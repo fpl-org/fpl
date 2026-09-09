@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+#
+# .githooks/commit-msg — enforce docs/COMMITS.md.
+#
+# Hard gates (reject on failure):
+#   1. header  <type>(<scope>)<!?>: <summary>  — type in the allowed set, scope
+#      [a-z0-9/._-]+, summary starts lower-case and has no trailing period,
+#      whole header <= 72 chars
+#   2. line 2 blank whenever a body/trailer follows
+#   3. body lines <= 72 chars, except fenced code, table rows, and lines with no
+#      break opportunity after column 72 (a long URL or path)
+#   4. provenance: Assisted-By: + Session-Id: together, or a lone Human-Only: true
+#   5. known trailers appear in canonical order
+#   6. unless Human-Only, the commit author email equals .git/agent-identity
+#   7. oracle guard: editing docs/DESIGN.md, docs/SPEC.md or features/*/spec.md
+#      requires the literal marker [spec] in the message
+#
+# Advisory (documented, not machine-checkable): imperative mood, one logical
+# change per commit, hunk-level staging.
+#
+# Bypassed for merge/revert/fixup/squash messages.
+
+set -euo pipefail
+
+msg_file="$1"
+repo_root="$(git rev-parse --show-toplevel)"
+first="$(sed -n '1p' "$msg_file")"
+
+case "$first" in
+"Merge "*|"Revert "*|"fixup! "*|"squash! "*|"amend! "*) exit 0 ;;
+esac
+
+fail() {
+	echo "commit-msg: $1" >&2
+	echo "           see docs/COMMITS.md" >&2
+	exit 1
+}
+
+# 1. header ----------------------------------------------------------------
+types='feat|fix|docs|refactor|perf|test|build|ci|chore|revert'
+printf '%s' "$first" | grep -Eq "^(${types})(\([a-z0-9/._-]+\))?!?: .+" \
+	|| fail "header must be '<type>(<scope>): <summary>' — got: $first"
+[ "${#first}" -le 72 ] || fail "header is ${#first} chars (>72)"
+summary="${first#*: }"
+case "$summary" in
+[A-Z]*) fail "summary must start lower-case: $summary" ;;
+*.)     fail "summary must not end with a period: $summary" ;;
+esac
+
+# 2. blank line 2 --------------------------------------------------------------
+if [ -n "$(sed -n '2p' "$msg_file")" ]; then
+	fail "line 2 must be blank (one blank line between header and body)"
+fi
+
+# Split body / trailer block. The trailer block is the last paragraph when every
+# one of its lines looks like  Token: value  (or a folded continuation).
+mapfile -t lines <"$msg_file"
+n=${#lines[@]}
+trailer_start=$n
+if [ "$n" -gt 0 ]; then
+	i=$((n - 1))
+	# skip trailing blank lines
+	while [ "$i" -ge 0 ] && [ -z "${lines[$i]}" ]; do i=$((i - 1)); done
+	end=$i
+	while [ "$i" -ge 0 ] && [ -n "${lines[$i]}" ]; do i=$((i - 1)); done
+	blk_start=$((i + 1))
+	is_block=1
+	for ((j = blk_start; j <= end; j++)); do
+		case "${lines[$j]}" in
+		[A-Za-z]*:\ *|[[:space:]]*) : ;;   # trailer or folded continuation
+		*) is_block=0; break ;;
+		esac
+	done
+	[ "$is_block" -eq 1 ] && [ "$blk_start" -gt 1 ] && trailer_start=$blk_start
+fi
+
+# 3. body width --------------------------------------------------------------
+in_fence=0
+for ((k = 2; k < trailer_start; k++)); do
+	line="${lines[$k]:-}"
+	case "$line" in '```'*) in_fence=$((1 - in_fence)); continue ;; esac
+	[ "$in_fence" -eq 1 ] && continue
+	case "$line" in '|'*) continue ;; esac
+	[ "${#line}" -le 72 ] && continue
+	# allowed only if there is no space at/after column 73 (unbreakable token)
+	rest="${line:72}"
+	case "$rest" in *" "*) fail "body line $((k + 1)) is ${#line} chars (>72): $line" ;; esac
+done
+
+# 4. provenance --------------------------------------------------------------
+if ! grep -Eq '^Human-Only:[[:space:]]*true[[:space:]]*$' "$msg_file"; then
+	grep -Eq '^Assisted-By:[[:space:]]*\S' "$msg_file" \
+		|| fail "missing 'Assisted-By:' trailer (or 'Human-Only: true')"
+	grep -Eq '^Session-Id:[[:space:]]*\S' "$msg_file" \
+		|| fail "missing 'Session-Id:' trailer (or 'Human-Only: true')"
+
+	# 6. author identity ----------------------------------------------------
+	id_file="$(git rev-parse --git-dir)/agent-identity"
+	if [ -s "$id_file" ]; then
+		want="$(head -n1 "$id_file")"
+		got="${GIT_AUTHOR_EMAIL:-$(git var GIT_AUTHOR_IDENT | sed -n 's/.*<\(.*\)>.*/\1/p')}"
+		[ "$got" = "$want" ] \
+			|| fail "author email is '$got', expected the machine account '$want' (use acommit, or -H for a human commit)"
+	else
+		fail "agent identity unset; run scripts/agent-identity set <email> (or commit with 'Human-Only: true')"
+	fi
+fi
+
+# 5. trailer order --------------------------------------------------------------
+order="Refs BREAKING-CHANGE Advisor Assisted-By Reasoning-Effort Session-Id Co-Authored-By"
+prev=0
+while IFS= read -r tok; do
+	rank=0 idx=0
+	for known in $order; do
+		idx=$((idx + 1))
+		[ "$tok" = "$known" ] && rank=$idx
+	done
+	[ "$rank" -eq 0 ] && continue
+	[ "$rank" -ge "$prev" ] || fail "trailer '$tok' is out of order (expected: $order)"
+	prev=$rank
+done < <(sed -n 's/^\([A-Za-z][A-Za-z-]*\):[[:space:]].*/\1/p' "$msg_file")
+
+# 7. oracle guard --------------------------------------------------------------
+protected='^(docs/DESIGN\.md|docs/SPEC\.md|features/[^/]+/spec\.md)$'
+if git diff --cached --name-only | grep -Eq "$protected"; then
+	grep -Fq '[spec]' "$msg_file" \
+		|| fail "this commit edits a protected spec file; add [spec] to the message if intentional"
+fi
+
+# 8. soft atomicity gate (LLM judge; fails open — see .githooks/atomic-check) ---
+"$repo_root/.githooks/atomic-check" "$msg_file" || exit $?
+
+exit 0
