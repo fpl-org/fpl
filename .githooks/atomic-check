@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+#
+# .githooks/atomic-check — soft LLM gate: is the staged commit ONE logical change?
+#
+# Symbolic hooks can check message shape but not whether the diff is cohesive.
+# This asks a cheap model (Haiku) to judge the staged diff against the commit
+# message's stated intent and blocks a commit that bundles unrelated concerns.
+#
+# It is a *soft* verifier — weaker than the symbolic gates — so it fails OPEN on
+# any infrastructure problem (no model reachable, bad reply): it only blocks on a
+# clear "not atomic" verdict from a model that actually answered.
+#
+#   FPL_ATOMIC_GATE = block (default) | warn | off
+#     block  non-atomic verdict -> exit 1
+#     warn   non-atomic verdict -> print, exit 0
+#     off    skip entirely
+#   FPL_ATOMIC_STRICT=1   also block when the model could not be reached
+#
+# Usage: atomic-check <commit-msg-file>
+
+set -euo pipefail
+
+mode="${FPL_ATOMIC_GATE:-block}"
+[ "$mode" = "off" ] && exit 0
+
+msg_file="${1:?usage: atomic-check <commit-msg-file>}"
+git_dir="$(git rev-parse --git-dir)"
+
+# Nothing staged (e.g. --amend --no-edit of metadata) -> nothing to judge.
+git diff --cached --quiet && exit 0
+
+model="claude-haiku-4-5-20251001"
+stat="$(git diff --cached --stat)"
+diff="$(git diff --cached --unified=1 | head -c 16000)"
+msg="$(sed -e '/^#/d' "$msg_file")"
+
+# Cache: keyed on staged tree + message, so amend loops do not re-bill.
+key="$(printf '%s\0%s' "$(git write-tree)" "$msg" | git hash-object --stdin)"
+cache_dir="$git_dir/atomic-cache"
+cache_file="$cache_dir/$key"
+mkdir -p "$cache_dir"
+if [ -f "$cache_file" ]; then
+	verdict="$(cat "$cache_file")"
+else
+	read -r -d '' prompt <<-EOF || true
+	You review a single git commit for atomicity. Given the commit message and its
+	staged diff, decide whether the diff is ONE cohesive logical change that matches
+	the message's stated intent. Unrelated concerns mixed together (e.g. a feature
+	plus an incidental refactor plus a typo fix in a third area) are NOT atomic.
+	A large but single-purpose change IS atomic.
+
+	Reply with ONLY a JSON object, no prose:
+	{"atomic": true|false, "reason": "<=200 chars"}
+
+	=== COMMIT MESSAGE ===
+	$msg
+
+	=== DIFF STAT ===
+	$stat
+
+	=== DIFF (may be truncated) ===
+	$diff
+	EOF
+
+	raw=""
+	if command -v claude >/dev/null 2>&1; then
+		raw="$(claude -p "$prompt" --model "$model" --output-format json 2>/dev/null || true)"
+		# `claude -p --output-format json` yields either a single {result:...}
+		# object or an array of stream messages ending in {type:result,result:...}.
+		raw="$(printf '%s' "$raw" | python3 -c 'import sys,json
+try: d=json.load(sys.stdin)
+except Exception: sys.exit(0)
+if isinstance(d,list):
+    for m in reversed(d):
+        if isinstance(m,dict) and m.get("type")=="result": print(m.get("result","")); break
+elif isinstance(d,dict):
+    print(d.get("result",""))' 2>/dev/null || true)"
+	fi
+	if [ -z "$raw" ] && [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+		raw="$(curl -sS --max-time 30 https://api.anthropic.com/v1/messages \
+			-H "x-api-key: $ANTHROPIC_API_KEY" \
+			-H "anthropic-version: 2023-06-01" \
+			-H "content-type: application/json" \
+			-d "$(python3 -c 'import json,sys
+print(json.dumps({"model":sys.argv[1],"max_tokens":200,
+"messages":[{"role":"user","content":sys.argv[2]}]}))' "$model" "$prompt")" 2>/dev/null || true)"
+		raw="$(printf '%s' "$raw" | python3 -c 'import sys,json
+try: print(json.load(sys.stdin)["content"][0]["text"])
+except Exception: pass' 2>/dev/null || true)"
+	fi
+
+	verdict="$(printf '%s' "$raw" | python3 -c 'import sys,json,re
+m=re.search(r"\{.*\}", sys.stdin.read(), re.S)
+if not m: sys.exit(0)
+try:
+    o=json.loads(m.group(0))
+    print(("atomic" if o.get("atomic") else "split") + "\t" + str(o.get("reason",""))[:200])
+except Exception: pass' 2>/dev/null || true)"
+	[ -n "$verdict" ] && printf '%s' "$verdict" >"$cache_file"
+fi
+
+if [ -z "$verdict" ]; then
+	echo "atomic-check: model unreachable; skipping (set FPL_ATOMIC_STRICT=1 to block)" >&2
+	[ "${FPL_ATOMIC_STRICT:-0}" = "1" ] && exit 1
+	exit 0
+fi
+
+kind="${verdict%%$'\t'*}"
+reason="${verdict#*$'\t'}"
+[ "$kind" = "atomic" ] && exit 0
+
+echo "atomic-check: this commit looks like more than one logical change." >&2
+echo "              $reason" >&2
+echo "              split it (git reset -p / git add -p), or FPL_ATOMIC_GATE=warn to override." >&2
+[ "$mode" = "warn" ] && exit 0
+exit 1
