@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+#
+# scripts/acommit — make a commit that follows docs/COMMITS.md.
+#
+# Assembles a Conventional-Commits header and a git-trailer provenance block,
+# sets the author to "<model display name> <machine-account email>" while leaving
+# the committer as whoever ran the session, then calls `git commit`. The
+# .githooks/commit-msg hook validates the result independently — acommit is the
+# happy path, not the enforcement.
+#
+# Usage:
+#   scripts/acommit -t <type> -s <scope> -m <summary> [options] [-- <git commit args>]
+#
+#   -t TYPE        feat|fix|docs|refactor|perf|test|build|ci|chore|revert   (required)
+#   -s SCOPE       e.g. harness, docs, scripts, grammar, eval               (required)
+#   -m SUMMARY     imperative, lower-case, no period, <=72 with the header  (required)
+#   -b BODY        body text; repeatable (one -b per paragraph).
+#                  If no -b and stdin is not a tty, the body is read from stdin.
+#   -B            breaking change: add "!" to the header and a BREAKING-CHANGE trailer
+#                  (give the description with -k).
+#   -k TEXT       BREAKING-CHANGE description (implies -B).
+#   -a ADVISOR    external model consulted, e.g. fable-5.1; repeatable.
+#   -r REF        Refs: value (path / issue / feature); repeatable.
+#   -M NAME       model display name, e.g. "Claude Sonnet 5". Falls back to
+#                  $FPL_MODEL / $CLAUDE_CODE_MODEL. Required (no reliable default).
+#   -H            human-only commit: no author override, no agent trailers,
+#                  adds "Human-Only: true".
+#   -n            dry run: print the message and the git command, commit nothing.
+#
+# Everything after `--` is forwarded to `git commit` (e.g. -- -S, -- --amend).
+
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+
+type=""; scope=""; summary=""; breaking=0; breaking_text=""
+human_only=0; dry=0; model_name="${FPL_MODEL:-${CLAUDE_CODE_MODEL:-}}"
+bodies=(); advisors=(); refs=(); passthru=()
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-t) type="$2"; shift 2 ;;
+	-s) scope="$2"; shift 2 ;;
+	-m) summary="$2"; shift 2 ;;
+	-b) bodies+=("$2"); shift 2 ;;
+	-B) breaking=1; shift ;;
+	-k) breaking=1; breaking_text="$2"; shift 2 ;;
+	-a) advisors+=("$2"); shift 2 ;;
+	-r) refs+=("$2"); shift 2 ;;
+	-M) model_name="$2"; shift 2 ;;
+	-H) human_only=1; shift ;;
+	-n) dry=1; shift ;;
+	--) shift; passthru=("$@"); break ;;
+	*) echo "acommit: unknown argument: $1" >&2; exit 2 ;;
+	esac
+done
+
+die() { echo "acommit: $*" >&2; exit 2; }
+
+case "$type" in
+feat|fix|docs|refactor|perf|test|build|ci|chore|revert) : ;;
+"") die "missing -t TYPE" ;;
+*) die "invalid type '$type' (see docs/COMMITS.md)" ;;
+esac
+[ -n "$scope" ] || die "missing -s SCOPE"
+[ -n "$summary" ] || die "missing -m SUMMARY"
+
+# Header ---------------------------------------------------------------------
+bang=""; [ "$breaking" -eq 1 ] && bang="!"
+header="${type}(${scope})${bang}: ${summary}"
+if [ ${#header} -gt 72 ]; then
+	die "header is ${#header} chars (>72): $header"
+fi
+
+# Body ---------------------------------------------------------------------
+body=""
+if [ ${#bodies[@]} -gt 0 ]; then
+	printf -v body '%s\n\n' "${bodies[@]}"
+	body="${body%$'\n\n'}"
+elif [ ! -t 0 ]; then
+	body="$(cat)"
+fi
+
+# Body width — same rule as .githooks/commit-msg (fenced code, table rows and
+# unbreakable long tokens are exempt). Fail fast rather than let the hook do it.
+if [ -n "$body" ]; then
+	in_fence=0 lineno=0
+	while IFS= read -r bl; do
+		lineno=$((lineno + 1))
+		case "$bl" in '```'*) in_fence=$((1 - in_fence)); continue ;; esac
+		[ "$in_fence" -eq 1 ] && continue
+		case "$bl" in '|'*) continue ;; esac
+		[ ${#bl} -le 72 ] && continue
+		case "${bl:72}" in *" "*) die "body line $lineno is ${#bl} chars (>72): $bl" ;; esac
+	done <<<"$body"
+fi
+
+# Trailers ---------------------------------------------------------------------
+trailers=()
+for r in "${refs[@]:-}"; do [ -n "$r" ] && trailers+=("Refs: $r"); done
+if [ "$breaking" -eq 1 ]; then
+	[ -n "$breaking_text" ] || die "-B/breaking needs -k \"description\""
+	trailers+=("BREAKING-CHANGE: $breaking_text")
+fi
+
+author_arg=()
+if [ "$human_only" -eq 1 ]; then
+	trailers+=("Human-Only: true")
+else
+	[ -n "$model_name" ] || die "model unknown: pass -M \"Claude Sonnet 5\" (or set \$FPL_MODEL)"
+	email="$("$repo_root/scripts/agent-identity" show)" \
+		|| die "agent identity unset — run: scripts/agent-identity set <email>"
+	# slug: "Claude Sonnet 5" -> "claude-sonnet-5"; "Claude Fable 5.1" -> "claude-fable-5-1"
+	slug="$(printf '%s' "$model_name" | tr '[:upper:] .' '[:lower:]--' | tr -s '-')"
+	for a in "${advisors[@]:-}"; do [ -n "$a" ] && trailers+=("Advisor: $a"); done
+	trailers+=("Assisted-By: $slug")
+	[ -n "${CLAUDE_EFFORT:-}" ] && trailers+=("Reasoning-Effort: $CLAUDE_EFFORT")
+	[ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && trailers+=("Session-Id: $CLAUDE_CODE_SESSION_ID")
+	trailers+=("Co-Authored-By: $model_name <noreply@anthropic.com>")
+	author_arg=(--author "$model_name <$email>")
+fi
+
+# Assemble ---------------------------------------------------------------------
+msg="$header"
+[ -n "$body" ] && msg="$msg"$'\n\n'"$body"
+if [ ${#trailers[@]} -gt 0 ]; then
+	msg="$msg"$'\n\n'
+	for t in "${trailers[@]}"; do msg="$msg$t"$'\n'; done
+	msg="${msg%$'\n'}"
+fi
+
+if [ "$dry" -eq 1 ]; then
+	echo "--- message ---"
+	printf '%s\n' "$msg"
+	echo "--- command ---"
+	printf 'git commit %s%s -F -\n' \
+		"${author_arg[*]:-}" "${passthru[*]:+ ${passthru[*]}}"
+	exit 0
+fi
+
+printf '%s\n' "$msg" | git commit "${author_arg[@]}" "${passthru[@]}" -F -
