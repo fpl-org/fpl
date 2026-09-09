@@ -1,0 +1,13 @@
+# Linked git worktrees live here (see docs/WORKTREES.md).
+# Ignored so they don't show as untracked content in the main tree;
+# `git worktree list` still tracks them normally.
+worktrees/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+*.egg-info/
