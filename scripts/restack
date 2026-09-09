@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+#
+# scripts/restack — rebase the current stack onto the latest base, moving every
+# branch ref in the stack with it.
+#
+# This is the whole "restack" step from docs/WORKFLOW.md. It relies on
+# rebase.updateRefs=true (set by scripts/setup) so intermediate branch refs that
+# point at commits in the stack are carried along instead of left behind.
+#
+# Usage:
+#   scripts/restack              # fetch origin, rebase HEAD onto origin/<base>
+#   scripts/restack <base>       # use a different base ref (default: main)
+#   scripts/restack --continue   # after resolving conflicts
+#   scripts/restack --abort
+
+set -euo pipefail
+
+case "${1:-}" in
+--continue) exec git rebase --continue ;;
+--abort)    exec git rebase --abort ;;
+esac
+
+base="${1:-main}"
+cur="$(git branch --show-current)"
+[ -n "$cur" ] || { echo "restack: detached HEAD; checkout your stack branch first" >&2; exit 1; }
+
+echo "==> git fetch origin"
+git fetch origin
+
+upstream="origin/$base"
+git rev-parse --verify --quiet "$upstream" >/dev/null \
+	|| { echo "restack: $upstream not found" >&2; exit 1; }
+
+ahead="$(git rev-list --count "$upstream..HEAD")"
+behind="$(git rev-list --count "HEAD..$upstream")"
+echo "==> $cur is $ahead ahead / $behind behind $upstream"
+if [ "$behind" -eq 0 ]; then
+	echo "    already on top of $upstream; nothing to restack"
+	exit 0
+fi
+
+echo "==> git rebase --update-refs --onto $upstream $upstream $cur"
+git rebase --update-refs "$upstream"
+echo "==> done; refs in the stack moved with it:"
+git --no-pager log --oneline --decorate "$upstream..HEAD"
