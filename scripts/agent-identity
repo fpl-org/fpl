@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+#
+# scripts/agent-identity — read / write the agent author email for this worktree.
+#
+# The value lives in `.git/agent-identity` (one line, an email address). It is
+# inside .git/, so it is per-worktree and never committed. `scripts/acommit`
+# reads it to build `--author="<model display name> <email>"`; see docs/COMMITS.md.
+#
+# Only the email is stored. The author *name* is derived per-commit from the model
+# that is running, so `git shortlog -sn` distinguishes "Claude Sonnet 5" from
+# "Claude Opus 5" while both link to one GitHub machine account via the email.
+#
+# Usage:
+#   scripts/agent-identity show           # print the email, exit 1 if unset
+#   scripts/agent-identity set <email>    # store the email
+#   scripts/agent-identity path           # print the file path
+
+set -euo pipefail
+
+git_dir="$(git rev-parse --git-dir)"
+id_file="$git_dir/agent-identity"
+
+cmd="${1:-show}"
+case "$cmd" in
+show)
+	[ -s "$id_file" ] || { echo "agent-identity: not set ($id_file)" >&2; exit 1; }
+	head -n1 "$id_file"
+	;;
+set)
+	email="${2:-}"
+	case "$email" in
+	*@*.*) : ;;
+	*) echo "agent-identity: '$email' is not an email address" >&2; exit 2 ;;
+	esac
+	printf '%s\n' "$email" >"$id_file"
+	echo "agent-identity: set to $email"
+	;;
+path)
+	echo "$id_file"
+	;;
+*)
+	echo "usage: agent-identity {show|set <email>|path}" >&2
+	exit 2
+	;;
+esac
