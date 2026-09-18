@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+#
+# scripts/new-worktree — create an implementation worktree under worktrees/<name>/.
+#
+# The create recipe from docs/WORKTREES.md as one command, usable by any agent or
+# human (`.claude/commands/new-worktree.md` is a thin wrapper over this):
+#
+#   1. `git worktree add worktrees/<name> -b attempt/<name> <base>`, always from
+#      the root checkout, so it works when invoked from inside another worktree.
+#   2. Carries the root's agent identity into the new worktree. The file lives
+#      under the per-worktree git dir, so a fresh worktree starts without one;
+#      docs/COMMITS.md fixes the email as one constant machine-account address,
+#      so inheriting it is safe. Skipped when the root has none.
+#   3. Runs `scripts/setup` inside the new worktree (hooks, stacked-commit config,
+#      identity report).
+#
+# It scaffolds nothing: `fpl/` and `features/` are the first implementation
+# session's job (docs/CONVENTIONS.md).
+#
+# Usage:
+#   scripts/new-worktree [-n] <name> [base]
+#
+#   <name>   [a-z0-9][a-z0-9._-]*  -> path worktrees/<name>, branch attempt/<name>
+#   [base]   ref to branch from (default: main)
+#   -n       dry run: print the commands, create nothing
+
+set -euo pipefail
+
+die() { echo "new-worktree: $*" >&2; exit 2; }
+
+dry=0
+[ "${1:-}" = "-n" ] && { dry=1; shift; }
+name="${1:-}"; base="${2:-main}"
+[ -n "$name" ] || die "usage: new-worktree [-n] <name> [base]"
+[ $# -le 2 ] || die "too many arguments"
+printf '%s' "$name" | grep -Eq '^[a-z0-9][a-z0-9._-]*$' \
+	|| die "invalid name '$name' (want [a-z0-9][a-z0-9._-]*)"
+
+# The root checkout is always the first entry, wherever we were invoked from.
+root="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+[ -n "$root" ] || die "not inside a git repository"
+path="worktrees/$name"; branch="attempt/$name"
+
+[ ! -e "$root/$path" ] || die "$path already exists"
+git -C "$root" rev-parse --verify --quiet "$base^{commit}" >/dev/null \
+	|| die "base '$base' is not a commit"
+if git -C "$root" show-ref --verify --quiet "refs/heads/$branch"; then
+	die "branch $branch already exists"
+fi
+
+if [ "$dry" -eq 1 ]; then
+	echo "git -C $root worktree add $path -b $branch $base"
+	echo "(cd $root/$path && $root/scripts/setup)"
+	exit 0
+fi
+
+echo "==> git worktree add $path -b $branch $base"
+git -C "$root" worktree add "$path" -b "$branch" "$base"
+
+if email="$(cd "$root" && scripts/agent-identity show 2>/dev/null)"; then
+	echo "==> inherit agent identity from the root checkout"
+	(cd "$root/$path" && "$root/scripts/agent-identity" set "$email" >/dev/null)
+fi
+
+(cd "$root/$path" && "$root/scripts/setup")
+
+echo "==> ready: $root/$path on $branch (from $base)"

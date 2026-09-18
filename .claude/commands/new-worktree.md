@@ -7,13 +7,13 @@ Create a fresh FPL implementation attempt. See `docs/WORKTREES.md`.
 
 Given `$1` = name (required), `$2` = base branch (default `main`):
 
-1. From the repo root: `git worktree add worktrees/$1 -b attempt/$1 $2`
-2. `cd worktrees/$1 && ../../scripts/setup` — wires `.githooks/`, the stacked-commit git
-   config, and reports whether `.git/agent-identity` is set.
-3. If identity is unset, tell the maintainer to run
-   `scripts/agent-identity set <machine-account-email>` (see `docs/COMMITS.md`); do not
-   proceed to commits until it is.
-4. Report the worktree path and branch. Stop — implementation starts with `/new-feature` or
+1. Run `scripts/new-worktree $1 $2`. It adds `worktrees/$1` on branch `attempt/$1`, carries
+   the root's agent identity into it, and runs `scripts/setup` there (hooks, stacked-commit
+   git config, identity report).
+2. If the output says the identity is NOT SET (the root had none to inherit), tell the
+   maintainer to run `scripts/agent-identity set <machine-account-email>` inside the new
+   worktree (see `docs/COMMITS.md`); do not proceed to commits until it is.
+3. Report the worktree path and branch. Stop — implementation starts with `/new-feature` or
    `/impl-feature` inside the new worktree.
 
 Do not scaffold `fpl/` or `features/` here unless the maintainer asks.
