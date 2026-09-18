@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+#
+# .githooks/pre-commit — enforce the root/worktree edit boundary.
+#
+# AGENTS.md and docs/WORKTREES.md split the repo in two: the root checkout holds
+# the shared harness, each worktrees/<name>/ holds one implementation attempt,
+# and a session edits only its own side. Every branch carries both sets of
+# paths, so nothing but convention stopped a worktree session from "fixing" a
+# script in place, or a root session from growing an fpl/. This makes the rule
+# a symbolic gate, judged on the staged paths:
+#
+#   root checkout    (.git is a directory)  rejects implementation paths
+#   linked worktree  (.git is a file)       rejects harness paths
+#
+# Paths in neither set (README.md, .gitignore, .github/, …) pass on both sides.
+#
+#   FPL_BOUNDARY = block (default) | warn | off
+#
+# git runs pre-commit for `git commit` only — not for rebase, cherry-pick or
+# merge — so restacking a worktree onto a main whose harness moved is unaffected.
+
+set -euo pipefail
+
+mode="${FPL_BOUNDARY:-block}"
+[ "$mode" = "off" ] && exit 0
+
+top="$(git rev-parse --show-toplevel)"
+if [ -f "$top/.git" ]; then
+	side="worktree"; other="the harness"; where="the root checkout"
+	forbidden='^(docs/|\.claude/|scripts/|\.githooks/|AGENTS\.md$|CLAUDE\.md$)'
+else
+	side="root"; other="an implementation"; where="a worktrees/<name>/"
+	forbidden='^(fpl/|features/|tests/|pyproject\.toml$|Makefile$)'
+fi
+
+# --no-renames: a rename across the boundary must show both of its ends.
+bad="$(git diff --cached --name-only --no-renames | grep -E "$forbidden" || true)"
+[ -z "$bad" ] && exit 0
+
+{
+	echo "pre-commit: this is a $side checkout, but the commit touches $other:"
+	printf '%s\n' "$bad" | sed 's/^/              /'
+	echo "            make that change from $where (docs/WORKTREES.md),"
+	echo "            or FPL_BOUNDARY=warn to override."
+} >&2
+[ "$mode" = "warn" ] && exit 0
+exit 1

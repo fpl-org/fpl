@@ -63,6 +63,11 @@ is a thin wrapper over it.
 A root session never edits inside a worktree; a worktree session never edits the harness. To
 change the harness while mid-attempt, commit in the worktree, `cd` to root, edit there.
 
+**[gate]** `.githooks/pre-commit` enforces this table on the staged paths: a root checkout
+rejects the second row's paths, a linked worktree rejects the first row's. Paths in neither
+row pass on both sides. `FPL_BOUNDARY=block` (default) · `warn` (print, don't block) · `off`.
+Git runs it for `git commit` only, so restacking a worktree onto a moved `main` is unaffected.
+
 ## Current state
 
 - `worktrees/a/` — the first worktree (relocated from `./fpl_a`), branch `fpl_a`. Empty of

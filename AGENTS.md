@@ -23,7 +23,7 @@ do not invent language semantics.
   docs/               settled decisions and conventions (vendor-neutral)
   .claude/            Claude Code commands, subagents, skill, hooks
   scripts/            acommit, restack, setup, agent-identity, new-worktree (any agent/human)
-  .githooks/          commit-msg, atomic-check (enabled by scripts/setup)
+  .githooks/          pre-commit, commit-msg, atomic-check (enabled by scripts/setup)
   worktrees/<name>/   one implementation attempt each; git-ignored; see docs/WORKTREES.md
 ```
 
@@ -33,6 +33,7 @@ own linked worktree at `worktrees/<name>/` on its own branch.
 - A root session edits the harness only — never files inside a `worktrees/<name>/`.
 - A worktree session edits that worktree only — never up into the harness or sideways into
   another worktree.
+- `.githooks/pre-commit` gates both rules on the staged paths (`FPL_BOUNDARY=warn` overrides).
 - Details and `git worktree` recipes: `docs/WORKTREES.md`.
 
 ## Settled decisions
