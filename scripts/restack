@@ -39,7 +39,7 @@ if [ "$behind" -eq 0 ]; then
 	exit 0
 fi
 
-echo "==> git rebase --update-refs --onto $upstream $upstream $cur"
+echo "==> git rebase --update-refs $upstream"
 git rebase --update-refs "$upstream"
 echo "==> done; refs in the stack moved with it:"
 git --no-pager log --oneline --decorate "$upstream..HEAD"
