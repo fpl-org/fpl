@@ -23,6 +23,10 @@
 #   -r REF        Refs: value (path / issue / feature); repeatable.
 #   -M NAME       model display name, e.g. "Claude Sonnet 5". Falls back to
 #                  $FPL_MODEL / $CLAUDE_CODE_MODEL. Required (no reliable default).
+#   -S ID         agent session id for the Session-Id trailer. Falls back to
+#                  $FPL_SESSION_ID / $CLAUDE_CODE_SESSION_ID. Required: the
+#                  commit-msg hook rejects an agent commit without it, and an
+#                  invented id would be worthless for forensics.
 #   -H            human-only commit: no author override, no agent trailers,
 #                  adds "Human-Only: true".
 #   -n            dry run: print the message and the git command, commit nothing.
@@ -35,6 +39,7 @@ repo_root="$(git rev-parse --show-toplevel)"
 
 type=""; scope=""; summary=""; breaking=0; breaking_text=""
 human_only=0; dry=0; model_name="${FPL_MODEL:-${CLAUDE_CODE_MODEL:-}}"
+session_id="${FPL_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
 bodies=(); advisors=(); refs=(); passthru=()
 
 while [ $# -gt 0 ]; do
@@ -48,6 +53,7 @@ while [ $# -gt 0 ]; do
 	-a) advisors+=("$2"); shift 2 ;;
 	-r) refs+=("$2"); shift 2 ;;
 	-M) model_name="$2"; shift 2 ;;
+	-S) session_id="$2"; shift 2 ;;
 	-H) human_only=1; shift ;;
 	-n) dry=1; shift ;;
 	--) shift; passthru=("$@"); break ;;
@@ -108,6 +114,8 @@ if [ "$human_only" -eq 1 ]; then
 	trailers+=("Human-Only: true")
 else
 	[ -n "$model_name" ] || die "model unknown: pass -M \"Claude Sonnet 5\" (or set \$FPL_MODEL)"
+	[ -n "$session_id" ] || die "session id unknown: pass -S <id> (or set \$FPL_SESSION_ID)"
+	case "$session_id" in *[[:space:]]*) die "session id must not contain whitespace: '$session_id'" ;; esac
 	email="$("$repo_root/scripts/agent-identity" show)" \
 		|| die "agent identity unset — run: scripts/agent-identity set <email>"
 	# slug: "Claude Sonnet 5" -> "claude-sonnet-5"; "Claude Fable 5.1" -> "claude-fable-5-1"
@@ -115,7 +123,7 @@ else
 	for a in "${advisors[@]:-}"; do [ -n "$a" ] && trailers+=("Advisor: $a"); done
 	trailers+=("Assisted-By: $slug")
 	[ -n "${CLAUDE_EFFORT:-}" ] && trailers+=("Reasoning-Effort: $CLAUDE_EFFORT")
-	[ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && trailers+=("Session-Id: $CLAUDE_CODE_SESSION_ID")
+	trailers+=("Session-Id: $session_id")
 	trailers+=("Co-Authored-By: $model_name <noreply@anthropic.com>")
 	author_arg=(--author "$model_name <$email>")
 fi

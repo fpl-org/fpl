@@ -45,6 +45,9 @@ commit independently. Each rule below is marked **[gate]** (a hook rejects viola
 - **[gate]** one blank line before it; each line `Token: value`, tokens use `-` for spaces.
 - **[gate]** `Assisted-By` **and** `Session-Id` are both present — **or** a single
   `Human-Only: true` line for a hand-made human commit.
+- `scripts/acommit` takes the session id from `-S <id>`, else `$FPL_SESSION_ID`, else
+  `$CLAUDE_CODE_SESSION_ID`, and refuses to commit when none is set — any harness can
+  export `FPL_SESSION_ID`. It never invents one: a made-up id is useless for forensics.
 - **[gate]** known trailers appear in this order:
 
   | Trailer | Meaning | Example |
