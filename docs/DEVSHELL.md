@@ -15,7 +15,7 @@ no Homebrew, no pyenv, no global pip.
 
 ## Loading it automatically
 
-`.envrc` holds one directive, `use flake`, which makes [direnv](https://direnv.net) load the
+`.envrc` ends in one directive, `use flake`, which makes [direnv](https://direnv.net) load the
 shell whenever you `cd` into the repository or one of its worktrees and unload it when you
 leave. direnv's own description: "Load the build environment of a derivation similar to
 `nix develop`." Run `direnv allow` once per checkout; direnv will not execute an `.envrc` it
@@ -59,6 +59,20 @@ through GitHub, for now". So it lives in a second shell, `github`: the default s
 nix develop .#github                       # a shell that has gh
 nix develop .#github -c gh pr create …     # or one command in it
 ```
+
+To have direnv load it instead of the default, name it in `.fpl-shell`:
+
+```
+echo github > .fpl-shell        # picked up at the next prompt
+rm .fpl-shell                   # back to the default
+```
+
+`.fpl-shell` is git-ignored: the choice belongs to one checkout and never travels with a
+commit, so nobody gets a forge client because somebody else wanted one. The file holds a name,
+not code. `.envrc` reads it, strips everything outside `[a-z0-9-]`, accepts only the shells it
+knows, and falls back to `default` with an error for anything else. It is deliberately not
+sourced: direnv asks for approval of `.envrc` itself, but not of files an `.envrc` sources, so
+a sourced, git-ignored file would be a way to run code nobody reviewed.
 
 Another forge gets a shell of its own next to this one, not a place in the default.
 
