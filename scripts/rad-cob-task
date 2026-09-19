@@ -1,0 +1,246 @@
+#!/usr/bin/env python3
+"""rad-cob-task — reducer for the Radicle COB type of FPL's task graph.
+
+Radicle keeps a collaborative object (COB) as a graph of signed operations under
+refs/cobs/<type>/<id>. For a type it does not know, `rad` runs a helper named after the
+last segment of the type name, once per operation: one JSON line on stdin,
+
+    {"value": <state so far, {} at first>,
+     "op": {"id", "author", "timestamp", "actions": [...]}, "concurrent": [...]}
+
+and the new state as JSON on stdout (radicle::cob::external). `rad` replays every operation
+through the helper whenever it reads the object, so this file IS the meaning of the stored
+operations: change it and every task is reinterpreted.
+
+Two rules follow from how `rad` treats the helper (checked with rad 1.10.3):
+
+  * It must never fail on an operation. A non-zero exit makes the whole object unreadable
+    for everyone. An operation is signed but otherwise untrusted: it may come from any peer
+    and carry anything. Whatever is malformed, unknown or not allowed is skipped and counted
+    in `ignored`, never raised.
+  * It must be deterministic: no clock, no environment, no I/O besides stdin and stdout.
+
+State of a task:
+
+    title, description   text
+    state                todo | doing | done | dropped
+    blockedBy            ids of tasks that must be done (or dropped) first
+    assignee             DID of whoever works on it, or null
+    author               DID that opened it
+    opened, updated      timestamps of the first and of the last applied operation
+    ignored              number of actions that were skipped
+
+Actions (the JSONL lines given to `rad cob create|update`):
+
+    {"type": "open",    "title": str, "description"?: str}      first operation only
+    {"type": "edit",    "title"?: str, "description"?: str}     author
+    {"type": "assign",  "to": DID | null}                       author
+    {"type": "state",   "state": todo|doing|done|dropped}       author, assignee
+    {"type": "block",   "by": <task id>}                        author, assignee
+    {"type": "unblock", "by": <task id>}                        author, assignee
+
+Who may act is decided here, because an external COB has no other authorisation: the
+author may do anything, the assignee may move the task and its blockers, anybody else is
+ignored. scripts/task is the command-line front end; `--self-test` needs no rad.
+"""
+
+import json
+import re
+import sys
+
+STATES = ("todo", "doing", "done", "dropped")
+OID = re.compile(r"^[0-9a-f]{40}$")
+MAX_TITLE, MAX_DESCRIPTION, MAX_BLOCKERS = 200, 10_000, 64
+
+
+def did(value):
+    """An actor as a DID. `rad` names the author of an operation by bare key, people write
+    `did:key:…` (that is what `rad self --did` prints); one form, or they never compare equal."""
+    if not isinstance(value, str) or not 0 < len(value) <= 100:
+        return None
+    return value if value.startswith("did:") else "did:key:" + value
+
+
+def text(value, limit):
+    """`value` as an accepted string, or None."""
+    if isinstance(value, str) and 0 < len(value.strip()) and len(value) <= limit:
+        return value.strip()
+    return None
+
+
+def apply(task, action, actor):
+    """Apply one action in place. True if it was applied, False if it was skipped."""
+    if not isinstance(action, dict):
+        return False
+    kind = action.get("type")
+
+    if kind == "open":
+        title = text(action.get("title"), MAX_TITLE)
+        if task or title is None:  # only as the first thing that ever happens
+            return False
+        description = action.get("description", "")
+        if not isinstance(description, str) or len(description) > MAX_DESCRIPTION:
+            return False
+        task.update(
+            title=title,
+            description=description,
+            state="todo",
+            blockedBy=[],
+            assignee=None,
+            author=actor,
+        )
+        return True
+
+    if not task:  # nothing else makes sense before `open`
+        return False
+    is_author = actor == task["author"]
+    is_worker = is_author or (actor is not None and actor == task["assignee"])
+
+    if kind == "edit" and is_author:
+        changed = False
+        title = text(action.get("title"), MAX_TITLE)
+        if title is not None:
+            task["title"], changed = title, True
+        description = action.get("description")
+        if isinstance(description, str) and len(description) <= MAX_DESCRIPTION:
+            task["description"], changed = description, True
+        return changed
+
+    if kind == "assign" and is_author:
+        to = action.get("to")
+        if to is None or did(to) is not None:
+            task["assignee"] = did(to)
+            return True
+        return False
+
+    if kind == "state" and is_worker:
+        if action.get("state") in STATES:
+            task["state"] = action["state"]
+            return True
+        return False
+
+    if kind in ("block", "unblock") and is_worker:
+        by = action.get("by")
+        if not (isinstance(by, str) and OID.match(by)):
+            return False
+        if kind == "block":
+            if by in task["blockedBy"] or len(task["blockedBy"]) >= MAX_BLOCKERS:
+                return False
+            task["blockedBy"] = sorted(task["blockedBy"] + [by])
+            return True
+        if by in task["blockedBy"]:
+            task["blockedBy"].remove(by)
+            return True
+        return False
+
+    return False
+
+
+def reduce(request):
+    """The state after request["op"], given request["value"]. Never raises."""
+    try:
+        value = request.get("value")
+        task = dict(value) if isinstance(value, dict) else {}
+        op = request.get("op") if isinstance(request.get("op"), dict) else {}
+        actor = did(op.get("author"))
+        stamp = op.get("timestamp") if isinstance(op.get("timestamp"), int) else None
+        actions = op.get("actions") if isinstance(op.get("actions"), list) else []
+        ignored = task.pop("ignored", 0)
+        applied = 0
+        for action in actions:
+            try:
+                ok = apply(task, action, actor)
+            except Exception:  # a bug here must not make the object unreadable
+                ok = False
+            applied += ok
+            ignored += not ok
+        if task:
+            if applied and stamp is not None:
+                task.setdefault("opened", stamp)
+                task["updated"] = stamp
+            task["ignored"] = ignored
+        elif ignored:
+            task = {"ignored": ignored}
+        return task
+    except Exception:
+        value = request.get("value") if isinstance(request, dict) else None
+        return value if isinstance(value, dict) else {}
+
+
+def main():
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        try:
+            request = json.loads(line)
+        except ValueError:
+            request = {}
+        json.dump(reduce(request if isinstance(request, dict) else {}), sys.stdout)
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+
+def self_test():
+    alice, bob, eve = "z6Mkalice", "z6Mkbob", "z6Mkeve"  # bare keys, as rad gives them
+    a = "a" * 40
+    state = {}
+
+    def op(author, *actions, stamp=1):
+        nonlocal state
+        state = reduce(
+            {"value": state, "op": {"author": author, "timestamp": stamp, "actions": list(actions)}}
+        )
+        return state
+
+    checks = []
+
+    def check(name, ok):
+        checks.append((name, bool(ok)))
+
+    op(eve, {"type": "state", "state": "done"})
+    check("nothing before open", state == {"ignored": 1})
+    op(alice, {"type": "open", "title": "  lexer  ", "description": "d"}, stamp=10)
+    check(
+        "open",
+        state["title"] == "lexer"
+        and state["state"] == "todo"
+        and state["author"] == "did:key:" + alice,
+    )
+    check("open stamps", state["opened"] == 10 and state["updated"] == 10)
+    op(bob, {"type": "open", "title": "hijack"})
+    check("second open ignored", state["title"] == "lexer" and state["ignored"] == 2)
+    op(eve, {"type": "state", "state": "done"}, {"type": "edit", "title": "pwn"})
+    check("stranger ignored", state["state"] == "todo" and state["title"] == "lexer")
+    op(bob, {"type": "state", "state": "doing"})
+    check("unassigned cannot move it", state["state"] == "todo")
+    op(alice, {"type": "assign", "to": "did:key:" + bob})  # as `rad self --did` prints it
+    check("assignee stored as a DID", state["assignee"] == "did:key:" + bob)
+    op(bob, {"type": "state", "state": "doing"}, {"type": "block", "by": a}, stamp=20)
+    check("assignee moves and blocks", state["state"] == "doing" and state["blockedBy"] == [a])
+    check("updated follows", state["opened"] == 10 and state["updated"] == 20)
+    op(bob, {"type": "edit", "title": "mine"}, {"type": "assign", "to": bob})
+    check("assignee cannot edit or assign", state["title"] == "lexer")
+    op(alice, {"type": "block", "by": a}, {"type": "block", "by": "zz"}, {"type": "block"})
+    check("bad or repeated blockers ignored", state["blockedBy"] == [a])
+    op(alice, {"type": "unblock", "by": a}, {"type": "state", "state": "finished"})
+    check("unblock, bad state ignored", state["blockedBy"] == [] and state["state"] == "doing")
+    before = dict(state)
+    for junk in (None, 7, "x", [], {"type": None}, {"type": "open"}, {"type": "frobnicate"}):
+        op(alice, junk)
+    check("junk actions only count", {**state, "ignored": 0} == {**before, "ignored": 0})
+    op(alice, {"type": "edit", "title": "x" * 201}, {"type": "edit", "description": "y" * 10_001})
+    check("oversized text ignored", state["title"] == "lexer")
+    check("garbage requests", reduce({}) == {} and reduce({"value": 3, "op": 4}) == {})
+    check("garbage keeps state", reduce({"value": before, "op": None}) == before)
+
+    failed = [name for name, ok in checks if not ok]
+    for name in failed:
+        print(f"FAIL {name}", file=sys.stderr)
+    print(f"rad-cob-task: self-test {'ok' if not failed else 'FAILED'} ({len(checks)} checks)")
+    sys.exit(1 if failed else 0)
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] == ["--self-test"]:
+        self_test()
+    main()
