@@ -17,7 +17,11 @@
 # request as the maintainer and leave nobody to approve it. So this refuses unless the
 # token belongs to the account named in .git/agent-identity, and unless the branch on the
 # forge is the commit you have here. It does not push: a push is yours or the
-# maintainer's to make (WORKFLOW.md, rule 8). Needs gh: `scripts/layer on github`.
+# maintainer's to make (WORKFLOW.md, rule 8).
+#
+# It talks to the forge over its API, with python3 from the default dev shell, so the
+# github layer is not needed. The token is gh's if gh has one for the machine account,
+# else the one in .git/agent-credentials (docs/WORKFLOW.md).
 set -euo pipefail
 
 die() {
@@ -84,17 +88,82 @@ if [ "$dry" -eq 1 ]; then
 	exit 0
 fi
 
-command -v gh >/dev/null || die "gh not found; scripts/layer on github"
-token="$(gh auth token -u "$login" 2>/dev/null)" || token=""
-[ -n "$token" ] || die "gh has no token for '$login'; run: gh auth login (as $login)"
-whoami="$(GH_TOKEN="$token" gh api user -q .login)" || die "the token for '$login' is not accepted"
-[ "$whoami" = "$login" ] || die "the token belongs to '$whoami', not '$login'"
-
-open_url='select(.state=="OPEN").url'
-if url="$(GH_TOKEN="$token" gh pr view "$branch" --json url,state -q "$open_url" 2>/dev/null)" &&
-	[ -n "$url" ]; then
-	printf 'pr: already open\n' >&2
-	printf '%s\n' "$url"
-	exit 0
+# The token of the machine account. gh keeps one per account in the system keyring;
+# .git/agent-credentials is the fallback, a git credential-store file holding one
+# https://<login>:<token>@github.com line. Its login must be the machine account's: a
+# credential for somebody else is not a fallback, it is the wrong author.
+token="" cred=""
+if command -v gh >/dev/null; then
+	token="$(gh auth token -u "$login" 2>/dev/null || true)"
 fi
-GH_TOKEN="$token" gh pr create --base "$base" --head "$branch" --title "$title" --body "$text"
+if [ -z "$token" ]; then
+	common="$(cd "$(git rev-parse --git-common-dir)" && pwd)"
+	cred="$common/agent-credentials"
+	if [ -r "$cred" ]; then
+		line="$(grep -m1 -E "^https://$login:[^@]+@github\\.com" "$cred" || true)"
+		token="${line#*:*:}"
+		token="${token%@*}"
+	fi
+fi
+[ -n "$token" ] || die "no token for '$login': gh has none, and neither has ${cred:-.git/agent-credentials}"
+
+# owner/repo from the remote, so the API knows where to file.
+slug="$(git remote get-url "$remote")"
+slug="${slug%.git}"
+slug="${slug#*github.com}"
+slug="${slug#[:/]}"
+case "$slug" in
+*/*) ;;
+*) die "cannot read owner/repo from the url of '$remote'" ;;
+esac
+
+# One round trip per step: who the token is, whether the branch is already filed, and
+# then the pull request. Anything but 'the token is the machine account' stops here.
+FPL_TOKEN="$token" python3 - "$slug" "$login" "$branch" "$base" "$title" "$text" <<'PY'
+import json, os, sys, urllib.error, urllib.request
+
+slug, login, branch, base, title, body = sys.argv[1:7]
+
+
+def die(message):
+    print(f"pr: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def api(path, payload=None):
+    request = urllib.request.Request(
+        f"https://api.github.com{path}",
+        data=None if payload is None else json.dumps(payload).encode(),
+        headers={
+            "Authorization": f"Bearer {os.environ['FPL_TOKEN']}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Content-Type": "application/json",
+        },
+        method="GET" if payload is None else "POST",
+    )
+    try:
+        with urllib.request.urlopen(request) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        detail = json.loads(error.read() or b"{}")
+        die(f"{path}: {error.code} {detail.get('message', error.reason)}")
+
+
+whoami = api("/user").get("login")
+if whoami != login:
+    die(f"the token belongs to '{whoami}', not '{login}'")
+
+owner = slug.split("/")[0]
+open_prs = api(f"/repos/{slug}/pulls?state=open&head={owner}:{branch}")
+if open_prs:
+    print("pr: already open", file=sys.stderr)
+    print(open_prs[0]["html_url"])
+    raise SystemExit(0)
+
+created = api(
+    f"/repos/{slug}/pulls",
+    {"title": title, "body": body, "head": branch, "base": base},
+)
+print(created["html_url"])
+PY
