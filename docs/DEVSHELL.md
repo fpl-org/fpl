@@ -126,6 +126,9 @@ Update deliberately, as its own commit: `nix flake update`, then `make check` in
 
 ## Known trap: interactive `nix develop` on a Mac
 
+direnv (above) is the recommended route into the shell — the trap below is what happens
+without it.
+
 On that same Mac, a bare interactive `nix develop` gave a half-working shell: `bash`, `make`,
 `sed`, `grep` and `awk` came from the Nix store, but `git` and `gh` (then still in the default
 shell) resolved to nix-darwin's system profile, `jj` and `python3` to Homebrew, and `ruff` and
