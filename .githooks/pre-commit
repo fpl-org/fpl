@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 #
-# .githooks/pre-commit — enforce the root/worktree edit boundary.
+# .githooks/pre-commit — two symbolic gates on where a commit may be made:
+#   1. the root/worktree edit boundary (below)
+#   2. no direct commits on main (end of file)
 #
 # AGENTS.md and docs/WORKTREES.md split the repo in two: the root checkout holds
 # the shared harness, each worktrees/<name>/ holds one implementation attempt,
@@ -21,8 +23,29 @@
 
 set -euo pipefail
 
+# Gate 2 lives in a function so gate 1's early exits still reach it.
+#
+# docs/WORKFLOW.md rule 6: everything lands on main through a GitHub PR. A commit
+# made while main is checked out can only reach origin by a direct push or a
+# local merge, so it is refused at the source. Pulling a landed PR is a
+# fast-forward (or a merge), neither of which runs pre-commit.
+#
+#   FPL_MAIN_GATE = block (default) | warn | off
+main_gate() {
+	local gate="${FPL_MAIN_GATE:-block}"
+	[ "$gate" = "off" ] && return 0
+	[ "$(git branch --show-current)" = "main" ] || return 0
+	{
+		echo "pre-commit: direct commit on main. Changes land through a GitHub PR:"
+		echo "              git switch -c stack/<name>     (the staged changes come along)"
+		echo "            see docs/WORKFLOW.md, or FPL_MAIN_GATE=warn to override."
+	} >&2
+	[ "$gate" = "warn" ] && return 0
+	return 1
+}
+
 mode="${FPL_BOUNDARY:-block}"
-[ "$mode" = "off" ] && exit 0
+[ "$mode" = "off" ] && { main_gate; exit $?; }
 
 top="$(git rev-parse --show-toplevel)"
 if [ -f "$top/.git" ]; then
@@ -35,7 +58,7 @@ fi
 
 # --no-renames: a rename across the boundary must show both of its ends.
 bad="$(git diff --cached --name-only --no-renames | grep -E "$forbidden" || true)"
-[ -z "$bad" ] && exit 0
+[ -z "$bad" ] && { main_gate; exit $?; }
 
 {
 	echo "pre-commit: this is a $side checkout, but the commit touches $other:"
@@ -43,5 +66,5 @@ bad="$(git diff --cached --name-only --no-renames | grep -E "$forbidden" || true
 	echo "            make that change from $where (docs/WORKTREES.md),"
 	echo "            or FPL_BOUNDARY=warn to override."
 } >&2
-[ "$mode" = "warn" ] && exit 0
+[ "$mode" = "warn" ] && { main_gate; exit $?; }
 exit 1

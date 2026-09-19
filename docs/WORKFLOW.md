@@ -22,6 +22,8 @@ top of base) · **restack** (rebase the stack when base or a lower commit change
    rewrites SHAs.
 6. **Everything lands through a GitHub pull request** — harness changes included. No local
    merge into `main`, no direct push to it. See [Land](#land--through-github-for-now).
+   `.githooks/pre-commit` refuses a commit made while `main` is checked out
+   (`FPL_MAIN_GATE=warn` overrides); the forge-side half is a branch protection rule on `main`.
 7. **The repository must stay self-sufficient.** The forge is where review happens, not where
    the record lives: every commit carries its `Stack:` trailer (`docs/COMMITS.md`), and
    anything a review changes about the *why* is folded back into the commit body before
