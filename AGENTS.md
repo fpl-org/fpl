@@ -23,7 +23,7 @@ do not invent language semantics.
   docs/               settled decisions and conventions (vendor-neutral)
   .claude/            Claude Code commands, subagents, skill, hooks
   scripts/            acommit, commit-lint, restack, setup, agent-identity, new-worktree,
-                      branch-lint, layer, pr, land
+                      branch-lint, layer, pr, land, task, rad-cob-task
   flake.nix, flake.lock   the dev shell: one pinned toolchain for everyone (docs/DEVSHELL.md)
   .githooks/          pre-commit, commit-msg, atomic-check, reference-transaction, pre-push
                       (all enabled by scripts/setup)
@@ -103,6 +103,8 @@ is wrong, say so and let the maintainer decide — don't route around it.
 - **Land through a GitHub PR, always** (rebase-merge, never a local merge into `main`). The
   `Stack:` trailer on every commit keeps the grouping in the repo once the refs are deleted.
 - Authorship model (machine account + `claude[bot]` App): `docs/COMMITS.md`.
+- The task graph (`scripts/task`, Radicle COBs in the repository): `docs/TASKS.md`. Not in use
+  until the repository has been through `rad init`.
 
 ## Coding standards
 
