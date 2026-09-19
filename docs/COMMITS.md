@@ -17,7 +17,7 @@ the hook over commits that already exist, and `.github/workflows/commit-lint.yml
 for every commit of a pull request. Run it yourself before pushing:
 
 ```
-scripts/commit-lint -b "$(git branch --show-current)" origin/main..HEAD
+scripts/commit-lint -b "$(git branch --show-current)" github/main..HEAD
 ```
 
 Judged after the fact, a `fixup!`, `squash!` or `amend!` commit fails (a rebase-merge would

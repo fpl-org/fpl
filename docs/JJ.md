@@ -40,7 +40,7 @@ hook**, and `jj git push` does not run `pre-push`. So none of these act on a `jj
 Before pushing, run the message gates yourself:
 
 ```
-scripts/commit-lint -b <branch> origin/main..<bookmark>
+scripts/commit-lint -b <branch> github/main..<bookmark>
 ```
 
 A human commit carries `Human-Only: true` (`docs/COMMITS.md`). `jj` can add it to every

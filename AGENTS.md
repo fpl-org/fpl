@@ -38,7 +38,7 @@ own linked worktree at `worktrees/<name>/` on its own branch.
   another worktree.
 - `.githooks/pre-commit` gates both rules on the staged paths (`FPL_BOUNDARY=warn` overrides).
   It also refuses a `git commit` with `main` checked out; the real gate is
-  `.githooks/reference-transaction`, which lets `main` move only to where `origin/main` already
+  `.githooks/reference-transaction`, which lets `main` move only to where `github/main` already
   is, so local merges are refused too. Work on a stack branch (`docs/WORKFLOW.md`).
 - Details and `git worktree` recipes: `docs/WORKTREES.md`.
 
