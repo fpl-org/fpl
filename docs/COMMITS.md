@@ -131,11 +131,10 @@ email, independent identity — no collision, no impersonation either way.
 
 `.github/workflows/claude.yml` wires the hooks in the App's runner before it starts
 (`scripts/setup`, and `scripts/agent-identity set` with the bot's own address), so a commit
-it makes there meets the same `commit-msg` as one made in a terminal, and may use
-`scripts/acommit`. `FPL_SESSION_ID` is `gha-<run id>`, which leads back to the Actions run.
-Until a run has shown that this holds, `scripts/commit-lint` still judges the App's commits
-on the format gates only (header, blank line, body width, trailer order, oracle guard), not
-on provenance, `Stack:` or agent territory.
+it makes there meets the same `commit-msg` as one made in a terminal. It commits with
+`scripts/acommit`: the author name carries its model, `Session-Id` is `gha-<run id>` and
+leads back to the Actions run. `scripts/commit-lint` holds its commits to every gate; the
+App's address is one of the accepted agent addresses in the `commit-lint` workflow.
 
 GitHub links a commit to an account by matching the author/co-author **email** to one
 registered on that account. `noreply@anthropic.com` is not a forge account, so a bare

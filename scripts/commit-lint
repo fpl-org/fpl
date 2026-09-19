@@ -17,8 +17,7 @@
 #               want for a range of main.
 #
 # Environment: FPL_AGENT_EMAILS, space-separated author addresses accepted for agent
-# commits, in addition to .git/agent-identity. FPL_FORGE_BOT_EMAILS, authors held to the
-# format gates only; defaults to the Claude GitHub App (docs/COMMITS.md, section 2).
+# commits, in addition to .git/agent-identity.
 set -euo pipefail
 
 die() {
@@ -43,7 +42,6 @@ hook="$top/.githooks/commit-msg"
 commits="$(git rev-list --reverse --no-merges "$range")" || die "bad revision range: $range"
 [ -n "$commits" ] || die "no commits in $range"
 
-export FPL_FORGE_BOT_EMAILS="${FPL_FORGE_BOT_EMAILS-41898282+claude[bot]@users.noreply.github.com}"
 export FPL_LINT_BRANCH="$branch"
 msg="$(mktemp)"
 trap 'rm -f "$msg"' EXIT

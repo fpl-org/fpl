@@ -29,6 +29,9 @@ jobs:
           HEAD_REF: ${{ github.head_ref }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          # The machine accounts agents commit as (docs/COMMITS.md, section 1).
-          FPL_AGENT_EMAILS: 326980220+psjg-claude@users.noreply.github.com
+          # The addresses agents commit as: the machine account of terminal sessions and
+          # the Claude GitHub App (docs/COMMITS.md, sections 1 and 2).
+          FPL_AGENT_EMAILS: >-
+            326980220+psjg-claude@users.noreply.github.com
+            41898282+claude[bot]@users.noreply.github.com
         run: scripts/commit-lint -b "$HEAD_REF" "$BASE_SHA..$HEAD_SHA"
