@@ -111,9 +111,11 @@ Update deliberately, as its own commit: `nix flake update`, then `make check` in
   `on`, `off` and `reset` write what `.envrc` then loads; an unknown name and a name of shell
   metacharacters are refused before anything is stored; stray lines already in `.fpl-shell`
   are dropped at the next write.
-- **Layers on the maintainer's `aarch64-darwin` Mac** — an earlier form of the layers, which
-  put each one in front of `PATH` from `.envrc`, resolved `gh` and `glab` together there. The
-  generated shells have not been run on that Mac yet.
+- **Layers on the maintainer's `aarch64-darwin` Mac** — with direnv, each at its own prompt:
+  `gitlab` then `github` in `.fpl-shell` loaded `.#github-gitlab`, with `gh`, `glab` and
+  `ruff` from the Nix store; `gitlab` alone loaded `.#gitlab`, with `glab` from the store and
+  `gh` falling back to the system one; `forges` loaded `.#forges`, with both from the store.
+  The file was written by hand there; `scripts/layer` has not been run on that Mac.
 - **"No `gh`" means none from this flake.** That Mac also has a `gh` in nix-darwin's system
   profile, so in the default shell `command -v gh` prints `/run/current-system/sw/bin/gh`. A
   dev shell prepends to `PATH`; it does not hide what the machine already has.
