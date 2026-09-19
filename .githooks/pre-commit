@@ -25,10 +25,13 @@ set -euo pipefail
 
 # Gate 2 lives in a function so gate 1's early exits still reach it.
 #
-# docs/WORKFLOW.md rule 6: everything lands on main through a GitHub PR. A commit
-# made while main is checked out can only reach origin by a direct push or a
-# local merge, so it is refused at the source. Pulling a landed PR is a
-# fast-forward (or a merge), neither of which runs pre-commit.
+# docs/WORKFLOW.md rule 6: everything lands on main through a GitHub PR. This
+# only catches a `git commit` made while main is checked out — a direct commit,
+# or the manual commit that finishes resolving a conflicted local merge. git
+# never invokes pre-commit for a clean (non-conflicting) merge or a
+# fast-forward — including pulling a landed PR — so those pass through
+# untouched; the forge-side branch protection rule on main is what actually
+# stops them.
 #
 #   FPL_MAIN_GATE = block (default) | warn | off
 main_gate() {
