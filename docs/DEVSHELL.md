@@ -48,7 +48,7 @@ gate calls when it is present (the gate fails open without it, `docs/COMMITS.md`
 
 The default shell has no forge client; the harness runs on git alone (`docs/WORKFLOW.md`,
 rule 7). Forge clients are **layers**, declared as data in `layers` in `flake.nix`;
-`nix eval --json .#lib.layers` lists them. Today: `github` (`gh`), `gitlab` (`glab`), and
+`scripts/layer` lists them. Today: `github` (`gh`), `gitlab` (`glab`), and
 `forges`, which has no packages of its own and `extends` the other two.
 
 Every combination of layers is a dev shell, named by the layer names in sorted order, joined
@@ -59,16 +59,19 @@ nix develop .#github -c gh pr create …
 nix develop .#github-gitlab
 ```
 
-direnv builds that name from `.fpl-shell`: one layer per line, `#` starts a comment.
+With direnv, `scripts/layer` turns layers on and off for the checkout it is run in:
 
 ```
-printf 'github\ngitlab\n' > .fpl-shell     # loads .#github-gitlab at the next prompt
-rm .fpl-shell                              # back to .#default
+scripts/layer                    # list them; * marks the ones that are on here
+scripts/layer on github gitlab   # direnv loads .#github-gitlab at the next prompt
+scripts/layer off gitlab
+scripts/layer reset              # back to .#default
 ```
 
-`.fpl-shell` is git-ignored, so the choice stays in one checkout. `.envrc` reads it as names,
-never as code: each line is cut down to `[a-z0-9]` and must be one of the flake's layer names.
-Anything else is reported and skipped; the rest still loads.
+It stores the choice in `.fpl-shell`, one layer per line, after checking each name against
+the flake. The file is git-ignored, so the choice stays in one checkout. `.envrc` does not
+trust it all the same: it reads the lines as names, never as code, cuts each down to
+`[a-z0-9]`, and skips with an error whatever is not a layer of the flake.
 
 To add a layer, add an entry to `layers`: a name of letters and digits, a `description`,
 `packages`, and optionally `extends`. Nothing else needs editing. The flake flattens `extends`
@@ -104,7 +107,10 @@ Update deliberately, as its own commit: `nix flake update`, then `make check` in
   Blank lines, comments, a missing final newline and a repeated name are fine. An unknown name
   and a line of shell metacharacters are skipped with the error and execute nothing. In the
   flake, a cycle, an unknown name in `extends` and a `-` in a layer name each stop evaluation
-  with a message. `github-gitlab` evaluates on the other three systems.
+  with a message. `github-gitlab` evaluates on the other three systems. `scripts/layer`: list,
+  `on`, `off` and `reset` write what `.envrc` then loads; an unknown name and a name of shell
+  metacharacters are refused before anything is stored; stray lines already in `.fpl-shell`
+  are dropped at the next write.
 - **Layers on the maintainer's `aarch64-darwin` Mac** — an earlier form of the layers, which
   put each one in front of `PATH` from `.envrc`, resolved `gh` and `glab` together there. The
   generated shells have not been run on that Mac yet.

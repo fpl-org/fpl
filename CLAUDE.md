@@ -22,7 +22,8 @@ Read it first. This file only covers Claude Code tooling that lives under `.clau
     `ruff format` + quick `pytest`; no-op at the harness root.
 
 The git-level tooling (`scripts/acommit`, `scripts/restack`, `scripts/setup`,
-`scripts/new-worktree`, `scripts/branch-lint`, `.githooks/*`) is not Claude-specific — see `AGENTS.md` and
+`scripts/new-worktree`, `scripts/branch-lint`, `scripts/layer`, `.githooks/*`) is not
+Claude-specific — see `AGENTS.md` and
 `docs/COMMITS.md`.
 
 ## Branch names

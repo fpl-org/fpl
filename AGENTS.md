@@ -22,7 +22,7 @@ do not invent language semantics.
   CLAUDE.md           Claude Code tooling notes only
   docs/               settled decisions and conventions (vendor-neutral)
   .claude/            Claude Code commands, subagents, skill, hooks
-  scripts/            acommit, restack, setup, agent-identity, new-worktree, branch-lint
+  scripts/            acommit, restack, setup, agent-identity, new-worktree, branch-lint, layer
   flake.nix, flake.lock   the dev shell: one pinned toolchain for everyone (docs/DEVSHELL.md)
   .githooks/          pre-commit, commit-msg, atomic-check, reference-transaction, pre-push
                       (all enabled by scripts/setup)
@@ -115,7 +115,7 @@ performance treated as a feature. (Claude sessions: load the `software-style` an
    a bare interactive `nix develop` is unreliable on macOS). It carries every tool below at a
    pinned version and wires the git hooks on first entry. Check: `command -v ruff` prints a
    `/nix/store/…` path. It has no forge client; `gh` is an opt-in layer, per checkout:
-   `echo github >> .fpl-shell`, or `nix develop .#github -c gh …`.
+   `scripts/layer on github`, or `nix develop .#github -c gh …`.
 1. Read this file, `docs/STACK.md`, `docs/CONVENTIONS.md`, `docs/COMMITS.md`, `docs/WORKFLOW.md`,
    `docs/BRANCHES.md`.
 2. Pick a worktree (`git worktree list`) or make one (`scripts/new-worktree <name>`; see
