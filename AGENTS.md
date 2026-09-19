@@ -23,7 +23,8 @@ do not invent language semantics.
   docs/               settled decisions and conventions (vendor-neutral)
   .claude/            Claude Code commands, subagents, skill, hooks
   scripts/            acommit, restack, setup, agent-identity, new-worktree, branch-lint
-  .githooks/          pre-commit, commit-msg, atomic-check (enabled by scripts/setup)
+  .githooks/          pre-commit, commit-msg, atomic-check, reference-transaction, pre-push
+                      (all enabled by scripts/setup)
   worktrees/<name>/   one implementation attempt each; git-ignored; see docs/WORKTREES.md
 ```
 
