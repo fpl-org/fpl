@@ -99,6 +99,25 @@ To amend a commit that isn't on top:
 git rebase -i --update-refs github/main    # mark the target 'edit', amend, continue
 ```
 
+## Read the diff with the file around it
+
+```
+scripts/review                 the current branch against main
+scripts/review -b <base> …     against the branch below, in a stack
+scripts/review -s              side by side
+```
+
+renders every changed file whole — `git diff -U9999` through `diff2html` — and opens the page
+in the browser. A forge shows a hunk and three lines around it; whether a name is already
+bound, whether the line above reverses the meaning, whether `set -e` bites here, none of that
+is in the hunk, and a reviewer who cannot see it approves what he cannot judge.
+`FPL_REVIEW_CONTEXT` changes the number of lines; `-o <file>` writes the page instead of
+opening it.
+
+It reads git refs and nothing else: no forge, no network, no account. It works on a branch
+that was never pushed, and it survives a change of forge — which is rule 7 applied to the one
+part of review that does not need the forge at all.
+
 ## Land — through GitHub, for now
 
 ```

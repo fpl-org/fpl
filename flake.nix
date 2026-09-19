@@ -105,6 +105,7 @@
             pkgs.gawk
             pkgs.git
             pkgs.jujutsu # optional workflow, docs/JJ.md
+            pkgs.diff2html-cli # scripts/review renders a branch as a page
 
             # The implementation stack, docs/STACK.md: Python 3.12 + Lark, and the
             # `make check` gate of docs/CONVENTIONS.md (ruff, pyright strict, pytest).
