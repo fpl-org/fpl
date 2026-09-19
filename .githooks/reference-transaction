@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+#
+# .githooks/reference-transaction — refuse to CREATE a branch whose name does not
+# parse under docs/BRANCHES.md.
+#
+# Git has no branch-creation hook. This is the hook that sees every ref update —
+# `git switch -c`, `git branch`, `git worktree add -b`, `git branch -m`, a fetch
+# into refs/heads/ — and a non-zero exit in the "prepared" state aborts the
+# transaction. Unlike pre-commit and commit-msg it is not skipped by --no-verify.
+#
+# Only creations under refs/heads/ are judged. Updates and deletions of existing
+# branches pass untouched, so a branch that predates a grammar change keeps
+# working, and rebases, fetches of remote-tracking refs, stashes and tags never
+# pay more than the early exit.
+#
+# Known gap: `git branch -m old new` slips through. Git (observed on 2.34) sends
+# only the deletion of the old name through this hook; the new ref is written
+# outside a transaction. A renamed branch is caught at pre-push and in CI.
+#
+#   FPL_BRANCH_GATE = block (default) | warn | off
+#
+# Fails open when it cannot find the linter (a checkout from before it existed).
+
+set -euo pipefail
+
+[ "${1:-}" = "prepared" ] || exit 0
+mode="${FPL_BRANCH_GATE:-block}"
+[ "$mode" = "off" ] && exit 0
+
+top="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+lint="$top/scripts/branch-lint"
+[ -x "$lint" ] || exit 0
+
+rc=0
+while read -r old new ref; do
+	case "$ref" in refs/heads/*) : ;; *) continue ;; esac
+	case "$new" in *[!0]*) : ;; *) continue ;; esac          # all zeroes: a deletion
+	# <old> is all zeroes for a creation AND for a forced update, so ask the ref
+	# store; in "prepared" the old value is still what is on disk.
+	git rev-parse --verify --quiet "$ref" >/dev/null && continue
+	"$lint" "${ref#refs/heads/}" || rc=1
+done
+
+[ "$rc" -eq 0 ] && exit 0
+echo "reference-transaction: branch not created. FPL_BRANCH_GATE=warn to override." >&2
+[ "$mode" = "warn" ] && exit 0
+exit 1
