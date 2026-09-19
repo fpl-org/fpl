@@ -1,0 +1,290 @@
+#!/usr/bin/env python3
+"""scripts/task — FPL's task graph, kept in the repository as Radicle COBs.
+
+    scripts/task new "<title>" [-d <description>] [-b <id>]...   open a task, optionally blocked
+    scripts/task list [--all]        open tasks; --all includes done and dropped
+    scripts/task ready               tasks nothing is waiting on: what can be picked up now
+    scripts/task show <id>
+    scripts/task start|done|drop|reopen <id>
+    scripts/task block <id> <by>     <id> must wait for <by>;  unblock removes it
+    scripts/task assign <id> <did>|me|nobody
+    scripts/task edit <id> [-t <title>] [-d <description>]
+
+An <id> may be any unambiguous prefix. Tasks live under refs/cobs/<TYPE>/ of the Radicle
+repository, as signed operations: who opened, moved or blocked what is part of the record,
+and it travels with the repository, not with a forge. scripts/rad-cob-task gives the
+operations their meaning and says who may do what; this file only reads state and writes
+actions through `rad cob`. Needs rad (`scripts/layer on radicle`) and a repository that
+went through `rad init`. `--self-test` runs the whole thing in a throwaway Radicle home.
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import tempfile
+
+TYPE = "nl.psjg.fpl.task"
+OPEN_STATES = ("todo", "doing")
+VERBS = {"start": "doing", "done": "done", "drop": "dropped", "reopen": "todo"}
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def die(message):
+    sys.exit(f"task: {message}")
+
+
+def rad(*args, stdin=None):
+    """Run rad with scripts/ on PATH, where it finds the rad-cob-task helper."""
+    env = dict(os.environ, PATH=HERE + os.pathsep + os.environ.get("PATH", ""))
+    try:
+        done = subprocess.run(["rad", *args], env=env, input=stdin, capture_output=True, text=True)
+    except FileNotFoundError:
+        die("rad not found; scripts/layer on radicle")
+    if done.returncode != 0:
+        die(f"rad {' '.join(args[:2])} failed: {done.stderr.strip() or done.stdout.strip()}")
+    return done.stdout
+
+
+class Graph:
+    def __init__(self):
+        self.rid = rad(".").strip()
+        if not self.rid.startswith("rad:"):
+            die("this is not a Radicle repository; run rad init first")
+        self.tasks = {}
+        for oid in rad("cob", "list", "--repo", self.rid, "--type", TYPE).split():
+            state = json.loads(
+                rad("cob", "show", "--repo", self.rid, "--type", TYPE, "--object", oid)
+            )
+            if state.get("title"):  # an object that never got a valid `open` is not a task
+                self.tasks[oid] = state
+
+    def resolve(self, prefix):
+        hits = [oid for oid in self.tasks if oid.startswith(prefix.lower())]
+        if len(hits) != 1:
+            die(f"'{prefix}' matches {len(hits)} tasks")
+        return hits[0]
+
+    def waiting_on(self, oid):
+        """Blockers of `oid` that are still open. An unknown blocker counts as open."""
+        blockers = self.tasks[oid].get("blockedBy", [])
+        return [b for b in blockers if self.tasks.get(b, {}).get("state", "todo") in OPEN_STATES]
+
+    def act(self, oid, message, *actions):
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl") as handle:
+            handle.write("".join(json.dumps(a) + "\n" for a in actions))
+            handle.flush()
+            if oid is None:
+                return rad(
+                    "cob",
+                    "create",
+                    "--repo",
+                    self.rid,
+                    "--type",
+                    TYPE,
+                    "--message",
+                    message,
+                    handle.name,
+                ).strip()
+            rad(
+                "cob",
+                "update",
+                "--repo",
+                self.rid,
+                "--type",
+                TYPE,
+                "--object",
+                oid,
+                "--message",
+                message,
+                handle.name,
+            )
+            return oid
+
+    def must_change(self, oid, field, expected):
+        """The reducer skips what is not allowed without an error; say so here."""
+        state = json.loads(rad("cob", "show", "--repo", self.rid, "--type", TYPE, "--object", oid))
+        if state.get(field) != expected:
+            die(
+                f"{oid[:7]}: not applied. Only the author, or the assignee for state and "
+                f"blockers, may do that (scripts/rad-cob-task)"
+            )
+
+
+def line(graph, oid):
+    task = graph.tasks[oid]
+    waiting = graph.waiting_on(oid)
+    tail = f"  <- {' '.join(b[:7] for b in waiting)}" if waiting else ""
+    who = f"  @{task['assignee'][-8:]}" if task.get("assignee") else ""
+    return f"{oid[:7]}  {task['state']:<7}  {task['title']}{who}{tail}"
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(prog="scripts/task", description=__doc__.split("\n\n")[0])
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    new = sub.add_parser("new")
+    new.add_argument("title")
+    new.add_argument("-d", "--description", default="")
+    new.add_argument("-b", "--blocked-by", action="append", default=[])
+    sub.add_parser("list").add_argument("--all", action="store_true")
+    sub.add_parser("ready")
+    sub.add_parser("show").add_argument("id")
+    for verb in VERBS:
+        sub.add_parser(verb).add_argument("id")
+    for verb in ("block", "unblock"):
+        p = sub.add_parser(verb)
+        p.add_argument("id")
+        p.add_argument("by")
+    assign = sub.add_parser("assign")
+    assign.add_argument("id")
+    assign.add_argument("to")
+    edit = sub.add_parser("edit")
+    edit.add_argument("id")
+    edit.add_argument("-t", "--title")
+    edit.add_argument("-d", "--description")
+    args = parser.parse_args(argv)
+    graph = Graph()
+
+    if args.cmd == "new":
+        blockers = [graph.resolve(b) for b in args.blocked_by]
+        actions = [{"type": "open", "title": args.title, "description": args.description}]
+        actions += [{"type": "block", "by": b} for b in blockers]
+        print(graph.act(None, f"open: {args.title}", *actions)[:7])
+    elif args.cmd in ("list", "ready"):
+        for oid in sorted(graph.tasks, key=lambda o: (graph.tasks[o].get("opened", 0), o)):
+            state = graph.tasks[oid]["state"]
+            if args.cmd == "ready" and (state not in OPEN_STATES or graph.waiting_on(oid)):
+                continue
+            if args.cmd == "list" and not args.all and state not in OPEN_STATES:
+                continue
+            print(line(graph, oid))
+    elif args.cmd == "show":
+        oid = graph.resolve(args.id)
+        print(json.dumps({"id": oid, **graph.tasks[oid]}, indent=2))
+    elif args.cmd in VERBS:
+        oid = graph.resolve(args.id)
+        graph.act(oid, f"{args.cmd}", {"type": "state", "state": VERBS[args.cmd]})
+        graph.must_change(oid, "state", VERBS[args.cmd])
+    elif args.cmd in ("block", "unblock"):
+        oid, by = graph.resolve(args.id), graph.resolve(args.by)
+        if oid == by:
+            die("a task cannot block itself")
+        graph.act(oid, f"{args.cmd} {by[:7]}", {"type": args.cmd, "by": by})
+    elif args.cmd == "assign":
+        oid = graph.resolve(args.id)
+        to = {"me": rad("self", "--did").strip(), "nobody": None}.get(args.to, args.to)
+        graph.act(oid, f"assign {args.to}", {"type": "assign", "to": to})
+        graph.must_change(oid, "assignee", to)
+    elif args.cmd == "edit":
+        oid = graph.resolve(args.id)
+        action = {"type": "edit"}
+        if args.title is not None:
+            action["title"] = args.title
+        if args.description is not None:
+            action["description"] = args.description
+        if len(action) == 1:
+            die("nothing to edit: give -t and/or -d")
+        graph.act(oid, "edit", action)
+
+
+def self_test():
+    """End to end against a real rad, in a throwaway home and repository."""
+    me = os.path.abspath(__file__)
+    with tempfile.TemporaryDirectory() as tmp:
+        env = dict(
+            os.environ,
+            RAD_HOME=f"{tmp}/home",
+            RAD_PASSPHRASE="self-test",
+            GIT_CONFIG_GLOBAL="/dev/null",
+        )
+        repo = f"{tmp}/repo"
+        os.makedirs(repo)
+
+        def sh(*cmd, ok=True):
+            done = subprocess.run(cmd, cwd=repo, env=env, capture_output=True, text=True)
+            if ok and done.returncode != 0:
+                sys.exit(f"self-test: {' '.join(cmd)}\n{done.stdout}{done.stderr}")
+            return done
+
+        sh("rad", "auth", "--alias", "selftest")
+        sh("git", "init", "-q", "-b", "main")
+        sh(
+            "git",
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        )
+        sh(
+            "rad",
+            "init",
+            "--name",
+            "selftest",
+            "--description",
+            "x",
+            "--default-branch",
+            "main",
+            "--private",
+            "--no-confirm",
+        )
+        checks = []
+
+        def task(*a, ok=True):
+            return sh(sys.executable, me, *a, ok=ok)
+
+        def check(name, ok):
+            checks.append((name, bool(ok)))
+
+        lexer = task("new", "lexer: integer literals").stdout.strip()
+        parser = task("new", "parser: integer expressions", "-b", lexer).stdout.strip()
+        check("ids are 7 characters", len(lexer) == 7 and len(parser) == 7)
+        ready = task("ready").stdout
+        check("blocked task is not ready", lexer in ready and parser not in ready)
+        check("list shows the blocker", f"<- {lexer}" in task("list").stdout)
+        task("start", lexer)
+        check("start", "doing" in task("list").stdout)
+        task("done", lexer)
+        ready = task("ready").stdout
+        check("done unblocks", parser in ready and lexer not in ready)
+        check(
+            "list hides done, --all shows it",
+            lexer not in task("list").stdout and lexer in task("list", "--all").stdout,
+        )
+        task("assign", parser, "me")
+        check(
+            "assign me", json.loads(task("show", parser).stdout)["assignee"].startswith("did:key:")
+        )
+        task("edit", parser, "-t", "parser: expressions")
+        check("edit", "parser: expressions" in task("list").stdout)
+        check("self-block refused", task("block", parser, parser, ok=False).returncode != 0)
+        check("unknown id refused", task("done", "ffffffff", ok=False).returncode != 0)
+        log = sh(
+            "rad",
+            "cob",
+            "log",
+            "--repo",
+            sh("rad", ".").stdout.strip(),
+            "--type",
+            TYPE,
+            "--object",
+            json.loads(task("show", lexer).stdout)["id"],
+        ).stdout
+        check("every operation is a signed-off commit with an author", log.count("author") >= 3)
+
+    failed = [name for name, ok in checks if not ok]
+    for name in failed:
+        print(f"FAIL {name}", file=sys.stderr)
+    print(f"task: self-test {'ok' if not failed else 'FAILED'} ({len(checks)} checks)")
+    sys.exit(1 if failed else 0)
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] == ["--self-test"]:
+        self_test()
+    main(sys.argv[1:])
