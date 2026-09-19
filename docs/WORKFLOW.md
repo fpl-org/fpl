@@ -34,7 +34,7 @@ sets `rebase.updateRefs=true` (carry intermediate branch refs during rebase),
 ## Build a stack
 
 ```
-git switch -c stack/typed-let main         # start the stack off base
+git switch -c stack/typed-let/tip main     # start the stack off base; you work on …/tip
 # … edit …
 scripts/acommit -t feat -s parser -m "parse let-bindings"      # commit 1 (bottom)
 git branch stack/typed-let/1                # ref at the first reviewable boundary
@@ -44,6 +44,10 @@ git branch stack/typed-let/2
 ```
 
 Now open PRs bottom-up: `…/1` → `main`, `…/2` → `…/1`.
+
+Ref names: a stack is `stack/<name>` when it will be a single PR, or `stack/<name>/tip` plus
+numbered boundary refs when it will be several. Never both for one `<name>` — git stores refs
+as paths, so `stack/typed-let` and `stack/typed-let/1` cannot coexist (`cannot lock ref`).
 
 ## Restack (base moved, or you amended a lower commit)
 
