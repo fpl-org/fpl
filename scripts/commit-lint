@@ -2,8 +2,8 @@
 #
 # scripts/commit-lint — run the commit-msg gates over commits that already exist.
 #
-#   scripts/commit-lint origin/main..HEAD
-#   scripts/commit-lint -b agent/claude/stack/x origin/main..HEAD
+#   scripts/commit-lint github/main..HEAD
+#   scripts/commit-lint -b agent/claude/stack/x github/main..HEAD
 #
 # .githooks/commit-msg judges a commit while it is being made, and only in a clone whose
 # hooks are wired, with a tool that runs hooks. `git commit --no-verify`, an unwired clone

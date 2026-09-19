@@ -17,8 +17,8 @@
 #
 # 2. main only follows its upstream. docs/WORKFLOW.md rule 6: everything lands
 #    on main through a pull request. So locally, refs/heads/main may move only
-#    to the commit its upstream (origin/main) already points at. That admits
-#    `git pull` after a landed PR and `git reset --hard origin/main`, and
+#    to the commit its upstream (github/main) already points at. That admits
+#    `git pull` after a landed PR and `git reset --hard github/main`, and
 #    refuses a commit, a merge (fast-forward or not) and a rebase made on main.
 #    pre-commit cannot do this: git runs it for `git commit` only, so a clean
 #    local merge never reaches it. Fails open when main has no upstream.
@@ -58,7 +58,7 @@ for u in "${updates[@]}"; do
 	if [ "$ref" = "refs/heads/main" ] && [ "$main_mode" != "off" ]; then
 		up="$(git for-each-ref --format='%(upstream)' refs/heads/main)"
 		if [ -n "$up" ]; then
-			# `git fetch origin main:main` moves both refs in one transaction
+			# `git fetch github main:main` moves both refs in one transaction
 			want="$(in_txn "$up" || git rev-parse --verify --quiet "$up" || true)"
 			if [ -n "$want" ] && [ "$new" != "$want" ]; then
 				{
