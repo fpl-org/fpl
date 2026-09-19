@@ -129,10 +129,13 @@ CI runs and `@claude` interactions on issues/PRs are authored by the **`claude[b
 (the [Claude GitHub App](https://github.com/apps/claude), installed on this repo). Different
 email, independent identity — no collision, no impersonation either way.
 
-The App writes its own messages and knows neither this trailer block nor the branch grammar.
-`scripts/commit-lint` therefore holds its commits to the format gates only (header, blank
-line, body width, trailer order, oracle guard) and not to provenance, `Stack:` or agent
-territory. Its author address is the provenance.
+`.github/workflows/claude.yml` wires the hooks in the App's runner before it starts
+(`scripts/setup`, and `scripts/agent-identity set` with the bot's own address), so a commit
+it makes there meets the same `commit-msg` as one made in a terminal, and may use
+`scripts/acommit`. `FPL_SESSION_ID` is `gha-<run id>`, which leads back to the Actions run.
+Until a run has shown that this holds, `scripts/commit-lint` still judges the App's commits
+on the format gates only (header, blank line, body width, trailer order, oracle guard), not
+on provenance, `Stack:` or agent territory.
 
 GitHub links a commit to an account by matching the author/co-author **email** to one
 registered on that account. `noreply@anthropic.com` is not a forge account, so a bare

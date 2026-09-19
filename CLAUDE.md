@@ -27,6 +27,13 @@ The git-level tooling (`scripts/acommit`, `scripts/commit-lint`, `scripts/restac
 Claude-specific — see `AGENTS.md` and
 `docs/COMMITS.md`.
 
+## Running as the GitHub App
+
+When `@claude` on an issue or pull request starts you in GitHub Actions, the git hooks are
+wired and your author address is the App's. A plain `git commit` without the trailer block
+is refused. Commit with `scripts/acommit -M "<your model name>" -t … -s … -m … -b …`;
+`FPL_SESSION_ID` is already set, and `Stack:` is derived from the branch.
+
 ## Branch names
 
 Claude sessions that can choose their branch work on `agent/claude/…` (`docs/BRANCHES.md`);
