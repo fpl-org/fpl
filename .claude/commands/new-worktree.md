@@ -7,7 +7,8 @@ Create a fresh FPL implementation attempt. See `docs/WORKTREES.md`.
 
 Given `$1` = name (required), `$2` = base branch (default `main`):
 
-1. Run `scripts/new-worktree $1 $2`. It adds `worktrees/$1` on branch `attempt/$1`, carries
+1. Run `scripts/new-worktree -a claude $1 $2`. It adds `worktrees/$1` on branch
+   `agent/claude/attempt/$1` (agent commits need an agent branch, `docs/BRANCHES.md`), carries
    the root's agent identity into it, and runs `scripts/setup` there (hooks, stacked-commit
    git config, identity report).
 2. If the output says the identity is NOT SET (the root had none to inherit), tell the
