@@ -99,19 +99,22 @@ Update deliberately, as its own commit: `nix flake update`, then `make check` in
 - **`aarch64-darwin`** — built on the maintainer's Mac. Both `nix develop -c …` and direnv
   (`direnv allow`, then the next prompt in zsh) resolve `git`, `python3` and `ruff` from the
   Nix store and import `lark` 1.3.1.
-- **`aarch64-linux`** — evaluated down to the derivation (every package exists for it), not
-  built. Intel Macs (`x86_64-darwin`) are not a target: nixpkgs 26.05 is the last release to
-  support them.
+- **`aarch64-linux`** — built and exercised in an Ubuntu 22.04 VM on the maintainer's Mac,
+  with Nix 2.35.2 unpacked into a home directory and mounted at `/nix` through `bwrap`, since
+  the VM gives no root. Every tool resolves from the Nix store, `lark` 1.3.1 imports, `ruff`,
+  `pyright` and `pytest` run on a Lark snippet, `.#default` has no `gh`, `.#github-gitlab`
+  and `.#forges` have `gh` and `glab`, `scripts/layer` writes what direnv then loads.
+  Intel Macs (`x86_64-darwin`) are not a target: nixpkgs 26.05 is the last release to support
+  them.
 - **Layers** — on `x86_64-linux` with direnv 2.37.1. No `.fpl-shell` loads `.#default`,
   without `gh`. `github` loads `.#github`; `gitlab` then `github`, unsorted, loads
   `.#github-gitlab` with both tools from the Nix store; `forges` gives both through `extends`.
   Blank lines, comments, a missing final newline and a repeated name are fine. An unknown name
   and a line of shell metacharacters are skipped with the error and execute nothing. In the
   flake, a cycle, an unknown name in `extends` and a `-` in a layer name each stop evaluation
-  with a message. `github-gitlab` evaluates on the other two systems. `scripts/layer`: list,
-  `on`, `off` and `reset` write what `.envrc` then loads; an unknown name and a name of shell
-  metacharacters are refused before anything is stored; stray lines already in `.fpl-shell`
-  are dropped at the next write.
+  with a message. `scripts/layer`: list, `on`, `off` and `reset` write what `.envrc` then
+  loads; an unknown name and a name of shell metacharacters are refused before anything is
+  stored; stray lines already in `.fpl-shell` are dropped at the next write.
 - **Layers on the maintainer's `aarch64-darwin` Mac** — with direnv, each at its own prompt:
   `gitlab` then `github` in `.fpl-shell` loaded `.#github-gitlab`, with `gh`, `glab` and
   `ruff` from the Nix store; `gitlab` alone loaded `.#gitlab`, with `glab` from the store and
