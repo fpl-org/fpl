@@ -1,0 +1,34 @@
+# Forge-side half of the commit-message gates (docs/COMMITS.md).
+#
+# .githooks/commit-msg only judges a commit in a clone whose hooks are wired, made by a
+# tool that runs hooks. `git commit --no-verify`, an unwired clone and jj all get past it.
+# This runs the same hook over every commit of the pull request, where it cannot be
+# skipped. Mark the "commit-lint" check as required in the ruleset for main to make it a
+# hard gate.
+#
+# Refs and SHAs reach the script through environment variables, never through ${{ }}
+# interpolation into the shell: a branch name is attacker-controlled text.
+name: commit-lint
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  commit-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Every commit of the pull request passes the commit-msg gates
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # The machine accounts agents commit as (docs/COMMITS.md, section 1).
+          FPL_AGENT_EMAILS: 326980220+psjg-claude@users.noreply.github.com
+        run: scripts/commit-lint -b "$HEAD_REF" "$BASE_SHA..$HEAD_SHA"
