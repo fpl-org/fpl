@@ -1,8 +1,15 @@
 # STACK.md — the implementation stack, and why
 
 This decision is **settled**. It was reached with the maintainer after consulting two external
-advisors (a ChatGPT session and a Fable 5.1 session). Reopen it only with the maintainer, and
-only with new information. This document exists so it isn't relitigated in every worktree.
+advisors, each through a different channel:
+
+- **ChatGPT** — consulted by the maintainer by hand, who relayed questions and answers into the
+  session as a human proxy. No agent talked to it directly.
+- **Fable 5.1** — consulted model-to-model: an Opus model in a Claude Code session queried it
+  through the advisor pattern.
+
+Reopen it only with the maintainer, and only with new information. This document exists so it
+isn't relitigated in every worktree.
 
 ## The decision
 
