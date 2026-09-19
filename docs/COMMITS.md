@@ -96,6 +96,11 @@ Two identities, deliberately kept apart.
   - `.githooks/commit-msg` rejects a non-`Human-Only` commit whose author email is not the one
     in `.git/agent-identity`.
 - **committer** stays whoever ran the session (their normal `git config user.*`).
+- **[gate] agent territory** — a commit that is not `Human-Only` sits on an agent branch:
+  `agent/<id>/…`, or the flat vendor form `<id>/<slug>` (`docs/BRANCHES.md`). The branch's
+  `<id>` names its lead, not an exclusive author, so it is not compared with `Assisted-By`:
+  a Codex commit on a Claude-led branch is legal and attributed by its own author name and
+  trailers. Human commits on agent branches are legal too. `FPL_BRANCH_GATE=warn` overrides.
 - Set up once per clone/worktree:
 
   ```
