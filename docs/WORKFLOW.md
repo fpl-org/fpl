@@ -56,6 +56,8 @@ Now open PRs bottom-up: `…/1` → `main`, `…/2` → `…/1`.
 Ref names: a stack is `stack/<name>` when it will be a single PR, or `stack/<name>/tip` plus
 numbered boundary refs when it will be several. Never both for one `<name>` — git stores refs
 as paths, so `stack/typed-let` and `stack/typed-let/1` cannot coexist (`cannot lock ref`).
+An agent's stack is the same name under `agent/<id>/`: `agent/claude/stack/typed-let/tip`. The
+full grammar, and the gates that enforce it, are in `docs/BRANCHES.md`.
 
 ## Restack (base moved, or you amended a lower commit)
 
