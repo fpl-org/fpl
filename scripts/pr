@@ -63,8 +63,26 @@ login="${login%@*}"
 # The forge is the remote the branch tracks, or else the one the base tracks.
 remote="$(git config "branch.$branch.remote" || git config "branch.$base.remote")" ||
 	die "neither '$branch' nor '$base' tracks a remote"
+
+# .git/agent-credentials, if it is there: a git credential-store file holding one
+# https://<login>:<token>@github.com line for the machine account (docs/WORKFLOW.md).
+cred="$(cd "$(git rev-parse --git-common-dir)" && pwd)/agent-credentials"
+[ -r "$cred" ] || cred=""
+
+# A private repository answers nothing to an anonymous read, and the session an agent runs
+# in has no keyring for git to ask. So a call to the forge goes out with that file, and
+# with the inherited helpers cleared first: a helper that answers for the maintainer would
+# be the wrong account, silently.
+git_forge() {
+	if [ -n "$cred" ]; then
+		git -c credential.helper= -c credential.helper="store --file=$cred" "$@"
+	else
+		git "$@"
+	fi
+}
+
 here="$(git rev-parse HEAD)"
-there="$(git ls-remote "$remote" "refs/heads/$branch" | cut -f1)"
+there="$(git_forge ls-remote "$remote" "refs/heads/$branch" | cut -f1)"
 [ -n "$there" ] || die "'$branch' is not on $remote yet; push it first"
 [ "$there" = "$here" ] || die "$remote has ${there:0:7}, you have ${here:0:7}; push first"
 
@@ -92,18 +110,14 @@ fi
 # .git/agent-credentials is the fallback, a git credential-store file holding one
 # https://<login>:<token>@github.com line. Its login must be the machine account's: a
 # credential for somebody else is not a fallback, it is the wrong author.
-token="" cred=""
+token=""
 if command -v gh >/dev/null; then
 	token="$(gh auth token -u "$login" 2>/dev/null || true)"
 fi
-if [ -z "$token" ]; then
-	common="$(cd "$(git rev-parse --git-common-dir)" && pwd)"
-	cred="$common/agent-credentials"
-	if [ -r "$cred" ]; then
-		line="$(grep -m1 -E "^https://$login:[^@]+@github\\.com" "$cred" || true)"
-		token="${line#*:*:}"
-		token="${token%@*}"
-	fi
+if [ -z "$token" ] && [ -n "$cred" ]; then
+	line="$(grep -m1 -E "^https://$login:[^@]+@github\\.com" "$cred" || true)"
+	token="${line#*:*:}"
+	token="${token%@*}"
 fi
 [ -n "$token" ] || die "no token for '$login': gh has none, and neither has ${cred:-.git/agent-credentials}"
 
