@@ -11,3 +11,6 @@ __pycache__/
 .ruff_cache/
 dist/
 *.egg-info/
+
+# direnv's cache of the dev shell (docs/DEVSHELL.md)
+.direnv/
