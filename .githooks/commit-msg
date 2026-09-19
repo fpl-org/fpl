@@ -14,6 +14,8 @@
 #   6. unless Human-Only, the commit author email equals .git/agent-identity
 #   7. oracle guard: editing docs/DESIGN.md, docs/SPEC.md or features/*/spec.md
 #      requires the literal marker [spec] in the message
+#   8. stack record: on a stack/<name>[/<part>] branch the message carries
+#      'Stack: <name>'; a Stack: value is always [a-z0-9][a-z0-9._-]*
 #
 # Advisory (documented, not machine-checkable): imperative mood, one logical
 # change per commit, hunk-level staging.
@@ -107,7 +109,7 @@ if ! grep -Eq '^Human-Only:[[:space:]]*true[[:space:]]*$' "$msg_file"; then
 fi
 
 # 5. trailer order --------------------------------------------------------------
-order="Refs BREAKING-CHANGE Advisor Assisted-By Reasoning-Effort Session-Id Co-Authored-By"
+order="Refs Stack BREAKING-CHANGE Advisor Assisted-By Reasoning-Effort Session-Id Co-Authored-By"
 prev=0
 while IFS= read -r tok; do
 	rank=0 idx=0
@@ -127,7 +129,25 @@ if git diff --cached --name-only | grep -Eq "$protected"; then
 		|| fail "this commit edits a protected spec file; add [spec] to the message if intentional"
 fi
 
-# 8. soft atomicity gate (LLM judge; fails open — see .githooks/atomic-check) ---
+# 8. stack record ------------------------------------------------------------
+# The refs of a landed stack get deleted and a linear landing leaves no merge
+# commit, so the trailer is the only in-repo record of which commits formed one
+# unit. Detached HEAD (mid-rebase) has no branch and is not judged.
+stack_val="$(sed -n 's/^Stack:[[:space:]]*//p' "$msg_file" | head -n1)"
+if [ -n "$stack_val" ]; then
+	printf '%s' "$stack_val" | grep -Eq '^[a-z0-9][a-z0-9._-]*$' \
+		|| fail "Stack: value '$stack_val' must match [a-z0-9][a-z0-9._-]*"
+fi
+branch="$(git branch --show-current)"
+case "$branch" in
+stack/?*)
+	want_stack="${branch#stack/}"; want_stack="${want_stack%%/*}"
+	[ "$stack_val" = "$want_stack" ] \
+		|| fail "on branch $branch the message needs 'Stack: $want_stack' (got '${stack_val:-none}'; acommit adds it)"
+	;;
+esac
+
+# 9. soft atomicity gate (LLM judge; fails open — see .githooks/atomic-check) ---
 "$repo_root/.githooks/atomic-check" "$msg_file" || exit $?
 
 exit 0

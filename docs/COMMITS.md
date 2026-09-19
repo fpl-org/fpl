@@ -45,6 +45,12 @@ commit independently. Each rule below is marked **[gate]** (a hook rejects viola
 - **[gate]** one blank line before it; each line `Token: value`, tokens use `-` for spaces.
 - **[gate]** `Assisted-By` **and** `Session-Id` are both present — **or** a single
   `Human-Only: true` line for a hand-made human commit.
+- **[gate]** on a `stack/<name>` or `stack/<name>/<part>` branch the message carries
+  `Stack: <name>`; the value is always `[a-z0-9][a-z0-9._-]*`. `scripts/acommit` derives it
+  from the branch (`-K <name>` overrides). Stack refs are deleted after landing and a linear
+  landing leaves no merge commit, so this trailer is the in-repo record of which commits formed
+  one unit: `git log --grep='^Stack: typed-let$'` recovers the stack years later, forge or no
+  forge.
 - `scripts/acommit` takes the session id from `-S <id>`, else `$FPL_SESSION_ID`, else
   `$CLAUDE_CODE_SESSION_ID`, and refuses to commit when none is set — any harness can
   export `FPL_SESSION_ID`. It never invents one: a made-up id is useless for forensics.
@@ -53,6 +59,7 @@ commit independently. Each rule below is marked **[gate]** (a hook rejects viola
   | Trailer | Meaning | Example |
   | --- | --- | --- |
   | `Refs` | path / issue / feature this commit serves (repeatable) | `Refs: docs/STACK.md` |
+  | `Stack` | the stack this commit landed as part of (`docs/WORKFLOW.md`) | `Stack: typed-let` |
   | `BREAKING-CHANGE` | required iff `!` in header | `BREAKING-CHANGE: core drops Let node` |
   | `Advisor` | an external model whose output informed the change (repeatable) | `Advisor: fable-5.1` |
   | `Assisted-By` | the model that produced the change, stable slug | `Assisted-By: claude-sonnet-5` |

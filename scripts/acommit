@@ -21,6 +21,10 @@
 #   -k TEXT       BREAKING-CHANGE description (implies -B).
 #   -a ADVISOR    external model consulted, e.g. fable-5.1; repeatable.
 #   -r REF        Refs: value (path / issue / feature); repeatable.
+#   -K STACK      Stack: value — the stack this commit belongs to. Defaults to
+#                  <name> when the current branch is stack/<name> or
+#                  stack/<name>/<part>; omitted on any other branch. The trailer
+#                  is the in-repo record of the grouping once the refs are gone.
 #   -M NAME       model display name, e.g. "Claude Sonnet 5". Falls back to
 #                  $FPL_MODEL / $CLAUDE_CODE_MODEL. Required (no reliable default).
 #   -S ID         agent session id for the Session-Id trailer. Falls back to
@@ -40,6 +44,7 @@ repo_root="$(git rev-parse --show-toplevel)"
 type=""; scope=""; summary=""; breaking=0; breaking_text=""
 human_only=0; dry=0; model_name="${FPL_MODEL:-${CLAUDE_CODE_MODEL:-}}"
 session_id="${FPL_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
+stack=""
 bodies=(); advisors=(); refs=(); passthru=()
 
 while [ $# -gt 0 ]; do
@@ -52,6 +57,7 @@ while [ $# -gt 0 ]; do
 	-k) breaking=1; breaking_text="$2"; shift 2 ;;
 	-a) advisors+=("$2"); shift 2 ;;
 	-r) refs+=("$2"); shift 2 ;;
+	-K) stack="$2"; shift 2 ;;
 	-M) model_name="$2"; shift 2 ;;
 	-S) session_id="$2"; shift 2 ;;
 	-H) human_only=1; shift ;;
@@ -104,6 +110,16 @@ fi
 # Trailers ---------------------------------------------------------------------
 trailers=()
 for r in "${refs[@]:-}"; do [ -n "$r" ] && trailers+=("Refs: $r"); done
+if [ -z "$stack" ]; then
+	# stack/<name> or stack/<name>/<part>  ->  <name>
+	branch="$(git branch --show-current)"
+	case "$branch" in stack/?*) stack="${branch#stack/}"; stack="${stack%%/*}" ;; esac
+fi
+if [ -n "$stack" ]; then
+	printf '%s' "$stack" | grep -Eq '^[a-z0-9][a-z0-9._-]*$' \
+		|| die "invalid stack name '$stack' (want [a-z0-9][a-z0-9._-]*)"
+	trailers+=("Stack: $stack")
+fi
 if [ "$breaking" -eq 1 ]; then
 	[ -n "$breaking_text" ] || die "-B/breaking needs -k \"description\""
 	trailers+=("BREAKING-CHANGE: $breaking_text")
