@@ -99,8 +99,14 @@ Update deliberately, as its own commit: `nix flake update`, then `make check` in
   Nix store and import `lark` 1.3.1.
 - **`x86_64-darwin`, `aarch64-linux`** — evaluated down to the derivation (every package
   exists for them), not built.
-- **The `github` shell** — built on `x86_64-linux` only: it has `gh` from the Nix store and the
-  default shell has no `gh` at all. On the other three systems it is evaluated, not built.
+- **The `github` shell** — built on `x86_64-linux` and on the maintainer's `aarch64-darwin`
+  Mac. There, with direnv: `.fpl-shell` holding `github` loads `.#github` and `gh` resolves
+  from the Nix store; removing the file reloads `.#default` at the next prompt, without a new
+  `direnv allow`, and `ruff` stays in the store. On the other two systems it is evaluated, not
+  built.
+- **"No `gh`" means none from this flake.** That Mac also has a `gh` in nix-darwin's system
+  profile, so in the default shell `command -v gh` prints `/run/current-system/sw/bin/gh`. A
+  dev shell prepends to `PATH`; it does not hide what the machine already has.
 
 ## Known trap: interactive `nix develop` on a Mac
 
