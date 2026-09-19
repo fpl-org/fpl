@@ -96,8 +96,21 @@ gh pr create --base main              --head stack/typed-let/1
 gh pr create --base stack/typed-let/1 --head stack/typed-let/2
 ```
 
-`gh` is not in the default dev shell. Get it with `nix develop .#github` (`docs/DEVSHELL.md`,
-"Forge tools are opt-in"), or file the PRs in the browser.
+For agent work there are two scripts, one for each side of the review:
+
+```
+scripts/pr [-B <base>]     # the agent's side: file the branch as the machine account
+scripts/land [<number>]    # the maintainer's side: checks, conversation, diff, then decide
+```
+
+`scripts/pr` refuses unless the token it uses belongs to the machine account of
+`.git/agent-identity` and the branch on the forge is the commit you have; it does not push.
+`scripts/land` waits for the checks, prints the conversation, opens the diff in the browser,
+and only after Enter approves, rebase-merges, deletes the branch and updates `main`. The
+author of a pull request cannot approve it, which is why the two sides are two accounts.
+
+`gh` is not in the default dev shell: `scripts/layer on github` (`docs/DEVSHELL.md`, "Forge
+tools are opt-in"), or do both sides in the browser.
 
 - Merge the bottom PR first, with **Rebase and merge**, and delete its branch. GitHub then
   retargets the next PR to `main`. Rebase-merge puts every commit on `main` individually,

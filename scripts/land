@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+#
+# scripts/land — the maintainer's half of landing a pull request: wait, look, decide.
+#
+#   scripts/land                   the pull request of the current branch
+#   scripts/land <number | url>
+#
+# Waits for the checks, prints the conversation, opens the diff in the browser, and then
+# stops for a keypress. Only after Enter does it approve, rebase-merge, delete the branch
+# and bring main up to date (docs/WORKFLOW.md, "Land"). A failed check ends it before
+# the question.
+#
+# It exists because a chain of gh commands made it easy to approve a diff that had never
+# been on screen. It is for a person: it refuses without a terminal, and it refuses when
+# the active gh account is the author of the request, which the forge would reject
+# anyway. It is a rail, not a lock: whoever can run gh as the maintainer can approve
+# without it. Needs gh: `scripts/layer on github`.
+set -euo pipefail
+
+die() {
+	printf 'land: %s\n' "$*" >&2
+	exit 1
+}
+
+[ $# -le 1 ] || die "usage: scripts/land [<number | url>]"
+[ -t 0 ] && [ -t 1 ] || die "needs a terminal: landing is a person's decision"
+command -v gh >/dev/null || die "gh not found; scripts/layer on github"
+
+target="${1:-$(git branch --show-current)}"
+[ -n "$target" ] || die "detached HEAD; name the pull request"
+fields='[.url,.state,.author.login,(.number|tostring)]|join(" ")'
+info="$(gh pr view "$target" --json url,state,author,number -q "$fields")" ||
+	die "no pull request for '$target'"
+read -r url state author number <<<"$info"
+[ "$state" = OPEN ] || die "#$number is $state"
+me="$(gh api user -q .login)"
+[ "$me" != "$author" ] || die "you are '$me', the author of #$number; switch: gh auth switch"
+
+gh pr checks "$url" --watch || die "checks did not pass on #$number"
+GH_PAGER=cat gh pr view "$url" --comments
+
+if command -v open >/dev/null; then
+	open "$url/files"
+elif command -v xdg-open >/dev/null; then
+	xdg-open "$url/files" >/dev/null 2>&1 &
+else
+	printf '\nOpen the diff yourself: %s/files\n' "$url"
+fi
+
+printf '\n#%s by %s. The diff is open in your browser.\n' "$number" "$author"
+printf 'Enter = approve and rebase-merge, Ctrl-C = stop: '
+read -r _
+gh pr review "$url" --approve
+gh pr merge "$url" --rebase --delete-branch
+git switch main
+git pull
