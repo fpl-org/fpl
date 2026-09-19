@@ -25,13 +25,12 @@ set -euo pipefail
 
 # Gate 2 lives in a function so gate 1's early exits still reach it.
 #
-# docs/WORKFLOW.md rule 6: everything lands on main through a GitHub PR. This
-# only catches a `git commit` made while main is checked out — a direct commit,
-# or the manual commit that finishes resolving a conflicted local merge. git
-# never invokes pre-commit for a clean (non-conflicting) merge or a
-# fast-forward — including pulling a landed PR — so those pass through
-# untouched; the forge-side branch protection rule on main is what actually
-# stops them.
+# docs/WORKFLOW.md rule 6: everything lands on main through a GitHub PR. This is
+# the early, friendly half of that rule: it stops a `git commit` on main before
+# the message is even written. It is NOT the enforcement. Git runs pre-commit
+# for `git commit` only, so a clean local merge into main never reaches this
+# hook, and --no-verify skips it. The enforcement is .githooks/reference-transaction,
+# which lets main move only to where its upstream already is.
 #
 #   FPL_MAIN_GATE = block (default) | warn | off
 main_gate() {
