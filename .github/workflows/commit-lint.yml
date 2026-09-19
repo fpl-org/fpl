@@ -14,6 +14,11 @@ on:
   pull_request:
     types: [opened, reopened, synchronize]
 
+# One run per pull request; a new push cancels the run of the commit it replaces.
+concurrency:
+  group: commit-lint-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
