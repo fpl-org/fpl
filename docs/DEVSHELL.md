@@ -120,12 +120,15 @@ Update deliberately, as its own commit: `nix flake update`, then `make check` in
   lines, comments, a missing final newline and a name given twice are fine; an unknown name
   and a line of shell metacharacters are skipped with the error and execute nothing; removing
   the file removes the roots under `.direnv/`. `nix develop -c nix shell .#github` and
-  `nix develop .#github` work too. On the other three systems the layer is evaluated, not
-  built. Its predecessor, a whole `github` shell chosen by one name in `.fpl-shell`, was
-  built and switched on the maintainer's `aarch64-darwin` Mac; the layered form has not been
-  run there yet.
+  `nix develop .#github` work too.
 - **The `gitlab` layer** — same machine, same checks: alone, and together with `github`, in
-  which case both `gh` and `glab` resolve from the Nix store. Evaluated, not built, elsewhere.
+  which case both `gh` and `glab` resolve from the Nix store.
+- **Both layers on the maintainer's `aarch64-darwin` Mac** — with direnv, `.fpl-shell` naming
+  `github` and `gitlab` builds both and resolves `gh` and `glab` from the Nix store at the
+  next prompt. A single layer on its own, and the error paths, were not run there. The
+  predecessor of the layers, a whole `github` shell chosen by one name, was built and
+  switched on the same Mac. On `x86_64-darwin` and `aarch64-linux` the layers are evaluated,
+  not built.
 - **"No `gh`" means none from this flake.** That Mac also has a `gh` in nix-darwin's system
   profile, so in the default shell `command -v gh` prints `/run/current-system/sw/bin/gh`. A
   dev shell prepends to `PATH`; it does not hide what the machine already has.
