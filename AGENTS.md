@@ -22,7 +22,8 @@ do not invent language semantics.
   CLAUDE.md           Claude Code tooling notes only
   docs/               settled decisions and conventions (vendor-neutral)
   .claude/            Claude Code commands, subagents, skill, hooks
-  scripts/            acommit, restack, setup, agent-identity, new-worktree, branch-lint, layer
+  scripts/            acommit, commit-lint, restack, setup, agent-identity, new-worktree,
+                      branch-lint, layer
   flake.nix, flake.lock   the dev shell: one pinned toolchain for everyone (docs/DEVSHELL.md)
   .githooks/          pre-commit, commit-msg, atomic-check, reference-transaction, pre-push
                       (all enabled by scripts/setup)
