@@ -31,11 +31,21 @@
           description = "GitLab's CLI (glab)";
           packages = [ pkgs.glab ];
         };
+        radicle = {
+          description = "Radicle's CLI and node (rad, radicle-node, git-remote-rad)";
+          packages = [ pkgs.radicle-node ];
+        };
+        radicleui = {
+          description = "Radicle's desktop app, for reviewing patches; large";
+          extends = [ "radicle" ];
+          packages = [ pkgs.radicle-desktop ];
+        };
         forges = {
-          description = "every forge client";
+          description = "every forge client (not the desktop app)";
           extends = [
             "github"
             "gitlab"
+            "radicle"
           ];
           packages = [ ];
         };
