@@ -37,7 +37,7 @@ top of base) · **restack** (rebase the stack when base or a lower commit change
 8. **A change to the CI goes through the maintainer's hands.** A workflow on a branch of this
    repository runs with the repository's secrets before anyone has reviewed it, so whoever
    can push a file under `.github/workflows/` can read them. Agents push over HTTPS with a
-   token that lacks GitHub's `workflow` scope, and the forge refuses such a push from it. The
+   token that has no Workflows permission, and the forge refuses such a push from it. The
    maintainer pushes those branches himself, over SSH, with a key that needs a touch for
    every use (a Secure Enclave key; checked, it asks each time, twice in a row too). No key
    that works without him is registered for the account on a machine where agents run.
@@ -109,8 +109,33 @@ scripts/land [<number>]    # the maintainer's side: checks, conversation, diff, 
 and only after Enter approves, rebase-merges, deletes the branch and updates `main`. The
 author of a pull request cannot approve it, which is why the two sides are two accounts.
 
-`gh` is not in the default dev shell: `scripts/layer on github` (`docs/DEVSHELL.md`, "Forge
-tools are opt-in"), or do both sides in the browser.
+`scripts/land` needs `gh`, which is not in the default dev shell: `scripts/layer on github`
+(`docs/DEVSHELL.md`, "Forge tools are opt-in"), or land in the browser. `scripts/pr` needs
+neither: it calls the API with python3 from the default shell.
+
+## The agent's credential
+
+`.git/agent-credentials`, mode 600, one line:
+
+```
+https://<machine account>:<token>@github.com
+```
+
+That is git's credential-store format, so the same file serves a push and `scripts/pr`:
+
+```
+git -c credential.helper="store --file=$PWD/.git/agent-credentials" push origin <branch>
+```
+
+It sits inside `.git/`, so it is per clone and never committed. The token is a fine-grained
+personal access token of the machine account, scoped to this repository alone, with Contents
+and Pull requests read/write and Metadata read — and no Workflows. Rule 8 is then a property
+of the credential rather than of anyone's discipline: the push is refused, not remembered to
+be avoided.
+
+The maintainer creates it (the account's settings, then approve the request as an owner of
+the organisation) and writes the file. It expires; a push then fails with 403 and a new token
+is made the same way. Agents read it through git and never print it.
 
 - Merge the bottom PR first, with **Rebase and merge**, and delete its branch. GitHub then
   retargets the next PR to `main`. Rebase-merge puts every commit on `main` individually,
