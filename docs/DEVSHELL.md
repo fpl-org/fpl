@@ -48,8 +48,10 @@ gate calls when it is present (the gate fails open without it, `docs/COMMITS.md`
 
 The default shell has no forge client; the harness runs on git alone (`docs/WORKFLOW.md`,
 rule 7). Forge clients are **layers**, declared as data in `layers` in `flake.nix`;
-`scripts/layer` lists them. Today: `github` (`gh`), `gitlab` (`glab`), and
-`forges`, which has no packages of its own and `extends` the other two.
+`scripts/layer` lists them. Today: `github` (`gh`), `gitlab` (`glab`), `radicle` (`rad`,
+`radicle-node`, `git-remote-rad`), `radicleui`, which `extends` `radicle` with the desktop
+app for reviewing patches, and `forges`, which has no packages of its own and `extends` the
+three clients.
 
 Every combination of layers is a dev shell, named by the layer names in sorted order, joined
 with `-`:
@@ -109,6 +111,8 @@ Update deliberately, as its own commit: `nix flake update`, then `make check` in
 - **Layers** — on `x86_64-linux` with direnv 2.37.1. No `.fpl-shell` loads `.#default`,
   without `gh`. `github` loads `.#github`; `gitlab` then `github`, unsorted, loads
   `.#github-gitlab` with both tools from the Nix store; `forges` gives both through `extends`.
+  `radicle` gives `rad` 1.10.3, `radicleui` adds the `radicle-desktop` binary (not launched:
+  no display there).
   Blank lines, comments, a missing final newline and a repeated name are fine. An unknown name
   and a line of shell metacharacters are skipped with the error and execute nothing. In the
   flake, a cycle, an unknown name in `extends` and a `-` in a layer name each stop evaluation
