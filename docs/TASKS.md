@@ -12,10 +12,10 @@ which creates the maintainer's key and is his step. Needs `rad`: `scripts/layer 
 
 ```
 scripts/task new "parser: integer expressions" -b <id>    # -b: blocked by; repeatable
-scripts/task ready                                       # what can be picked up now
+scripts/task ready                                       # what can be picked up now; 1 on a loop
 scripts/task list [--all]
 scripts/task start|done|drop|reopen <id>
-scripts/task block|unblock <id> <by>
+scripts/task block|unblock <id> <by>                     # block -f records a loop anyway
 scripts/task assign <id> <did>|me|nobody
 scripts/task edit <id> [-t <title>] [-d <description>]
 scripts/task show <id>                                   # the full state, as JSON
@@ -24,6 +24,65 @@ scripts/task show <id>                                   # the full state, as JS
 An `<id>` is any unambiguous prefix. A task is `todo`, `doing`, `done` or `dropped`. It is
 *ready* when it is open and every task in its `blockedBy` is done or dropped; a blocker this
 clone does not know counts as open.
+
+## Loops
+
+Two tasks that each need the other is a real state of the world — the grammar needs to know
+which nodes carry a span, the node set needs to know what the grammar emits — and a record
+that cannot say so makes people lie to it. But it is usually a sign that one of the two wants
+splitting into the part the other needs, and that is a judgement rather than a rule.
+
+So `block` stops rather than refuses. A block that would close a loop prints the chain and
+what it costs, and `block --force` records it anyway:
+
+```
+$ scripts/task block 1234567 89abcde
+task: that makes a loop: 1234567 -> 89abcde -> 1234567
+     nothing in it would be ready. See whether one of them splits into
+     the part the other needs; to record the loop anyway, block --force.
+```
+
+A loop that arrives anyway — forced, or replicated from a peer who never ran this command
+line — may not go quiet. It keeps every task in it out of `ready`, and `ready` then names it
+and exits 1:
+
+```
+$ scripts/task ready
+5ff0a21  todo     lexer: integer literals
+# waiting on each other, nothing here can start: 1234567 -> 89abcde -> 1234567
+$ echo $?
+1
+```
+
+The notice goes on stdout rather than stderr, because an agent's harness may drop that stream
+or show it only when a command fails, and this is the one thing that must not go unseen. `#`
+is the usual skip marker, so `grep -v '^#'` leaves a list of tasks. The exit code answers
+rather than complains, the way `git diff --exit-code` does; write `|| true` where the answer
+does not matter.
+
+Which leaves stderr for what it is good at. A refusal — an unknown id, a `block` that would
+close a loop, no `rad` on the path — goes there and exits **2**. So the three codes divide
+the way `grep` divides them:
+
+| | |
+|---|---|
+| **0** | the answer: here is what can be picked up |
+| **1** | an answer with bad news in it: a loop, and nothing in it can start |
+| **2** | the command was refused and did nothing |
+
+A harness can act on the code alone, without reading either stream. (`sysexits(3)` was the
+other candidate and is not used: FreeBSD's own manual now says the interface "has been
+deprecated and is retained only for compatibility", and its codes describe kinds of failure,
+which leaves no room for an answer that succeeded and carries bad news.)
+
+A blocker that is not open does not hold anything up and so cannot be part of a loop; neither
+can one this clone has not replicated.
+
+Both halves are needed, and neither is a guarantee. The check at `block` is a guard on the
+path people take; the report at `ready` catches what comes in past it. Acyclicity cannot be
+enforced where the authorisation is: the reducer sees one task at a time, a loop spans
+several, and a peer can always write operations without the command line. The graph is
+acyclic when it is healthy, and a loop is a diagnosis rather than a forbidden shape.
 
 ## Who may do what
 
@@ -60,7 +119,9 @@ Two properties of that protocol shape the helper (checked with `rad` 1.10.3):
 
 - `scripts/rad-cob-task --self-test`: the reducer alone, no `rad` needed. Order of `open`,
   the three kinds of actor, junk and oversized input, and that nothing raises.
-- `scripts/task --self-test`: every command against a real `rad` in a throwaway home.
+- `scripts/task --self-test`: every command against a real `rad` in a throwaway home,
+  including a two-task loop: the second `block` is refused and says how to go on, `--force`
+  records it, both stay out of `ready`, `ready` names them, and dropping one frees the other.
 - Two `radicle-node`s on an isolated test network on one x86_64-linux machine, two keys:
   the task refs arrive with `rad clone`, helper or no helper; without the helper
   `rad cob show` fails with "failed to spawn program 'rad-cob-task'" and nothing else breaks;

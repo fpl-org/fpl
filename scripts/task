@@ -3,12 +3,14 @@
 
     scripts/task new "<title>" [-d <description>] [-b <id>]...   open a task, optionally blocked
     scripts/task list [--all]        open tasks; --all includes done and dropped
-    scripts/task ready               tasks nothing is waiting on: what can be picked up now
+    scripts/task ready               tasks nothing is waiting on; exit 1 if a loop is left
     scripts/task show <id>
     scripts/task start|done|drop|reopen <id>
-    scripts/task block <id> <by>     <id> must wait for <by>;  unblock removes it
+    scripts/task block [-f] <id> <by>  <id> must wait for <by>;  unblock removes it
     scripts/task assign <id> <did>|me|nobody
     scripts/task edit <id> [-t <title>] [-d <description>]
+
+Exit: 0 the answer, 1 an answer with a loop in it, 2 the command was refused.
 
 An <id> may be any unambiguous prefix. Tasks live under refs/cobs/<TYPE>/ of the Radicle
 repository, as signed operations: who opened, moved or blocked what is part of the record,
@@ -32,7 +34,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def die(message):
-    sys.exit(f"task: {message}")
+    """Refused: the command did not do what was asked. Exit 2, on the model of grep --
+    0 the answer, 1 an answer with bad news in it, 2 the question was no good. A harness
+    can then tell 'you asked wrong' from 'the graph is stuck' by the code alone.
+    """
+    print(f"task: {message}", file=sys.stderr)
+    sys.exit(2)
 
 
 def rad(*args, stdin=None):
@@ -70,6 +77,59 @@ class Graph:
         """Blockers of `oid` that are still open. An unknown blocker counts as open."""
         blockers = self.tasks[oid].get("blockedBy", [])
         return [b for b in blockers if self.tasks.get(b, {}).get("state", "todo") in OPEN_STATES]
+
+    def path_to(self, src, dst):
+        """The chain of open tasks from `src` down to `dst` along `blockedBy`, or None.
+
+        `block a b` makes a loop exactly when `a` is already reachable from `b` this way.
+        """
+        seen, stack = {src}, [(src, [src])]
+        while stack:
+            oid, path = stack.pop()
+            for nxt in self.waiting_on(oid):
+                if nxt == dst:
+                    return path + [nxt]
+                if nxt in self.tasks and nxt not in seen:
+                    seen.add(nxt)
+                    stack.append((nxt, path + [nxt]))
+        return None
+
+    def cycles(self):
+        """Open tasks that wait on each other, one list per cycle, each starting at its
+        lowest id so the same cycle reads the same way twice.
+
+        A `block` that closes a loop is not refused. Two tasks that each need the other
+        is a thing that happens -- the grammar needs to know which nodes carry a span,
+        the node set needs to know what the grammar emits -- and the record should be
+        able to say so. What it must not do is go quiet: `ready` would come back empty
+        with no reason given. So the loop is reported, and splitting one of the tasks is
+        the maintainer's call, not the tool's.
+        """
+        def edges(oid):
+            # A blocker nobody has replicated yet holds the task up, but it cannot be
+            # part of a loop we can see, so it is not walked.
+            return iter([b for b in self.waiting_on(oid) if b in self.tasks])
+
+        found, colour = [], {}  # colour: 1 on the stack, 2 finished
+        for root in sorted(self.tasks):
+            if colour.get(root) or self.tasks[root]["state"] not in OPEN_STATES:
+                continue
+            stack = [(root, edges(root))]
+            colour[root] = 1
+            while stack:
+                oid, rest = stack[-1]
+                nxt = next(rest, None)
+                if nxt is None:
+                    colour[oid] = 2
+                    stack.pop()
+                elif colour.get(nxt) == 1:  # back onto the stack: a loop
+                    at = [i for i, (o, _) in enumerate(stack) if o == nxt][0]
+                    loop = [o for o, _ in stack[at:]]
+                    found.append(loop[loop.index(min(loop)) :] + loop[: loop.index(min(loop))])
+                elif not colour.get(nxt):
+                    colour[nxt] = 1
+                    stack.append((nxt, edges(nxt)))
+        return found
 
     def act(self, oid, message, *actions):
         with tempfile.NamedTemporaryFile("w", suffix=".jsonl") as handle:
@@ -136,6 +196,8 @@ def main(argv):
         p = sub.add_parser(verb)
         p.add_argument("id")
         p.add_argument("by")
+        if verb == "block":
+            p.add_argument("-f", "--force", action="store_true")
     assign = sub.add_parser("assign")
     assign.add_argument("id")
     assign.add_argument("to")
@@ -159,6 +221,19 @@ def main(argv):
             if args.cmd == "list" and not args.all and state not in OPEN_STATES:
                 continue
             print(line(graph, oid))
+        if args.cmd == "ready":
+            # On stdout, as a comment, and with a non-zero exit. Not stderr: an agent's
+            # harness may drop that stream, or show it only when a command fails, and
+            # this is the one thing that must not go unseen. `#` is the usual skip
+            # marker, so `grep -v '^#'` leaves a list of tasks. The exit code answers
+            # rather than complains, the way `git diff --exit-code` does; `|| true`
+            # where the answer does not matter.
+            loops = graph.cycles()
+            for loop in loops:
+                ids = " -> ".join(o[:7] for o in loop + loop[:1])
+                print(f"# waiting on each other, nothing here can start: {ids}")
+            if loops:
+                return 1
     elif args.cmd == "show":
         oid = graph.resolve(args.id)
         print(json.dumps({"id": oid, **graph.tasks[oid]}, indent=2))
@@ -170,6 +245,16 @@ def main(argv):
         oid, by = graph.resolve(args.id), graph.resolve(args.by)
         if oid == by:
             die("a task cannot block itself")
+        # Closing a loop is usually a sign that one of the two wants splitting into the
+        # part the other needs. Usually, not always -- so this is a stop, not a refusal.
+        back = None if args.cmd == "unblock" or args.force else graph.path_to(by, oid)
+        if back:
+            chain = " -> ".join(o[:7] for o in [oid] + back)
+            die(
+                f"that makes a loop: {chain}\n"
+                "     nothing in it would be ready. See whether one of them splits into\n"
+                "     the part the other needs; to record the loop anyway, block --force."
+            )
         graph.act(oid, f"{args.cmd} {by[:7]}", {"type": args.cmd, "by": by})
     elif args.cmd == "assign":
         oid = graph.resolve(args.id)
@@ -262,7 +347,28 @@ def self_test():
         )
         task("edit", parser, "-t", "parser: expressions")
         check("edit", "parser: expressions" in task("list").stdout)
-        check("self-block refused", task("block", parser, parser, ok=False).returncode != 0)
+        check("self-block refused", task("block", parser, parser, ok=False).returncode == 2)
+
+        # A loop is allowed to be recorded; what it may not do is make `ready` go quiet.
+        left = task("new", "span: pick the representation").stdout.strip()
+        right = task("new", "grammar: emit spans").stdout.strip()
+        task("block", left, right)
+        refused = task("block", right, left, ok=False)
+        check("a loop is refused by default, with the refusal code", refused.returncode == 2)
+        check("and the message names the chain and the way out", "makes a loop" in refused.stderr and "--force" in refused.stderr)
+        task("block", right, left, "--force")
+        done = task("ready", ok=False)
+        check("a loop keeps both out of the list", f"\n{left}" not in done.stdout and f"\n{right}" not in done.stdout)
+        check("and ready exits 1, the answer-with-bad-news code", done.returncode == 1)
+        check(
+            "and says so on stdout, naming them",
+            "waiting on each other" in done.stdout and left in done.stdout and right in done.stdout,
+        )
+        check("the notice is a comment, so a filter leaves tasks only",
+              all(not l.startswith("#") for l in done.stdout.splitlines() if l and "waiting" not in l))
+        task("drop", left)
+        freed = task("ready")
+        check("dropping one ends the loop", right in freed.stdout and freed.returncode == 0)
         check("unknown id refused", task("done", "ffffffff", ok=False).returncode != 0)
         log = sh(
             "rad",
@@ -287,4 +393,4 @@ def self_test():
 if __name__ == "__main__":
     if sys.argv[1:] == ["--self-test"]:
         self_test()
-    main(sys.argv[1:])
+    sys.exit(main(sys.argv[1:]) or 0)
