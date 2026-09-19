@@ -52,7 +52,7 @@ mode="${FPL_BOUNDARY:-block}"
 top="$(git rev-parse --show-toplevel)"
 if [ -f "$top/.git" ]; then
 	side="worktree"; other="the harness"; where="the root checkout"
-	forbidden='^(docs/|\.claude/|scripts/|\.githooks/|AGENTS\.md$|CLAUDE\.md$)'
+	forbidden='^(docs/|\.claude/|scripts/|\.githooks/|AGENTS\.md$|CLAUDE\.md$|flake\.(nix|lock)$|\.envrc$)'
 else
 	side="root"; other="an implementation"; where="a worktrees/<name>/"
 	forbidden='^(fpl/|features/|tests/|pyproject\.toml$|Makefile$)'
