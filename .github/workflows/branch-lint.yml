@@ -1,0 +1,29 @@
+# Forge-side half of the branch-name gate (docs/BRANCHES.md).
+#
+# The local hooks stop a bad name at creation and at push, but only in a clone
+# whose hooks are wired. This judges the name where it cannot be skipped: on the
+# pull request. Mark the "branch-lint" check as required in the ruleset for main
+# to make it a hard gate.
+#
+# The head ref reaches the script through an environment variable, never through
+# ${{ }} interpolation into the shell: a branch name is attacker-controlled text.
+name: branch-lint
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  branch-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Grammar self-test
+        run: scripts/branch-lint --self-test
+      - name: Head branch parses
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: scripts/branch-lint "$HEAD_REF"
