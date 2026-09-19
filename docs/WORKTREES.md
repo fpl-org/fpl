@@ -57,7 +57,7 @@ is a thin wrapper over it.
 
 | Path | Where it lives | Edited by |
 | --- | --- | --- |
-| `docs/`, `.claude/`, `scripts/`, `.githooks/`, `AGENTS.md`, `CLAUDE.md` | root, `main` | root sessions |
+| `docs/`, `.claude/`, `scripts/`, `.githooks/`, `AGENTS.md`, `CLAUDE.md`, `flake.nix`, `flake.lock`, `.envrc` | root, `main` | root sessions |
 | `fpl/`, `features/`, `pyproject.toml`, `Makefile`, `tests/` | each `worktrees/<name>/` | that worktree's sessions |
 | `.git/agent-identity` | per worktree (untracked) | `scripts/agent-identity` |
 
