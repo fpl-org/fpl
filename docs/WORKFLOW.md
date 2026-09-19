@@ -34,6 +34,13 @@ top of base) · **restack** (rebase the stack when base or a lower commit change
    the record lives: every commit carries its `Stack:` trailer (`docs/COMMITS.md`), and
    anything a review changes about the *why* is folded back into the commit body before
    landing. If GitHub vanished, `git log` alone should still explain every decision.
+8. **A change to the CI goes through the maintainer's hands.** A workflow on a branch of this
+   repository runs with the repository's secrets before anyone has reviewed it, so whoever
+   can push a file under `.github/workflows/` can read them. Agents push over HTTPS with a
+   token that lacks GitHub's `workflow` scope, and the forge refuses such a push from it. The
+   maintainer pushes those branches himself, over SSH, with a key that needs a touch for
+   every use (a Secure Enclave key; checked, it asks each time, twice in a row too). No key
+   that works without him is registered for the account on a machine where agents run.
 
 ## Setup (once per clone/worktree)
 
