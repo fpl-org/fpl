@@ -58,8 +58,24 @@ Update deliberately, as its own commit: `nix flake update`, then `make check` in
 
 ## What was verified
 
-The shell was built and exercised on `x86_64-linux`: every tool above resolves from the Nix
-store, `ruff`, strict `pyright` and `pytest` pass on a Lark snippet, and the first-entry hook
-wires a fresh clone and then stays silent. For `aarch64-darwin`, `x86_64-darwin` and
-`aarch64-linux` the shell was evaluated down to its derivation — every package exists for them
-— but not built. The first person to enter it on a Mac is the test.
+- **`x86_64-linux`** — built and exercised: every tool above resolves from the Nix store,
+  `ruff`, strict `pyright` and `pytest` pass on a Lark snippet, and the first-entry hook wires
+  a fresh clone and then stays silent.
+- **`aarch64-darwin`** — built on the maintainer's Mac. `nix develop -c …` resolves `git`,
+  `python3`, `ruff` and `pyright` from the Nix store and imports `lark` 1.3.1.
+- **`x86_64-darwin`, `aarch64-linux`** — evaluated down to the derivation (every package
+  exists for them), not built.
+
+## Known trap: interactive `nix develop` on a Mac
+
+On that same Mac, a bare interactive `nix develop` gave a half-working shell: `bash`, `make`,
+`sed`, `grep` and `awk` came from the Nix store, but `git` and `gh` resolved to nix-darwin's
+system profile, `jj` and `python3` to Homebrew, and `ruff` and `pyright` were not found at all,
+so `import lark` failed. The identical flake run as `nix develop -c <command>` was correct, so
+the flake is not at fault: the interactive shell's own startup files rewrite `PATH` after Nix
+has set it. Which file does it has not been tracked down.
+
+Until it is, do not trust a bare `nix develop` prompt on macOS. Use direnv (above), which
+applies the environment from the prompt hook, after the startup files have run, and without a
+nested shell — or run things as `nix develop -c <command>`. A quick self-check in any shell:
+`command -v ruff` must print a `/nix/store/…` path.
