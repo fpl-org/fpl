@@ -1,47 +1,92 @@
 #!/usr/bin/env bash
 #
-# .githooks/reference-transaction — refuse to CREATE a branch whose name does not
-# parse under docs/BRANCHES.md.
+# .githooks/reference-transaction — two gates on ref updates, the one place git
+# cannot be asked to look away: this hook sees every ref update, a non-zero exit
+# in the "prepared" state aborts the transaction, and --no-verify does not skip it.
 #
-# Git has no branch-creation hook. This is the hook that sees every ref update —
-# `git switch -c`, `git branch`, `git worktree add -b`, `git branch -m`, a fetch
-# into refs/heads/ — and a non-zero exit in the "prepared" state aborts the
-# transaction. Unlike pre-commit and commit-msg it is not skipped by --no-verify.
+# 1. Branch names. Refuse to CREATE a branch whose name does not parse under
+#    docs/BRANCHES.md. Git has no branch-creation hook; this catches
+#    `git switch -c`, `git branch`, `git worktree add -b` and a fetch into
+#    refs/heads/. Only creations are judged: updates and deletions of existing
+#    branches pass, so a branch that predates a grammar change keeps working.
+#    Known gap: `git branch -m old new` slips through. Git (observed on 2.34)
+#    sends only the deletion of the old name through this hook; the new ref is
+#    written outside a transaction. A renamed branch is caught at pre-push and
+#    in CI.
+#      FPL_BRANCH_GATE = block (default) | warn | off
 #
-# Only creations under refs/heads/ are judged. Updates and deletions of existing
-# branches pass untouched, so a branch that predates a grammar change keeps
-# working, and rebases, fetches of remote-tracking refs, stashes and tags never
-# pay more than the early exit.
-#
-# Known gap: `git branch -m old new` slips through. Git (observed on 2.34) sends
-# only the deletion of the old name through this hook; the new ref is written
-# outside a transaction. A renamed branch is caught at pre-push and in CI.
-#
-#   FPL_BRANCH_GATE = block (default) | warn | off
+# 2. main only follows its upstream. docs/WORKFLOW.md rule 6: everything lands
+#    on main through a pull request. So locally, refs/heads/main may move only
+#    to the commit its upstream (origin/main) already points at. That admits
+#    `git pull` after a landed PR and `git reset --hard origin/main`, and
+#    refuses a commit, a merge (fast-forward or not) and a rebase made on main.
+#    pre-commit cannot do this: git runs it for `git commit` only, so a clean
+#    local merge never reaches it. Fails open when main has no upstream.
+#      FPL_MAIN_GATE = block (default) | warn | off
 #
 # Fails open when it cannot find the linter (a checkout from before it existed).
 
 set -euo pipefail
 
 [ "${1:-}" = "prepared" ] || exit 0
-mode="${FPL_BRANCH_GATE:-block}"
-[ "$mode" = "off" ] && exit 0
+branch_mode="${FPL_BRANCH_GATE:-block}"
+main_mode="${FPL_MAIN_GATE:-block}"
+[ "$branch_mode" = "off" ] && [ "$main_mode" = "off" ] && exit 0
 
-top="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+updates=()
+while read -r old new ref; do updates+=("$new $ref"); done
+[ "${#updates[@]}" -gt 0 ] || exit 0
+
+top="$(git rev-parse --show-toplevel 2>/dev/null)" || top=""
 lint="$top/scripts/branch-lint"
-[ -x "$lint" ] || exit 0
 
-rc=0
-while read -r old new ref; do
+# new value this same transaction gives REF, if it touches it
+in_txn() {
+	local u
+	for u in "${updates[@]}"; do
+		[ "${u#* }" = "$1" ] && { echo "${u%% *}"; return 0; }
+	done
+	return 1
+}
+
+name_rc=0; main_rc=0
+for u in "${updates[@]}"; do
+	new="${u%% *}"; ref="${u#* }"
 	case "$ref" in refs/heads/*) : ;; *) continue ;; esac
 	case "$new" in *[!0]*) : ;; *) continue ;; esac          # all zeroes: a deletion
+
+	if [ "$ref" = "refs/heads/main" ] && [ "$main_mode" != "off" ]; then
+		up="$(git for-each-ref --format='%(upstream)' refs/heads/main)"
+		if [ -n "$up" ]; then
+			# `git fetch origin main:main` moves both refs in one transaction
+			want="$(in_txn "$up" || git rev-parse --verify --quiet "$up" || true)"
+			if [ -n "$want" ] && [ "$new" != "$want" ]; then
+				{
+					echo "reference-transaction: main may only move to where ${up#refs/remotes/} already is."
+					echo "    Changes land through a pull request (docs/WORKFLOW.md):"
+					echo "        git switch -c stack/<name>        # your work comes along"
+					echo "    FPL_MAIN_GATE=warn to override."
+				} >&2
+				main_rc=1
+			fi
+		fi
+		continue
+	fi
+
+	[ "$branch_mode" = "off" ] && continue
+	[ -x "$lint" ] || continue
 	# <old> is all zeroes for a creation AND for a forced update, so ask the ref
 	# store; in "prepared" the old value is still what is on disk.
 	git rev-parse --verify --quiet "$ref" >/dev/null && continue
-	"$lint" "${ref#refs/heads/}" || rc=1
+	"$lint" "${ref#refs/heads/}" || name_rc=1
 done
 
-[ "$rc" -eq 0 ] && exit 0
-echo "reference-transaction: branch not created. FPL_BRANCH_GATE=warn to override." >&2
-[ "$mode" = "warn" ] && exit 0
-exit 1
+rc=0
+if [ "$name_rc" -ne 0 ]; then
+	echo "reference-transaction: branch not created. FPL_BRANCH_GATE=warn to override." >&2
+	[ "$branch_mode" = "warn" ] || rc=1
+fi
+if [ "$main_rc" -ne 0 ]; then
+	[ "$main_mode" = "warn" ] || rc=1
+fi
+exit "$rc"
