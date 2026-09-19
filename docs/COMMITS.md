@@ -45,8 +45,8 @@ commit independently. Each rule below is marked **[gate]** (a hook rejects viola
 - **[gate]** one blank line before it; each line `Token: value`, tokens use `-` for spaces.
 - **[gate]** `Assisted-By` **and** `Session-Id` are both present — **or** a single
   `Human-Only: true` line for a hand-made human commit.
-- **[gate]** on a `stack/<name>` or `stack/<name>/<part>` branch the message carries
-  `Stack: <name>`; the value is always `[a-z0-9][a-z0-9._-]*`. `scripts/acommit` derives it
+- **[gate]** on a stack branch — `stack/<name>[/<part>]`, or the same under `agent/<id>/`
+  (`docs/BRANCHES.md`) — the message carries `Stack: <name>`; the value is always `[a-z0-9][a-z0-9._-]*`. `scripts/acommit` derives it
   from the branch (`-K <name>` overrides). Stack refs are deleted after landing and a linear
   landing leaves no merge commit, so this trailer is the in-repo record of which commits formed
   one unit: `git log --grep='^Stack: typed-let$'` recovers the stack years later, forge or no
