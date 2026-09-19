@@ -69,6 +69,39 @@ author name carries the model and `Assisted-By` carries its slug (`docs/COMMITS.
 commit on `agent/claude/stack/typed-let/tip` is legal and fully attributed. When no single
 agent leads — a branch opened for several agents from the start — use the id `ai`.
 
+## Why the path does not encode stack topology
+
+A tempting reading of git's `/` is `branch(-of-branch)*`: put a child stack *under* its parent,
+to any depth, so the name shows the shape of the stack. Git allows the depth, but the idea
+fails, first mechanically and then by design.
+
+Mechanically: a ref cannot be both a leaf and a directory. Next to `stack/x`, git refuses
+`stack/x/y` (`cannot lock ref … 'refs/heads/stack/x' exists`), and in a stack parent and child
+always exist at the same time, each being the head of its own PR. A leaf suffix works around
+it — `stack/x/tip`, `stack/x/y/tip`, `stack/x/y/z/tip` coexist, which is also why ghstack names
+its refs `…/head` — but that only makes the following problems reachable:
+
+- **Landing.** Once `x` is merged, `y` hangs off `main`, yet it is still called
+  `stack/x/y/tip`. The name now states a parent that no longer exists.
+- **Reordering.** Inserting a branch in the middle, splitting one, or re-parenting one means
+  renaming every descendant.
+- **Renaming costs PRs.** GitHub: "If the renamed branch is the head branch of an open pull
+  request, this pull request is closed." One reorder closes the PRs of the whole subtree, and
+  their review history with them.
+- **Several agents.** A child that Codex writes on a Claude-led stack lives under
+  `agent/codex/…`, not under `agent/claude/stack/x/…`. The path hierarchy breaks exactly where
+  multi-agent stacks begin.
+
+So the rule is: **the name is identity, the graph is structure.** A name says which stack a
+branch belongs to and who leads it — facts that survive landing and reordering. The shape of
+the stack is already recorded, exactly once, in the commit graph (and mirrored in each PR's
+base), so it is derived, never declared: a branch's parent is the nearest ancestor commit
+that carries a stack ref, `main` otherwise. A tree-shaped stack simply gives its parts unique
+names under one `<name>`.
+
+The numbered `part` has the same weakness in a milder form: after a reorder `2` may sit below
+`1`. Treat the number as a review-order hint; the graph is the authority.
+
 ## Gates
 
 | Gate | Where | What it stops |
