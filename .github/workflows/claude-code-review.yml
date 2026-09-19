@@ -1,14 +1,21 @@
 name: Claude Code Review
 
+# A review costs a model call; the two lint workflows cost seconds. So this one runs
+# when there is something new to judge -- the pull request opened, reopened, or left
+# draft -- and not on every push to the branch. Ask for a re-review by commenting
+# @claude, which .github/workflows/claude.yml answers.
+#
+# The ruleset does not require a branch to be up to date with main (no strict policy),
+# so "Update branch" is never needed to merge; pressing it only spends another run.
 on:
   pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
+    types: [opened, ready_for_review, reopened]
+
+# One run per pull request. A second push while a review is running cancels the first:
+# the review of a commit that is no longer the head is worth nothing.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   claude-review:
