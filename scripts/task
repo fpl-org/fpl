@@ -14,7 +14,7 @@ Exit: 0 the answer, 1 an answer with a loop in it, 2 the command was refused.
 
 An <id> may be any unambiguous prefix. Tasks live under refs/cobs/<TYPE>/ of the Radicle
 repository, as signed operations: who opened, moved or blocked what is part of the record,
-and it travels with the repository, not with a forge. scripts/rad-cob-task gives the
+and it travels with the repository, not with a forge. scripts/rad-cob-dagtaak gives the
 operations their meaning and says who may do what; this file only reads state and writes
 actions through `rad cob`. Needs rad (`scripts/layer on radicle`) and a repository that
 went through `rad init`. `--self-test` runs the whole thing in a throwaway Radicle home.
@@ -27,7 +27,7 @@ import subprocess
 import sys
 import tempfile
 
-TYPE = "nl.psjg.fpl.task"
+TYPE = "nl.psjs.dagtaak"
 OPEN_STATES = ("todo", "doing")
 VERBS = {"start": "doing", "done": "done", "drop": "dropped", "reopen": "todo"}
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -43,7 +43,7 @@ def die(message):
 
 
 def rad(*args, stdin=None):
-    """Run rad with scripts/ on PATH, where it finds the rad-cob-task helper."""
+    """Run rad with scripts/ on PATH, where it finds the rad-cob-dagtaak helper."""
     env = dict(os.environ, PATH=HERE + os.pathsep + os.environ.get("PATH", ""))
     try:
         done = subprocess.run(["rad", *args], env=env, input=stdin, capture_output=True, text=True)
@@ -168,7 +168,7 @@ class Graph:
         if state.get(field) != expected:
             die(
                 f"{oid[:7]}: not applied. Only the author, or the assignee for state and "
-                f"blockers, may do that (scripts/rad-cob-task)"
+                f"blockers, may do that (scripts/rad-cob-dagtaak)"
             )
 
 
