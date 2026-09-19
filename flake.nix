@@ -17,8 +17,18 @@
         "aarch64-linux"
       ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+
+      layers = pkgs: {
+        github = pkgs.gh;
+      };
     in
     {
+      # Opt-in layers: tools that talk to one forge. None of them is in the default shell
+      # (docs/DEVSHELL.md). Each is a package, so they stack in any combination: several
+      # installables to `nix shell`, or one name per line in the git-ignored .fpl-shell for
+      # direnv. .envrc keeps a list of these names; add a layer in both places.
+      packages = forAllSystems layers;
+
       devShells = forAllSystems (
         pkgs:
         let
@@ -63,14 +73,11 @@
               '';
             };
         in
-        {
+        # `nix develop .#github` and so on: the default shell plus that one layer, for a
+        # single command without direnv. Generated from `layers`, so the two cannot drift.
+        nixpkgs.lib.mapAttrs (_: layer: mkFplShell [ layer ]) (layers pkgs)
+        // {
           default = mkFplShell [ ];
-
-          # Opt-in: the default shell plus GitHub's CLI, for whoever opens and merges pull
-          # requests from the terminal. A forge client is never part of the default
-          # environment (docs/DEVSHELL.md). `nix develop .#github`, or put `github` in the
-          # git-ignored file .fpl-shell to make direnv pick it.
-          github = mkFplShell [ pkgs.gh ];
         }
       );
 

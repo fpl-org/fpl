@@ -2,8 +2,8 @@
 
 `flake.nix` defines one [Nix](https://nixos.org) dev shell for the harness and for every
 implementation worktree. Entering it gives a human or an agent the same tools at the same
-versions, on macOS and Linux, without installing anything globally. A second, opt-in shell
-adds a forge client ([below](#forge-tools-are-opt-in)).
+versions, on macOS and Linux, without installing anything globally. Forge clients are opt-in
+layers on top of it ([below](#forge-tools-are-opt-in)).
 
 ```
 nix develop            # enter the shell once
@@ -52,29 +52,44 @@ stay that way. A program whose only use is talking to one company's API is not s
 checkout should load whether it needs it or not.
 
 `gh` is still the practical way to file the pull requests of `docs/WORKFLOW.md`, "Land —
-through GitHub, for now". So it lives in a second shell, `github`: the default shell plus
-`gh`, built from the same nixpkgs pin.
+through GitHub, for now". So it is a **layer**: a package of the flake, from the same nixpkgs
+pin, that goes on top of the default shell when a checkout asks for it.
 
-```
-nix develop .#github                       # a shell that has gh
-nix develop .#github -c gh pr create …     # or one command in it
-```
+| Layer | Tool |
+| --- | --- |
+| `github` | `gh` |
 
-To have direnv load it instead of the default, name it in `.fpl-shell`:
+With direnv, name the layers in `.fpl-shell`, one per line; `#` starts a comment:
 
 ```
 echo github > .fpl-shell        # picked up at the next prompt
-rm .fpl-shell                   # back to the default
+rm .fpl-shell                   # back to no forge tooling
 ```
 
-`.fpl-shell` is git-ignored: the choice belongs to one checkout and never travels with a
-commit, so nobody gets a forge client because somebody else wanted one. The file holds a name,
-not code. `.envrc` reads it, strips everything outside `[a-z0-9-]`, accepts only the shells it
-knows, and falls back to `default` with an error for anything else. It is deliberately not
-sourced: direnv asks for approval of `.envrc` itself, but not of files an `.envrc` sources, so
-a sourced, git-ignored file would be a way to run code nobody reviewed.
+Without direnv:
 
-Another forge gets a shell of its own next to this one, not a place in the default.
+```
+nix develop .#github -c gh pr create …           # the default shell plus one layer
+nix develop -c nix shell .#github -c gh …        # the general form; `nix shell` takes any
+                                                 # number of layers
+```
+
+Layers, not alternative shells, because forges add up: a checkout that pushes to two of them
+wants both clients, and one shell per combination doubles with every forge. `.envrc` always
+loads the default shell and then puts each requested layer in front of `PATH`, so any
+combination is one more line in `.fpl-shell`. The layers are built in one `nix build`, with
+out-links under `.direnv/` as garbage-collector roots; `PATH` gets the store paths
+themselves, so `command -v gh` still shows where the tool comes from.
+
+`.fpl-shell` is git-ignored: the choice belongs to one checkout and never travels with a
+commit, so nobody gets a forge client because somebody else wanted one. The file holds names,
+not code. `.envrc` reads it line by line, strips everything outside `[a-z0-9-]`, and accepts
+only the layers it knows; anything else is skipped with an error and the rest still loads. It
+is deliberately not sourced: direnv asks for approval of `.envrc` itself, but not of files an
+`.envrc` sources, so a sourced, git-ignored file would be a way to run code nobody reviewed.
+
+A new layer is two edits: an entry in `layers` in `flake.nix`, and its name in the `case` of
+`.envrc`. The `nix develop .#<layer>` shells are generated from `layers`.
 
 ## nixpkgs comes from nixos.org, not from a forge
 
@@ -87,7 +102,7 @@ runner, an agent sandbox that only admits selected repositories — which is the
 repository keeps its records in-repo (`docs/WORKFLOW.md`, rule 7).
 
 Update deliberately, as its own commit: `nix flake update`, then `make check` in a worktree.
-`nix fmt` formats `flake.nix`.
+`nix fmt flake.nix` formats it.
 
 ## What was verified
 
@@ -99,11 +114,15 @@ Update deliberately, as its own commit: `nix flake update`, then `make check` in
   Nix store and import `lark` 1.3.1.
 - **`x86_64-darwin`, `aarch64-linux`** — evaluated down to the derivation (every package
   exists for them), not built.
-- **The `github` shell** — built on `x86_64-linux` and on the maintainer's `aarch64-darwin`
-  Mac. There, with direnv: `.fpl-shell` holding `github` loads `.#github` and `gh` resolves
-  from the Nix store; removing the file reloads `.#default` at the next prompt, without a new
-  `direnv allow`, and `ruff` stays in the store. On the other two systems it is evaluated, not
-  built.
+- **The `github` layer** — on `x86_64-linux` with direnv 2.37.1: no `.fpl-shell` gives no
+  `gh`; `github` gives `gh` from the Nix store next to an unchanged `ruff` and `git`; blank
+  lines, comments, a missing final newline and a name given twice are fine; an unknown name
+  and a line of shell metacharacters are skipped with the error and execute nothing; removing
+  the file removes the roots under `.direnv/`. `nix develop -c nix shell .#github` and
+  `nix develop .#github` work too. On the other three systems the layer is evaluated, not
+  built. Its predecessor, a whole `github` shell chosen by one name in `.fpl-shell`, was
+  built and switched on the maintainer's `aarch64-darwin` Mac; the layered form has not been
+  run there yet.
 - **"No `gh`" means none from this flake.** That Mac also has a `gh` in nix-darwin's system
   profile, so in the default shell `command -v gh` prints `/run/current-system/sw/bin/gh`. A
   dev shell prepends to `PATH`; it does not hide what the machine already has.
