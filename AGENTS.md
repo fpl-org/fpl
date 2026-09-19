@@ -34,6 +34,8 @@ own linked worktree at `worktrees/<name>/` on its own branch.
 - A worktree session edits that worktree only — never up into the harness or sideways into
   another worktree.
 - `.githooks/pre-commit` gates both rules on the staged paths (`FPL_BOUNDARY=warn` overrides).
+  It also refuses a commit made with `main` checked out — work on a `stack/<name>` branch
+  (`docs/WORKFLOW.md`).
 - Details and `git worktree` recipes: `docs/WORKTREES.md`.
 
 ## Settled decisions
