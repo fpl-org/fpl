@@ -89,6 +89,9 @@ gh pr create --base main              --head stack/typed-let/1
 gh pr create --base stack/typed-let/1 --head stack/typed-let/2
 ```
 
+`gh` is not in the default dev shell. Get it with `nix develop .#github` (`docs/DEVSHELL.md`,
+"Forge tools are opt-in"), or file the PRs in the browser.
+
 - Merge the bottom PR first, with **Rebase and merge**, and delete its branch. GitHub then
   retargets the next PR to `main`. Rebase-merge puts every commit on `main` individually,
   message and trailers intact, with no merge commit — history stays linear and bisectable.

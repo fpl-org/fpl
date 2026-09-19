@@ -19,9 +19,13 @@
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
     in
     {
-      devShells = forAllSystems (pkgs: {
-        default = pkgs.mkShell {
-          packages = [
+      devShells = forAllSystems (
+        pkgs:
+        let
+          # Everything the harness and an implementation worktree need, and nothing that
+          # talks to a forge: the default shell must be enough to do all the work offline
+          # and against any remote.
+          base = [
             # The harness: scripts/ and .githooks/ are bash >= 4 (mapfile) and were written
             # against GNU userland; macOS ships bash 3.2 and BSD tools.
             pkgs.bashInteractive
@@ -30,7 +34,6 @@
             pkgs.gnused
             pkgs.gawk
             pkgs.git
-            pkgs.gh
             pkgs.jujutsu # optional workflow, docs/JJ.md
 
             # The implementation stack, docs/STACK.md: Python 3.12 + Lark, and the
@@ -44,17 +47,32 @@
             pkgs.gnumake
           ];
 
-          # Wire the git hooks once per clone/worktree; stay silent afterwards so that
-          # direnv re-entering the shell costs nothing.
-          shellHook = ''
-            if top="$(git rev-parse --show-toplevel 2>/dev/null)" \
-              && [ -x "$top/scripts/setup" ] \
-              && [ "$(git config --local --get core.hooksPath 2>/dev/null)" != ".githooks" ]; then
-              "$top/scripts/setup"
-            fi
-          '';
-        };
-      });
+          mkFplShell =
+            extra:
+            pkgs.mkShell {
+              packages = base ++ extra;
+
+              # Wire the git hooks once per clone/worktree; stay silent afterwards so that
+              # direnv re-entering the shell costs nothing.
+              shellHook = ''
+                if top="$(git rev-parse --show-toplevel 2>/dev/null)" \
+                  && [ -x "$top/scripts/setup" ] \
+                  && [ "$(git config --local --get core.hooksPath 2>/dev/null)" != ".githooks" ]; then
+                  "$top/scripts/setup"
+                fi
+              '';
+            };
+        in
+        {
+          default = mkFplShell [ ];
+
+          # Opt-in: the default shell plus GitHub's CLI, for whoever opens and merges pull
+          # requests from the terminal. A forge client is never part of the default
+          # environment (docs/DEVSHELL.md). `nix develop .#github`, or put `github` in the
+          # git-ignored file .fpl-shell to make direnv pick it.
+          github = mkFplShell [ pkgs.gh ];
+        }
+      );
 
       formatter = forAllSystems (pkgs: pkgs.nixfmt);
     };

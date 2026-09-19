@@ -1,8 +1,9 @@
 # DEVSHELL.md — one environment for everyone
 
-`flake.nix` defines a single [Nix](https://nixos.org) dev shell for the harness and for every
+`flake.nix` defines one [Nix](https://nixos.org) dev shell for the harness and for every
 implementation worktree. Entering it gives a human or an agent the same tools at the same
-versions, on macOS and Linux, without installing anything globally.
+versions, on macOS and Linux, without installing anything globally. A second, opt-in shell
+adds a forge client ([below](#forge-tools-are-opt-in)).
 
 ```
 nix develop            # enter the shell once
@@ -34,7 +35,7 @@ started elsewhere does not: launch it from the repo directory, or wrap the comma
 | Tools | Why |
 | --- | --- |
 | `bash` 5, GNU `coreutils` `grep` `sed` `awk` | `scripts/` and `.githooks/` need bash ≥ 4 (`mapfile`) and were written against GNU userland; macOS ships bash 3.2 and BSD tools |
-| `git`, `gh`, `jj` | the workflow of `docs/WORKFLOW.md`; `jj` is the optional one of `docs/JJ.md` |
+| `git`, `jj` | the workflow of `docs/WORKFLOW.md`; `jj` is the optional one of `docs/JJ.md` |
 | Python 3.12 with `lark` and `pytest`, `ruff`, `pyright`, `make` | the implementation stack of `docs/STACK.md` and the `make check` gate of `docs/CONVENTIONS.md`, with no virtualenv to create first |
 
 On first entry in a clone or worktree the shell runs `scripts/setup` (git hooks, stacked-commit
@@ -42,6 +43,24 @@ config, identity report). It checks `core.hooksPath` first, so every later entry
 
 Not in the shell: credentials of any kind, and the `claude` CLI that the soft `atomic-check`
 gate calls when it is present (the gate fails open without it, `docs/COMMITS.md`).
+
+## Forge tools are opt-in
+
+The default shell holds no forge client. Everything the harness does itself — the hooks, the
+linters, `acommit`, `restack` — runs on git alone, and rule 7 of `docs/WORKFLOW.md` wants it to
+stay that way. A program whose only use is talking to one company's API is not something every
+checkout should load whether it needs it or not.
+
+`gh` is still the practical way to file the pull requests of `docs/WORKFLOW.md`, "Land —
+through GitHub, for now". So it lives in a second shell, `github`: the default shell plus
+`gh`, built from the same nixpkgs pin.
+
+```
+nix develop .#github                       # a shell that has gh
+nix develop .#github -c gh pr create …     # or one command in it
+```
+
+Another forge gets a shell of its own next to this one, not a place in the default.
 
 ## nixpkgs comes from nixos.org, not from a forge
 
@@ -66,15 +85,18 @@ Update deliberately, as its own commit: `nix flake update`, then `make check` in
   Nix store and import `lark` 1.3.1.
 - **`x86_64-darwin`, `aarch64-linux`** — evaluated down to the derivation (every package
   exists for them), not built.
+- **The `github` shell** — built on `x86_64-linux` only: it has `gh` from the Nix store and the
+  default shell has no `gh` at all. On the other three systems it is evaluated, not built.
 
 ## Known trap: interactive `nix develop` on a Mac
 
 On that same Mac, a bare interactive `nix develop` gave a half-working shell: `bash`, `make`,
-`sed`, `grep` and `awk` came from the Nix store, but `git` and `gh` resolved to nix-darwin's
-system profile, `jj` and `python3` to Homebrew, and `ruff` and `pyright` were not found at all,
-so `import lark` failed. The identical flake run as `nix develop -c <command>` was correct, so
-the flake is not at fault: the interactive shell's own startup files rewrite `PATH` after Nix
-has set it. Which file does it has not been tracked down.
+`sed`, `grep` and `awk` came from the Nix store, but `git` and `gh` (then still in the default
+shell) resolved to nix-darwin's system profile, `jj` and `python3` to Homebrew, and `ruff` and
+`pyright` were not found at all, so `import lark` failed. The identical flake run as
+`nix develop -c <command>` was correct, so the flake is not at fault: the interactive shell's
+own startup files rewrite `PATH` after Nix has set it. Which file does it has not been tracked
+down.
 
 Until it is, do not trust a bare `nix develop` prompt on macOS. Use direnv (above), which
 applies the environment from the prompt hook, after the startup files have run, and without a
