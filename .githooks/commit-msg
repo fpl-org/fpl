@@ -14,8 +14,9 @@
 #   6. unless Human-Only, the commit author email equals .git/agent-identity
 #   7. oracle guard: editing docs/DESIGN.md, docs/SPEC.md or features/*/spec.md
 #      requires the literal marker [spec] in the message
-#   8. stack record: on a stack/<name>[/<part>] branch the message carries
-#      'Stack: <name>'; a Stack: value is always [a-z0-9][a-z0-9._-]*
+#   8. stack record: on a stack branch, human or agent (scripts/branch-lint),
+#      the message carries 'Stack: <name>'; a Stack: value is always
+#      [a-z0-9][a-z0-9._-]*
 #
 # Advisory (documented, not machine-checkable): imperative mood, one logical
 # change per commit, hunk-level staging.
@@ -139,13 +140,13 @@ if [ -n "$stack_val" ]; then
 		|| fail "Stack: value '$stack_val' must match [a-z0-9][a-z0-9._-]*"
 fi
 branch="$(git branch --show-current)"
-case "$branch" in
-stack/?*)
-	want_stack="${branch#stack/}"; want_stack="${want_stack%%/*}"
+parsed=""
+[ -n "$branch" ] && parsed="$("$repo_root/scripts/branch-lint" --parse "$branch" 2>/dev/null || true)"
+want_stack="$(printf '%s\n' "$parsed" | sed -n 's/^stack=//p')"
+if [ -n "$want_stack" ]; then
 	[ "$stack_val" = "$want_stack" ] \
 		|| fail "on branch $branch the message needs 'Stack: $want_stack' (got '${stack_val:-none}'; acommit adds it)"
-	;;
-esac
+fi
 
 # 9. soft atomicity gate (LLM judge; fails open — see .githooks/atomic-check) ---
 "$repo_root/.githooks/atomic-check" "$msg_file" || exit $?

@@ -22,9 +22,11 @@
 #   -a ADVISOR    external model consulted, e.g. fable-5.1; repeatable.
 #   -r REF        Refs: value (path / issue / feature); repeatable.
 #   -K STACK      Stack: value — the stack this commit belongs to. Defaults to
-#                  <name> when the current branch is stack/<name> or
-#                  stack/<name>/<part>; omitted on any other branch. The trailer
-#                  is the in-repo record of the grouping once the refs are gone.
+#                  the <name> of a stack branch, human or agent, as parsed by
+#                  scripts/branch-lint (stack/<name>[/<part>],
+#                  agent/<id>/stack/<name>[/<part>]); omitted on any other
+#                  branch. The trailer is the in-repo record of the grouping
+#                  once the refs are gone.
 #   -M NAME       model display name, e.g. "Claude Sonnet 5". Falls back to
 #                  $FPL_MODEL / $CLAUDE_CODE_MODEL. Required (no reliable default).
 #   -S ID         agent session id for the Session-Id trailer. Falls back to
@@ -111,9 +113,11 @@ fi
 trailers=()
 for r in "${refs[@]:-}"; do [ -n "$r" ] && trailers+=("Refs: $r"); done
 if [ -z "$stack" ]; then
-	# stack/<name> or stack/<name>/<part>  ->  <name>
 	branch="$(git branch --show-current)"
-	case "$branch" in stack/?*) stack="${branch#stack/}"; stack="${stack%%/*}" ;; esac
+	if [ -n "$branch" ]; then
+		stack="$("$repo_root/scripts/branch-lint" --parse "$branch" 2>/dev/null \
+			| sed -n 's/^stack=//p')" || true
+	fi
 fi
 if [ -n "$stack" ]; then
 	printf '%s' "$stack" | grep -Eq '^[a-z0-9][a-z0-9._-]*$' \
