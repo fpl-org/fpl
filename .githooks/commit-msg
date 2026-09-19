@@ -17,6 +17,10 @@
 #   8. stack record: on a stack branch, human or agent (scripts/branch-lint),
 #      the message carries 'Stack: <name>'; a Stack: value is always
 #      [a-z0-9][a-z0-9._-]*
+#   9. agent territory: a commit that is not Human-Only sits on an agent branch
+#      (agent/<id>/... or the flat vendor form <id>/<slug>, docs/BRANCHES.md).
+#      The branch <id> is the lead, not an exclusive author, so it is NOT
+#      compared with Assisted-By; human commits on agent branches are legal.
 #
 # Advisory (documented, not machine-checkable): imperative mood, one logical
 # change per commit, hunk-level staging.
@@ -148,7 +152,22 @@ if [ -n "$want_stack" ]; then
 		|| fail "on branch $branch the message needs 'Stack: $want_stack' (got '${stack_val:-none}'; acommit adds it)"
 fi
 
-# 9. soft atomicity gate (LLM judge; fails open — see .githooks/atomic-check) ---
+# 9. agent territory ------------------------------------------------------------
+# FPL_BRANCH_GATE = block (default) | warn | off, shared with the ref-name hooks.
+branch_gate="${FPL_BRANCH_GATE:-block}"
+if [ "$branch_gate" != "off" ] && [ -n "$branch" ] \
+	&& ! grep -Eq '^Human-Only:[[:space:]]*true[[:space:]]*$' "$msg_file"; then
+	branch_kind="$(printf '%s\n' "$parsed" | sed -n 's/^kind=//p')"
+	case "$branch_kind" in
+	agent-*|vendor) : ;;
+	*)
+		note="agent commit on '$branch', which is not an agent branch; work on agent/<id>/${branch} (docs/BRANCHES.md)"
+		[ "$branch_gate" = "warn" ] && echo "commit-msg: $note" >&2 || fail "$note"
+		;;
+	esac
+fi
+
+# 10. soft atomicity gate (LLM judge; fails open — see .githooks/atomic-check) ---
 "$repo_root/.githooks/atomic-check" "$msg_file" || exit $?
 
 exit 0
