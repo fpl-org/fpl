@@ -7,8 +7,9 @@ file in the tree. A file in the tree would need a pull request for every change 
 COB is a graph of signed operations under `refs/cobs/<type>/<id>`: it travels with the
 repository, and who opened, moved or blocked a task is part of the record, per actor key.
 
-**Status: tooling only.** Nothing uses it until the repository has been through `rad init`,
-which creates the maintainer's key and is his step. Needs `rad`: `scripts/layer on radicle`.
+**Status: empty.** The repository has been through `rad init`, so the store exists and the
+maintainer's key is the one that signs. No task has been written to it. Needs `rad`:
+`scripts/layer on radicle`.
 
 ```
 scripts/task new "parser: integer expressions" -b <id>    # -b: blocked by; repeatable
@@ -127,8 +128,10 @@ Two properties of that protocol shape the helper (checked with `rad` 1.10.3):
   `rad cob show` fails with "failed to spawn program 'rad-cob-task'" and nothing else breaks;
   a stranger's `done` replicates to the author and changes nothing but `ignored`; after
   `assign`, the assignee's `done` replicates and the blocked task turns up in `ready`.
+- Both self-tests on aarch64-darwin, against the maintainer's own `rad` 1.10.3 in the repository
+  initialised above: the same 16 and 18 checks that pass on x86_64-linux.
 
-Not verified: macOS; what two operations that are concurrent in the graph resolve to
+Not verified: what two operations that are concurrent in the graph resolve to
 (`rad` orders them, this was not probed); more than two peers.
 
 ## Open decisions
