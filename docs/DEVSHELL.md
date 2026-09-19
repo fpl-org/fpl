@@ -12,6 +12,23 @@ direnv allow           # or: load it automatically on cd (see below)
 It needs Nix with flakes enabled (`experimental-features = nix-command flakes`). Nothing else:
 no Homebrew, no pyenv, no global pip.
 
+## Loading it automatically
+
+`.envrc` holds one directive, `use flake`, which makes [direnv](https://direnv.net) load the
+shell whenever you `cd` into the repository or one of its worktrees and unload it when you
+leave. direnv's own description: "Load the build environment of a derivation similar to
+`nix develop`." Run `direnv allow` once per checkout; direnv will not execute an `.envrc` it
+has not been shown, and asks again when the file changes. Worktrees branch from `main`, so
+each carries its own `.envrc` and needs its own `direnv allow`.
+
+Plain `use flake` re-evaluates the flake when `flake.nix` or `flake.lock` change. If entering
+feels slow, [nix-direnv](https://github.com/nix-community/nix-direnv) caches the result and
+keeps it from being garbage-collected; it needs no change here. `.direnv/` is git-ignored.
+
+Editors and agents started from a shell with direnv active inherit the environment. One
+started elsewhere does not: launch it from the repo directory, or wrap the command as
+`nix develop -c <command>`.
+
 ## What is in it, and why
 
 | Tools | Why |
