@@ -53,10 +53,11 @@ cmd="${1:-list}"
 case "$cmd" in
 list)
 	on="$(current)"
+	width="$(cut -f1 <<<"$known" | awk '{ if (length > w) w = length } END { print w }')"
 	while IFS=$'\t' read -r name description; do
 		mark=' '
 		grep -qxF "$name" <<<"$on" && mark='*'
-		printf '%s %-8s %s\n' "$mark" "$name" "$description"
+		printf '%s %-*s  %s\n' "$mark" "$width" "$name" "$description"
 	done <<<"$known"
 	;;
 on | off)
