@@ -5,8 +5,11 @@
 # The create recipe from docs/WORKTREES.md as one command, usable by any agent or
 # human (`.claude/commands/new-worktree.md` is a thin wrapper over this):
 #
-#   1. `git worktree add worktrees/<name> -b attempt/<name> <base>`, always from
-#      the root checkout, so it works when invoked from inside another worktree.
+#   1. `git worktree add worktrees/<name> -b <branch> <base>`, always from the
+#      root checkout, so it works when invoked from inside another worktree.
+#      <branch> is attempt/<name>, or agent/<id>/attempt/<name> with -a: agent
+#      commits are only accepted on agent branches (docs/BRANCHES.md), so an
+#      attempt an agent will work in needs -a.
 #   2. Carries the root's agent identity into the new worktree. The file lives
 #      under the per-worktree git dir, so a fresh worktree starts without one;
 #      docs/COMMITS.md fixes the email as one constant machine-account address,
@@ -18,20 +21,28 @@
 # session's job (docs/CONVENTIONS.md).
 #
 # Usage:
-#   scripts/new-worktree [-n] <name> [base]
+#   scripts/new-worktree [-n] [-a <id>] <name> [base]
 #
 #   <name>   [a-z0-9][a-z0-9._-]*  -> path worktrees/<name>, branch attempt/<name>
 #   [base]   ref to branch from (default: main)
+#   -a <id>  the agent that leads the attempt (claude, codex, …): the branch
+#            becomes agent/<id>/attempt/<name>; the path stays worktrees/<name>
 #   -n       dry run: print the commands, create nothing
 
 set -euo pipefail
 
 die() { echo "new-worktree: $*" >&2; exit 2; }
 
-dry=0
-[ "${1:-}" = "-n" ] && { dry=1; shift; }
+dry=0; agent_id=""
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-n) dry=1; shift ;;
+	-a) agent_id="${2:-}"; [ -n "$agent_id" ] || die "-a needs an agent id"; shift 2 ;;
+	*) break ;;
+	esac
+done
 name="${1:-}"; base="${2:-main}"
-[ -n "$name" ] || die "usage: new-worktree [-n] <name> [base]"
+[ -n "$name" ] || die "usage: new-worktree [-n] [-a <id>] <name> [base]"
 [ $# -le 2 ] || die "too many arguments"
 printf '%s' "$name" | grep -Eq '^[a-z0-9][a-z0-9._-]*$' \
 	|| die "invalid name '$name' (want [a-z0-9][a-z0-9._-]*)"
@@ -39,7 +50,8 @@ printf '%s' "$name" | grep -Eq '^[a-z0-9][a-z0-9._-]*$' \
 # The root checkout is always the first entry, wherever we were invoked from.
 root="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
 [ -n "$root" ] || die "not inside a git repository"
-path="worktrees/$name"; branch="attempt/$name"
+path="worktrees/$name"; branch="${agent_id:+agent/$agent_id/}attempt/$name"
+"$root/scripts/branch-lint" "$branch" || die "branch '$branch' does not parse"
 
 [ ! -e "$root/$path" ] || die "$path already exists"
 git -C "$root" rev-parse --verify --quiet "$base^{commit}" >/dev/null \

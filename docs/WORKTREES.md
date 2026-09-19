@@ -30,6 +30,7 @@ worktrees/
 ```
 # create an attempt (worktree add + agent identity + scripts/setup in one step)
 scripts/new-worktree b                       # worktrees/b on attempt/b, from main
+scripts/new-worktree -a claude b             # …on agent/claude/attempt/b, for an agent to work in
 scripts/new-worktree b some-ref              # …from another base; -n for a dry run
 
 # the same by hand
