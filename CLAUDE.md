@@ -22,8 +22,15 @@ Read it first. This file only covers Claude Code tooling that lives under `.clau
     `ruff format` + quick `pytest`; no-op at the harness root.
 
 The git-level tooling (`scripts/acommit`, `scripts/restack`, `scripts/setup`,
-`scripts/new-worktree`, `.githooks/*`) is not Claude-specific — see `AGENTS.md` and
+`scripts/new-worktree`, `scripts/branch-lint`, `.githooks/*`) is not Claude-specific — see `AGENTS.md` and
 `docs/COMMITS.md`.
+
+## Branch names
+
+Claude sessions that can choose their branch work on `agent/claude/…` (`docs/BRANCHES.md`);
+the hooks reject agent commits anywhere else. `claude-code-action` and Claude cloud sessions
+emit flat `claude/<slug>` names, which the grammar admits as the vendor escape hatch — do not
+reconfigure them to fake a hierarchy under `claude/`.
 
 ## Coding standards
 
