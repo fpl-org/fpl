@@ -8,8 +8,8 @@
 # point at commits in the stack are carried along instead of left behind.
 #
 # Usage:
-#   scripts/restack              # fetch origin, rebase HEAD onto origin/<base>
-#   scripts/restack <base>       # use a different base ref (default: main)
+#   scripts/restack              # fetch, rebase HEAD onto the upstream of <base>
+#   scripts/restack <base>       # use a different base branch (default: main)
 #   scripts/restack --continue   # after resolving conflicts
 #   scripts/restack --abort
 
@@ -24,12 +24,14 @@ base="${1:-main}"
 cur="$(git branch --show-current)"
 [ -n "$cur" ] || { echo "restack: detached HEAD; checkout your stack branch first" >&2; exit 1; }
 
-echo "==> git fetch origin"
-git fetch origin
+# Where the base lives is whatever the base branch tracks. Remotes are named after the place
+# (docs/WORKFLOW.md, Setup), so no remote name is assumed here.
+upstream="$(git rev-parse --abbrev-ref --symbolic-full-name "$base@{upstream}" 2>/dev/null)" \
+	|| { echo "restack: '$base' tracks no upstream; git branch -u <remote>/$base $base" >&2; exit 1; }
+remote="$(git config "branch.$base.remote")"
 
-upstream="origin/$base"
-git rev-parse --verify --quiet "$upstream" >/dev/null \
-	|| { echo "restack: $upstream not found" >&2; exit 1; }
+echo "==> git fetch $remote"
+git fetch "$remote"
 
 ahead="$(git rev-list --count "$upstream..HEAD")"
 behind="$(git rev-list --count "HEAD..$upstream")"

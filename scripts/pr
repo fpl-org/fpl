@@ -55,7 +55,9 @@ login="${login%@*}"
 [ -n "$login" ] && [ "$login" != "$identity" ] ||
 	die "cannot read a login from '$identity'"
 
-remote="$(git config "branch.$branch.remote" || echo origin)"
+# The forge is the remote the branch tracks, or else the one the base tracks.
+remote="$(git config "branch.$branch.remote" || git config "branch.$base.remote")" ||
+	die "neither '$branch' nor '$base' tracks a remote"
 here="$(git rev-parse HEAD)"
 there="$(git ls-remote "$remote" "refs/heads/$branch" | cut -f1)"
 [ -n "$there" ] || die "'$branch' is not on $remote yet; push it first"
