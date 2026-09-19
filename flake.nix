@@ -18,18 +18,68 @@
       ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
 
+      # Opt-in layers on top of the default shell. DATA ONLY: a name (letters and digits),
+      # a description, packages, and optionally `extends`, naming layers whose packages come
+      # along. Today every layer is a forge client, because nothing that talks to a forge
+      # belongs in the default shell (docs/DEVSHELL.md). To add a layer, add an entry here;
+      # the shells and the list .envrc checks against are generated below.
       layers = pkgs: {
-        github = pkgs.gh;
-        gitlab = pkgs.glab;
+        github = {
+          description = "GitHub's CLI (gh)";
+          packages = [ pkgs.gh ];
+        };
+        gitlab = {
+          description = "GitLab's CLI (glab)";
+          packages = [ pkgs.glab ];
+        };
+        forges = {
+          description = "every forge client";
+          extends = [
+            "github"
+            "gitlab"
+          ];
+          packages = [ ];
+        };
       };
+
+      # Flattens `extends` into one package list per layer, so nothing downstream knows about
+      # inheritance. The graph may be a DAG; `unique` drops what is reached twice. A cycle or
+      # an unknown name throws with the path that led there. Plain recursion would instead
+      # hang the evaluator, which looks like a wedged machine rather than a bad config.
+      resolveLayers =
+        raw:
+        let
+          inherit (nixpkgs.lib)
+            concatMap
+            concatStringsSep
+            elem
+            hasInfix
+            mapAttrs
+            unique
+            ;
+          packagesOf =
+            seen: name:
+            if elem name seen then
+              throw "layer cycle: ${concatStringsSep " -> " (seen ++ [ name ])}"
+            else if !(raw ? ${name}) then
+              throw "unknown layer '${name}', named by: ${concatStringsSep " -> " seen}"
+            else
+              let
+                layer = raw.${name};
+                inherited = concatMap (packagesOf (seen ++ [ name ])) (layer.extends or [ ]);
+              in
+              inherited ++ layer.packages;
+          badNames = builtins.filter (hasInfix "-") (builtins.attrNames raw);
+        in
+        if badNames != [ ] then
+          throw "a layer name may not contain '-', which joins names: ${toString badNames}"
+        else
+          mapAttrs (name: layer: {
+            inherit (layer) description;
+            packages = unique (packagesOf [ ] name);
+          }) raw;
     in
     {
-      # Opt-in layers: tools that talk to one forge. None of them is in the default shell
-      # (docs/DEVSHELL.md). Each is a package, so they stack in any combination: several
-      # installables to `nix shell`, or one name per line in the git-ignored .fpl-shell for
-      # direnv. .envrc keeps a list of these names; add a layer in both places.
-      packages = forAllSystems layers;
-
       devShells = forAllSystems (
         pkgs:
         let
@@ -74,13 +124,27 @@
               '';
             };
         in
-        # `nix develop .#github` and so on: the default shell plus that one layer, for a
-        # single command without direnv. Generated from `layers`, so the two cannot drift.
-        nixpkgs.lib.mapAttrs (_: layer: mkFplShell [ layer ]) (layers pkgs)
-        // {
-          default = mkFplShell [ ];
-        }
+        # One shell per combination of layers, named by the layer names in sorted order joined
+        # with "-": default, github, github-gitlab, ... Attributes are lazy, so a combination
+        # nobody asks for is never evaluated. .envrc builds the same name from .fpl-shell.
+        let
+          inherit (nixpkgs.lib) concatMap foldl unique;
+          resolved = resolveLayers (layers pkgs);
+          names = builtins.attrNames resolved;
+          subsets = foldl (acc: n: acc ++ map (s: s ++ [ n ]) acc) [ [ ] ] names;
+          shellFor = subset: {
+            name = if subset == [ ] then "default" else builtins.concatStringsSep "-" subset;
+            value = mkFplShell (unique (concatMap (n: resolved.${n}.packages) subset));
+          };
+        in
+        builtins.listToAttrs (map shellFor subsets)
       );
+
+      # What layers exist, without building anything: `nix eval --json .#lib.layers`.
+      # .envrc checks .fpl-shell against `layerNames`. Only names and descriptions are forced,
+      # so the empty package set is never looked into.
+      lib.layers = builtins.mapAttrs (_: layer: layer.description) (layers { });
+      lib.layerNames = builtins.concatStringsSep " " (builtins.attrNames (layers { }));
 
       formatter = forAllSystems (pkgs: pkgs.nixfmt);
     };
