@@ -88,7 +88,7 @@ acyclic when it is healthy, and a loop is a diagnosis rather than a forbidden sh
 ## Who may do what
 
 An external COB has no authorisation but what its reducer gives it, and any peer can write
-operations. So `scripts/rad-cob-task` decides, per operation, by the key that signed it:
+operations. So `scripts/rad-cob-dagtaak` decides, per operation, by the key that signed it:
 
 | Actor | May |
 | --- | --- |
@@ -103,29 +103,34 @@ record shows that it did. Repository delegates are not consulted.
 
 `rad` knows issues and patches. For any other type it runs a helper, named after the last
 segment of the type name, once per operation: the state so far and the operation in, the new
-state out, as JSON (`radicle::cob::external`). The type is `nl.psjg.fpl.task`, so the helper
-is `rad-cob-task`; `scripts/task` puts `scripts/` on `PATH` for the `rad` it runs. With plain
+state out, as JSON (`radicle::cob::external`). The type is `nl.psjs.dagtaak`, so the helper
+is `rad-cob-dagtaak`; `scripts/task` puts `scripts/` on `PATH` for the `rad` it runs. With plain
 `rad cob …` do the same: `PATH="$PWD/scripts:$PATH" rad cob show …`.
+
+The name is settled. It is a reversed domain the maintainer owns, and it carries no project:
+the graph is meant to outlive this repository, so a task written here reads the same in
+whatever comes next. Renaming it again would orphan every task written under the old name,
+because `rad` looks the helper up by the last segment and would not find the old refs.
 
 Two properties of that protocol shape the helper (checked with `rad` 1.10.3):
 
 - `rad` replays every operation through the helper each time it reads an object. The helper
   is therefore the meaning of the stored operations. Changing it reinterprets every task
-  ever written: treat a change to `scripts/rad-cob-task` like a schema migration.
+  ever written: treat a change to `scripts/rad-cob-dagtaak` like a schema migration.
 - A helper that exits non-zero makes the object unreadable, for everyone. So it never fails:
   whatever is malformed, unknown or not allowed is skipped and counted. It is also
   deterministic: no clock, no environment, nothing but stdin and stdout.
 
 ## What was verified
 
-- `scripts/rad-cob-task --self-test`: the reducer alone, no `rad` needed. Order of `open`,
+- `scripts/rad-cob-dagtaak --self-test`: the reducer alone, no `rad` needed. Order of `open`,
   the three kinds of actor, junk and oversized input, and that nothing raises.
 - `scripts/task --self-test`: every command against a real `rad` in a throwaway home,
   including a two-task loop: the second `block` is refused and says how to go on, `--force`
   records it, both stay out of `ready`, `ready` names them, and dropping one frees the other.
 - Two `radicle-node`s on an isolated test network on one x86_64-linux machine, two keys:
   the task refs arrive with `rad clone`, helper or no helper; without the helper
-  `rad cob show` fails with "failed to spawn program 'rad-cob-task'" and nothing else breaks;
+  `rad cob show` fails with "failed to spawn program 'rad-cob-dagtaak'" and nothing else breaks;
   a stranger's `done` replicates to the author and changes nothing but `ignored`; after
   `assign`, the assignee's `done` replicates and the blocked task turns up in `ready`.
 - Both self-tests on aarch64-darwin, against the maintainer's own `rad` 1.10.3 in the repository
@@ -136,7 +141,4 @@ Not verified: what two operations that are concurrent in the graph resolve to
 
 ## Open decisions
 
-- **The type name.** `nl.psjg.fpl.task` is a placeholder: the convention is a reversed
-  domain its owner controls. Renaming it later orphans every task written under the old name,
-  so settle it before the first real task.
 - Whether repository delegates should be able to act on any task.

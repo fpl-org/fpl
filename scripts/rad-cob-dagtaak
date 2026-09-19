@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""rad-cob-task — reducer for the Radicle COB type of FPL's task graph.
+"""rad-cob-dagtaak — reducer for the Radicle COB type of FPL's task graph.
 
 Radicle keeps a collaborative object (COB) as a graph of signed operations under
 refs/cobs/<type>/<id>. For a type it does not know, `rad` runs a helper named after the
@@ -236,7 +236,7 @@ def self_test():
     failed = [name for name, ok in checks if not ok]
     for name in failed:
         print(f"FAIL {name}", file=sys.stderr)
-    print(f"rad-cob-task: self-test {'ok' if not failed else 'FAILED'} ({len(checks)} checks)")
+    print(f"rad-cob-dagtaak: self-test {'ok' if not failed else 'FAILED'} ({len(checks)} checks)")
     sys.exit(1 if failed else 0)
 
 
