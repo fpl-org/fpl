@@ -2,7 +2,8 @@
 #
 # scripts/pr — open the pull request for the current agent branch, as the machine account.
 #
-#   scripts/pr                     title and body from the first commit of the branch
+#   scripts/pr                     title and body from the first commit of the branch; with
+#                                  more than one commit the body also lists every subject
 #   scripts/pr -t <title> -b <text>
 #   scripts/pr -B <base>           target another branch than main (the PR below, in a stack)
 #   scripts/pr -n                  dry run: print what would be sent
@@ -68,8 +69,12 @@ count="$(git rev-list --count "$remote/$base..HEAD")"
 # Default body: the first paragraph of the first commit's body, as one line.
 [ -n "$body" ] || body="$(git log -1 --format=%b "$first" |
 	awk 'NF==0{exit} {printf "%s%s", sep, $0; sep=" "}')"
-text="$(printf '%s%s\n\n%s commit%s, rebase-merge.' \
-	"${stack:+Stack: $stack$'\n\n'}" "$body" "$count" "$([ "$count" = 1 ] || echo s)")"
+# One commit speaks for itself. More than one: the first commit's paragraph describes only
+# the first change, so list them all.
+subjects=""
+[ "$count" = 1 ] || subjects="$(git log --reverse --format='- %s' "$remote/$base..HEAD")"$'\n\n'
+text="$(printf '%s%s\n\n%s%s commit%s, rebase-merge.' \
+	"${stack:+Stack: $stack$'\n\n'}" "$body" "$subjects" "$count" "$([ "$count" = 1 ] || echo s)")"
 
 if [ "$dry" -eq 1 ]; then
 	printf 'as:    %s\nbase:  %s\nhead:  %s\ntitle: %s\n\n%s\n' \
