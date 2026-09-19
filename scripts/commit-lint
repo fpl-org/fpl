@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+#
+# scripts/commit-lint — run the commit-msg gates over commits that already exist.
+#
+#   scripts/commit-lint origin/main..HEAD
+#   scripts/commit-lint -b agent/claude/stack/x origin/main..HEAD
+#
+# .githooks/commit-msg judges a commit while it is being made, and only in a clone whose
+# hooks are wired, with a tool that runs hooks. `git commit --no-verify`, an unwired clone
+# and jj (docs/JJ.md) all get past it. This runs the same hook, in its lint mode, over a
+# revision range, so the forge can judge every commit of a pull request
+# (.github/workflows/commit-lint.yml) and anyone can do the same before pushing.
+#
+#   -b BRANCH   the branch the commits are headed for review on. With it, gate 8 wants
+#               the matching 'Stack:' trailer and gate 9 wants an agent branch for agent
+#               commits. Without it those two comparisons are skipped, which is what you
+#               want for a range of main.
+#
+# Environment: FPL_AGENT_EMAILS, space-separated author addresses accepted for agent
+# commits, in addition to .git/agent-identity. FPL_FORGE_BOT_EMAILS, authors held to the
+# format gates only; defaults to the Claude GitHub App (docs/COMMITS.md, section 2).
+set -euo pipefail
+
+die() {
+	printf 'commit-lint: %s\n' "$*" >&2
+	exit 2
+}
+
+branch=""
+while getopts "b:" opt; do
+	case "$opt" in
+	b) branch="$OPTARG" ;;
+	*) die "usage: scripts/commit-lint [-b <branch>] <rev-range>" ;;
+	esac
+done
+shift $((OPTIND - 1))
+[ $# -eq 1 ] || die "usage: scripts/commit-lint [-b <branch>] <rev-range>"
+range="$1"
+
+top="$(git rev-parse --show-toplevel)"
+hook="$top/.githooks/commit-msg"
+[ -x "$hook" ] || die "no executable $hook"
+commits="$(git rev-list --reverse --no-merges "$range")" || die "bad revision range: $range"
+[ -n "$commits" ] || die "no commits in $range"
+
+export FPL_FORGE_BOT_EMAILS="${FPL_FORGE_BOT_EMAILS-41898282+claude[bot]@users.noreply.github.com}"
+export FPL_LINT_BRANCH="$branch"
+msg="$(mktemp)"
+trap 'rm -f "$msg"' EXIT
+
+bad=0 total=0
+for c in $commits; do
+	total=$((total + 1))
+	git log -1 --format=%B "$c" >"$msg"
+	subject="$(git log -1 --format='%h %s' "$c")"
+	if out="$(FPL_LINT_COMMIT="$c" "$hook" "$msg" 2>&1)"; then
+		printf 'ok    %s\n' "$subject"
+	else
+		bad=$((bad + 1))
+		printf 'FAIL  %s\n' "$subject"
+		printf '%s\n' "$out" | sed 's/^/        /'
+	fi
+done
+printf 'commit-lint: %d of %d commits failed\n' "$bad" "$total"
+[ "$bad" -eq 0 ]

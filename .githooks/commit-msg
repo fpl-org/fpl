@@ -26,22 +26,49 @@
 # change per commit, hunk-level staging.
 #
 # Bypassed for merge/revert/fixup/squash messages.
+#
+# Lint mode (scripts/commit-lint, CI): FPL_LINT_COMMIT=<sha> judges a commit that
+# already exists instead of the one being made. The author and the changed files
+# then come from that commit, the branch from FPL_LINT_BRANCH (unset: gates 8
+# and 9 do not compare against a branch), FPL_AGENT_EMAILS adds accepted agent
+# addresses to the one in .git/agent-identity, and gate 10 is skipped.
+# A fixup!/squash!/amend! commit is rejected there: a rebase-merge would land it
+# as it is. A commit by an address in FPL_FORGE_BOT_EMAILS (the forge's own bot,
+# docs/COMMITS.md section 2) is held to the format gates only.
 
 set -euo pipefail
 
 msg_file="$1"
 repo_root="$(git rev-parse --show-toplevel)"
 first="$(sed -n '1p' "$msg_file")"
-
-case "$first" in
-"Merge "*|"Revert "*|"fixup! "*|"squash! "*|"amend! "*) exit 0 ;;
-esac
+lint_commit="${FPL_LINT_COMMIT:-}"
 
 fail() {
 	echo "commit-msg: $1" >&2
 	echo "           see docs/COMMITS.md" >&2
 	exit 1
 }
+
+case "$first" in
+"fixup! "*|"squash! "*|"amend! "*)
+	[ -z "$lint_commit" ] || fail "'${first%% *}' commit left in the branch; autosquash before landing"
+	exit 0
+	;;
+"Merge "*|"Revert "*) exit 0 ;;
+esac
+
+# Who wrote it. In lint mode that is the commit's author, not the environment's.
+if [ -n "$lint_commit" ]; then
+	author_email="$(git log -1 --format=%ae "$lint_commit")"
+else
+	author_email="${GIT_AUTHOR_EMAIL:-$(git var GIT_AUTHOR_IDENT | sed -n 's/.*<\(.*\)>.*/\1/p')}"
+fi
+forge_bot=0
+if [ -n "$lint_commit" ]; then
+	for bot in ${FPL_FORGE_BOT_EMAILS:-}; do
+		[ "$author_email" = "$bot" ] && forge_bot=1
+	done
+fi
 
 # 1. header ----------------------------------------------------------------
 types='feat|fix|docs|refactor|perf|test|build|ci|chore|revert'
@@ -95,7 +122,7 @@ for ((k = 2; k < trailer_start; k++)); do
 done
 
 # 4. provenance --------------------------------------------------------------
-if ! grep -Eq '^Human-Only:[[:space:]]*true[[:space:]]*$' "$msg_file"; then
+if [ "$forge_bot" -eq 0 ] && ! grep -Eq '^Human-Only:[[:space:]]*true[[:space:]]*$' "$msg_file"; then
 	grep -Eq '^Assisted-By:[[:space:]]*\S' "$msg_file" \
 		|| fail "missing 'Assisted-By:' trailer (or 'Human-Only: true')"
 	grep -Eq '^Session-Id:[[:space:]]*\S' "$msg_file" \
@@ -103,14 +130,18 @@ if ! grep -Eq '^Human-Only:[[:space:]]*true[[:space:]]*$' "$msg_file"; then
 
 	# 6. author identity ----------------------------------------------------
 	id_file="$(git rev-parse --git-dir)/agent-identity"
-	if [ -s "$id_file" ]; then
-		want="$(head -n1 "$id_file")"
-		got="${GIT_AUTHOR_EMAIL:-$(git var GIT_AUTHOR_IDENT | sed -n 's/.*<\(.*\)>.*/\1/p')}"
-		[ "$got" = "$want" ] \
-			|| fail "author email is '$got', expected the machine account '$want' (use acommit, or -H for a human commit)"
-	else
-		fail "agent identity unset; run scripts/agent-identity set <email> (or commit with 'Human-Only: true')"
-	fi
+	want=""
+	[ -s "$id_file" ] && want="$(head -n1 "$id_file")"
+	[ -z "$lint_commit" ] || want="$want ${FPL_AGENT_EMAILS:-}"
+	want="$(printf '%s' "$want" | xargs)" # trim
+	[ -n "$want" ] \
+		|| fail "agent identity unset; run scripts/agent-identity set <email> (or commit with 'Human-Only: true')"
+	known=0
+	for w in $want; do
+		[ "$author_email" = "$w" ] && known=1
+	done
+	[ "$known" -eq 1 ] \
+		|| fail "author email is '$author_email', expected the machine account '$want' (use acommit, or -H for a human commit)"
 fi
 
 # 5. trailer order --------------------------------------------------------------
@@ -129,7 +160,12 @@ done < <(sed -n 's/^\([A-Za-z][A-Za-z-]*\):[[:space:]].*/\1/p' "$msg_file")
 
 # 7. oracle guard --------------------------------------------------------------
 protected='^(docs/DESIGN\.md|docs/SPEC\.md|features/[^/]+/spec\.md)$'
-if git diff --cached --name-only | grep -Eq "$protected"; then
+if [ -n "$lint_commit" ]; then
+	changed="$(git diff-tree --no-commit-id --name-only -r --root "$lint_commit")"
+else
+	changed="$(git diff --cached --name-only)"
+fi
+if printf '%s\n' "$changed" | grep -Eq "$protected"; then
 	grep -Fq '[spec]' "$msg_file" \
 		|| fail "this commit edits a protected spec file; add [spec] to the message if intentional"
 fi
@@ -143,7 +179,12 @@ if [ -n "$stack_val" ]; then
 	printf '%s' "$stack_val" | grep -Eq '^[a-z0-9][a-z0-9._-]*$' \
 		|| fail "Stack: value '$stack_val' must match [a-z0-9][a-z0-9._-]*"
 fi
-branch="$(git branch --show-current)"
+if [ -n "$lint_commit" ]; then
+	branch="${FPL_LINT_BRANCH:-}"
+else
+	branch="$(git branch --show-current)"
+fi
+[ "$forge_bot" -eq 0 ] || branch="" # the forge's bot knows neither trailer nor territory
 parsed=""
 [ -n "$branch" ] && parsed="$("$repo_root/scripts/branch-lint" --parse "$branch" 2>/dev/null || true)"
 want_stack="$(printf '%s\n' "$parsed" | sed -n 's/^stack=//p')"
@@ -168,6 +209,6 @@ if [ "$branch_gate" != "off" ] && [ -n "$branch" ] \
 fi
 
 # 10. soft atomicity gate (LLM judge; fails open — see .githooks/atomic-check) ---
-"$repo_root/.githooks/atomic-check" "$msg_file" || exit $?
+[ -n "$lint_commit" ] || "$repo_root/.githooks/atomic-check" "$msg_file" || exit $?
 
 exit 0

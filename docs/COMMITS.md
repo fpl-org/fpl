@@ -10,6 +10,19 @@ generator can all read, while staying legible for a human doing archaeology year
 commit independently. Each rule below is marked **[gate]** (a hook rejects violations) or
 **[advisory]** (documented, not machine-checkable — a hook cannot reliably tell).
 
+The hook only sees a commit made with git, in a clone whose hooks are wired.
+`git commit --no-verify`, an unwired clone and `jj` (`docs/JJ.md`) get past it. So the same
+gates run a second time where they cannot be skipped: `scripts/commit-lint <rev-range>` runs
+the hook over commits that already exist, and `.github/workflows/commit-lint.yml` does that
+for every commit of a pull request. Run it yourself before pushing:
+
+```
+scripts/commit-lint -b "$(git branch --show-current)" origin/main..HEAD
+```
+
+Judged after the fact, a `fixup!`, `squash!` or `amend!` commit fails (a rebase-merge would
+land it as it is), and the atomicity check is skipped.
+
 ## Message format
 
 ```
@@ -115,6 +128,11 @@ Two identities, deliberately kept apart.
 CI runs and `@claude` interactions on issues/PRs are authored by the **`claude[bot]`** account
 (the [Claude GitHub App](https://github.com/apps/claude), installed on this repo). Different
 email, independent identity — no collision, no impersonation either way.
+
+The App writes its own messages and knows neither this trailer block nor the branch grammar.
+`scripts/commit-lint` therefore holds its commits to the format gates only (header, blank
+line, body width, trailer order, oracle guard) and not to provenance, `Stack:` or agent
+territory. Its author address is the provenance.
 
 GitHub links a commit to an account by matching the author/co-author **email** to one
 registered on that account. `noreply@anthropic.com` is not a forge account, so a bare

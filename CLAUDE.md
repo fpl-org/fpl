@@ -21,7 +21,8 @@ Read it first. This file only covers Claude Code tooling that lives under `.clau
   - `Stop` → `.claude/hooks/stop-check.sh`: in an implementation worktree, best-effort
     `ruff format` + quick `pytest`; no-op at the harness root.
 
-The git-level tooling (`scripts/acommit`, `scripts/restack`, `scripts/setup`,
+The git-level tooling (`scripts/acommit`, `scripts/commit-lint`, `scripts/restack`,
+`scripts/setup`,
 `scripts/new-worktree`, `scripts/branch-lint`, `scripts/layer`, `.githooks/*`) is not
 Claude-specific — see `AGENTS.md` and
 `docs/COMMITS.md`.
