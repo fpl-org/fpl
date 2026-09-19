@@ -111,8 +111,10 @@ performance treated as a feature. (Claude sessions: load the `software-style` an
 
 ## Picking up work
 
-0. Enter the dev shell: `nix develop`, or `direnv allow` once (`docs/DEVSHELL.md`). It carries
-   every tool below at a pinned version and wires the git hooks on first entry.
+0. Enter the dev shell: `direnv allow` once, or `nix develop -c <command>` (`docs/DEVSHELL.md`;
+   a bare interactive `nix develop` is unreliable on macOS). It carries every tool below at a
+   pinned version and wires the git hooks on first entry. Check: `command -v ruff` prints a
+   `/nix/store/…` path.
 1. Read this file, `docs/STACK.md`, `docs/CONVENTIONS.md`, `docs/COMMITS.md`, `docs/WORKFLOW.md`,
    `docs/BRANCHES.md`.
 2. Pick a worktree (`git worktree list`) or make one (`scripts/new-worktree <name>`; see

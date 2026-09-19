@@ -61,8 +61,9 @@ Update deliberately, as its own commit: `nix flake update`, then `make check` in
 - **`x86_64-linux`** — built and exercised: every tool above resolves from the Nix store,
   `ruff`, strict `pyright` and `pytest` pass on a Lark snippet, and the first-entry hook wires
   a fresh clone and then stays silent.
-- **`aarch64-darwin`** — built on the maintainer's Mac. `nix develop -c …` resolves `git`,
-  `python3`, `ruff` and `pyright` from the Nix store and imports `lark` 1.3.1.
+- **`aarch64-darwin`** — built on the maintainer's Mac. Both `nix develop -c …` and direnv
+  (`direnv allow`, then the next prompt in zsh) resolve `git`, `python3` and `ruff` from the
+  Nix store and import `lark` 1.3.1.
 - **`x86_64-darwin`, `aarch64-linux`** — evaluated down to the derivation (every package
   exists for them), not built.
 
@@ -77,5 +78,8 @@ has set it. Which file does it has not been tracked down.
 
 Until it is, do not trust a bare `nix develop` prompt on macOS. Use direnv (above), which
 applies the environment from the prompt hook, after the startup files have run, and without a
-nested shell — or run things as `nix develop -c <command>`. A quick self-check in any shell:
+nested shell — on that Mac it gave the correct environment where the interactive shell did
+not — or run things as `nix develop -c <command>`. direnv applies the change at the *next*
+prompt: a check typed together with `direnv allow` still sees the old `PATH`. A quick
+self-check in any shell:
 `command -v ruff` must print a `/nix/store/…` path.
