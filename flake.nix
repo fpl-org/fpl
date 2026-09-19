@@ -20,6 +20,7 @@
 
       layers = pkgs: {
         github = pkgs.gh;
+        gitlab = pkgs.glab;
       };
     in
     {

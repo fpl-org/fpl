@@ -58,11 +58,13 @@ pin, that goes on top of the default shell when a checkout asks for it.
 | Layer | Tool |
 | --- | --- |
 | `github` | `gh` |
+| `gitlab` | `glab` |
 
 With direnv, name the layers in `.fpl-shell`, one per line; `#` starts a comment:
 
 ```
 echo github > .fpl-shell        # picked up at the next prompt
+echo gitlab >> .fpl-shell       # both
 rm .fpl-shell                   # back to no forge tooling
 ```
 
@@ -70,8 +72,7 @@ Without direnv:
 
 ```
 nix develop .#github -c gh pr create …           # the default shell plus one layer
-nix develop -c nix shell .#github -c gh …        # the general form; `nix shell` takes any
-                                                 # number of layers
+nix develop -c nix shell .#github .#gitlab       # the general form: any number of layers
 ```
 
 Layers, not alternative shells, because forges add up: a checkout that pushes to two of them
@@ -123,6 +124,8 @@ Update deliberately, as its own commit: `nix flake update`, then `make check` in
   built. Its predecessor, a whole `github` shell chosen by one name in `.fpl-shell`, was
   built and switched on the maintainer's `aarch64-darwin` Mac; the layered form has not been
   run there yet.
+- **The `gitlab` layer** — same machine, same checks: alone, and together with `github`, in
+  which case both `gh` and `glab` resolve from the Nix store. Evaluated, not built, elsewhere.
 - **"No `gh`" means none from this flake.** That Mac also has a `gh` in nix-darwin's system
   profile, so in the default shell `command -v gh` prints `/run/current-system/sw/bin/gh`. A
   dev shell prepends to `PATH`; it does not hide what the machine already has.
