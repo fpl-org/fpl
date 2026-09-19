@@ -94,6 +94,8 @@ is wrong, say so and let the maintainer decide — don't route around it.
   LLM `atomic-check` blocks commits that bundle unrelated changes.
 - Work in **stacked commits** — small, ordered, individually reviewable; **`scripts/restack`**
   rebases the stack when the base moves. See `docs/WORKFLOW.md`. Prefer `jj`? `docs/JJ.md`.
+- **Land through a GitHub PR, always** (rebase-merge, never a local merge into `main`). The
+  `Stack:` trailer on every commit keeps the grouping in the repo once the refs are deleted.
 - Authorship model (machine account + `claude[bot]` App): `docs/COMMITS.md`.
 
 ## Coding standards

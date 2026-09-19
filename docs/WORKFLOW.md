@@ -20,6 +20,12 @@ top of base) · **restack** (rebase the stack when base or a lower commit change
    it (or base for the bottom one).
 5. **Never rewrite a commit that others have based work on** without telling them — restacking
    rewrites SHAs.
+6. **Everything lands through a GitHub pull request** — harness changes included. No local
+   merge into `main`, no direct push to it. See [Land](#land--through-github-for-now).
+7. **The repository must stay self-sufficient.** The forge is where review happens, not where
+   the record lives: every commit carries its `Stack:` trailer (`docs/COMMITS.md`), and
+   anything a review changes about the *why* is folded back into the commit body before
+   landing. If GitHub vanished, `git log` alone should still explain every decision.
 
 ## Setup (once per clone/worktree)
 
@@ -65,11 +71,32 @@ To amend a commit that isn't on top:
 git rebase -i --update-refs origin/main    # mark the target 'edit', amend, continue
 ```
 
-## Land
+## Land — through GitHub, for now
 
-Merge the bottom PR first; GitHub retargets the next one to `main`. `scripts/restack` after
-each merge to drop the landed commit from your local stack. When the stack is empty, delete
-the `stack/…` refs.
+```
+git push -u origin stack/typed-let/1 stack/typed-let/2
+gh pr create --base main              --head stack/typed-let/1
+gh pr create --base stack/typed-let/1 --head stack/typed-let/2
+```
+
+- Merge the bottom PR first, with **Rebase and merge**, and delete its branch. GitHub then
+  retargets the next PR to `main`. Rebase-merge puts every commit on `main` individually,
+  message and trailers intact, with no merge commit — history stays linear and bisectable.
+- **Never squash a multi-commit PR.** Squashing collapses the atomic commits, and their
+  bodies and trailers, into one. (A one-commit PR is the only case where it is harmless.)
+- GitHub's rebase-merge always rewrites the SHAs and the committer. So `scripts/restack` after
+  each merge: the rebase recognises the landed commits as already applied and drops them from
+  your local stack.
+- When the stack is empty, delete the `stack/…` refs, locally and on `origin`. Nothing is lost:
+  the grouping lives in each commit's `Stack:` trailer, the discussion in the PRs.
+
+```
+git log --grep='^Stack: typed-let$'       # the whole stack, years later, forge or no forge
+```
+
+"For now" is deliberate. PRs are the review surface because they are the one at hand, not
+because the record belongs on a forge; rule 7 keeps the switch to an in-repo review system
+cheap.
 
 ## Why this and not a feature branch
 
