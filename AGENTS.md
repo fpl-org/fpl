@@ -23,6 +23,7 @@ do not invent language semantics.
   docs/               settled decisions and conventions (vendor-neutral)
   .claude/            Claude Code commands, subagents, skill, hooks
   scripts/            acommit, restack, setup, agent-identity, new-worktree, branch-lint
+  flake.nix, flake.lock   the dev shell: one pinned toolchain for everyone (docs/DEVSHELL.md)
   .githooks/          pre-commit, commit-msg, atomic-check, reference-transaction, pre-push
                       (all enabled by scripts/setup)
   worktrees/<name>/   one implementation attempt each; git-ignored; see docs/WORKTREES.md
@@ -110,6 +111,8 @@ performance treated as a feature. (Claude sessions: load the `software-style` an
 
 ## Picking up work
 
+0. Enter the dev shell: `nix develop`, or `direnv allow` once (`docs/DEVSHELL.md`). It carries
+   every tool below at a pinned version and wires the git hooks on first entry.
 1. Read this file, `docs/STACK.md`, `docs/CONVENTIONS.md`, `docs/COMMITS.md`, `docs/WORKFLOW.md`,
    `docs/BRANCHES.md`.
 2. Pick a worktree (`git worktree list`) or make one (`scripts/new-worktree <name>`; see
