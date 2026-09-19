@@ -114,8 +114,8 @@ performance treated as a feature. (Claude sessions: load the `software-style` an
 0. Enter the dev shell: `direnv allow` once, or `nix develop -c <command>` (`docs/DEVSHELL.md`;
    a bare interactive `nix develop` is unreliable on macOS). It carries every tool below at a
    pinned version and wires the git hooks on first entry. Check: `command -v ruff` prints a
-   `/nix/store/…` path. It has no forge client; `gh` is opt-in, per checkout:
-   `echo github > .fpl-shell`, or `nix develop .#github -c gh …`.
+   `/nix/store/…` path. It has no forge client; `gh` is an opt-in layer, per checkout:
+   `echo github >> .fpl-shell`, or `nix develop .#github -c gh …`.
 1. Read this file, `docs/STACK.md`, `docs/CONVENTIONS.md`, `docs/COMMITS.md`, `docs/WORKFLOW.md`,
    `docs/BRANCHES.md`.
 2. Pick a worktree (`git worktree list`) or make one (`scripts/new-worktree <name>`; see
