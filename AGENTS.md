@@ -22,7 +22,7 @@ do not invent language semantics.
   CLAUDE.md           Claude Code tooling notes only
   docs/               settled decisions and conventions (vendor-neutral)
   .claude/            Claude Code commands, subagents, skill, hooks
-  scripts/            acommit, restack, setup, agent-identity, new-worktree (any agent/human)
+  scripts/            acommit, restack, setup, agent-identity, new-worktree, branch-lint
   .githooks/          pre-commit, commit-msg, atomic-check (enabled by scripts/setup)
   worktrees/<name>/   one implementation attempt each; git-ignored; see docs/WORKTREES.md
 ```
@@ -108,7 +108,8 @@ performance treated as a feature. (Claude sessions: load the `software-style` an
 
 ## Picking up work
 
-1. Read this file, `docs/STACK.md`, `docs/CONVENTIONS.md`, `docs/COMMITS.md`, `docs/WORKFLOW.md`.
+1. Read this file, `docs/STACK.md`, `docs/CONVENTIONS.md`, `docs/COMMITS.md`, `docs/WORKFLOW.md`,
+   `docs/BRANCHES.md`.
 2. Pick a worktree (`git worktree list`) or make one (`scripts/new-worktree <name>`; see
    `docs/WORKTREES.md`).
 3. In it, find a feature whose `make check` is red — or scaffold one and stop for the

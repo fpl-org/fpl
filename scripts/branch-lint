@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+#
+# scripts/branch-lint — the branch-name grammar, as an executable.
+#
+# docs/BRANCHES.md is the prose; this file is the single parser every gate uses
+# (reference-transaction, pre-push, commit-msg, acommit, CI), so the grammar is
+# written down exactly once:
+#
+#   branch  = "main" / work / agent / vendor / legacy
+#   work    = "stack/" name [ "/" part ]         ; one PR, or tip + boundary refs
+#           / "attempt/" name                    ; an implementation worktree
+#   agent   = "agent/" id "/" work               ; agent work, full hierarchy
+#   vendor  = id "/" slug                        ; escape hatch: a tool that can
+#                                                ; only emit <its-name>/<flat-slug>
+#   id      = "claude" / "codex" / "copilot" / "cursor" / "jules" / "ai"
+#   name    = lower *( lower / "." / "_" / "-" ) ; lower = a-z / 0-9
+#   part    = "tip" / 1*DIGIT [ "-" name ]       ; order, optional label: 03-api
+#   slug    = 1*( ALPHA / DIGIT / "." / "_" / "-" )   ; whatever the tool makes up
+#   legacy  = "fpl_a"                            ; predates the grammar
+#
+# `agent` and `vendor` cannot collide: a vendor branch has exactly one slash and
+# starts with an id; an agent branch starts with the literal "agent/". An agent
+# that can choose its branch name MUST use the agent form; the vendor form exists
+# only because some tools hard-code their prefix (docs/BRANCHES.md lists which).
+#
+# Usage:
+#   branch-lint <name>...        exit 0 if all conform, else 1 with a reason each
+#   branch-lint --parse <name>   print kind= agent= stack= part= (one per line);
+#                                exit 1 if the name does not conform
+#   branch-lint --self-test      run the built-in table
+#
+# Names are judged on top of git's own rules (`git check-ref-format --branch`).
+
+set -euo pipefail
+
+ids='claude|codex|copilot|cursor|jules|ai'
+name='[a-z0-9][a-z0-9._-]*'
+part="(tip|[0-9]+(-${name})?)"
+work="(stack/(${name})(/${part})?|attempt/(${name}))"
+
+# parse NAME -> sets kind agent stack part; returns 1 when NAME does not conform.
+parse() {
+	local b="$1" rest
+	kind=""; agent=""; stack=""; part_v=""
+	case "$b" in
+	main)  kind=trunk;  return 0 ;;
+	fpl_a) kind=legacy; return 0 ;;
+	esac
+	rest="$b"
+	if [[ "$b" =~ ^agent/(${ids})/(.+)$ ]]; then
+		agent="${BASH_REMATCH[1]}"; rest="${BASH_REMATCH[2]}"
+	elif [[ "$b" =~ ^(${ids})/([A-Za-z0-9._-]+)$ ]]; then
+		kind=vendor; agent="${BASH_REMATCH[1]}"; return 0
+	fi
+	if [[ "$rest" =~ ^stack/(${name})(/${part})?$ ]]; then
+		kind=stack; stack="${BASH_REMATCH[1]}"; part_v="${BASH_REMATCH[3]:-}"
+	elif [[ "$rest" =~ ^attempt/(${name})$ ]]; then
+		kind=attempt
+	else
+		return 1
+	fi
+	[ -n "$agent" ] && kind="agent-$kind"
+	return 0
+}
+
+# why NAME -> one line explaining the rejection, as specific as we can be.
+why() {
+	local b="$1"
+	if ! git check-ref-format --branch "$b" >/dev/null 2>&1; then
+		echo "git itself rejects this name (git check-ref-format)"; return
+	fi
+	case "$b" in
+	agent/*/*)
+		if [[ ! "$b" =~ ^agent/(${ids})/ ]]; then
+			echo "unknown agent id; known: ${ids//|/ }"
+		else
+			echo "after agent/<id>/ expected stack/<name>[/<part>] or attempt/<name>"
+		fi ;;
+	agent/*) echo "expected agent/<id>/stack/<name>[/<part>] or agent/<id>/attempt/<name>" ;;
+	stack/*/*/*|attempt/*/*) echo "too many path components" ;;
+	stack/*/*) echo "part must be 'tip' or a number with an optional label (3, 03-api)" ;;
+	stack/*|attempt/*) echo "name must match [a-z0-9][a-z0-9._-]*" ;;
+	*/*/*)
+		if [[ "$b" =~ ^(${ids})/ ]]; then
+			echo "the vendor escape hatch is flat (<id>/<slug>); use agent/${b%%/*}/... for hierarchy"
+		else
+			echo "unknown top-level namespace '${b%%/*}'"
+		fi ;;
+	*/*) echo "unknown top-level namespace '${b%%/*}'; expected stack/ attempt/ agent/ or a vendor id" ;;
+	*) echo "bare names are not allowed; expected stack/<name>, attempt/<name>, agent/<id>/..." ;;
+	esac
+}
+
+self_test() {
+	local fail=0 b
+	local good=(
+		main fpl_a
+		stack/typed-let stack/typed-let/tip stack/typed-let/1 stack/typed-let/03-api
+		stack/v1.2_x attempt/b
+		agent/claude/stack/typed-let agent/claude/stack/typed-let/tip
+		agent/codex/stack/x/12-parser agent/claude/attempt/b agent/ai/stack/x
+		claude/issue-12-20260919-1234 copilot/fix-login claude/Fix_Auth-01NAB2cDE
+	)
+	local bad=(
+		master develop feature/x fix-typo Stack/x stack/ stack/X stack/-x
+		stack/x/ stack/x/head stack/x/1/2 stack/x/tip/1 stack/x/03_api
+		attempt/b/1 agent agent/claude agent/claude/x agent/gpt/stack/x
+		agent/claude/claude/x agent/claude/stack claude/stack/x/tip
+		claude/ gh/psjg/1/head 'stack/x y' stack/x..y stack/x.lock
+	)
+	for b in "${good[@]}"; do
+		parse "$b" && git check-ref-format --branch "$b" >/dev/null 2>&1 \
+			|| { echo "self-test: should ACCEPT '$b'" >&2; fail=1; }
+	done
+	for b in "${bad[@]}"; do
+		if parse "$b" && git check-ref-format --branch "$b" >/dev/null 2>&1; then
+			echo "self-test: should REJECT '$b'" >&2; fail=1
+		fi
+	done
+	parse agent/claude/stack/typed-let/03-api
+	[ "$kind/$agent/$stack/$part_v" = "agent-stack/claude/typed-let/03-api" ] \
+		|| { echo "self-test: parse fields wrong: $kind/$agent/$stack/$part_v" >&2; fail=1; }
+	parse stack/solo
+	[ "$kind/$agent/$stack/$part_v" = "stack//solo/" ] \
+		|| { echo "self-test: parse fields wrong: $kind/$agent/$stack/$part_v" >&2; fail=1; }
+	[ "$fail" -eq 0 ] && echo "branch-lint: self-test ok (${#good[@]} accept, ${#bad[@]} reject)"
+	return "$fail"
+}
+
+case "${1:-}" in
+--self-test) self_test ;;
+--parse)
+	b="${2:?usage: branch-lint --parse <name>}"
+	if parse "$b" && git check-ref-format --branch "$b" >/dev/null 2>&1; then
+		printf 'kind=%s\nagent=%s\nstack=%s\npart=%s\n' "$kind" "$agent" "$stack" "$part_v"
+	else
+		echo "branch-lint: '$b': $(why "$b")" >&2; exit 1
+	fi ;;
+""|-h|--help) sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+*)
+	rc=0
+	for b in "$@"; do
+		if ! { parse "$b" && git check-ref-format --branch "$b" >/dev/null 2>&1; }; then
+			echo "branch-lint: '$b': $(why "$b")" >&2
+			echo "             grammar: docs/BRANCHES.md" >&2
+			rc=1
+		fi
+	done
+	exit "$rc" ;;
+esac
