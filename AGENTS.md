@@ -14,6 +14,8 @@ The language *vision* is deliberately unwritten. It gets drawn out in a dedicate
 (`docs/DESIGN.md`, populated by the `design-fpl` process). Until `DESIGN.md` has real content,
 do not invent language semantics.
 
+Keep talk about the vision sober, and the harness small: `docs/notes/2026-09-19-sober.md`.
+
 ## Repository layout
 
 ```
