@@ -4,6 +4,20 @@ Direction only. Scope and ordering shift as `docs/DESIGN.md` fills in. Each mile
 a stack of small commits (`docs/WORKFLOW.md`) inside a worktree and is "done" only when
 `make check` is green (`docs/CONVENTIONS.md`).
 
+## Before milestone 0
+
+The table below starts at a worktree skeleton, but three phases come first and none of them is
+language work. They are listed so the roadmap does not read as though the lexer begins tomorrow.
+
+1. **The version control harness.** `scripts/`, `.githooks/`, `docs/WORKFLOW.md` and the task
+   graph of `docs/TASKS.md`. Largely built; the store exists and holds nothing yet.
+2. **The noslop harness.** Not specified here yet.
+3. **Prototyping**, which is where milestone 0 begins.
+
+`docs/notes/2026-09-19-sober.md` applies to both harness phases: a harness change earns its
+place by making a reviewed, landed change cheaper, and there are no language changes yet for
+either of them to make cheaper. That is a thing to watch, not a rule against them.
+
 | # | Milestone | Done when |
 | --- | --- | --- |
 | 0 | **Worktree skeleton** — `pyproject.toml`, `Makefile` (`make check` = ruff + pyright + pytest), `fpl/` module stubs, `features/_template/`, empty conformance runner | `make check` runs and passes with zero features |
