@@ -43,6 +43,60 @@ about the parts a live environment needs. An editor, a shell, a window onto the 
 system — those are what shaped Smalltalk, and they ask the questions this project is
 eventually about.
 
+## And if there is no outside project at all
+
+The maximal position is to build all of it: language, compiler, environment, tools, the
+version control underneath — a refusal of what is not invented here, applied to itself. That
+is not a new idea and it is not obviously a mistake. Oberon did it. Forth did it, often down
+to the metal. Plan 9 did it. Smalltalk and the Lisp machines did it. TempleOS did it alone.
+
+What the survivors have in common is that they bought totality with one unifying mechanism
+and a great deal of cutting. Wirth's rule for Oberon was that the whole system had to be
+comprehensible by one person, and everything that did not fit was removed. Plan 9 made
+everything a file. Smalltalk sent messages and did nothing else. Forth's answer was to make
+the language almost nothing at all. What died are the projects that wanted totality *and*
+richness. The hazard is not the scale; it is the number of distinct mechanisms.
+
+The second cost is the one this note began with. Build everything, and there is no mediating
+project outside the language: the system mediates itself. That is the Haskell situation
+carried to its limit — a closed loop which can be perfectly consistent with its own demands
+while saying nothing about whether it is good for anything else. TempleOS is the monument to
+that, and it is a monument rather than a tool for exactly this reason.
+
+The move the tradition found against it is small: keep one user outside the loop, using the
+thing for something the system itself does not need. Unix had real users. Smalltalk had
+children and a research group who wanted things the implementors did not. One is enough.
+
+## Method, and one principle with a precedent
+
+The intended method is conceptual plundering in the manner of Deleuze and Guattari:
+take the tradition apart, recombine it, put the pieces down somewhere they did not come from,
+and then see what actually works together and what only looked like it would. Hauntology is
+the register — the material is a history of computing that did not happen, handled as
+something to work with rather than to restore.
+
+The working principle is *sustained velocity*: the project has to accelerate itself, by
+bootstrapping and dogfooding, so that the thing being built keeps making the building
+cheaper.
+
+That principle has a name and a precedent inside the very tradition being invoked. Engelbart
+called it bootstrapping and gave it three levels: A is the work itself, B is improving how
+the work is done, and C is improving how the improving is done. Running all three at once is
+the method, and it is how his lab built NLS and the mouse — with the tools they were building,
+while they were building them. The aim here is the same aim: raise what one ordinary person
+can do.
+
+## The tension this leaves
+
+Those two conclusions pull against each other, and both are in the plan.
+
+Sustained velocity says to spend effort on the system making itself better at making itself.
+Keeping a user outside the loop says that effort spent inside the loop tells you nothing about
+whether any of it is worth having. Every hour that goes into the bootstrap is an hour not
+spent on the one outsider who would answer that.
+
+Neither should quietly win by default. Writing both down is how that gets noticed.
+
 ## What this does not license
 
 Nothing yet. `docs/DESIGN.md` has no content and there is no grammar, and a mediating project
