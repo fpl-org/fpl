@@ -203,10 +203,14 @@ It pushes to the `rad` remote and so needs `rad` (`scripts/layer on radicle`) an
 the agent. `--self-test` runs it in a throwaway Radicle home without the network.
 
 ```
-scripts/review --serve       the open patches, in the browser
+scripts/review --serve       import the open pull requests, then show them in the browser
 ```
 
-reads the patches and nothing else. The first page lists the open pull requests by what they
+stops the page this clone is already serving, if there is one, imports every open pull
+request (`scripts/import-review --open`), and serves the patches on 127.0.0.1. The page
+reads the patches and nothing else. Its address, token included, is also written to
+`.git/review-serve.pid`, so it can be opened in another browser than the default. The
+first page lists the open pull requests by what they
 need from you (your review, changes, merging), a stacked one indented under the one it sits
 on. A pull request opens laid out the way stacked-review tools lay it out: the stack on the
 left with main at the bottom, the changed files in the middle with every file whole behind
@@ -225,9 +229,9 @@ Open pull requests form one queue, first in, first out: each is based on the one
 before it, and only the head is based on main. "Read the queue" shows the whole queue on
 one page, head first: you read a change, approve its hunks, merge it at its end, and keep
 scrolling into the next. Merging the head moves the rest of the queue up onto the new main,
-and an approval stays with a hunk as long as the hunk itself does not change. Only what is in Radicle shows: `scripts/import-review
---open` first, to bring the pull requests in. What you write there goes into the
-patch under your key, the way the Radicle CLI writes it: a line comment into your review of
+and an approval stays with a hunk as long as the hunk itself does not change. Only what is
+in Radicle shows; `scripts/review-serve` without `--fresh` serves it without importing
+first. What you write there goes into the patch under your key, the way the Radicle CLI writes it: a line comment into your review of
 the revision, a reply into the thread it answers, accept or reject as your review's verdict.
 Comments in a review can be resolved; imported ones cannot, because Radicle keeps them on
 the revision, where there is no resolve, so they are answered instead.

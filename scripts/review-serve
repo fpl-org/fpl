@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """scripts/review-serve — review Radicle patches in the browser, with the whole file in view.
 
-    scripts/review --serve [--port <n>]     the usual way in
-    scripts/review-serve [--port <n>] [--no-open]
+    scripts/review --serve [--port <n>]     the usual way in: stop a running page, import
+                                            every open pull request, serve (= --fresh)
+    scripts/review-serve [--fresh] [--port <n>] [--no-open]
     scripts/review-serve --self-test        run against a throwaway Radicle home
 
 Serves a page on 127.0.0.1 that reads the repository's Radicle patches and nothing else,
@@ -41,10 +42,12 @@ import json
 import os
 import re
 import secrets
+import signal
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.parse
 import webbrowser
 
@@ -1162,14 +1165,51 @@ def credential_args():
     return ["-c", "credential.helper=", "-c", f"credential.helper=store --file={cred}"]
 
 
-def import_pr(num):
-    """Run the sibling import-review for one pull request. Its only push goes to rad, where
-    the branch-name grammar of the pre-push hook does not apply, so the hook is told to warn."""
+def import_pr(what):
+    """Run the sibling import-review for one pull request (or "--open" for all). Its only push
+    goes to rad, where the branch-name grammar of the pre-push hook does not apply, so the
+    hook is told to warn."""
     importer = os.path.join(os.path.dirname(os.path.abspath(__file__)), "import-review")
     if not os.path.exists(importer):
         return subprocess.CompletedProcess([importer], 1, "", "import-review is not next to review-serve")
-    return run(sys.executable, importer, str(num), ok=False,
+    return run(sys.executable, importer, str(what), ok=False,
                env=dict(os.environ, FPL_BRANCH_GATE="warn"))
+
+
+# One page per clone. The running one leaves its pid in the git directory, so the next
+# start can stop it instead of opening a second page on another port.
+
+def pidfile():
+    gitdir = run("git", "rev-parse", "--absolute-git-dir", ok=False).stdout.strip()
+    return os.path.join(gitdir, "review-serve.pid") if gitdir else None
+
+
+def stop_running(announce=print):
+    """Stop the page this clone is already serving, if there is one. The pid is only trusted
+    if that process is still a review-serve; a stale file is removed."""
+    path = pidfile()
+    if not path or not os.path.exists(path):
+        return False
+    try:
+        with open(path) as f:
+            pid = int(f.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        pid = 0
+    command = run("ps", "-p", str(pid), "-o", "command=", ok=False).stdout if pid > 0 else ""
+    stopped = False
+    if "review-serve" in command and pid != os.getpid():
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(50):
+            if run("ps", "-p", str(pid), "-o", "pid=", ok=False).returncode != 0:
+                break
+            time.sleep(0.1)
+        announce(f"stopped the page that was running (pid {pid})")
+        stopped = True
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    return stopped
 
 
 def tail(done):
@@ -1454,6 +1494,17 @@ def serve(port, open_browser, announce=print):
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{server.server_address[1]}/?t={token}"
+    mine = pidfile()
+    if mine:
+        with open(mine, "w") as f:
+            # The address goes in too, with its token, so whoever may read this clone's git
+            # directory (the one who started it, or an agent working for them) can open it.
+            f.write(f"{os.getpid()} {server.server_address[1]}\n{url}\n")
+
+    def stop(*_):
+        raise KeyboardInterrupt
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGTERM, stop)
     announce(url)
     if open_browser:
         threading.Timer(0.3, lambda: webbrowser.open(url)).start()
@@ -1461,10 +1512,18 @@ def serve(port, open_browser, announce=print):
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        server.server_close()
+        try:
+            with open(mine) as f:
+                if f.read().split()[0] == str(os.getpid()):
+                    os.remove(mine)
+        except (OSError, IndexError, TypeError):
+            pass
 
 
 def main(argv):
-    port, open_browser = int(os.environ.get("FPL_REVIEW_PORT", "0")), True
+    port, open_browser, fresh = int(os.environ.get("FPL_REVIEW_PORT", "0")), True, False
     args = list(argv)
     while args:
         a = args.pop(0)
@@ -1472,12 +1531,24 @@ def main(argv):
             port = int(args.pop(0))
         elif a == "--no-open":
             open_browser = False
+        elif a == "--fresh":
+            fresh = True
         elif a in ("-h", "--help"):
             print(__doc__.split("\n\n")[1])
             return 0
         else:
-            print("usage: scripts/review-serve [--port <n>] [--no-open]", file=sys.stderr)
+            print("usage: scripts/review-serve [--fresh] [--port <n>] [--no-open]", file=sys.stderr)
             return 2
+    say = lambda line: print(line, flush=True)
+    stop_running(say)
+    if fresh:
+        say("importing every open pull request …")
+        fetched = import_pr("--open")
+        out = (fetched.stdout + fetched.stderr).strip()
+        if out:
+            say(out)
+        if fetched.returncode != 0:
+            say("review-serve: the import failed; serving what Radicle already has")
     try:
         serve(port, open_browser, announce=lambda u: print(u, flush=True))
     except Refused as error:
