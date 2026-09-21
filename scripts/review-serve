@@ -496,12 +496,28 @@ padding:8px 12px;border-radius:8px;font-size:13px;display:flex;gap:12px;align-it
 #cur-meter[hidden]{display:none}
 .stack .trunkline .node{display:inline-block;flex:none;margin:0}
 .stack .ti.on .tc a{background:none;font-weight:400}.stack .ti .tc a.on{background:var(--acc-soft)}
+/* one pull request at a time: each is its own scrolling document */
+#surface{position:relative;overflow:hidden;padding:0}
+#surface>.sec{display:none}
+#surface>.sec.current{display:block;position:absolute;inset:0;overflow:auto;overscroll-behavior-y:contain;max-width:none;margin:0;
+padding:16px max(24px,calc((100% - 1600px) / 2)) 72px}
+#surface>.gate{display:none}#surface>.sec~p.end{display:none}
+#surface>.note{position:absolute;top:8px;left:50%;transform:translateX(-50%);z-index:6;width:min(900px,92%);box-shadow:0 8px 24px rgba(0,0,0,.18)}
+.edge{position:absolute;left:50%;transform:translateX(-50%);width:min(720px,80%);height:44px;border:1px dashed var(--line);border-radius:10px;
+background:var(--surface);display:flex;align-items:center;justify-content:center;font-size:13px;color:var(--mut);overflow:hidden;
+z-index:5;opacity:0;pointer-events:none;transition:opacity .15s}
+.edge.down{bottom:12px}.edge.up{top:12px}.edge.show{opacity:1}
+.edge i{position:absolute;inset:0 auto 0 0;width:calc(var(--p,0) * 100%);background:var(--acc-soft)}
+.edge.armed i{background:var(--ok-soft)}.edge span{position:relative;padding:0 16px;text-align:center}
+.sec.enter-down{animation:enter-down .22s ease-out}.sec.enter-up{animation:enter-up .22s ease-out}
+@keyframes enter-down{from{transform:translateY(40px);opacity:.4}}@keyframes enter-up{from{transform:translateY(-40px);opacity:.4}}
 @media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
 """
 
 SCRIPT = r"""
 const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
-const T=document.body.dataset.t, S=$('#surface');
+const T=document.body.dataset.t, BOX=$('#surface');
+let S=BOX;  // what scrolls: the pull request in front of you
 const calm=matchMedia('(prefers-reduced-motion: reduce)').matches;
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 function remember(k,v){try{localStorage.setItem('review.'+k,v)}catch(e){}}
@@ -524,40 +540,45 @@ function jump(el,smooth=true){if(el)go(posOf(el)-12,smooth)}
 function center(el,smooth=true){if(!el)return;const h=el.getBoundingClientRect().height,v=S.clientHeight;
   go(posOf(el)-Math.max(12,(v-Math.min(h,v*.8))/2),smooth)}
 
-/* only the pull request you are at and its neighbours are in the page; the rest is a title */
-const PLACE='<p class="mut placeholder">Loads when you get here; a click on the title loads it now.</p>';
+/* one pull request at a time, each its own scrolling document; its neighbours are loaded
+   so the step to them is quick, the rest are titles */
+const PLACE='<p class="mut placeholder">Loading…</p>';
 const loaded=s=>s&&s.dataset.loaded==='1';
-function steady(change,s){const a=(shown&&shown!==s&&shown.isConnected)?shown:null,before=a?posOf(a)-S.scrollTop:0;change();
-  if(a){passUntil=Date.now()+250;S.scrollTop=posOf(a)-before}}
 const pending=new Map();
 function load(s){if(!s)return Promise.resolve();if(loaded(s))return Promise.resolve();if(pending.has(s))return pending.get(s);
   const p=fetch('/section/'+s.dataset.oid+'?t='+T).then(async r=>{const html=await r.text();
-    steady(()=>{$('.sbody',s).innerHTML=r.ok?html:'<p class="err">'+html+'</p>';s.dataset.loaded='1'},s);initSec(s)})
+    $('.sbody',s).innerHTML=r.ok?html:'<p class="err">'+html+'</p>';s.dataset.loaded='1';initSec(s)})
     .finally(()=>pending.delete(s));pending.set(s,p);return p}
-function unload(s){if(!loaded(s)||s.contains(cur))return;steady(()=>{$('.sbody',s).innerHTML=PLACE;s.dataset.loaded=''},s)}
-function around(s){const all=secs(),i=all.indexOf(s);if(i<0)return;
-  const want=[s,all[i+1],all[i-1]&&!all[i-1].classList.contains('merged')?all[i-1]:null].filter(Boolean);
-  const keep=new Set([...want,all[i-1]].filter(Boolean));
-  all.forEach(x=>{if(!keep.has(x))unload(x)});return Promise.all(want.map(load))}
+function unload(s){if(!loaded(s)||s===S)return;$('.sbody',s).innerHTML=PLACE;s.dataset.loaded=''}
+function around(s){const all=secs(),i=all.indexOf(s);if(i<0)return Promise.resolve();
+  const keep=new Set([s,all[i+1],all[i-1]].filter(Boolean));
+  all.forEach(x=>{if(!keep.has(x))unload(x)});return Promise.all([...keep].map(load))}
 function secFor(id){return secs().find(s=>id===s.id||id.startsWith(s.id+'-'))}
 function initSec(s){$$('.file',s).forEach(f=>{if($('[data-viewed]',f)&&recall(viewKey(f))==='1')setViewed(f,true,false)})}
-document.addEventListener('click',e=>{const h=e.target.closest('.sec .shead h2');if(!h)return;const s=secOf(h);
-  if(!loaded(s)){load(s).then(()=>jump(s))}});
 
 /* the tree, and which pull request you are in */
-function inView(){const y=S.scrollTop+S.clientHeight*.3;let c=null;for(const s of secs()){if(posOf(s)<=y)c=s}return c||secs()[0]}
+function inView(){return S===BOX?null:S}
 let shown=null;
 function meter(sec){const t=+sec.dataset.total,d=+sec.dataset.done,r=+sec.dataset.refused,m=$('#cur-meter');
   $('#cur-title').textContent=(sec.dataset.num?'#'+sec.dataset.num+' · ':'')+sec.dataset.title;
   if(sec.classList.contains('merged')){m.hidden=true;return}
   m.hidden=false;$('b',m).style.width=(t?100*d/t:100)+'%';$('span',m).textContent=d+'/'+t+' hunks'+(r?', '+r+' not':'')}
-function spy(){const s=inView();if(!s||s===shown)return;shown=s;around(s);
+// Put a pull request in front of you: at its top, its end, or at an element in it.
+async function show(s,where='top'){if(!s)return;const from=shown,all=secs(),dir=from?Math.sign(all.indexOf(s)-all.indexOf(from)):0;
+  await load(s);
+  if(from&&from!==s)from.classList.remove('current','enter-down','enter-up');
+  s.classList.remove('enter-down','enter-up');s.classList.add('current');S=s;shown=s;
+  if(!calm&&dir){void s.offsetWidth;s.classList.add(dir>0?'enter-down':'enter-up')}
+  if(where==='top')S.scrollTop=0;else if(where==='bottom')S.scrollTop=S.scrollHeight;else if(where)center(where,false);
+  pull={dir:0,p:0,at:0,hold:false};edges();
   $$('.ti').forEach(t=>t.classList.toggle('on',t.dataset.for===s.id));
   const on=$('.ti.on');if(on){const st=$('.shell>.stack'),r=on.getBoundingClientRect(),q=st.getBoundingClientRect();
     if(r.top<q.top||r.bottom>q.bottom)st.scrollTop+=r.top-q.top-q.height/3}
-  $$('.traypr').forEach(t=>t.hidden=t.dataset.for!==s.id);tab(recall('tab')||'timeline');meter(s)}
-let spyQueued=false;
-S.addEventListener('scroll',()=>{if(!spyQueued){spyQueued=true;requestAnimationFrame(()=>{spyQueued=false;spy()})}});
+  $$('.traypr').forEach(t=>t.hidden=t.dataset.for!==s.id);tab(recall('tab')||'timeline');meter(s);
+  history.replaceState(null,'','#'+s.id);
+  if(!cur||secOf(cur)!==s){$$('tr.hunkbar.current').forEach(x=>x.classList.remove('current'));cur=null;
+    const b=$$('tr.hunkbar',s).find(x=>!stateOf(x));if(b){b.classList.add('current');cur=b}}
+  around(s)}
 function tab(name){$$('.tray nav a').forEach(a=>a.classList.toggle('on',a.dataset.tab===name));
   $$('.traypr:not([hidden]) .pane').forEach(p=>p.hidden=p.dataset.tab!==name);remember('tab',name)}
 $$('.tray nav a').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();tab(a.dataset.tab)}));
@@ -566,17 +587,17 @@ document.addEventListener('click',e=>{
   const d=e.target.closest('.disc');if(d){const li=d.closest('.ti');disclose(li,d.getAttribute('aria-expanded')!=='true');return}
   const all=e.target.closest('[data-expand-all]');if(all){const open=all.textContent.startsWith('Expand');
     $$('.ti').forEach(li=>disclose(li,open));all.textContent=open?'Collapse all':'Expand all';return}
-  const j=e.target.closest('[data-jump]');if(j){e.preventDefault();const s=$('#'+j.dataset.jump);load(s).then(()=>{whole(s);jump(s)});return}
+  const j=e.target.closest('[data-jump]');if(j){e.preventDefault();const s=$('#'+j.dataset.jump);show(s).then(()=>whole(s));return}
   const c=e.target.closest('[data-commit]');if(c){e.preventDefault();showCommit(c);return}
-  const w=e.target.closest('[data-whole]');if(w){const s=secOf(w);whole(s);jump(s);return}
+  const w=e.target.closest('[data-whole]');if(w){const s=secOf(w);whole(s);S.scrollTop=0;return}
   const g=e.target.closest('[data-goto]');if(g){e.preventDefault();const tp=g.closest('.traypr'),s=tp?$('#'+tp.dataset.for):secFor(g.dataset.goto);
-    load(s).then(()=>{const t=document.getElementById(g.dataset.goto);if(!t)return;whole(secOf(t));center(t);
+    show(s,null).then(()=>{const t=document.getElementById(g.dataset.goto);if(!t)return;whole(secOf(t));center(t);
       t.animate?.([{outline:'2px solid var(--acc)'},{outline:'2px solid transparent'}],{duration:1400})});return}
 });
-async function showCommit(a){const s=$('#'+a.dataset.sec);if(!s)return;await load(s);
+async function showCommit(a){const s=$('#'+a.dataset.sec);if(!s)return;await show(s);
   $$('.tc a.on').forEach(x=>x.classList.remove('on'));a.classList.add('on');
   const r=await fetch('/commit/'+s.dataset.oid+'/'+a.dataset.commit+'?t='+T),html=await r.text();
-  const cv=$('.cview',s);cv.innerHTML=r.ok?html:'<p class="err">'+html+'</p>';cv.hidden=false;$('.files',s).hidden=true;jump(s)}
+  const cv=$('.cview',s);cv.innerHTML=r.ok?html:'<p class="err">'+html+'</p>';cv.hidden=false;$('.files',s).hidden=true;S.scrollTop=0}
 function whole(s){if(!s)return;const cv=$('.cview',s);if(cv&&!cv.hidden){cv.hidden=true;cv.innerHTML='';$('.files',s).hidden=false;
   $$('.tc a.on').forEach(x=>x.classList.remove('on'))}}
 
@@ -625,14 +646,17 @@ function commentOn(bar){const d=bar.dataset,fm=form(bar,bar.closest('table'));fm
   fm.querySelector('.what').textContent=d.path+' '+(d.side==='old'?'L':'R')+d.start+(+d.end-1>+d.start?'–'+(d.end-1):'');fm.body.focus()}
 
 /* marks */
-const bars=()=>$$('tr.hunkbar').filter(b=>!secOf(b).classList.contains('merged')&&!b.closest('.files').hidden&&!b.closest('.file.is-viewed'));
+const bars=()=>$$('tr.hunkbar',S).filter(b=>!secOf(b).classList.contains('merged')&&!b.closest('.files').hidden&&!b.closest('.file.is-viewed'));
 const stateOf=b=>b.classList.contains('done')?'approve':b.classList.contains('refused')?'reject':null;
 let cur=null;
 function focusBar(b,smooth=true){if(!b)return;$$('tr.hunkbar.current').forEach(x=>x.classList.remove('current'));
   b.classList.add('current');cur=b;center(b.closest('tbody'),smooth)}
 function nextBar(){const all=bars();let i=all.indexOf(cur);
-  if(i<0||!visible(cur)){const y=S.scrollTop;i=all.findIndex(b=>posOf(b)>=y)-1}
-  focusBar(all.find((b,k)=>k>i&&!stateOf(b))||all[i+1])}
+  if(i<0||!visible(cur)){const y=S.scrollTop;i=all.findIndex(b=>posOf(b)>=y);i=(i<0?all.length:i)-1}
+  const b=all.find((b,k)=>k>i&&!stateOf(b))||all[i+1];
+  if(b)return focusBar(b);
+  // Past the last hunk: the merge box, and after it the next pull request by scrolling on.
+  const m=$('.mergebox',S);if(m&&!visible(m))return center(m);toast('End of this one: scroll on past the end for the next')}
 function prevBar(){const all=bars();let i=all.indexOf(cur);
   if(i<0||!visible(cur)){const y=S.scrollTop+S.clientHeight;i=all.findIndex(b=>posOf(b)>y);if(i<0)i=all.length}
   focusBar(all[Math.max(0,i-1)])}
@@ -699,7 +723,7 @@ function fly(bar,what,from){const tb=bar.closest('tbody'),dir=what==='approve'?1
   setTimeout(()=>{tb.style.transition='none';tb.style.transform='';tb.classList.remove('lean-yes','lean-no','armed');
     requestAnimationFrame(()=>{tb.style.transition='opacity .18s';tb.style.opacity=''});nextBar()},170)}
 let drag=null;
-S.addEventListener('pointerdown',e=>{if(e.button!==0)return;const tb=e.target.closest('tbody.hk');
+BOX.addEventListener('pointerdown',e=>{if(e.button!==0)return;const tb=e.target.closest('tbody.hk');
   if(!tb||secOf(tb).classList.contains('merged')||e.target.closest('button,a,textarea,input,form,td.n,td.g,.thread-box'))return;
   drag={tb,x:e.clientX,y:e.clientY,dx:0,on:false,id:e.pointerId}});
 window.addEventListener('pointermove',e=>{if(!drag||e.pointerId!==drag.id)return;const dx=e.clientX-drag.x,dy=e.clientY-drag.y;
@@ -709,47 +733,43 @@ window.addEventListener('pointermove',e=>{if(!drag||e.pointerId!==drag.id)return
 function endDrag(){if(!drag)return;const d=drag;drag=null;document.body.classList.remove('swiping');if(d.on)release(d.tb,d.dx)}
 window.addEventListener('pointerup',endDrag);window.addEventListener('pointercancel',endDrag);
 
-/* the gates: at the end of a pull request the page stops; scroll on and the gate fills, and
-   past the line you are in the next one. The same going back up. */
-const FULL=650;let pull={g:null,dir:0,p:0,at:0,hold:false},swipe={tb:null,dx:0,timer:0};
-function fill(g,dir,p){$$('.gate').forEach(x=>{if(x!==g){x.style.setProperty('--p',0);x.classList.remove('armed','up')}});if(!g)return;
-  g.style.setProperty('--p',Math.min(1,p/FULL));g.classList.toggle('armed',p>=FULL);g.classList.toggle('up',dir<0);
-  $('span',g).textContent=dir<0?g.dataset.up:g.dataset.down}
-// A gate only holds once it has really been in view for a moment: until then the height of
-// what is above it is the browser's estimate for the tables it has not drawn yet, and a
-// gate that looks near can be a long way off.
-const seen=new Map();
-const watch=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){if(!seen.has(e.target))seen.set(e.target,Date.now())}
-  else seen.delete(e.target)}),{root:S,rootMargin:'600px 0px 600px 0px'});
-$$('.gate').forEach(g=>watch.observe(g));
-const real=g=>seen.has(g)&&Date.now()-seen.get(g)>=60;
-function free(){if(pull.g){pull={g:null,dir:0,p:0,at:0,hold:false};fill(null)}return false}
-function wall(dy){if(Date.now()<passUntil||!dy)return false;const top=S.scrollTop,h=S.clientHeight,gs=$$('.gate');let g,limit;
-  if(dy>0){g=gs.find(x=>posOf(x)+x.offsetHeight>=top+h-1);if(!g||!real(g))return false;limit=posOf(g)+g.offsetHeight-h;
-    if(top+dy<=limit)return free();if(top<limit)S.scrollTop=limit
-  }else{g=gs.filter(x=>posOf(x)<=top+1).pop();if(!g||!real(g))return false;limit=posOf(g);
-    if(top+dy>=limit)return free();if(top>limit)S.scrollTop=limit}
-  // Arriving at the wall, the rest of that flick is absorbed: only a new push, after a
-  // pause, fills the gate. So momentum stops you at the end instead of carrying you over.
+/* the edges: the browser stops at the end of a pull request by itself, and the rubber band
+   there is the resistance. Pushing on past it fills the bar, and a full bar brings the next
+   one; the same at the top for the one before. Nothing here holds the scroll back, which
+   a page cannot do in the middle of a swipe (Chrome lets only the first wheel event of a
+   swipe be cancelled): it only counts what arrives at the edge. The rest of a flick that
+   runs into the edge is not counted; only a new push, after a pause. */
+const FULL=500;let pull={dir:0,p:0,at:0,hold:false},swipe={tb:null,dx:0,timer:0};
+const edge={down:document.createElement('div'),up:document.createElement('div')};
+for(const [k,el] of Object.entries(edge)){el.className='edge '+k;el.innerHTML='<i></i><span></span>';BOX.append(el)}
+const nbr=d=>{const all=secs(),i=all.indexOf(S);return i<0?null:all[i+d]||null};
+const label=s=>(s.dataset.num?'#'+s.dataset.num+' · ':'')+s.dataset.title+(s.classList.contains('merged')?' (merged)':'');
+function edges(){const dn=nbr(1),up=nbr(-1);
+  $('span',edge.down).textContent=dn?'Keep scrolling for '+label(dn):'End of the queue';
+  $('span',edge.up).textContent=up?'Pull back to '+label(up):'';
+  const atEnd=S!==BOX&&S.scrollTop+S.clientHeight>=S.scrollHeight-2,atTop=S!==BOX&&S.scrollTop<=1;
+  edge.down.classList.toggle('show',atEnd);edge.up.classList.toggle('show',atTop&&!!up);
+  for(const [k,el] of Object.entries(edge)){const on=pull.dir===(k==='down'?1:-1);
+    el.style.setProperty('--p',on?Math.min(1,pull.p/FULL):0);el.classList.toggle('armed',on&&pull.p>=FULL)}}
+BOX.addEventListener('scroll',()=>edges(),true);
+function push(dy){if(!dy||S===BOX)return;const dir=Math.sign(dy);
+  const atEnd=S.scrollTop+S.clientHeight>=S.scrollHeight-2,atTop=S.scrollTop<=1;
+  if(!(dir>0?atEnd&&nbr(1):atTop&&nbr(-1))){if(pull.dir){pull={dir:0,p:0,at:0,hold:false};edges()}return}
   const now=Date.now();
-  if(pull.g!==g||pull.dir!==Math.sign(dy)){pull={g,dir:Math.sign(dy),p:0,at:now,hold:true};fill(g,pull.dir,0);return true}
-  if(pull.hold){const gap=now-pull.at;pull.at=now;if(gap<180)return true;pull.hold=false}
-  pull.p+=Math.abs(dy);pull.at=now;fill(g,pull.dir,pull.p);
-  if(pull.p>=FULL){const d=pull.dir;pull={g:null,dir:0,p:0,at:0,hold:false};
-    setTimeout(()=>fill(null),300);
-    const to=d>0?$('#'+g.dataset.to):$('#'+g.dataset.back);
-    load(to).then(()=>{if(d>0)go(posOf(g)+g.offsetHeight);else go(Math.max(0,posOf(g)-S.clientHeight))})}
-  return true}
-(function decay(){if(pull.g&&!pull.hold&&Date.now()-pull.at>140){pull.p*=.82;if(pull.p<8){pull.p=0;fill(null);pull.g=null}else fill(pull.g,pull.dir,pull.p)}
+  if(pull.dir!==dir){pull={dir,p:0,at:now,hold:true};edges();return}
+  if(pull.hold){const gap=now-pull.at;pull.at=now;if(gap<180)return;pull.hold=false}
+  pull.p+=Math.abs(dy);pull.at=now;edges();
+  if(pull.p>=FULL){pull={dir:0,p:0,at:0,hold:false};show(nbr(dir),dir>0?'top':'bottom')}}
+(function decay(){if(pull.dir&&!pull.hold&&Date.now()-pull.at>160){pull.p*=.85;if(pull.p<6)pull={dir:0,p:0,at:0,hold:false};edges()}
   requestAnimationFrame(decay)})();
-S.addEventListener('wheel',e=>{
+BOX.addEventListener('wheel',e=>{
   if(Math.abs(e.deltaX)>Math.abs(e.deltaY)){const tb=e.target.closest('tbody.hk');if(!tb||secOf(tb).classList.contains('merged'))return;
-    e.preventDefault();if(swipe.tb!==tb)swipe={tb,dx:0,timer:0};swipe.dx-=e.deltaX;lean(tb,swipe.dx);clearTimeout(swipe.timer);
+    if(e.cancelable)e.preventDefault();if(swipe.tb!==tb)swipe={tb,dx:0,timer:0};swipe.dx-=e.deltaX;lean(tb,swipe.dx);clearTimeout(swipe.timer);
     swipe.timer=setTimeout(()=>{const {tb,dx}=swipe;swipe={tb:null,dx:0,timer:0};release(tb,dx)},160);return}
-  if(wall(e.deltaY))e.preventDefault()},{passive:false});
+  push(e.deltaY)},{passive:false});
 let touchY=null;
-S.addEventListener('touchstart',e=>{touchY=e.touches[0].clientY},{passive:true});
-S.addEventListener('touchmove',e=>{if(touchY===null)return;const y=e.touches[0].clientY,dy=touchY-y;touchY=y;if(wall(dy))e.preventDefault()},{passive:false});
+BOX.addEventListener('touchstart',e=>{touchY=e.touches[0].clientY},{passive:true});
+BOX.addEventListener('touchmove',e=>{if(touchY===null)return;const y=e.touches[0].clientY,dy=touchY-y;touchY=y;push(dy)},{passive:true});
 
 /* merging: purple while it runs, grey when done, then on to the next one */
 document.addEventListener('submit',async e=>{const f=e.target;if(!f.classList.contains('land'))return;e.preventDefault();
@@ -761,16 +781,21 @@ document.addEventListener('submit',async e=>{const f=e.target;if(!f.classList.co
   s.classList.remove('merging');s.classList.add('just');
   $('.mergebox',s).innerHTML='<h3 class="merged-mark">Merged</h3><div class="mut">'+(next?'On to '+(next.dataset.num?'#'+next.dataset.num:'the next one')+', which is now on the new main.':'The queue is empty.')+'</div>';
   const node=$('.ti[data-for="'+s.id+'"] .node');if(node)node.classList.add('merged');await sleep(calm?0:900);
-  if(next){jump(next);await sleep(calm?0:800)}
+  if(next){await show(next);await sleep(calm?0:500)}
   location.replace('/?t='+T+'&n='+Date.now()+(next?'#'+next.id:''))});
 
+/* keys. A mark goes on the hunk you can see: if the current one has scrolled away, the key
+   first brings you to the open hunk in view, and a second press marks it. */
+function judge(what){if(cur&&visible(cur))return fly(cur,what);
+  const b=bars().find(x=>visible(x)&&!stateOf(x))||bars().find(x=>visible(x));
+  if(b){focusBar(b);toast('This one? Press again to mark it')}else nextBar()}
 /* keys */
 document.addEventListener('keydown',e=>{if(e.target.closest('textarea,input,select')||e.metaKey||e.ctrlKey||e.altKey)return;const k=e.key;
   const act=f=>{e.preventDefault();f()};
   if(k==='ArrowDown'||k==='j'||k==='n')act(nextBar);
   else if(k==='ArrowUp'||k==='k'||k==='p')act(prevBar);
-  else if((k==='ArrowRight'||k==='a')&&cur)act(()=>fly(cur,'approve'));
-  else if((k==='ArrowLeft'||k==='x')&&cur)act(()=>fly(cur,'reject'));
+  else if(k==='ArrowRight'||k==='a')act(()=>judge('approve'));
+  else if(k==='ArrowLeft'||k==='x')act(()=>judge('reject'));
   else if(k==='c'&&cur)act(()=>commentOn(cur));
   else if(k==='u')act(undo);
   else if(k==='v')act(()=>{const f=(cur&&cur.closest('.file'))||$$('.file').find(x=>visible(x));if(f)toggleViewed(f)});
@@ -783,14 +808,11 @@ document.addEventListener('keydown',e=>{if(e.target.closest('textarea,input,sele
 });
 
 /* arriving: at the hunk or pull request in the address, else at the head of the queue */
-(async function(){const h=location.hash.slice(1),first=secs().find(s=>!s.classList.contains('merged'));
-  const at=(h&&secFor(h))||first;if(at){shown=at;await around(at)}
+(async function(){const h=location.hash.slice(1),first=secs().find(s=>!s.classList.contains('merged'))||secs().pop();
+  const at=(h&&secFor(h))||first;if(!at)return;
+  await show(at,'top');
   const t=h&&document.getElementById(h);
-  if(t&&t.matches('tr.hunkbar'))focusBar(t,false);
-  else if(t){if(t.matches('section.sec'))jump(t,false);else center(t,false)}
-  else if(first)jump(first,false);
-  if(!cur){const s=t?secOf(t):first;const b=s&&$$('tr.hunkbar',s).find(x=>!stateOf(x));if(b){b.classList.add('current');cur=b}}
-  shown=null;spy()})();
+  if(t&&t.matches('tr.hunkbar'))focusBar(t,false);else if(t&&!t.matches('section.sec'))center(t,false)})();
 """
 
 
