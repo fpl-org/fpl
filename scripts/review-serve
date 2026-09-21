@@ -459,6 +459,8 @@ display:flex;align-items:center;justify-content:center;color:var(--mut);font-siz
 .end{text-align:center}
 /* the gutter: unchanged stretches are hatched, and a click there folds one */
 table.d td.g{width:10px;min-width:10px;padding:0}
+.chunk{content-visibility:auto;contain-intrinsic-size:auto 4000px}.chunk table.d{table-layout:fixed}
+table.d col.cg{width:10px}table.d col.cn{width:58px}
 tr[data-run] td.g{background-image:repeating-linear-gradient(135deg,var(--hatch) 0 1.5px,transparent 1.5px 5px);cursor:pointer}
 tr[data-run] td.g:hover{background-color:var(--acc-soft)}
 tr.rs td.g{border-top:1px solid var(--line)}tr.re td.g{border-bottom:1px solid var(--line)}
@@ -569,12 +571,12 @@ document.addEventListener('click',e=>{const g=e.target.closest('tr[data-run] td.
 
 /* line comments: click a line number, shift-click to extend */
 document.addEventListener('click',e=>{
-  const n=e.target.closest('td.n');if(!n)return;const tr=n.closest('tr'),t=tr.closest('table'),side=n.dataset.side,line=+n.dataset.line;
+  const n=e.target.closest('td.n');if(!n)return;const tr=n.closest('tr'),t=tr.closest('table'),fl=tr.closest('.file'),side=n.dataset.side,line=+n.dataset.line;
   if(!line||!t.dataset.form)return;
-  window.pick=(e.shiftKey&&window.pick&&window.pick.t===t&&window.pick.side===side)?{...window.pick,end:line}:{t,side,start:line,end:line};
+  window.pick=(e.shiftKey&&window.pick&&window.pick.fl===fl&&window.pick.side===side)?{...window.pick,end:line}:{fl,side,start:line,end:line};
   const p=window.pick,lo=Math.min(p.start,p.end),hi=Math.max(p.start,p.end);
   $$('tr.sel').forEach(r=>r.classList.remove('sel'));let last=null;
-  t.querySelectorAll('td.n[data-side="'+side+'"]').forEach(c=>{const l=+c.dataset.line;if(l>=lo&&l<=hi){c.closest('tr').classList.add('sel');last=c.closest('tr')}});
+  fl.querySelectorAll('td.n[data-side="'+side+'"]').forEach(c=>{const l=+c.dataset.line;if(l>=lo&&l<=hi){c.closest('tr').classList.add('sel');last=c.closest('tr')}});
   const fm=form(last,t);fm.path.value=t.dataset.path;fm.side.value=side;fm.start.value=lo;fm.end.value=hi+1;
   fm.at.value=(secOf(t)||{}).id||'';fm.querySelector('.what').textContent=t.dataset.path+' '+(side==='old'?'L':'R')+lo+(lo===hi?'':'–'+hi);fm.body.focus()});
 function form(after,t){$$('tr.form').forEach(r=>r.remove());const row=document.createElement('tr');row.className='form thread';
@@ -585,7 +587,7 @@ function commentOn(bar){const d=bar.dataset,fm=form(bar,bar.closest('table'));fm
   fm.querySelector('.what').textContent=d.path+' '+(d.side==='old'?'L':'R')+d.start+(+d.end-1>+d.start?'–'+(d.end-1):'');fm.body.focus()}
 
 /* marks */
-const bars=()=>$$('tr.hunkbar').filter(b=>!secOf(b).classList.contains('merged')&&!b.closest('.files').hidden);
+const bars=()=>$$('tr.hunkbar').filter(b=>!secOf(b).classList.contains('merged')&&!b.closest('.files').hidden));
 const stateOf=b=>b.classList.contains('done')?'approve':b.classList.contains('refused')?'reject':null;
 let cur=null;
 function focusBar(b,smooth=true){if(!b)return;$$('tr.hunkbar.current').forEach(x=>x.classList.remove('current'));
@@ -825,7 +827,7 @@ def excerpt_of(c, rev):
                    for i in range(first, end))
     outdated = ' <span class="label">outdated</span>' if loc.get("commit") != rev["oid"] else ""
     return (f'<div class="excerpt"><div class="fname">{E(loc["path"])}{outdated}</div>'
-            f'<table class="d">{rows}</table></div>')
+            f'<table class="d ex">{rows}</table></div>')
 
 
 def forge_slug(patch):
@@ -913,20 +915,38 @@ def rows_html(entries, fid):
             for k in range(i, j):
                 marks[k] = (f"{fid}-{n}", " rs" if k == i else " re" if k == j - 1 else "")
         i = j
-    out, cur = [], object()
+    bodies, cur = [], object()
     for (row, _, group), mark in zip(entries, marks):
         if group != cur:
-            if out:
-                out.append("</tbody>")
-            out.append(f'<tbody class="hk" data-hunk="{group}">' if group else "<tbody>")
+            bodies.append([f'<tbody class="hk" data-hunk="{group}">' if group else "<tbody>"])
             cur = group
         if mark:
             edge = mark[1].strip()
             row = row.replace('<tr class="', f'<tr data-run="{mark[0]}" class="{edge + " " if edge else ""}', 1)
-        out.append(row)
-    if out:
-        out.append("</tbody>")
-    return "".join(out)
+        bodies[-1].append(row)
+    return [("".join(b) + "</tbody>", len(b) - 1) for b in bodies]
+
+
+CHUNK = 200  # rows per table: a long file is cut into tables the browser only draws in view
+COLS = '<colgroup><col class="cg"><col class="cn"><col class="cn"><col></colgroup>'
+
+
+def tables_html(bodies, attrs):
+    """Table bodies as a run of tables of about CHUNK rows each, cut only between bodies, so a
+    hunk stays whole. The columns are fixed, so the tables line up as one."""
+    out, cur, n = [], [], 0
+    for body, rows in bodies:
+        if cur and n + rows > CHUNK:
+            out.append((cur, n))
+            cur, n = [], 0
+        cur.append(body)
+        n += rows
+    if cur:
+        out.append((cur, n))
+    # Until a table is drawn the page reserves about its height, so the scrollbar and the
+    # gates are roughly where they will be.
+    return "".join(f'<div class="chunk" style="contain-intrinsic-size:auto {n * 22}px"><table class="d"{attrs}>'
+                   f'{COLS}{"".join(c)}</table></div>' for c, n in out)
 
 
 def sid_of(patch, oid):
@@ -1185,8 +1205,10 @@ def files_html(repo, rev, files, all_, hidden, patch=None, p="", readonly=False)
                     f'<button type="button" class="btn small hunk-comment">Comment <kbd>c</kbd></button>'
                     f'<button type="button" class="btn small" data-do="undo">Undo</button>'
                     f'<span class="drag-hint mut">or drag the hunk ⇆</span></td></tr>', True, group))
-        body = (rows_html(entries, f"{p}f{fi}") if not f["binary"]
-                else '<tbody><tr><td class="c mut">Binary file not shown.</td></tr></tbody>')
+        form = "" if readonly else f' data-form="{p}lineform"'
+        attrs = f' data-path="{E(path or "")}"{form}'
+        body = (tables_html(rows_html(entries, f"{p}f{fi}"), attrs) if not f["binary"]
+                else f'<table class="d"{attrs}><tbody><tr><td class="c mut">Binary file not shown.</td></tr></tbody></table>')
         title = path if not f["old_path"] or f["old_path"] == path else f"{f['old_path']} → {path}"
         plus = sum(1 for r in f["rows"] if r[0] == "add")
         minus = sum(1 for r in f["rows"] if r[0] == "del")
@@ -1196,11 +1218,10 @@ def files_html(repo, rev, files, all_, hidden, patch=None, p="", readonly=False)
             f'<div class="ffoot{" done" if len(ok) == len(hunks) else ""}"><span class="tally">{tally}</span>'
             f'<button type="button" class="btn small go" data-do="rest">Approve the rest of this file</button>'
             f'<span class="ok-mark">✓ file approved</span></div>')
-        form = "" if readonly else f' data-form="{p}lineform"'
         parts.append(f'<div class="file" id="{p}f-{fi}"><div class="fhead"><span class="path">{E(title or "?")}</span>'
                      f'<span class="add-n">+{plus}</span><span class="del-n">−{minus}</span>'
                      f'<span class="mut tally" style="margin-left:auto;font-size:12px">{tally}</span></div>'
-                     f'<table class="d" data-path="{E(path or "")}"{form}>{body}</table>{foot}</div>')
+                     f'{body}{foot}</div>')
     left = [c for cs in placed.values() for c in cs] + elsewhere
     if left:
         parts.append('<div class="file"><div class="fhead"><span class="path">Comments on lines outside this revision\'s diff</span></div>'
