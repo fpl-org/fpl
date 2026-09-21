@@ -408,6 +408,7 @@ body{display:flex;flex-direction:column;height:100vh;overflow:hidden}
 .bar .meter{min-width:0}
 .btn.icon{padding:4px 8px}
 .shell{flex:1;min-height:0;display:grid;grid-template-columns:auto minmax(0,1fr) auto}
+.shell>.stack{grid-column:1}#surface{grid-column:2}.shell>.tray{grid-column:3}
 .shell>.stack{width:290px;overflow:auto}
 #surface{position:relative;overflow:auto;padding:16px 24px 45vh;overscroll-behavior:contain}
 html,body,#surface{overscroll-behavior-x:none}
@@ -430,7 +431,7 @@ body.no-stack .shell>.stack,body.no-tray .shell>.tray{display:none}
 .trunkline{display:flex;gap:8px;align-items:center;padding:6px 8px 6px 26px;color:var(--mut);font-size:12px;
 border-top:1px dashed var(--line);border-bottom:1px dashed var(--line);margin:6px 0}
 /* a pull request */
-.sec{max-width:1100px;margin:0 auto;padding-top:4px}
+.sec{max-width:1600px;margin:0 auto;padding-top:4px}
 .shead{display:flex;gap:12px;align-items:flex-start;margin:4px 0 12px}
 .shead .st{flex:1;min-width:0}.shead h2{margin:0;font-size:18px;text-wrap:balance}
 .shead .meta{font-size:12px}.sact{display:flex;gap:8px;align-items:center}
@@ -447,10 +448,10 @@ border-top:1px dashed var(--line);border-bottom:1px dashed var(--line);margin:6p
 .sec.just .files,.sec.just .desc{filter:grayscale(1);opacity:.5;transition:filter .6s,opacity .6s}
 .cbanner{display:flex;gap:12px;align-items:center;justify-content:space-between;background:var(--acc-soft);
 border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:13px}
-.note{max-width:1100px;margin:0 auto 16px;background:var(--surface);border:1px solid var(--merged);border-radius:8px;padding:10px 14px}
+.note{max-width:1600px;margin:0 auto 16px;background:var(--surface);border:1px solid var(--merged);border-radius:8px;padding:10px 14px}
 .note summary{cursor:pointer;color:var(--merged);font-weight:600;font-size:13px}
 /* the gate between two pull requests: scroll on past the wall and it fills */
-.gate{position:relative;max-width:1100px;margin:28px auto;height:56px;border:1px dashed var(--line);border-radius:10px;
+.gate{position:relative;max-width:1600px;margin:28px auto;height:56px;border:1px dashed var(--line);border-radius:10px;
 display:flex;align-items:center;justify-content:center;color:var(--mut);font-size:13px;overflow:hidden;background:var(--surface)}
 .gate i{position:absolute;inset:0 auto 0 0;width:calc(var(--p,0) * 100%);background:var(--acc-soft)}
 .gate.up i{inset:0 0 0 auto}
