@@ -56,9 +56,9 @@ class Refused(Exception):
     pass
 
 
-def run(*cmd, ok=True):
+def run(*cmd, ok=True, env=None):
     try:
-        done = subprocess.run(cmd, capture_output=True, text=True)
+        done = subprocess.run(cmd, capture_output=True, text=True, env=env)
     except FileNotFoundError:
         raise Refused(f"{cmd[0]} not found" + ("; scripts/layer on radicle" if cmd[0] == "rad" else ""))
     if ok and done.returncode != 0:
@@ -1162,6 +1162,22 @@ def credential_args():
     return ["-c", "credential.helper=", "-c", f"credential.helper=store --file={cred}"]
 
 
+def import_pr(num):
+    """Run the sibling import-review for one pull request. Its only push goes to rad, where
+    the branch-name grammar of the pre-push hook does not apply, so the hook is told to warn."""
+    importer = os.path.join(os.path.dirname(os.path.abspath(__file__)), "import-review")
+    if not os.path.exists(importer):
+        return subprocess.CompletedProcess([importer], 1, "", "import-review is not next to review-serve")
+    return run(sys.executable, importer, str(num), ok=False,
+               env=dict(os.environ, FPL_BRANCH_GATE="warn"))
+
+
+def tail(done):
+    """The last line a failed command printed, for a one-line report."""
+    lines = (done.stderr or done.stdout or "").strip().splitlines()
+    return lines[-1] if lines else f"exit {done.returncode}"
+
+
 def land(repo, oid):
     """Approve and rebase-merge the patch's pull request, record the merge in Radicle, and
     move the patches stacked on it onto the new main. Returns what happened, for the page."""
@@ -1185,8 +1201,14 @@ def land(repo, oid):
     if info["baseRefName"] != "main":
         raise Refused(f"#{num} is based on {info['baseRefName']}; land that one first")
     if info["headRefOid"] != rev["oid"]:
+        # The forge moved on (a restack, or a new push). The new head is brought home as a
+        # revision here and now, but not merged: nobody has read it yet.
+        fetched = import_pr(num)
+        if fetched.returncode == 0:
+            raise Refused(f"the forge moved #{num} on from {rev['oid'][:7]} to {info['headRefOid'][:7]}; "
+                          "that head is now imported as a new revision, so reload and read it")
         raise Refused(f"the forge has {info['headRefOid'][:7]} for #{num}, and {rev['oid'][:7]} is what is "
-                      "shown here; scripts/import-review it and look again")
+                      f"shown here; importing it failed: {tail(fetched)}")
     bad = [c.get("name") or c.get("context") for c in info.get("statusCheckRollup") or []
            if (c.get("conclusion") or c.get("state") or "").upper() not in ("SUCCESS", "NEUTRAL", "SKIPPED")]
     if bad:
@@ -1225,8 +1247,6 @@ def land(repo, oid):
     # The patches stacked on this one still carry its old commits. Each is replayed onto
     # the new main without them, in a worktree of its own, and pushed as the machine
     # account, whose branches these are.
-    importer = os.path.join(os.path.dirname(os.path.abspath(__file__)), "import-review")
-
     def restack(old_parent, new_parent, onto_main):
         """Replay every open patch based on old_parent onto new_parent, then the ones based on
         those, all the way up the queue."""
@@ -1255,10 +1275,12 @@ def land(repo, oid):
                 if onto_main:
                     gh("pr", "edit", cnum, "--repo", slug, "--base", "main")
                 log.append(f"moved #{cnum} up: {cinfo['headRefOid'][:7]} → {new[:7]}" + (", now onto main" if onto_main else ""))
-                if os.path.exists(importer) and run(sys.executable, importer, cnum, ok=False).returncode == 0:
+                fetched = import_pr(cnum)
+                if fetched.returncode == 0:
                     log.append(f"imported the new head of #{cnum} as a revision")
                 else:
-                    log.append(f"run scripts/import-review {cnum} to see its new head here")
+                    log.append(f"importing the new head of #{cnum} failed ({tail(fetched)}); "
+                               f"run scripts/import-review {cnum}")
             finally:
                 run("git", "worktree", "remove", "--force", work, ok=False)
             restack(crev["oid"], new, False)
@@ -1720,6 +1742,17 @@ def self_test():
             st["prs"]["1"]["head_override"] = "0" * 40
             with open(state, "w") as f:
                 json.dump(st, f)
+            seen = []
+            real_run = globals()["run"]
+            globals()["run"] = lambda *cmd, ok=True, env=None: (
+                seen.append((cmd, (env or {}).get("FPL_BRANCH_GATE")))
+                or subprocess.CompletedProcess(cmd, 0, "", ""))
+            try:
+                moved_on = import_pr(1)
+            finally:
+                globals()["run"] = real_run
+            check("the importer runs with the branch gate at warn, since it pushes only to rad",
+                  moved_on.returncode == 0 and seen and seen[0][1] == "warn" and seen[0][0][-1] == "1")
             check("landing when the forge has another head is refused",
                   post(kind="land", patch=p1, revision=p1) == 400)
             st = gh_state()
