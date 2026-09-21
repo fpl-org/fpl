@@ -42,6 +42,7 @@ came in from elsewhere needs a `git fetch rad` first.
 """
 
 import html
+import http.cookies
 import http.server
 import json
 import os
@@ -575,7 +576,7 @@ async function show(s,where='top'){if(!s)return;const from=shown,all=secs(),dir=
   const on=$('.ti.on');if(on){const st=$('.shell>.stack'),r=on.getBoundingClientRect(),q=st.getBoundingClientRect();
     if(r.top<q.top||r.bottom>q.bottom)st.scrollTop+=r.top-q.top-q.height/3}
   $$('.traypr').forEach(t=>t.hidden=t.dataset.for!==s.id);tab(recall('tab')||'timeline');meter(s);
-  history.replaceState(null,'','#'+s.id);
+  history.replaceState(null,'',s.dataset.num?'/'+s.dataset.num:'/#'+s.id);
   if(!cur||secOf(cur)!==s){$$('tr.hunkbar.current').forEach(x=>x.classList.remove('current'));cur=null;
     const b=$$('tr.hunkbar',s).find(x=>!stateOf(x));if(b){b.classList.add('current');cur=b}}
   around(s)}
@@ -782,7 +783,7 @@ document.addEventListener('submit',async e=>{const f=e.target;if(!f.classList.co
   $('.mergebox',s).innerHTML='<h3 class="merged-mark">Merged</h3><div class="mut">'+(next?'On to '+(next.dataset.num?'#'+next.dataset.num:'the next one')+', which is now on the new main.':'The queue is empty.')+'</div>';
   const node=$('.ti[data-for="'+s.id+'"] .node');if(node)node.classList.add('merged');await sleep(calm?0:900);
   if(next){await show(next);await sleep(calm?0:500)}
-  location.replace('/?t='+T+'&n='+Date.now()+(next?'#'+next.id:''))});
+  location.reload()});
 
 /* keys. A mark goes on the hunk you can see: if the current one has scrolled away, the key
    first brings you to the open hunk in view, and a second press marks it. */
@@ -808,7 +809,7 @@ document.addEventListener('keydown',e=>{if(e.target.closest('textarea,input,sele
 });
 
 /* arriving: at the hunk or pull request in the address, else at the head of the queue */
-(async function(){const h=location.hash.slice(1),first=secs().find(s=>!s.classList.contains('merged'))||secs().pop();
+(async function(){const pn=location.pathname.match(/^\/(\d+)$/),h=location.hash.slice(1)||(pn?'pr-'+pn[1]:''),first=secs().find(s=>!s.classList.contains('merged'))||secs().pop();
   const at=(h&&secFor(h))||first;if(!at)return;
   await show(at,'top');
   const t=h&&document.getElementById(h);
@@ -1836,8 +1837,20 @@ def serve(port, open_browser, announce=print):
         def do_GET(self):
             url = urllib.parse.urlsplit(self.path)
             q = urllib.parse.parse_qs(url.query)
-            if not self.allowed() or q.get("t", [""])[0] != token:
+            jar = http.cookies.SimpleCookie(self.headers.get("Cookie") or "")
+            given = q.get("t", [""])[0]
+            if not self.allowed() or token not in (given, jar["rs"].value if "rs" in jar else ""):
                 return self.send(403, "forbidden: use the address scripts/review-serve printed\n", "text/plain")
+            if given and self.headers.get("Sec-Fetch-Mode") == "navigate":
+                # The token moves from the address into a cookie that only this page can send,
+                # and the address becomes the plain place: /31 for #31.
+                self.send_response(303)
+                self.send_header("Set-Cookie", f"rs={token}; Path=/; HttpOnly; SameSite=Strict")
+                rest = urllib.parse.urlencode([(k, v) for k, vs in q.items() if k != "t" for v in vs])
+                self.send_header("Location", url.path + (f"?{rest}" if rest else ""))
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             try:
                 m = re.fullmatch(r"/(?:pr|patch)/([0-9a-f]{40})", url.path)
                 old = q.get("p", [None])[0]
@@ -1849,8 +1862,9 @@ def serve(port, open_browser, announce=print):
                 if m:
                     # A pull request is a place on the one page now.
                     patch = repo.show(m.group(1))
-                    self.send(303, "", where=f"/?t={token}#{sid_of(patch, m.group(1))}")
-                elif url.path in ("/", "/queue"):
+                    n = forge_number(patch)
+                    self.send(303, "", where=f"/{n}" if n else f"/#{sid_of(patch, m.group(1))}")
+                elif url.path in ("/", "/queue") or re.fullmatch(r"/\d+", url.path):
                     self.send(200, surface(repo, token))
                 elif st:
                     self.send(200, json.dumps(status_of(repo, st.group(1), token)), "application/json")
@@ -1881,7 +1895,7 @@ def serve(port, open_browser, announce=print):
                 return self.send(200, json.dumps({"ok": True}), "application/json")
             at = (form.get("at") or [""])[0]
             at = f"#{at}" if re.fullmatch(r"[a-z0-9-]+", at) else ""
-            self.send(303, "", where=f"/?t={token}{at}")
+            self.send(303, "", where=f"/{at}")
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{server.server_address[1]}/?t={token}"
