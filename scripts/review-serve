@@ -715,11 +715,19 @@ const FULL=650;let pull={g:null,dir:0,p:0,at:0,hold:false},swipe={tb:null,dx:0,t
 function fill(g,dir,p){$$('.gate').forEach(x=>{if(x!==g){x.style.setProperty('--p',0);x.classList.remove('armed','up')}});if(!g)return;
   g.style.setProperty('--p',Math.min(1,p/FULL));g.classList.toggle('armed',p>=FULL);g.classList.toggle('up',dir<0);
   $('span',g).textContent=dir<0?g.dataset.up:g.dataset.down}
+// A gate only holds once it has really been in view for a moment: until then the height of
+// what is above it is the browser's estimate for the tables it has not drawn yet, and a
+// gate that looks near can be a long way off.
+const seen=new Map();
+const watch=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){if(!seen.has(e.target))seen.set(e.target,Date.now())}
+  else seen.delete(e.target)}),{root:S,rootMargin:'600px 0px 600px 0px'});
+$$('.gate').forEach(g=>watch.observe(g));
+const real=g=>seen.has(g)&&Date.now()-seen.get(g)>=60;
 function free(){if(pull.g){pull={g:null,dir:0,p:0,at:0,hold:false};fill(null)}return false}
 function wall(dy){if(Date.now()<passUntil||!dy)return false;const top=S.scrollTop,h=S.clientHeight,gs=$$('.gate');let g,limit;
-  if(dy>0){g=gs.find(x=>posOf(x)+x.offsetHeight>=top+h-1);if(!g)return false;limit=posOf(g)+g.offsetHeight-h;
+  if(dy>0){g=gs.find(x=>posOf(x)+x.offsetHeight>=top+h-1);if(!g||!real(g))return false;limit=posOf(g)+g.offsetHeight-h;
     if(top+dy<=limit)return free();if(top<limit)S.scrollTop=limit
-  }else{g=gs.filter(x=>posOf(x)<=top+1).pop();if(!g)return false;limit=posOf(g);
+  }else{g=gs.filter(x=>posOf(x)<=top+1).pop();if(!g||!real(g))return false;limit=posOf(g);
     if(top+dy>=limit)return free();if(top>limit)S.scrollTop=limit}
   // Arriving at the wall, the rest of that flick is absorbed: only a new push, after a
   // pause, fills the gate. So momentum stops you at the end instead of carrying you over.
