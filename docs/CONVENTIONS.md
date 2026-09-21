@@ -56,16 +56,16 @@ tests/
   the user.
 
 **The oracle rule:** the maintainer writes `spec.md`, the `.fpl` files, and the `.expected`
-files. The agent makes `make check` green against them. `spec.md`, `DESIGN.md`, `SPEC.md` are
-edit-protected (`[spec]` marker required).
+files. The agent makes `make check` green against them. `spec.md`, the examples, `DESIGN.md`
+and `SPEC.md` are edit-protected (`[spec]` marker required).
 
 ## The gate (`make check` inside a worktree)
 
-Runs, in order, non-interactively:
-
-1. `ruff check fpl tests`
-2. `pyright` — strict, `reportMatchNotExhaustive=error`
-3. `pytest -q` — unit tests, `test_ambiguity`, conformance
+A worktree's `Makefile` is `include quality/noslop.mk`. `make check` runs ruff, strict pyright
+(`reportMatchNotExhaustive=error`), the tests (unit, `test_ambiguity`, conformance) under
+100% branch coverage, and the structural checks of `docs/QUALITY.md`: CRAP, a property test
+per module, the layering of the source tree above, declared dependencies, dead and duplicate
+code, and named waivers.
 
 Green ⇔ done. A feature with a red or unrun `make check` is not done.
 
