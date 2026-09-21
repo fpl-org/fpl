@@ -11,7 +11,9 @@ language work. They are listed so the roadmap does not read as though the lexer 
 
 1. **The version control harness.** `scripts/`, `.githooks/`, `docs/WORKFLOW.md` and the task
    graph of `docs/TASKS.md`. Largely built; the store exists and holds nothing yet.
-2. **The noslop harness.** Not specified here yet.
+2. **The noslop harness.** `quality/` and the gate of `docs/QUALITY.md`: every check, and a
+   bad example each one must refuse, built before there is code to judge, so the pressure is
+   there from the first commit. Built with milestone 0's skeleton, which is its first subject.
 3. **Prototyping**, which is where milestone 0 begins.
 
 `docs/notes/2026-09-19-sober.md` applies to both harness phases: a harness change earns its
@@ -20,7 +22,7 @@ either of them to make cheaper. That is a thing to watch, not a rule against the
 
 | # | Milestone | Done when |
 | --- | --- | --- |
-| 0 | **Worktree skeleton** — `pyproject.toml`, `Makefile` (`make check` = ruff + pyright + pytest), `fpl/` module stubs, `features/_template/`, empty conformance runner | `make check` runs and passes with zero features |
+| 0 | **Worktree skeleton** — `pyproject.toml`, `Makefile` (`include quality/noslop.mk`), `fpl/` module stubs, `features/_template/`, empty conformance runner | `make ready` runs and passes with zero features |
 | 1 | **Lexer + parser** — `grammar.lark`, `parse.py` → surface AST with spans; `test_ambiguity.py` green | `features/arithmetic/` parses; zero Earley ambiguity |
 | 2 | **Tree-walking eval** — `ast_core.py`, `desugar.py`, `eval.py` for the arithmetic core; `python -m fpl file.fpl` runs | `features/arithmetic/` conformance passes end to end |
 | 3 | **Errors** — `errors.py`: every failure is `ERROR: <line>:<col> <message>` with a caret underline; no traceback escapes | error-case `.expected` files pass |
