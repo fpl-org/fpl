@@ -1,0 +1,26 @@
+# pyproject.toml — this attempt's project metadata and its mutation-testing scope.
+# The tools and their versions are the harness's (quality/pyproject.toml, quality/uv.lock);
+# changing this file is a policy change and takes [policy] (docs/QUALITY.md).
+
+[project]
+name = "fpl"
+version = "0"
+requires-python = ">=3.12,<3.13"
+dependencies = ["lark"]
+
+[tool.deptry]
+known_first_party = ["fpl"]
+
+[tool.deptry.per_rule_ignores]
+# The tools come from the harness environment, not from this project's dependencies.
+DEP001 = ["hypothesis", "pytest"]
+
+[tool.mutmut]
+source_paths = ["fpl/"]
+also_copy = ["features/"]
+pytest_add_cli_args = ["-p", "no:cacheprovider", "-q"]
+pytest_add_cli_args_test_selection = ["tests/"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-p", "noslop_pytest"]
