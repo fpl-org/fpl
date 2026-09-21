@@ -504,12 +504,18 @@ padding:8px 12px;border-radius:8px;font-size:13px;display:flex;gap:12px;align-it
 padding:16px max(24px,calc((100% - 1600px) / 2)) 72px}
 #surface>.gate{display:none}#surface>.sec~p.end{display:none}
 #surface>.note{position:absolute;top:8px;left:50%;transform:translateX(-50%);z-index:6;width:min(900px,92%);box-shadow:0 8px 24px rgba(0,0,0,.18)}
-.edge{position:absolute;left:50%;transform:translateX(-50%);width:min(720px,80%);height:44px;border:1px dashed var(--line);border-radius:10px;
-background:var(--surface);display:flex;align-items:center;justify-content:center;font-size:13px;color:var(--mut);overflow:hidden;
-z-index:5;opacity:0;pointer-events:none;transition:opacity .15s}
-.edge.down{bottom:12px}.edge.up{top:12px}.edge.show{opacity:1}
-.edge i{position:absolute;inset:0 auto 0 0;width:calc(var(--p,0) * 100%);background:var(--acc-soft)}
-.edge.armed i{background:var(--ok-soft)}.edge span{position:relative;padding:0 16px;text-align:center}
+.ring{position:absolute;left:50%;z-index:5;display:flex;flex-direction:column;align-items:center;gap:4px;pointer-events:none;
+opacity:0;transition:opacity .15s;transform:translate(-50%,calc((1 - var(--p,0)) * 18px))}
+.ring.down{bottom:14px}.ring.up{top:14px;flex-direction:column-reverse;transform:translate(-50%,calc((var(--p,0) - 1) * 18px))}
+.ring.show{opacity:calc(.4 + var(--p,0) * .6)}
+.ring svg{width:40px;height:40px;overflow:visible}
+.ring .track{fill:var(--surface);stroke:var(--line);stroke-width:3;transition:fill .12s,stroke .12s}
+.ring .arc{fill:none;stroke:var(--merged);stroke-width:3;stroke-linecap:round;stroke-dasharray:100;
+stroke-dashoffset:calc(100 - var(--p,0) * 100);transform:rotate(-90deg);transform-origin:22px 22px}
+.ring .icon{fill:none;stroke:var(--mut);stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+.ring.armed .track{fill:var(--merged);stroke:var(--merged)}.ring.armed .icon{stroke:#fff}
+.ring span{font-size:12px;color:var(--mut);max-width:min(60ch,70vw);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+background:var(--surface);padding:1px 8px;border-radius:999px}
 .sec.enter-down{animation:enter-down .22s ease-out}.sec.enter-up{animation:enter-up .22s ease-out}
 @keyframes enter-down{from{transform:translateY(40px);opacity:.4}}@keyframes enter-up{from{transform:translateY(-40px);opacity:.4}}
 @media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
@@ -657,7 +663,8 @@ function nextBar(){const all=bars();let i=all.indexOf(cur);
   const b=all.find((b,k)=>k>i&&!stateOf(b))||all[i+1];
   if(b)return focusBar(b);
   // Past the last hunk: the merge box, and after it the next pull request by scrolling on.
-  const m=$('.mergebox',S);if(m&&!visible(m))return center(m);toast('End of this one: scroll on past the end for the next')}
+  const m=$('.mergebox',S);if(m&&!visible(m))return center(m);
+  if(nbr(1)){if(atEnd())return show(nbr(1));S.scrollTo({top:S.scrollHeight,behavior:calm?'auto':'smooth'});toast('↓ once more for the next one')}}
 function prevBar(){const all=bars();let i=all.indexOf(cur);
   if(i<0||!visible(cur)){const y=S.scrollTop+S.clientHeight;i=all.findIndex(b=>posOf(b)>y);if(i<0)i=all.length}
   focusBar(all[Math.max(0,i-1)])}
@@ -735,33 +742,38 @@ function endDrag(){if(!drag)return;const d=drag;drag=null;document.body.classLis
 window.addEventListener('pointerup',endDrag);window.addEventListener('pointercancel',endDrag);
 
 /* the edges: the browser stops at the end of a pull request by itself, and the rubber band
-   there is the resistance. Pushing on past it fills the bar, and a full bar brings the next
+   there is the resistance. Pushing on past it fills a ring, and letting go of a full ring brings the next
    one; the same at the top for the one before. Nothing here holds the scroll back, which
    a page cannot do in the middle of a swipe (Chrome lets only the first wheel event of a
    swipe be cancelled): it only counts what arrives at the edge. The rest of a flick that
    runs into the edge is not counted; only a new push, after a pause. */
-const FULL=500;let pull={dir:0,p:0,at:0,hold:false},swipe={tb:null,dx:0,timer:0};
-const edge={down:document.createElement('div'),up:document.createElement('div')};
-for(const [k,el] of Object.entries(edge)){el.className='edge '+k;el.innerHTML='<i></i><span></span>';BOX.append(el)}
+const FULL=240;let pull={dir:0,p:0,at:0,hold:false},swipe={tb:null,dx:0,timer:0};
+function mkRing(k){const el=document.createElement('div');el.className='ring '+k;
+  el.innerHTML='<svg viewBox="0 0 44 44" aria-hidden="true"><circle class="track" cx="22" cy="22" r="18"/>'
+    +'<circle class="arc" cx="22" cy="22" r="18" pathLength="100"/><path class="icon" d="'
+    +(k==='down'?'M22 14v15M16 23l6 6 6-6':'M22 30V15M16 21l6-6 6 6')+'"/></svg><span></span>';BOX.append(el);return el}
+const ring={down:mkRing('down'),up:mkRing('up')};
 const nbr=d=>{const all=secs(),i=all.indexOf(S);return i<0?null:all[i+d]||null};
 const label=s=>(s.dataset.num?'#'+s.dataset.num+' · ':'')+s.dataset.title+(s.classList.contains('merged')?' (merged)':'');
-function edges(){const dn=nbr(1),up=nbr(-1);
-  $('span',edge.down).textContent=dn?'Keep scrolling for '+label(dn):'End of the queue';
-  $('span',edge.up).textContent=up?'Pull back to '+label(up):'';
-  const atEnd=S!==BOX&&S.scrollTop+S.clientHeight>=S.scrollHeight-2,atTop=S!==BOX&&S.scrollTop<=1;
-  edge.down.classList.toggle('show',atEnd);edge.up.classList.toggle('show',atTop&&!!up);
-  for(const [k,el] of Object.entries(edge)){const on=pull.dir===(k==='down'?1:-1);
-    el.style.setProperty('--p',on?Math.min(1,pull.p/FULL):0);el.classList.toggle('armed',on&&pull.p>=FULL)}}
+const atEnd=()=>S!==BOX&&S.scrollTop+S.clientHeight>=S.scrollHeight-2, atTop=()=>S!==BOX&&S.scrollTop<=1;
+function edges(){for(const [k,el] of Object.entries(ring)){const d=k==='down'?1:-1,n=nbr(d),on=pull.dir===d;
+    const p=on?Math.min(1,pull.p/FULL):0;$('span',el).textContent=n?label(n):'';
+    el.style.setProperty('--p',p);el.classList.toggle('armed',on&&pull.p>=FULL);
+    el.classList.toggle('show',!!n&&(d>0?atEnd():atTop())&&(on||d>0))}}
 BOX.addEventListener('scroll',()=>edges(),true);
+// Past the edge the pull only counts; letting go with the ring full brings the next one.
 function push(dy){if(!dy||S===BOX)return;const dir=Math.sign(dy);
-  const atEnd=S.scrollTop+S.clientHeight>=S.scrollHeight-2,atTop=S.scrollTop<=1;
-  if(!(dir>0?atEnd&&nbr(1):atTop&&nbr(-1))){if(pull.dir){pull={dir:0,p:0,at:0,hold:false};edges()}return}
+  if(!(dir>0?atEnd()&&nbr(1):atTop()&&nbr(-1))){if(pull.dir){pull={dir:0,p:0,at:0,hold:false};edges()}return}
   const now=Date.now();
-  if(pull.dir!==dir){pull={dir,p:0,at:now,hold:true};edges();return}
-  if(pull.hold){const gap=now-pull.at;pull.at=now;if(gap<180)return;pull.hold=false}
-  pull.p+=Math.abs(dy);pull.at=now;edges();
-  if(pull.p>=FULL){pull={dir:0,p:0,at:0,hold:false};show(nbr(dir),dir>0?'top':'bottom')}}
-(function decay(){if(pull.dir&&!pull.hold&&Date.now()-pull.at>160){pull.p*=.85;if(pull.p<6)pull={dir:0,p:0,at:0,hold:false};edges()}
+  // The flick that brought you here is still running out: its steps only get smaller. A
+  // pause, or a step bigger than the one before, is a hand pushing again.
+  if(pull.dir!==dir){pull={dir,p:0,at:now,hold:true,last:Math.abs(dy)};edges();return}
+  if(pull.hold){const gap=now-pull.at,a=Math.abs(dy),grew=a>pull.last+2;pull.at=now;pull.last=a;
+    if(gap<120&&!grew)return;pull.hold=false}
+  pull.p=Math.min(FULL*1.15,pull.p+Math.abs(dy));pull.at=now;edges()}
+function letGo(){if(pull.p>=FULL){const d=pull.dir;pull={dir:0,p:0,at:0,hold:false};edges();show(nbr(d),d>0?'top':'bottom');return true}return false}
+(function decay(){if(pull.dir&&!pull.hold&&Date.now()-pull.at>140&&!letGo()){pull.p*=.8;
+    if(pull.p<4)pull={dir:0,p:0,at:0,hold:false};edges()}
   requestAnimationFrame(decay)})();
 BOX.addEventListener('wheel',e=>{
   if(Math.abs(e.deltaX)>Math.abs(e.deltaY)){const tb=e.target.closest('tbody.hk');if(!tb||secOf(tb).classList.contains('merged'))return;
@@ -771,6 +783,7 @@ BOX.addEventListener('wheel',e=>{
 let touchY=null;
 BOX.addEventListener('touchstart',e=>{touchY=e.touches[0].clientY},{passive:true});
 BOX.addEventListener('touchmove',e=>{if(touchY===null)return;const y=e.touches[0].clientY,dy=touchY-y;touchY=y;push(dy)},{passive:true});
+BOX.addEventListener('touchend',()=>{touchY=null;pull.hold=false;pull.at=0});
 
 /* merging: purple while it runs, grey when done, then on to the next one */
 document.addEventListener('submit',async e=>{const f=e.target;if(!f.classList.contains('land'))return;e.preventDefault();
