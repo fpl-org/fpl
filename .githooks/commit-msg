@@ -12,8 +12,11 @@
 #   4. provenance: Assisted-By: + Session-Id: together, or a lone Human-Only: true
 #   5. known trailers appear in canonical order
 #   6. unless Human-Only, the commit author email equals .git/agent-identity
-#   7. oracle guard: editing docs/DESIGN.md, docs/SPEC.md or features/*/spec.md
-#      requires the literal marker [spec] in the message
+#   7. oracle guard: editing docs/DESIGN.md, docs/SPEC.md, features/*/spec.md or
+#      features/*/examples/* requires the literal marker [spec] in the message
+#  7b. policy guard: editing what sets how hard the gate judges (quality/,
+#      pyproject.toml, Makefile, mutants.allow) requires the literal marker
+#      [policy], and such a commit may not also touch fpl/ or tests/
 #   8. stack record: on a stack branch, human or agent (scripts/branch-lint),
 #      the message carries 'Stack: <name>'; a Stack: value is always
 #      [a-z0-9][a-z0-9._-]*
@@ -152,7 +155,7 @@ while IFS= read -r tok; do
 done < <(sed -n 's/^\([A-Za-z][A-Za-z-]*\):[[:space:]].*/\1/p' "$msg_file")
 
 # 7. oracle guard --------------------------------------------------------------
-protected='^(docs/DESIGN\.md|docs/SPEC\.md|features/[^/]+/spec\.md)$'
+protected='^(docs/DESIGN\.md|docs/SPEC\.md|features/[^/]+/spec\.md|features/[^/]+/examples/.+)$'
 if [ -n "$lint_commit" ]; then
 	changed="$(git diff-tree --no-commit-id --name-only -r --root "$lint_commit")"
 else
@@ -161,6 +164,19 @@ fi
 if printf '%s\n' "$changed" | grep -Eq "$protected"; then
 	grep -Fq '[spec]' "$msg_file" \
 		|| fail "this commit edits a protected spec file; add [spec] to the message if intentional"
+fi
+
+# 7b. policy guard ---------------------------------------------------------------
+# The gate's strictness lives in files an attempt could otherwise loosen in the same
+# breath as the code that needed it loosened (docs/QUALITY.md). A change to them is
+# named as one, and travels alone, so a reviewer sees it apart from any code.
+policy='^(quality/.+|pyproject\.toml|Makefile|mutants\.allow)$'
+if printf '%s\n' "$changed" | grep -Eq "$policy"; then
+	grep -Fq '[policy]' "$msg_file" \
+		|| fail "this commit changes the gate's policy ($(printf '%s\n' "$changed" | grep -E "$policy" | head -n3 | xargs)); add [policy] to the message if intentional"
+	if printf '%s\n' "$changed" | grep -Eq '^(fpl|tests)/'; then
+		fail "a [policy] commit may not also change fpl/ or tests/; split it"
+	fi
 fi
 
 # 8. stack record ------------------------------------------------------------
