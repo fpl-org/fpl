@@ -35,6 +35,10 @@
           description = "Radicle's CLI and node (rad, radicle-node, git-remote-rad)";
           packages = [ pkgs.radicle-node ];
         };
+        pijul = {
+          description = "pijul, for scripts/mirror and scripts/import-pr";
+          packages = [ pkgs.pijul ];
+        };
         radicleui = {
           description = "Radicle's desktop app, for reviewing patches; large";
           extends = [ "radicle" ];

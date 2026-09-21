@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+#
+# scripts/import-pr — take a pull request from a forge into pijul as one change.
+#
+#   git -C <git-repo> fetch <forge> pull/<n>/head:refs/pull/<n>/head
+#   scripts/import-pr <git-repo> <pr-ref> [<pijul-repo>]      (default pijul repo: .)
+#
+# The pull request's diff against the branch it was opened on becomes a single pijul change,
+# recorded under the contributor's name, with two lines in its description:
+#
+#   Git-Commit: <the PR's head commit>   so scripts/mirror puts their commit on the branch
+#   Landed-By:  <you>                    who signs off, and authors any merge commit
+#
+# Run it on a clean working copy of the channel the PR targets. The pijul record hooks run
+# as for any other change, so a PR that fails `make check` or the task gates is refused
+# here and not on the forge. Nothing here talks to the forge's API.
+#
+# Exit: 0 imported, 1 failed, 2 usage.
+set -euo pipefail
+
+die() { printf 'import-pr: %s\n' "$1" >&2; exit "${2:-1}"; }
+[ $# -ge 2 ] || die "usage: scripts/import-pr <git-repo> <pr-ref> [<pijul-repo>]" 2
+git_repo="$1" ref="$2" pj="${3:-.}" base_branch="${FPL_PR_BASE:-main}"
+export EDITOR=false VISUAL=false
+
+head="$(git -C "$git_repo" rev-parse --verify "$ref^{commit}")" || die "no commit $ref" 2
+base="$(git -C "$git_repo" merge-base "$base_branch" "$head")" || die "$ref shares no history with $base_branch" 2
+[ "$base" != "$head" ] || die "$ref adds nothing to $base_branch" 2
+
+cd "$pj"
+[ -d .pijul ] || die "$PWD is not a pijul repository" 2
+[ -z "$(pijul diff </dev/null 2>/dev/null)" ] || die "the pijul working copy has unrecorded changes"
+
+who="$(git -C "$git_repo" log -1 --format='%an <%ae>' "$head")"
+subject="$(git -C "$git_repo" log -1 --format=%s "$head")"
+count="$(git -C "$git_repo" rev-list --count "$base..$head")"
+[ "$count" = 1 ] || subject="$subject (+$((count - 1)) more)"
+lander="${FPL_LANDER:-$(git config user.name) <$(git config user.email)>}"
+
+patch="$(mktemp)"; trap 'rm -f "$patch"' EXIT
+git -C "$git_repo" diff --binary --full-index "$base" "$head" >"$patch"
+git apply --check "$patch" 2>/dev/null ||
+	die "the PR does not apply to this working copy; bring the channel up to $base_branch first"
+git apply "$patch"
+# Track exactly the files the pull request adds -- not `add -r .`, which would also pick up
+# whatever else sits untracked in the working copy, such as pijul's own .ignore.
+git -C "$git_repo" diff --name-only --diff-filter=AR "$base" "$head" | while IFS= read -r f; do
+	[ -e "$f" ] && pijul add "$f" >/dev/null 2>&1 </dev/null
+done
+
+out="$(pijul record -a -m "$subject" --author "$who" \
+	--description "Git-Commit: $head
+Landed-By: $lander" </dev/null 2>&1)" || {
+	printf '%s\n' "$out" >&2
+	pijul reset </dev/null >/dev/null 2>&1
+	die "record refused; the working copy was reset"
+}
+printf '%s\n' "$out" | grep -E '^Hash:' || die "nothing was recorded"

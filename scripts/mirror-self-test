@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+#
+# scripts/mirror-self-test — scripts/mirror and scripts/import-pr against a real pijul and
+# git, in a throwaway home. Run as `scripts/mirror --self-test`.
+set -uo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+T="$(mktemp -d)"; trap '[ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT
+export HOME="$T/home" EDITOR=false VISUAL=false; mkdir -p "$HOME/.ssh"
+export GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1
+git config --global init.defaultBranch main
+git config --global user.name "Maintainer"; git config --global user.email m@example.org
+ssh-keygen -q -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519"
+export SSH_AUTH_SOCK="$T/agent.sock"; eval "$(ssh-agent -a "$SSH_AUTH_SOCK")" >/dev/null
+ssh-add -q "$HOME/.ssh/id_ed25519"
+pijul identity new me --display-name Me --email me@example.org --no-link </dev/null >/dev/null 2>&1
+
+pass=0 fail=0
+check() { if eval "$2"; then pass=$((pass+1)); else fail=$((fail+1)); printf 'FAIL: %s\n' "$1"; fi; }
+M="$here/mirror" I="$here/import-pr"
+key="$(cut -d' ' -f2 < "$HOME/.ssh/id_ed25519.pub")"
+printf 'Maintainer m@example.org %s\n' "$key" > "$T/keys"; export FPL_MIRROR_KEYS="$T/keys"
+
+P="$T/pj"; G="$T/mirror.git"; mkdir -p "$P"; cd "$P"
+pijul init . >/dev/null 2>&1
+printf 'one\n' > a.txt; pijul add a.txt >/dev/null 2>&1; pijul record -a -m "base" >/dev/null 2>&1
+printf 'two\n' >> a.txt; pijul record -a -m "second" >/dev/null 2>&1
+
+h1="$("$M" "$P" "$T/m1" 2>/dev/null)"; h2="$("$M" "$P" "$T/m2" 2>/dev/null)"
+check "deterministic: two exports give one head" '[ -n "$h1" ] && [ "$h1" = "$h2" ]'
+check "keys give the author a real name" '[ "$(git -C "$T/m1" log -1 --format=%an main)" = Maintainer ]'
+check "every commit names its pijul change" '[ "$(git -C "$T/m1" log --format=%B main | grep -c "^Pijul-Change: ")" = 2 ]'
+again="$("$M" "$P" "$T/m1" 2>/dev/null)"
+check "re-export is a no-op" '[ "$again" = "$h1" ]'
+
+printf 'three\n' >> a.txt; pijul record -a -m "third" >/dev/null 2>&1
+h3="$("$M" "$P" "$T/m1" 2>/dev/null)"
+check "a new change only appends" 'git -C "$T/m1" merge-base --is-ancestor "$h1" "$h3"'
+
+# a contributor on the latest main
+git clone -q "$T/m1" "$T/c1"
+printf 'hello\n' > "$T/c1/b.txt"; git -C "$T/c1" add b.txt
+git -C "$T/c1" -c user.name="Ada Lovelace" -c user.email=ada@example.org commit -qm "feat: b"
+pr1="$(git -C "$T/c1" rev-parse HEAD)"
+git -C "$T/m1" fetch -q "$T/c1" "+main:refs/pull/1/head"
+git clone -q "$T/m1" "$T/work" 2>/dev/null
+FPL_LANDER="Maintainer <m@example.org>" "$I" "$T/m1" refs/pull/1/head "$P" >/dev/null 2>&1
+check "import records the contributor as author" 'pijul log --limit 1 </dev/null | grep -q "Ada Lovelace"'
+h4="$("$M" "$P" "$T/m1" 2>/dev/null)"
+check "PR on latest main: their commit is reused as is" '[ "$h4" = "$pr1" ]'
+
+# a contributor on an older main, while main moves on
+git clone -q "$T/m1" "$T/c2"
+printf 'readme\n' > "$T/c2/README"; git -C "$T/c2" add README
+git -C "$T/c2" -c user.name="Bo Smith" -c user.email=bo@example.org commit -qm "docs: readme"
+pr2="$(git -C "$T/c2" rev-parse HEAD)"
+printf 'four\n' >> a.txt; pijul record -a -m "fourth" >/dev/null 2>&1
+git -C "$T/m1" fetch -q "$T/c2" "+main:refs/pull/2/head"
+FPL_LANDER="Maintainer <m@example.org>" "$I" "$T/m1" refs/pull/2/head "$P" >/dev/null 2>&1
+h5="$("$M" "$P" "$T/m1" 2>/dev/null)"
+check "PR on older main: their commit is on the branch" 'git -C "$T/m1" merge-base --is-ancestor "$pr2" "$h5"'
+check "the merge commit is authored by the lander" \
+	'[ "$(git -C "$T/m1" log -1 --format="%an <%ae>" "$h5")" = "Maintainer <m@example.org>" ]'
+check "and the contributor keeps their own commit" \
+	'[ "$(git -C "$T/m1" log -1 --format="%an" "$pr2")" = "Bo Smith" ]'
+check "both lines of work are in the tree" \
+	'git -C "$T/m1" cat-file -e "$h5:README" && git -C "$T/m1" show "$h5:a.txt" | grep -q four'
+again="$("$M" "$P" "$T/m1" 2>/dev/null)"
+check "still deterministic after merges" '[ "$again" = "$h5" ]'
+
+# rewriting pijul main must not rewrite the mirror
+top="$(pijul log --limit 1 --hash-only </dev/null)"
+pijul unrecord --reset "$top" >/dev/null 2>&1 </dev/null
+"$M" "$P" "$T/m1" >/dev/null 2>&1; rc=$?
+check "a rewrite of main is refused, exit 3" '[ "$rc" = 3 ]'
+check "and the branch is left where it was" '[ "$(git -C "$T/m1" rev-parse main)" = "$h5" ]'
+"$M" -f "$P" "$T/m1" main stack/x >/dev/null 2>&1; rc=$?
+check "-f to a stack branch is allowed" '[ "$rc" = 0 ]'
+
+echo "mirror: self-test $([ $fail = 0 ] && echo ok || echo FAILED) ($pass checks, $fail failed)"
+[ "$fail" = 0 ]
