@@ -1,0 +1,3 @@
+why = "a match that misses a case of the type it matches on is refused"
+run = "pyright --project quality/pyright.json"
+expect = "reportMatchNotExhaustive"

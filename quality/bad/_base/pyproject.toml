@@ -1,0 +1,21 @@
+# The fixture project: what an implementation worktree's pyproject.toml holds, minus lark.
+[project]
+name = "fpl"
+version = "0"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[tool.deptry]
+known_first_party = ["fpl"]
+
+[tool.deptry.per_rule_ignores]
+DEP001 = ["hypothesis", "pytest"]
+
+[tool.mutmut]
+source_paths = ["fpl/"]
+pytest_add_cli_args = ["-p", "no:cacheprovider", "-q"]
+pytest_add_cli_args_test_selection = ["tests/"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-p", "noslop_pytest"]

@@ -1,0 +1,3 @@
+why = "a test that runs the code without checking what it returns lets a mutant live"
+run = "python scripts/mutants"
+expect = "survived"

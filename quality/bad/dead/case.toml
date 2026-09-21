@@ -1,0 +1,3 @@
+why = "a function nothing calls"
+run = "vulture fpl tests --min-confidence 60"
+expect = "unused function 'triple'"
