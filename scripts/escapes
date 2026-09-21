@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""scripts/escapes — every way out of a check is named and says why.
+
+    scripts/escapes [path ...]            (default: fpl tests)
+    scripts/escapes --self-test
+
+Each gate has a comment that silences it for one line. Those are allowed only in the form
+that names the rule and gives a reason after ` -- `, so a reviewer, and the next agent, can
+see what was waived and judge whether it still holds:
+
+    # noqa: E731 -- <reason>
+    # pyright: ignore[reportUnknownMemberType] -- <reason>
+    # pragma: no cover -- <reason>
+    # pragma: no mutate -- <reason>
+
+`# type: ignore` is refused outright: pyright's own form names the rule. Exit 0: none bare;
+1: some; 2: usage.
+"""
+
+import re
+import sys
+from pathlib import Path
+
+RULES = [
+    (re.compile(r"#\s*type:\s*ignore"), None, "use '# pyright: ignore[<rule>] -- <reason>'"),
+    (
+        re.compile(r"#\s*noqa\b(?P<rest>.*)"),
+        re.compile(r"^:\s*[A-Z]+\d+(,\s*[A-Z]+\d+)*\s+--\s+\S"),
+        "name the rule and give a reason: '# noqa: <RULE> -- <reason>'",
+    ),
+    (
+        re.compile(r"#\s*pyright:\s*ignore(?P<rest>.*)"),
+        re.compile(r"^\[\w+(,\s*\w+)*\]\s+--\s+\S"),
+        "name the rule and give a reason: '# pyright: ignore[<rule>] -- <reason>'",
+    ),
+    (
+        re.compile(r"#\s*pragma:\s*no\s+(?:cover|mutate)\b(?P<rest>.*)"),
+        re.compile(r"^\s+--\s+\S"),
+        "give a reason: '# pragma: no cover -- <reason>'",
+    ),
+]
+
+
+def findings(path: Path) -> list[str]:
+    out = []
+    for n, line in enumerate(path.read_text().splitlines(), 1):
+        for pattern, good, advice in RULES:
+            m = pattern.search(line)
+            if m and (good is None or not good.search(m.group("rest"))):
+                out.append(f"{path}:{n}: {line.strip()}\n    {advice}")
+    return out
+
+
+def main(argv: list[str]) -> int:
+    if argv == ["--self-test"]:
+        return self_test()
+    roots = [Path(a) for a in (argv or ["fpl", "tests"])]
+    found = [f for root in roots for p in sorted(root.rglob("*.py")) for f in findings(p)]
+    for f in found:
+        print(f"escapes: {f}")
+    if not found:
+        print("escapes: every waiver names its rule and gives a reason")
+    return 1 if found else 0
+
+
+def self_test() -> int:
+    import tempfile
+
+    good = [
+        "x = f()  # noqa: E731 -- a local predicate",
+        "y = g()  # pyright: ignore[reportUnknownMemberType] -- lark types it loosely",
+        "if z:  # pragma: no cover -- only on Windows",
+        "w = 1  # pragma: no mutate -- the constant is the spec",
+        "plain = 'no waiver here'",
+    ]
+    bad = [
+        "x = f()  # noqa",
+        "x = f()  # noqa: E731",
+        "y = g()  # type: ignore",
+        "y = g()  # pyright: ignore",
+        "y = g()  # pyright: ignore[reportAny]",
+        "if z:  # pragma: no cover",
+        "w = 1  # pragma: no mutate",
+    ]
+    checks: list[tuple[str, bool]] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for i, line in enumerate(good + bad):
+            p = Path(tmp) / f"f{i}.py"
+            p.write_text(line + "\n")
+            flagged = bool(findings(p))
+            checks.append(
+                (("refuses " if line in bad else "allows ") + line, flagged == (line in bad))
+            )
+    failed = [n for n, ok in checks if not ok]
+    for n in failed:
+        print(f"FAIL {n}", file=sys.stderr)
+    print(
+        f"escapes: self-test {'FAILED' if failed else 'ok'} "
+        f"({len(checks)} checks, {len(failed)} failed)"
+    )
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

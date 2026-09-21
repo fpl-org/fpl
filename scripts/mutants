@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""scripts/mutants — mutation testing, and a verdict on every mutant that lived.
+
+    scripts/mutants              run mutmut in the worktree, then judge its results
+    scripts/mutants --judge      judge the results of the last run only
+    scripts/mutants --self-test
+
+mutmut changes the code one small way at a time (`>` to `>=`, a string to another, a call's
+argument to None) and runs the tests against each change. A mutant the tests catch is killed.
+One they do not catch survived: the code it changed runs, but nothing checks what it does.
+
+Every mutant that is not killed (survived, no tests, timeout, suspicious) fails the gate
+unless `mutants.allow` in the worktree names it with a reason, one per line:
+
+    fpl.parse.x_where__mutmut_3 -- equivalent: col 0 and col 1 print the same caret
+
+Some mutants are equivalent (they change nothing observable) and no test can kill them;
+that is what the file is for, not for mutants nobody got round to. An entry without a
+reason is refused, and one whose mutant no longer lives is reported so the file can shrink.
+Changing `mutants.allow` is a policy change and takes [policy] (docs/QUALITY.md).
+
+Runs in the worktree's .venv (make harden). Exit 0: every mutant killed or allowed; 1: not.
+"""
+
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+ALLOW = Path("mutants.allow")
+LINE = re.compile(r"^\s*(?P<name>\S+):\s*(?P<status>.+?)\s*$")
+ENTRY = re.compile(r"^(?P<name>\S+)\s+--\s+(?P<reason>\S.*)$")
+
+
+def results(text: str) -> dict[str, str]:
+    """`mutmut results` output: every mutant it lists, with its status."""
+    out = {}
+    for line in text.splitlines():
+        m = LINE.match(line)
+        if m and "mutmut_" in m.group("name"):
+            out[m.group("name")] = m.group("status")
+    return out
+
+
+def allowed(text: str) -> tuple[dict[str, str], list[str]]:
+    """The allow file: named mutants with their reasons, and the lines that give no reason."""
+    ok, bad = {}, []
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        m = ENTRY.match(line.strip())
+        if m:
+            ok[m.group("name")] = m.group("reason")
+        else:
+            bad.append(line)
+    return ok, bad
+
+
+def judge(listed: dict[str, str], allow: dict[str, str], unreasoned: list[str], say) -> int:
+    live = {n: s for n, s in listed.items() if s != "killed"}
+    loose = {n: s for n, s in live.items() if n not in allow}
+    for line in unreasoned:
+        say(f"mutants: mutants.allow: '{line}' gives no reason ('<mutant> -- <reason>')")
+    for name, status in sorted(loose.items()):
+        say(f"mutants: {name}: {status}; see it with `mutmut show {name}`")
+    for name in sorted(set(allow) - set(live)):
+        say(f"mutants: mutants.allow names {name}, which no longer lives; drop it")
+    say(
+        f"mutants: {len(listed)} mutants, {len(listed) - len(live)} killed, "
+        f"{len(live)} not, {len(live) - len(loose)} of those allowed"
+    )
+    if not listed:
+        say("mutants: mutmut listed no mutants at all; a run that tested nothing proves nothing")
+    return 1 if loose or unreasoned or not listed else 0
+
+
+def main(argv: list[str]) -> int:
+    if argv == ["--self-test"]:
+        return self_test()
+    if argv not in ([], ["--judge"]):
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        return 2
+    mutmut = str(Path(sys.executable).with_name("mutmut"))
+    if not argv:
+        # mutmut reuses mutants/ for any source file not newer than its copy there, and a
+        # file restored by `mv` or `git stash` keeps its old time: start from nothing.
+        shutil.rmtree("mutants", ignore_errors=True)
+        run = subprocess.run([mutmut, "run"], capture_output=True, text=True, check=False)
+        if run.returncode != 0:
+            print(run.stdout[-2000:] + run.stderr[-2000:], file=sys.stderr)
+            print("mutants: mutmut run failed; the clean test run must pass first", file=sys.stderr)
+            return 1
+    listed = subprocess.run(
+        [mutmut, "results", "--all", "true"], capture_output=True, text=True, check=False
+    )
+    allow, unreasoned = allowed(ALLOW.read_text()) if ALLOW.is_file() else ({}, [])
+    return judge(results(listed.stdout), allow, unreasoned, print)
+
+
+def self_test() -> int:
+    checks: list[tuple[str, bool]] = []
+
+    def check(name: str, ok: object) -> None:
+        checks.append((name, bool(ok)))
+
+    out = (
+        "    fpl.a.x_f__mutmut_1: killed\n    fpl.a.x_f__mutmut_2: survived\n"
+        "    fpl.b.x_g__mutmut_1: no tests\nwarning: something\n"
+    )
+    live = results(out)
+    check(
+        "results are read by name",
+        live
+        == {
+            "fpl.a.x_f__mutmut_1": "killed",
+            "fpl.a.x_f__mutmut_2": "survived",
+            "fpl.b.x_g__mutmut_1": "no tests",
+        },
+    )
+    allow, bad = allowed("# comment\nfpl.a.x_f__mutmut_2 -- equivalent\nfpl.z.x__mutmut_9\n")
+    check(
+        "an entry needs a reason",
+        allow == {"fpl.a.x_f__mutmut_2": "equivalent"} and bad == ["fpl.z.x__mutmut_9"],
+    )
+    said: list[str] = []
+    check(
+        "an unallowed survivor fails",
+        judge(live, allow, [], said.append) == 1
+        and any("fpl.b.x_g__mutmut_1: no tests" in s for s in said),
+    )
+    said.clear()
+    check(
+        "all allowed passes",
+        judge(live, {**allow, "fpl.b.x_g__mutmut_1": "r"}, [], said.append) == 0,
+    )
+    said.clear()
+    check("an unreasoned entry fails", judge({"k": "killed"}, {}, ["x"], said.append) == 1)
+    said.clear()
+    check("no mutants at all fails", judge({}, {}, [], said.append) == 1)
+    said.clear()
+    judge({"k": "killed"}, {"gone__mutmut_1": "r"}, [], said.append)
+    check("a stale entry is reported", any("no longer lives" in s for s in said))
+    failed = [n for n, ok in checks if not ok]
+    for n in failed:
+        print(f"FAIL {n}", file=sys.stderr)
+    print(
+        f"mutants: self-test {'FAILED' if failed else 'ok'} "
+        f"({len(checks)} checks, {len(failed)} failed)"
+    )
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
