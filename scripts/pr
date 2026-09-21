@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 #
-# scripts/pr — open the pull request for the current agent branch, as the machine account.
+# scripts/pr — open the pull request for an agent branch, as the machine account.
 #
-#   scripts/pr                     title and body from the first commit of the branch; with
-#                                  more than one commit the body also lists every subject
+#   scripts/pr                     the current branch; title and body from its first
+#                                  commit, and with more than one commit the body also
+#                                  lists every subject
+#   scripts/pr <branch>            that branch, without checking it out
 #   scripts/pr -t <title> -b <text>
 #   scripts/pr -B <base>           target another branch than main (the PR below, in a stack)
 #   scripts/pr -n                  dry run: print what would be sent
+#
+# Naming the branch matters when the checkout is someone's working copy: switching it to
+# the branch rewrites their files, and a session that may not delete files can leave it
+# half switched. Nothing below reads the working tree, only refs.
 #
 # Prints the URL of the pull request, and nothing else, on stdout. If the branch already
 # has an open pull request, that one's URL is printed and nothing is created.
@@ -36,13 +42,17 @@ while getopts "t:b:B:n" opt; do
 	b) body="$OPTARG" ;;
 	B) base="$OPTARG" ;;
 	n) dry=1 ;;
-	*) die "usage: scripts/pr [-n] [-t <title>] [-b <body>] [-B <base>]" ;;
+	*) die "usage: scripts/pr [-n] [-t <title>] [-b <body>] [-B <base>] [<branch>]" ;;
 	esac
 done
+shift $((OPTIND - 1))
+[ $# -le 1 ] || die "usage: scripts/pr [-n] [-t <title>] [-b <body>] [-B <base>] [<branch>]"
 
 top="$(git rev-parse --show-toplevel)"
-branch="$(git branch --show-current)"
-[ -n "$branch" ] || die "detached HEAD; switch to the branch to file"
+branch="${1:-$(git branch --show-current)}"
+[ -n "$branch" ] || die "detached HEAD; name the branch to file"
+git rev-parse -q --verify "refs/heads/$branch" >/dev/null ||
+	die "no local branch '$branch'"
 parsed="$("$top/scripts/branch-lint" --parse "$branch")" ||
 	die "branch '$branch' does not parse"
 kind="$(sed -n 's/^kind=//p' <<<"$parsed")"
@@ -60,9 +70,15 @@ login="${login%@*}"
 [ -n "$login" ] && [ "$login" != "$identity" ] ||
 	die "cannot read a login from '$identity'"
 
-# The forge is the remote the branch tracks, or else the one the base tracks.
-remote="$(git config "branch.$branch.remote" || git config "branch.$base.remote")" ||
-	die "neither '$branch' nor '$base' tracks a remote"
+# The forge is the remote the branch tracks, else the one the base tracks, else the one
+# main tracks: a branch stacked on another agent branch usually tracks nothing, and its
+# base, created here, often does not either. Failing all three, a clone with a single
+# remote has only one forge to mean.
+remote="$(git config "branch.$branch.remote" ||
+	git config "branch.$base.remote" ||
+	git config branch.main.remote ||
+	{ [ "$(git remote | wc -l)" -eq 1 ] && git remote; })" ||
+	die "cannot tell the forge: '$branch', '$base' and main track no remote, and there is more than one"
 
 # .git/agent-credentials, if it is there: a git credential-store file holding one
 # https://<login>:<token>@github.com line for the machine account (docs/WORKFLOW.md).
@@ -81,14 +97,14 @@ git_forge() {
 	fi
 }
 
-here="$(git rev-parse HEAD)"
+here="$(git rev-parse "refs/heads/$branch")"
 there="$(git_forge ls-remote "$remote" "refs/heads/$branch" | cut -f1)"
 [ -n "$there" ] || die "'$branch' is not on $remote yet; push it first"
 [ "$there" = "$here" ] || die "$remote has ${there:0:7}, you have ${here:0:7}; push first"
 
-first="$(git rev-list --reverse "$remote/$base..HEAD" | head -n1)"
-[ -n "$first" ] || die "no commits between $remote/$base and HEAD"
-count="$(git rev-list --count "$remote/$base..HEAD")"
+first="$(git rev-list --reverse "$remote/$base..$here" | head -n1)"
+[ -n "$first" ] || die "no commits between $remote/$base and $branch"
+count="$(git rev-list --count "$remote/$base..$here")"
 [ -n "$title" ] || title="$(git log -1 --format=%s "$first")"
 # Default body: the first paragraph of the first commit's body, as one line.
 [ -n "$body" ] || body="$(git log -1 --format=%b "$first" |
@@ -96,7 +112,7 @@ count="$(git rev-list --count "$remote/$base..HEAD")"
 # One commit speaks for itself. More than one: the first commit's paragraph describes only
 # the first change, so list them all.
 subjects=""
-[ "$count" = 1 ] || subjects="$(git log --reverse --format='- %s' "$remote/$base..HEAD")"$'\n\n'
+[ "$count" = 1 ] || subjects="$(git log --reverse --format='- %s' "$remote/$base..$here")"$'\n\n'
 text="$(printf '%s%s\n\n%s%s commit%s, rebase-merge.' \
 	"${stack:+Stack: $stack$'\n\n'}" "$body" "$subjects" "$count" "$([ "$count" = 1 ] || echo s)")"
 
