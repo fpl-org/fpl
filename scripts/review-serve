@@ -5,9 +5,10 @@
     scripts/review-serve [--port <n>] [--no-open]
     scripts/review-serve --self-test        run against a throwaway Radicle home
 
-Serves a page on 127.0.0.1 that reads the repository's Radicle patches and nothing else:
-the open ones as a graph, a patch stacked on another drawn under it, and for each revision
-the diff with every changed file whole and the comments at the lines they are about.
+Serves a page on 127.0.0.1 that reads the repository's Radicle patches and nothing else,
+laid out like a mailbox: the open patches down the left, a patch stacked on another indented
+under it, and the chosen one on the right with every changed file whole and the comments at
+the lines they are about. j and k move through the list.
 
 What you write on the page goes into the patch, signed with your Radicle key, as the
 Radicle CLI would write it: a line comment or a comment on the whole revision goes into
@@ -245,8 +246,6 @@ a{color:var(--acc);text-decoration:none}a:hover{text-decoration:underline}
 header{padding:12px 16px;border-bottom:1px solid var(--ln);background:var(--card)}
 header h1{font-size:15px;margin:0}main{padding:16px;max-width:1200px;margin:0 auto}
 .mut{color:var(--mut)}code,pre,.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
-ul.tree{list-style:none;padding-left:18px;margin:4px 0}ul.tree.top{padding-left:0}
-ul.tree li{margin:4px 0}ul.tree ul.tree{border-left:1px solid var(--ln);margin-left:6px}
 .card{background:var(--card);border:1px solid var(--ln);border-radius:6px;margin:14px 0}
 .card>h2{font-size:13px;margin:0;padding:8px 10px;border-bottom:1px solid var(--ln);font-family:ui-monospace,monospace}
 table.d{border-collapse:collapse;width:100%}table.d td{padding:0 8px;vertical-align:top;white-space:pre-wrap;word-break:break-all}
@@ -265,6 +264,19 @@ button.pri{background:var(--acc);color:var(--card);border-color:var(--acc)}
 .err{background:var(--del);padding:8px 12px;border-radius:4px}
 .tag{font-size:11px;border:1px solid var(--ln);border-radius:9px;padding:0 6px;color:var(--mut)}
 details summary{cursor:pointer}
+body.mail{height:100vh;display:flex;flex-direction:column}body.mail main{flex:1;min-height:0;padding:0;max-width:none;margin:0;width:100%}
+.split{height:100%;display:grid;grid-template-columns:minmax(260px,360px) 1fr}
+.split aside{overflow:auto;border-right:1px solid var(--ln);background:var(--card)}
+.split iframe{width:100%;height:100%;border:0;background:var(--bg)}
+.pad{padding:10px 14px;margin:0;font-size:12px}
+a.item{display:block;padding:9px 14px 9px calc(14px + var(--depth) * 14px);border-bottom:1px solid var(--ln);
+border-left:3px solid transparent;color:var(--fg);text-decoration:none}
+a.item:hover{background:var(--bg)}a.item.on{background:var(--sel);border-left-color:var(--acc)}
+a.item .t{display:block;font-weight:500;font-size:13.5px}
+a.item .m{display:block;font-size:11.5px;color:var(--mut);font-family:ui-monospace,monospace;margin-top:2px}
+h2.ptitle{font-size:17px;margin:0 0 4px}
+@media (max-width:760px){.split{grid-template-columns:1fr;grid-template-rows:38vh 1fr}
+.split aside{border-right:0;border-bottom:1px solid var(--ln)}}
 """
 
 SCRIPT = """
@@ -292,11 +304,14 @@ document.addEventListener('click',e=>{
 """
 
 
-def page(title, body, token):
+def page(title, body, token, chrome=True, script=SCRIPT, cls=""):
+    """A whole page; without chrome it is the reading pane of the index, which has its own
+    header."""
+    head = (f'<header><h1><a href="/?t={token}" target="_top">review</a> <span class="mut">· {E(title)}</span></h1></header>'
+            if chrome else "")
     return f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{E(title)}</title><style>{STYLE}</style></head><body>
-<header><h1><a href="/?t={token}">review</a> <span class="mut">· {E(title)}</span></h1></header>
-<main>{body}</main><script>{SCRIPT}</script></body></html>"""
+<title>{E(title)}</title><style>{STYLE}</style></head><body class="{cls}">
+{head}<main>{body}</main><script>{script}</script></body></html>"""
 
 
 def who(c, me):
@@ -340,14 +355,16 @@ def thread_html(root, all_, ctx):
     return f'<div class="thread">{"".join(out)}{reply}</div>'
 
 
-def patch_page(repo, oid, rev_id, token):
+def patch_page(repo, oid, rev_id, token, embed=False):
     patch = repo.show(oid)
     revs = revisions(patch)
     rev = patch["revisions"].get(rev_id) if rev_id else revs[-1]
     if rev is None:
         raise Refused(f"no revision {rev_id} in patch {oid[:7]}")
     hidden = (f'<input type="hidden" name="t" value="{token}"><input type="hidden" name="patch" value="{oid}">'
-              f'<input type="hidden" name="revision" value="{rev["id"]}">')
+              f'<input type="hidden" name="revision" value="{rev["id"]}">'
+              + ('<input type="hidden" name="embed" value="1">' if embed else ""))
+    pane = "&embed=1" if embed else ""
     ctx = {"me": repo.me, "hidden": hidden}
     all_ = comments_of(rev)
     roots = [c for c in all_.values() if root_of(c, all_) is c]
@@ -357,15 +374,18 @@ def patch_page(repo, oid, rev_id, token):
         (placed.setdefault(a, []) if a and a[1] != "file" else general).append(c)
 
     num = forge_number(patch)
-    parts = [f'<p class="mut">patch <code>{oid[:7]}</code> by {E(short(patch["author"]["id"]))}'
+    parts = ([f'<h2 class="ptitle">{E(patch["title"])}</h2>'] if embed else [])
+    parts += [f'<p class="mut">patch <code>{oid[:7]}</code> by {E(short(patch["author"]["id"]))}'
              f'{f" · GitHub #{num}" if num else ""} · {E(patch["state"]["status"])}</p>']
     if len(revs) > 1:
         links = " ".join(
-            f'<a href="/patch/{oid}?t={token}&rev={r["id"]}">{"<b>" if r is rev else ""}{i + 1}: {r["oid"][:7]}{"</b>" if r is rev else ""}</a>'
+            f'<a href="/patch/{oid}?t={token}&rev={r["id"]}{pane}">{"<b>" if r is rev else ""}{i + 1}: {r["oid"][:7]}{"</b>" if r is rev else ""}</a>'
             for i, r in enumerate(revs))
         parts.append(f'<p>revisions: {links}</p>')
-    parts.append(f'<div class="card"><h2>description</h2><div class="c1"><div class="body">'
-                 f'{E(text_of(rev["description"]).strip())}</div></div></div>')
+    described = text_of(rev["description"]).strip()
+    if described:
+        parts.append(f'<div class="card"><h2>description</h2><div class="c1"><div class="body">'
+                     f'{E(described)}</div></div></div>')
 
     # Verdicts: everybody's, and a form for mine.
     reviews = []
@@ -418,37 +438,60 @@ def patch_page(repo, oid, rev_id, token):
                  f'<input type="hidden" name="side"><input type="hidden" name="start"><input type="hidden" name="end">'
                  f'<div class="mut what"></div><textarea name="body" required></textarea>'
                  f'<div class="row"><button class="pri">comment</button></div></form></template>')
-    return page(patch["title"], "".join(parts), token)
+    return page(patch["title"], "".join(parts), token, chrome=not embed)
+
+
+MAIL = """
+const items=[...document.querySelectorAll('a.item')], pane=document.querySelector('iframe');
+function pick(i){if(!items.length)return;i=Math.max(0,Math.min(items.length-1,i));
+  items.forEach(a=>a.classList.remove('on'));const a=items[i];a.classList.add('on');
+  a.scrollIntoView({block:'nearest'});
+  if(pane.dataset.oid!==a.dataset.oid){pane.dataset.oid=a.dataset.oid;pane.src=a.href}
+  history.replaceState(null,'','#'+a.dataset.oid)}
+items.forEach((a,i)=>a.addEventListener('click',e=>{e.preventDefault();pick(i)}));
+document.addEventListener('keydown',e=>{if(e.target.closest('textarea,input'))return;
+  const i=items.findIndex(a=>a.classList.contains('on'));
+  if(e.key==='j'||e.key==='ArrowDown'){e.preventDefault();pick(i+1)}
+  if(e.key==='k'||e.key==='ArrowUp'){e.preventDefault();pick(i-1)}});
+const h=location.hash.slice(1); pick(Math.max(0,items.findIndex(a=>a.dataset.oid===h)));
+"""
 
 
 def index_page(repo, token):
+    """The mailbox: open patches down the left in stack order, the chosen one on the right."""
     patches = repo.patches()
     open_, children = graph(patches)
+    rows = []
 
-    def tree(up, top=False):
-        kids = children.get(up, [])
-        if not kids:
-            return ""
-        items = []
-        for oid in kids:
+    def walk(up, depth):
+        for oid in children.get(up, []):
             p = open_[oid]
             rev = latest(p)
             num = forge_number(p)
             n = sum(len(comments_of(r)) for r in p["revisions"].values())
-            plural = "s" * (n != 1)
             verdicts = [r.get("verdict") for r in rev["reviews"].values() if r.get("verdict")]
-            items.append(f'<li><a href="/patch/{oid}?t={token}">{E(p["title"])}</a> '
-                         f'<span class="mut code">{oid[:7]}</span>'
-                         f'{f" <span class=tag>#{num}</span>" if num else ""}'
-                         f'{f" <span class=tag>{n} comment{plural}</span>" if n else ""}'
-                         + "".join(f" <span class=tag>{E(v)}</span>" for v in verdicts)
-                         + tree(oid) + "</li>")
-        return f'<ul class="tree{" top" if top else ""}">{"".join(items)}</ul>'
+            below = open_.get(up)
+            onto = (f"onto #{forge_number(below)}" if below and forge_number(below)
+                    else f"onto {up[:7]}" if below else "onto main")
+            meta = [f"#{num}" if num else oid[:7], onto]
+            if n:
+                meta.append(f"{n} comment{'s' * (n != 1)}")
+            meta += verdicts
+            rows.append(
+                f'<a class="item" data-oid="{oid}" style="--depth:{depth}" target="pane" '
+                f'href="/patch/{oid}?t={token}&embed=1">'
+                f'<span class="t">{"↳ " if depth else ""}{E(p["title"])}</span>'
+                f'<span class="m">{E(" · ".join(meta))}</span></a>')
+            walk(oid, depth + 1)
 
-    body = tree(None, top=True) or '<p class="mut">No open patches. scripts/import-review brings pull requests in.</p>'
+    walk(None, 0)
     closed = len(patches) - len(open_)
-    note = f'<p class="mut">{len(open_)} open, {closed} closed or merged. A patch based on another one\'s head is drawn under it.</p>'
-    return page("open patches", note + body, token)
+    listing = "".join(rows) or ('<p class="mut pad">No open patches. '
+                                '<code>scripts/import-review --open</code> brings the pull requests in.</p>')
+    body = (f'<div class="split"><aside><p class="mut pad">{len(open_)} open, {closed} closed or merged'
+            f' · j/k to move</p>{listing}</aside>'
+            f'<iframe name="pane" title="patch"></iframe></div>')
+    return page("open patches", body, token, script=MAIL, cls="mail")
 
 
 def act(repo, form):
@@ -535,7 +578,8 @@ def serve(port, open_browser, announce=print):
                 if url.path == "/":
                     self.send(200, index_page(repo, token))
                 elif m:
-                    self.send(200, patch_page(repo, m.group(1), q.get("rev", [None])[0], token))
+                    self.send(200, patch_page(repo, m.group(1), q.get("rev", [None])[0], token,
+                                              embed=q.get("embed", [""])[0] == "1"))
                 else:
                     self.send(404, "not found\n", "text/plain")
             except Refused as error:
@@ -550,7 +594,8 @@ def serve(port, open_browser, announce=print):
                 oid, revision = act(repo, form)
             except Refused as error:
                 return self.fail(error)
-            self.send(303, "", where=f"/patch/{oid}?t={token}&rev={revision}")
+            pane = "&embed=1" if form.get("embed", [""])[0] == "1" else ""
+            self.send(303, "", where=f"/patch/{oid}?t={token}&rev={revision}{pane}")
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{server.server_address[1]}/?t={token}"
@@ -685,7 +730,11 @@ def self_test():
             code, index = get("/")
             check("the index lists both patches", code == 200 and "first" in index and "second" in index)
             check("and draws the second under the first",
-                  index.index("first") < index.index("second") and "<ul class=\"tree\">" in index)
+                  index.index("first") < index.index("second") and "--depth:1" in index
+                  and "onto " + p1[:7] in index)
+            code, pane = get(f"/patch/{p1}?embed=1")
+            check("the reading pane has no header of its own", code == 200 and "<header>" not in pane
+                  and 'name="embed" value="1"' in pane)
             check("without the token there is nothing", get("/", t="wrong")[0] == 403)
 
             code, page1 = get(f"/patch/{p1}")
