@@ -363,10 +363,12 @@ tr.hunkbar>td{padding:6px 12px 6px 120px;background:var(--surface);border-top:1p
 font:13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;white-space:normal}
 tr.hunkbar>td{display:table-cell}tr.hunkbar .approve{display:inline;margin-left:12px}tr.hunkbar .ok-mark{margin-left:12px}
 tr.hunkbar.current>td{box-shadow:inset 3px 0 0 var(--acc);background:var(--acc-soft)}
-tr.done td.c{opacity:.55}tr.done.add td.n,tr.done.del td.n{background:var(--ok-soft)}
+tr.done td.c{opacity:.55}
+/* a judged hunk keeps its red and green; the mark is a stripe in the gutter */
+tr.done td.g{background:var(--ok)}
 .btn.go kbd{color:inherit;border-color:rgba(255,255,255,.55)}
 .ok-mark{color:var(--ok);font-weight:600}.no-mark{color:var(--bad);font-weight:600}
-tr.refused td.c{opacity:.7}tr.refused.add td.n,tr.refused.del td.n{background:var(--bad-soft)}
+tr.refused td.c{opacity:.7}tr.refused td.g{background:var(--bad)}
 tr.hunkbar.refused>td{background:var(--bad-soft)}tr.hunkbar.done>td{background:var(--ok-soft)}
 .ffoot{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:8px 12px;border-top:1px solid var(--line);font-size:13px;color:var(--mut)}
 .ffoot.done{background:var(--ok-soft)}.ffoot .approve{display:inline}
