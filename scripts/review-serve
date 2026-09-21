@@ -474,6 +474,10 @@ tr.hunkbar.done [data-do=undo],tr.hunkbar.refused [data-do=undo]{display:inline-
 tr.hunkbar.done [data-do=approve],tr.hunkbar.done [data-do=reject],tr.hunkbar.refused [data-do=approve],
 tr.hunkbar.refused [data-do=reject],tr.hunkbar.done .drag-hint,tr.hunkbar.refused .drag-hint{display:none}
 tr.hunkbar button{margin-left:8px}.drag-hint{margin-left:12px;font-size:12px}
+.ffoot .viewed{display:inline-flex;gap:6px;align-items:center;cursor:pointer;color:var(--ink);margin-left:auto}
+.ffoot .ok-mark+.viewed,.ffoot .btn+.ok-mark+.viewed{margin-left:0}
+.file.is-viewed .chunk{display:none}.file.is-viewed .fhead{cursor:pointer;border-radius:8px 8px 0 0}
+.file.is-viewed .fhead .path::after{content:" · viewed, click to open";font-weight:400;color:var(--mut)}
 .ffoot .ok-mark{display:none}.ffoot.done .ok-mark{display:inline}.ffoot.done [data-do=rest]{display:none}
 tbody.hk{cursor:grab}
 tbody.hk.lean-yes td{background-image:linear-gradient(rgba(43,138,62,calc(var(--p) * .22)),rgba(43,138,62,calc(var(--p) * .22)))}
@@ -569,6 +573,16 @@ function keep(change){const a=cur&&cur.closest('tbody')||inView(),before=a?posOf
 document.addEventListener('click',e=>{const g=e.target.closest('tr[data-run] td.g');if(g){keep(()=>foldRun(g.parentNode.dataset.run,true));return}
   const f=e.target.closest('tr.folded');if(f)keep(()=>foldRun(f.dataset.ph,false))});
 
+/* viewed: a file you have read folds away, until it changes */
+const viewKey=f=>'viewed.'+secOf(f).dataset.rev+'.'+($('table.d',f)||{dataset:{}}).dataset.path;
+function setViewed(f,on,save=true){f.classList.toggle('is-viewed',on);const c=$('[data-viewed]',f);if(c)c.checked=on;
+  if(save)remember(viewKey(f),on?'1':'')}
+$$('.file').forEach(f=>{if($('[data-viewed]',f)&&recall(viewKey(f))==='1')setViewed(f,true,false)});
+function toggleViewed(f){const on=!f.classList.contains('is-viewed'),h=$('.fhead',f),before=posOf(h)-S.scrollTop;
+  setViewed(f,on);passUntil=Date.now()+300;S.scrollTop=posOf(h)-Math.max(0,before)}
+document.addEventListener('change',e=>{const c=e.target.closest('[data-viewed]');if(c){c.checked=!c.checked;toggleViewed(c.closest('.file'))}});
+document.addEventListener('click',e=>{const h=e.target.closest('.file.is-viewed .fhead');if(h)toggleViewed(h.closest('.file'))});
+
 /* line comments: click a line number, shift-click to extend */
 document.addEventListener('click',e=>{
   const n=e.target.closest('td.n');if(!n)return;const tr=n.closest('tr'),t=tr.closest('table'),fl=tr.closest('.file'),side=n.dataset.side,line=+n.dataset.line;
@@ -587,7 +601,7 @@ function commentOn(bar){const d=bar.dataset,fm=form(bar,bar.closest('table'));fm
   fm.querySelector('.what').textContent=d.path+' '+(d.side==='old'?'L':'R')+d.start+(+d.end-1>+d.start?'–'+(d.end-1):'');fm.body.focus()}
 
 /* marks */
-const bars=()=>$$('tr.hunkbar').filter(b=>!secOf(b).classList.contains('merged')&&!b.closest('.files').hidden));
+const bars=()=>$$('tr.hunkbar').filter(b=>!secOf(b).classList.contains('merged')&&!b.closest('.files').hidden&&!b.closest('.file.is-viewed'));
 const stateOf=b=>b.classList.contains('done')?'approve':b.classList.contains('refused')?'reject':null;
 let cur=null;
 function focusBar(b,smooth=true){if(!b)return;$$('tr.hunkbar.current').forEach(x=>x.classList.remove('current'));
@@ -726,6 +740,7 @@ document.addEventListener('keydown',e=>{if(e.target.closest('textarea,input,sele
   else if((k==='ArrowLeft'||k==='x')&&cur)act(()=>fly(cur,'reject'));
   else if(k==='c'&&cur)act(()=>commentOn(cur));
   else if(k==='u')act(undo);
+  else if(k==='v')act(()=>{const f=(cur&&cur.closest('.file'))||$$('.file').find(x=>visible(x));if(f)toggleViewed(f)});
   else if(k==='z')act(foldNear);
   else if(k==='Z')act(foldAll);
   else if(k==='[')act(()=>flip('stack'));
@@ -1214,10 +1229,13 @@ def files_html(repo, rev, files, all_, hidden, patch=None, p="", readonly=False)
         minus = sum(1 for r in f["rows"] if r[0] == "del")
         tally = "" if readonly else (
             (f'{len(ok)}/{len(hunks)} hunks approved' + (f', {len(bad)} not' if bad else "")) if hunks else "nothing to approve")
-        foot = "" if readonly or not hunks else (
-            f'<div class="ffoot{" done" if len(ok) == len(hunks) else ""}"><span class="tally">{tally}</span>'
-            f'<button type="button" class="btn small go" data-do="rest">Approve the rest of this file</button>'
-            f'<span class="ok-mark">✓ file approved</span></div>')
+        # Viewed sits at the foot, where you arrive having read the file; ticking it folds the
+        # file away. It is yours alone, kept in this browser, and a new revision opens it again.
+        foot = "" if readonly else (
+            f'<div class="ffoot{" done" if hunks and len(ok) == len(hunks) else ""}"><span class="tally">{tally}</span>'
+            + (f'<button type="button" class="btn small go" data-do="rest">Approve the rest of this file</button>'
+               f'<span class="ok-mark">✓ file approved</span>' if hunks else "")
+            + '<label class="viewed"><input type="checkbox" data-viewed> Viewed <kbd>v</kbd></label></div>')
         parts.append(f'<div class="file" id="{p}f-{fi}"><div class="fhead"><span class="path">{E(title or "?")}</span>'
                      f'<span class="add-n">+{plus}</span><span class="del-n">−{minus}</span>'
                      f'<span class="mut tally" style="margin-left:auto;font-size:12px">{tally}</span></div>'
