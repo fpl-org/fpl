@@ -241,9 +241,13 @@ def when(stamp):
 VERDICTS = {"APPROVED": "approved", "CHANGES_REQUESTED": "asked for changes"}
 
 
+EXPORTED = re.compile(r"<!-- rad:([0-9a-f]{40}|verdict:[^ ]+) -->")
+
+
 def items(bundle):
     """The comments of a pull request in the order they were written, each with what it
-    needs to become a revision comment."""
+    needs to become a revision comment. What scripts/export-review put there came from the
+    patch, and stays out."""
     out = []
     for c in bundle["comments"]:
         out.append(dict(key=c["html_url"], at=c["created_at"], who=c["user"]["login"],
@@ -260,6 +264,7 @@ def items(bundle):
         out.append(dict(key=c["html_url"], at=c["created_at"], who=c["user"]["login"],
                         body=c["body"] or "", commit=c.get("commit_id"), where=c,
                         reply=c.get("in_reply_to_id"), id=c["id"]))
+    out = [i for i in out if not EXPORTED.search(i["body"])]
     return sorted(out, key=lambda i: (i["at"] or "", i["id"]))
 
 
@@ -314,6 +319,14 @@ def import_one(repo, remote, bundle, patches):
             m = re.search(r"#discussion_r(\d+)", comment["body"].split("\n", 1)[0])
             if m:
                 ids[int(m.group(1))] = cid
+    # A forge comment that scripts/export-review posted stands for a Radicle one, so a reply
+    # to it on the forge is a reply to that one here, in the thread it lives in.
+    review_of = {cid: review["id"] for revision in patch["revisions"].values()
+                 for review in revision["reviews"].values() for cid in review["comments"]["comments"]}
+    for c in bundle["review_comments"]:
+        m = EXPORTED.search(c.get("body") or "")
+        if m and len(m.group(1)) == 40:
+            ids[c["id"]] = m.group(1)
 
     added = 0
     for item in items(bundle):
@@ -329,8 +342,12 @@ def import_one(repo, remote, bundle, patches):
             where = location(item["where"])
             if where and have(where["commit"]):
                 action["location"] = where
-            if item["reply"] in ids:
-                action["replyTo"] = ids[item["reply"]]
+            parent = ids.get(item["reply"])
+            if parent in review_of:
+                action = {"type": "review.comment", "review": review_of[parent],
+                          "body": action["body"], "reply_to": parent}
+            elif parent:
+                action["replyTo"] = parent
         cid = repo.act(oid, f"Import {item['key']}", action)
         ids[item["id"]] = cid
         added += 1
@@ -521,6 +538,42 @@ def self_test():
         check("a comment made against the old head stays on the old revision", len(late) == 1)
         check("and a reply across runs still finds its parent",
               late and late[0].get("replyTo") == by["dave"][0])
+
+        # A comment written in the review, put on the forge by scripts/export-review, and
+        # answered there.
+        rid = sh("rad", ".").stdout.strip()
+        pid = next(o for o, p in patches().items() if p["title"] == "pr 1")
+
+        def act(action):
+            path = f"{tmp}/a.jsonl"
+            with open(path, "w") as f:
+                f.write(json.dumps(action) + "\n")
+            return sh("rad", "cob", "update", "--repo", rid, "--type", PATCH, "--object", pid,
+                      "--message", "x", path).stdout.strip().splitlines()[-1]
+
+        review = act({"type": "review", "revision": pid})
+        mine = act({"type": "review.comment", "review": review, "body": "from here"})
+        first["review_comments"] += [
+            {"id": 40, "html_url": "https://github.com/o/r/pull/1#discussion_r40",
+             "created_at": "2026-09-21T10:00:00Z", "user": {"login": "machine"},
+             "body": f"**t**, in the project's Radicle review:\n\nfrom here\n\n<!-- rad:{mine} -->",
+             "commit_id": one, "path": "f.txt", "line": 2, "start_line": None, "side": "RIGHT",
+             "in_reply_to_id": None},
+            {"id": 41, "html_url": "https://github.com/o/r/pull/1#discussion_r41",
+             "created_at": "2026-09-21T11:00:00Z", "user": {"login": "carol"},
+             "body": "agreed", "commit_id": one, "path": "f.txt", "line": 2, "start_line": None,
+             "side": "RIGHT", "in_reply_to_id": 40}]
+        with open(bundle, "w") as f:
+            json.dump([first], f)
+        imp()
+        p1 = patches()[pid]
+        everything = [c for r in p1["revisions"].values() for c in r["discussion"]["comments"].values()]
+        check("what the review put on the forge does not come back",
+              not any("discussion_r40" in c["body"] for c in everything))
+        thread = p1["revisions"][pid]["reviews"][next(iter(p1["revisions"][pid]["reviews"]))]["comments"]["comments"]
+        answer = [c for c in thread.values() if "discussion_r41" in c["body"]]
+        check("and an answer to it on the forge lands in its thread here",
+              len(answer) == 1 and (answer[0].get("replyTo") or answer[0].get("reply_to")) == mine)
 
     failed = [name for name, ok in checks if not ok]
     for name in failed:
