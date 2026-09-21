@@ -199,6 +199,21 @@ the verdict of whoever runs the import.
 It pushes to the `rad` remote and so needs `rad` (`scripts/layer on radicle`) and the key in
 the agent. `--self-test` runs it in a throwaway Radicle home without the network.
 
+```
+scripts/review --serve       the open patches, in the browser
+```
+
+reads the patches and nothing else, and draws the open ones as a graph: a patch based on
+another one's head hangs under it. A patch opens on its latest revision with every changed
+file whole and each comment under the lines it is about. What you write there goes into the
+patch under your key, the way the Radicle CLI writes it: a line comment into your review of
+the revision, a reply into the thread it answers, accept or reject as your review's verdict.
+Comments in a review can be resolved; imported ones cannot, because Radicle keeps them on
+the revision, where there is no resolve, so they are answered instead.
+
+It does not merge and does not reach the forge. The server listens on 127.0.0.1 only and
+wants the token in the address it prints, so no other page in the browser can write to it.
+
 ## The agent's credential
 
 `.git/agent-credentials`, mode 600, one line:
