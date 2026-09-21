@@ -432,6 +432,8 @@ body.no-stack .shell>.stack,body.no-tray .shell>.tray{display:none}
 border-top:1px dashed var(--line);border-bottom:1px dashed var(--line);margin:6px 0}
 /* a pull request */
 .sec{max-width:1600px;margin:0 auto;padding-top:4px}
+.sec:not([data-loaded="1"]) .shead h2{cursor:pointer}.sec:not([data-loaded="1"]) .shead h2:hover{text-decoration:underline}
+.placeholder{margin:0 0 0 40px;font-size:13px}
 .shead{display:flex;gap:12px;align-items:flex-start;margin:4px 0 12px}
 .shead .st{flex:1;min-width:0}.shead h2{margin:0;font-size:18px;text-wrap:balance}
 .shead .meta{font-size:12px}.sact{display:flex;gap:8px;align-items:center}
@@ -522,6 +524,26 @@ function jump(el,smooth=true){if(el)go(posOf(el)-12,smooth)}
 function center(el,smooth=true){if(!el)return;const h=el.getBoundingClientRect().height,v=S.clientHeight;
   go(posOf(el)-Math.max(12,(v-Math.min(h,v*.8))/2),smooth)}
 
+/* only the pull request you are at and its neighbours are in the page; the rest is a title */
+const PLACE='<p class="mut placeholder">Loads when you get here; a click on the title loads it now.</p>';
+const loaded=s=>s&&s.dataset.loaded==='1';
+function steady(change,s){const a=(shown&&shown!==s&&shown.isConnected)?shown:null,before=a?posOf(a)-S.scrollTop:0;change();
+  if(a){passUntil=Date.now()+250;S.scrollTop=posOf(a)-before}}
+const pending=new Map();
+function load(s){if(!s)return Promise.resolve();if(loaded(s))return Promise.resolve();if(pending.has(s))return pending.get(s);
+  const p=fetch('/section/'+s.dataset.oid+'?t='+T).then(async r=>{const html=await r.text();
+    steady(()=>{$('.sbody',s).innerHTML=r.ok?html:'<p class="err">'+html+'</p>';s.dataset.loaded='1'},s);initSec(s)})
+    .finally(()=>pending.delete(s));pending.set(s,p);return p}
+function unload(s){if(!loaded(s)||s.contains(cur))return;steady(()=>{$('.sbody',s).innerHTML=PLACE;s.dataset.loaded=''},s)}
+function around(s){const all=secs(),i=all.indexOf(s);if(i<0)return;
+  const want=[s,all[i+1],all[i-1]&&!all[i-1].classList.contains('merged')?all[i-1]:null].filter(Boolean);
+  const keep=new Set([...want,all[i-1]].filter(Boolean));
+  all.forEach(x=>{if(!keep.has(x))unload(x)});return Promise.all(want.map(load))}
+function secFor(id){return secs().find(s=>id===s.id||id.startsWith(s.id+'-'))}
+function initSec(s){$$('.file',s).forEach(f=>{if($('[data-viewed]',f)&&recall(viewKey(f))==='1')setViewed(f,true,false)})}
+document.addEventListener('click',e=>{const h=e.target.closest('.sec .shead h2');if(!h)return;const s=secOf(h);
+  if(!loaded(s)){load(s).then(()=>jump(s))}});
+
 /* the tree, and which pull request you are in */
 function inView(){const y=S.scrollTop+S.clientHeight*.3;let c=null;for(const s of secs()){if(posOf(s)<=y)c=s}return c||secs()[0]}
 let shown=null;
@@ -529,7 +551,7 @@ function meter(sec){const t=+sec.dataset.total,d=+sec.dataset.done,r=+sec.datase
   $('#cur-title').textContent=(sec.dataset.num?'#'+sec.dataset.num+' · ':'')+sec.dataset.title;
   if(sec.classList.contains('merged')){m.hidden=true;return}
   m.hidden=false;$('b',m).style.width=(t?100*d/t:100)+'%';$('span',m).textContent=d+'/'+t+' hunks'+(r?', '+r+' not':'')}
-function spy(){const s=inView();if(!s||s===shown)return;shown=s;
+function spy(){const s=inView();if(!s||s===shown)return;shown=s;around(s);
   $$('.ti').forEach(t=>t.classList.toggle('on',t.dataset.for===s.id));
   const on=$('.ti.on');if(on){const st=$('.shell>.stack'),r=on.getBoundingClientRect(),q=st.getBoundingClientRect();
     if(r.top<q.top||r.bottom>q.bottom)st.scrollTop+=r.top-q.top-q.height/3}
@@ -544,13 +566,14 @@ document.addEventListener('click',e=>{
   const d=e.target.closest('.disc');if(d){const li=d.closest('.ti');disclose(li,d.getAttribute('aria-expanded')!=='true');return}
   const all=e.target.closest('[data-expand-all]');if(all){const open=all.textContent.startsWith('Expand');
     $$('.ti').forEach(li=>disclose(li,open));all.textContent=open?'Collapse all':'Expand all';return}
-  const j=e.target.closest('[data-jump]');if(j){e.preventDefault();whole($('#'+j.dataset.jump));jump($('#'+j.dataset.jump));return}
+  const j=e.target.closest('[data-jump]');if(j){e.preventDefault();const s=$('#'+j.dataset.jump);load(s).then(()=>{whole(s);jump(s)});return}
   const c=e.target.closest('[data-commit]');if(c){e.preventDefault();showCommit(c);return}
   const w=e.target.closest('[data-whole]');if(w){const s=secOf(w);whole(s);jump(s);return}
-  const g=e.target.closest('[data-goto]');if(g){const t=document.getElementById(g.dataset.goto);if(t){e.preventDefault();whole(secOf(t));center(t);
-    t.animate?.([{outline:'2px solid var(--acc)'},{outline:'2px solid transparent'}],{duration:1400})}return}
+  const g=e.target.closest('[data-goto]');if(g){e.preventDefault();const tp=g.closest('.traypr'),s=tp?$('#'+tp.dataset.for):secFor(g.dataset.goto);
+    load(s).then(()=>{const t=document.getElementById(g.dataset.goto);if(!t)return;whole(secOf(t));center(t);
+      t.animate?.([{outline:'2px solid var(--acc)'},{outline:'2px solid transparent'}],{duration:1400})});return}
 });
-async function showCommit(a){const s=$('#'+a.dataset.sec);if(!s)return;
+async function showCommit(a){const s=$('#'+a.dataset.sec);if(!s)return;await load(s);
   $$('.tc a.on').forEach(x=>x.classList.remove('on'));a.classList.add('on');
   const r=await fetch('/commit/'+s.dataset.oid+'/'+a.dataset.commit+'?t='+T),html=await r.text();
   const cv=$('.cview',s);cv.innerHTML=r.ok?html:'<p class="err">'+html+'</p>';cv.hidden=false;$('.files',s).hidden=true;jump(s)}
@@ -578,7 +601,7 @@ document.addEventListener('click',e=>{const g=e.target.closest('tr[data-run] td.
 const viewKey=f=>'viewed.'+secOf(f).dataset.rev+'.'+($('table.d',f)||{dataset:{}}).dataset.path;
 function setViewed(f,on,save=true){f.classList.toggle('is-viewed',on);const c=$('[data-viewed]',f);if(c)c.checked=on;
   if(save)remember(viewKey(f),on?'1':'')}
-$$('.file').forEach(f=>{if($('[data-viewed]',f)&&recall(viewKey(f))==='1')setViewed(f,true,false)});
+
 function toggleViewed(f){const on=!f.classList.contains('is-viewed'),h=$('.fhead',f),before=posOf(h)-S.scrollTop;
   setViewed(f,on);passUntil=Date.now()+300;S.scrollTop=posOf(h)-Math.max(0,before)}
 document.addEventListener('change',e=>{const c=e.target.closest('[data-viewed]');if(c){c.checked=!c.checked;toggleViewed(c.closest('.file'))}});
@@ -706,7 +729,8 @@ function wall(dy){if(Date.now()<passUntil||!dy)return false;const top=S.scrollTo
   pull.p+=Math.abs(dy);pull.at=now;fill(g,pull.dir,pull.p);
   if(pull.p>=FULL){const d=pull.dir;pull={g:null,dir:0,p:0,at:0,hold:false};
     setTimeout(()=>fill(null),300);
-    if(d>0)go(posOf(g)+g.offsetHeight);else go(Math.max(0,posOf(g)-S.clientHeight));}
+    const to=d>0?$('#'+g.dataset.to):$('#'+g.dataset.back);
+    load(to).then(()=>{if(d>0)go(posOf(g)+g.offsetHeight);else go(Math.max(0,posOf(g)-S.clientHeight))})}
   return true}
 (function decay(){if(pull.g&&!pull.hold&&Date.now()-pull.at>140){pull.p*=.82;if(pull.p<8){pull.p=0;fill(null);pull.g=null}else fill(pull.g,pull.dir,pull.p)}
   requestAnimationFrame(decay)})();
@@ -751,13 +775,14 @@ document.addEventListener('keydown',e=>{if(e.target.closest('textarea,input,sele
 });
 
 /* arriving: at the hunk or pull request in the address, else at the head of the queue */
-(function(){const h=location.hash.slice(1),t=h&&document.getElementById(h);
-  const first=secs().find(s=>!s.classList.contains('merged'));
+(async function(){const h=location.hash.slice(1),first=secs().find(s=>!s.classList.contains('merged'));
+  const at=(h&&secFor(h))||first;if(at){shown=at;await around(at)}
+  const t=h&&document.getElementById(h);
   if(t&&t.matches('tr.hunkbar'))focusBar(t,false);
   else if(t){if(t.matches('section.sec'))jump(t,false);else center(t,false)}
   else if(first)jump(first,false);
   if(!cur){const s=t?secOf(t):first;const b=s&&$$('tr.hunkbar',s).find(x=>!stateOf(x));if(b){b.classList.add('current');cur=b}}
-  spy()})();
+  shown=null;spy()})();
 """
 
 
@@ -1284,9 +1309,11 @@ def hidden_for(token, oid, rev, sid):
             f'<input type="hidden" name="revision" value="{rev["id"]}"><input type="hidden" name="at" value="{sid}">')
 
 
-def section_html(repo, oid, patch, below, token, pos):
-    """One pull request on the page: its head, its description, every file, its merge box.
-    A merged one is there to look back at and takes no marks."""
+def section_html(repo, oid, patch, below, token, pos, full=False):
+    """One pull request on the page: its head, and, when full, its description, every file
+    and its merge box. The page asks for the body of the one you are at and its neighbours
+    (/section), so only those are in it. A merged one is there to look back at and takes
+    no marks."""
     rev = latest(patch)
     num = forge_number(patch)
     sid = sid_of(patch, oid)
@@ -1324,12 +1351,13 @@ def section_html(repo, oid, patch, below, token, pos):
             f'{len(files)} file{"s" * (len(files) != 1)} <span class="add-n">+{adds}</span> <span class="del-n">−{dels}</span> · '
             f'<span class="mono">{rev["oid"][:7]}</span></div></div>'
             f'<div class="sact">{review_pop}{link}</div></div>')
-    body = (head
-            + (f'<details class="desc"{"" if merged else " open"}><summary>Description</summary>'
-               f'<div class="md" style="margin-top:8px">{md(desc)}</div></details>' if desc else "")
-            + '<div class="cview" hidden></div>'
-            + f'<div class="files">{files_html(repo, rev, files, all_, hidden, patch, p, readonly=merged)}</div>'
-            + mergebox_html(rev, hidden, patch["state"]["status"], num, below, total, done, refused, first, p))
+    inner = "" if not full else (
+        (f'<details class="desc"{"" if merged else " open"}><summary>Description</summary>'
+         f'<div class="md" style="margin-top:8px">{md(desc)}</div></details>' if desc else "")
+        + '<div class="cview" hidden></div>'
+        + f'<div class="files">{files_html(repo, rev, files, all_, hidden, patch, p, readonly=merged)}</div>'
+        + mergebox_html(rev, hidden, patch["state"]["status"], num, below, total, done, refused, first, p))
+    body = head + f'<div class="sbody">{inner or PLACEHOLDER}</div>'
     section = (f'<section class="sec{" merged" if merged else ""}" id="{sid}" data-oid="{oid}" data-rev="{rev["id"]}" '
                f'data-num="{num or ""}" data-title="{E(patch["title"])}" data-total="{total}" data-done="{done}" '
                f'data-refused="{refused}">{body}</section>')
@@ -1343,7 +1371,22 @@ def section_html(repo, oid, patch, below, token, pos):
             f'<span>{E(patch["title"])}<span class="num">#{num or oid[:7]}'
             f'{" · merged" if merged else f" · {done}/{total}"}</span></span></a></div>'
             f'<ol class="tc" hidden>{commit_items or "<li class=mut>No commits.</li>"}</ol></li>')
-    return sid, section, tray, tree
+    return sid, section, tray, tree, inner
+
+
+PLACEHOLDER = '<p class="mut placeholder">Loads when you get here; a click on the title loads it now.</p>'
+
+
+def section_of(repo, oid, token):
+    """The body of one pull request, for the page to put in when you get near it."""
+    patches = repo.patches()
+    open_, order = queue_order(patches)
+    patch = patches.get(oid)
+    if patch is None:
+        raise Refused("no such patch")
+    up = dict(order).get(oid)
+    below = f"#{forge_number(open_[up])}" if up and forge_number(open_[up]) else up[:7] if up else None
+    return section_html(repo, oid, patch, below, token, 0, full=True)[4]
 
 
 def surface(repo, token):
@@ -1363,7 +1406,7 @@ def surface(repo, token):
         if not is_merged:
             pos += 1
         try:
-            sid, section, tray, tree = section_html(repo, o, p, below, token, pos)
+            sid, section, tray, tree, _ = section_html(repo, o, p, below, token, pos)
         except Refused as error:
             parts.append(f'<section class="sec"><h2>{E(p["title"])}</h2><p class="err">{E(str(error))}</p></section>')
             continue
@@ -1771,6 +1814,7 @@ def serve(port, open_browser, announce=print):
                 if url.path == "/" and old and re.fullmatch(r"[0-9a-f]{40}", old):
                     m = re.fullmatch(r"/pr/(.*)", f"/pr/{old}")
                 st = re.fullmatch(r"/status/([0-9a-f]{40})", url.path)
+                sb = re.fullmatch(r"/section/([0-9a-f]{40})", url.path)
                 cv = re.fullmatch(r"/commit/([0-9a-f]{40})/([0-9a-f]{40})", url.path)
                 if m:
                     # A pull request is a place on the one page now.
@@ -1780,6 +1824,8 @@ def serve(port, open_browser, announce=print):
                     self.send(200, surface(repo, token))
                 elif st:
                     self.send(200, json.dumps(status_of(repo, st.group(1), token)), "application/json")
+                elif sb:
+                    self.send(200, section_of(repo, sb.group(1), token))
                 elif cv:
                     self.send(200, commit_view(repo, cv.group(1), cv.group(2)))
                 else:
@@ -2022,7 +2068,9 @@ def self_test():
                   get(f"/pr/{p1}")[0] == 303 and get(f"/patch/{p1}")[0] == 303)
             check("the list is gone", get("/list")[0] == 404)
             check("without the token there is nothing", get("/", t="wrong")[0] == 403)
-            one_ = section(page, "pr-1")
+            one_ = get(f"/section/{p1}")[1]
+            check("the page carries titles only; bodies come when you get near",
+                  "line 40<" not in page and 'placeholder">' in page)
             check("the whole file is there and nothing is folded",
                   "line 1<" in one_ and "line 40<" in one_ and 'class="hidden' not in one_ and "show " not in one_)
             check("long unchanged stretches carry a fold handle", 'data-run="pr-1-f0-1"' in one_)
@@ -2033,7 +2081,7 @@ def self_test():
                   and 'id="pr-1-h-0-0"' in one_ and 'data-do="approve"' in one_)
             check("the panel has its timeline, files and commits",
                   'class="traypr" data-for="pr-1"' in page and "&lt;why&gt; this?" in page and 'data-goto="pr-1-f-0"' in page)
-            two_ = section(page, "pr-2")
+            two_ = get(f"/section/{p2}")[1]
             check("a stacked patch shows only its own layer", "g.txt" in two_ and "f.txt" not in two_)
             code, cview = get(f"/commit/{p1}/{one}")
             check("a commit can be read on its own", code == 200 and "line 20 &lt;b&gt;" in cview and "hunkbar" not in cview)
@@ -2088,7 +2136,7 @@ def self_test():
             check("the review form comments without a verdict",
                   post(kind="review", event="comment", patch=p1, revision=p1, body="general words") == 303
                   and any(c["body"] == "general words" for c in next(iter(show(p1)["revisions"][p1]["reviews"].values()))["comments"]["comments"].values()))
-            page1 = section(get("/")[1], "pr-1") + get("/")[1]
+            page1 = get(f"/section/{p1}")[1] + get("/")[1]
             check("the conversation shows it all back",
                   "rename this" in page1 and "because" in page1 and ">resolved<" in page1
                   and "requested changes" in page1 and "general words" in page1)
@@ -2164,7 +2212,8 @@ def self_test():
             code, queue = get("/queue")
             check("the queue reads head first, each change with its own hunks and merge box",
                   code == 200 and queue.index("first") < queue.index("second") and "head of the queue" in queue
-                  and 'id="pr-1-h-0-0"' in queue and 'id="pr-2-h-0-0"' in queue and 'id="pr-2-merge"' in queue)
+                  and 'id="pr-1-h-0-0"' in get(f"/section/{p1}")[1]
+                  and 'id="pr-2-h-0-0"' in get(f"/section/{p2}")[1] and 'id="pr-2-merge"' in get(f"/section/{p2}")[1])
             check("a mark from the page is answered, not redirected",
                   post(kind="approve", patch=p2, revision=p2, ranges=json.dumps([["g.txt", "new", 1, 2]]),
                        active="1", ajax="1") == 200)
@@ -2173,7 +2222,7 @@ def self_test():
                   and not any(c[:2] == ["pr", "merge"] for c in gh_state()["log"]))
             hunk = json.dumps([["f.txt", "new", 20, 21]])
             post(kind="reject", patch=p1, revision=p1, ranges=hunk, active="1", at="h-0-0")
-            page1 = section(get("/")[1], "pr-1")
+            page1 = get(f"/section/{p1}")[1]
             check("a hunk can be refused, and the merge box then offers to send it back",
                   'class="hunkbar refused"' in page1 and "Request changes" in page1 and "1 not" in page1)
             post(kind="reject", patch=p1, revision=p1, ranges=hunk, active="0", at="h-0-0")
@@ -2183,7 +2232,7 @@ def self_test():
             check("an approval is a signed reaction on those lines",
                   any(r["emoji"] == "\u2705" and r["location"]["new"]["range"] == {"start": 20, "end": 21} for r in reacts)
                   and not any(r["emoji"] == "\u274c" for r in reacts))
-            page1 = section(get("/")[1], "pr-1")
+            page1 = get(f"/section/{p1}")[1]
             check("with every hunk approved, the merge button is at the bottom",
                   'class="hunkbar done"' in page1 and "Every hunk approved" in page1
                   and page1.index("Every hunk approved") > page1.index('class="hunkbar done"'))
@@ -2216,11 +2265,11 @@ def self_test():
                "rad", f"+{moved}:refs/heads/patches/{p2}")
             check("the stacked patch has a new revision", len(show(p2)["revisions"]) == 2)
             page = get("/")[1]
-            page2 = section(page, "pr-2")
+            page2 = get(f"/section/{p2}")[1] + section(page, "pr-2")
             check("and the approval of its unchanged hunk carried over", "1/1 hunks" in page2 and 'class="hunkbar done"' in page2)
             check("the merged one stays above the head, to look back at, without marks",
                   page.index('class="sec merged" id="pr-1"') < page.index('id="pr-2"')
-                  and 'data-do="approve"' not in section(page, "pr-1"))
+                  and 'data-do="approve"' not in get(f"/section/{p1}")[1])
         finally:
             server.terminate()
             server.wait()
