@@ -12,6 +12,12 @@ __pycache__/
 dist/
 *.egg-info/
 
+# What the noslop lanes leave behind in a worktree (quality/noslop.mk)
+.noslop/
+mutants/
+.hypothesis/
+.import_linter_cache/
+
 # direnv's cache of the dev shell (docs/DEVSHELL.md)
 .direnv/
 
