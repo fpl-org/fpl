@@ -208,8 +208,15 @@ need from you (your review, changes, merging), a stacked one indented under the 
 on. A pull request opens laid out the way stacked-review tools lay it out: the stack on the
 left with main at the bottom, the changed files in the middle with every file whole behind
 folds and each comment under its lines, and a tray on the right with the timeline, the file
-tree and the commits. Review and Merge are in the header. Keys: `s` stack, `t` `f` `c` the
-tray, `j` `k` and enter on the list. Only what is in Radicle shows: `scripts/import-review
+tree and the commits.
+
+You read top to bottom and decide per hunk, in the place you read it: under each hunk are
+Approve (`a`), Not this (`x`) and Comment (`c`), and under each file a button for the rest
+of it; `n` and `p` move between hunks, and a selected range of lines can be approved on its
+own. A mark is a Radicle reaction on those lines, signed like a comment. The merge button is
+at the bottom (`m`), and it opens only when every hunk is approved; with hunks refused it
+offers to request changes instead. Merging records your approval of the revision too.
+Keys on the list: `j` `k` and enter. Only what is in Radicle shows: `scripts/import-review
 --open` first, to bring the pull requests in. What you write there goes into the
 patch under your key, the way the Radicle CLI writes it: a line comment into your review of
 the revision, a reply into the thread it answers, accept or reject as your review's verdict.

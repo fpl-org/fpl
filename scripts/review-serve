@@ -351,6 +351,22 @@ tr.thread>td{padding:8px 12px 10px 108px;background:var(--sunk);white-space:norm
 .merge{border:1px solid var(--line);border-radius:8px;padding:12px;margin-top:16px}
 .merge h3{margin:0 0 4px;font-size:14px}
 pre.log{white-space:pre-wrap;margin:8px 0 0;font-size:12px}
+tr.hunkbar>td{padding:6px 12px 6px 108px;background:var(--surface);border-top:1px solid var(--line);border-bottom:1px solid var(--line);
+font:13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;white-space:normal}
+tr.hunkbar>td{display:table-cell}tr.hunkbar .approve{display:inline;margin-left:12px}tr.hunkbar .ok-mark{margin-left:12px}
+tr.hunkbar.current>td{box-shadow:inset 3px 0 0 var(--acc);background:var(--acc-soft)}
+tr.done td.c{opacity:.55}tr.done.add td.n,tr.done.del td.n{background:var(--ok-soft)}
+.btn.go kbd{color:inherit;border-color:rgba(255,255,255,.55)}
+.ok-mark{color:var(--ok);font-weight:600}.no-mark{color:var(--bad);font-weight:600}
+tr.refused td.c{opacity:.7}tr.refused.add td.n,tr.refused.del td.n{background:var(--bad-soft)}
+tr.hunkbar.refused>td{background:var(--bad-soft)}tr.hunkbar.done>td{background:var(--ok-soft)}
+.ffoot{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:8px 12px;border-top:1px solid var(--line);font-size:13px;color:var(--mut)}
+.ffoot.done{background:var(--ok-soft)}.ffoot .approve{display:inline}
+.meter{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--mut)}
+.meter i{display:inline-block;width:90px;height:6px;border-radius:3px;background:var(--line);overflow:hidden}
+.meter i b{display:block;height:100%;background:var(--ok)}
+.mergebox{max-width:900px;border:1px solid var(--line);border-radius:8px;background:var(--surface);padding:16px;margin-top:8px}
+.mergebox h3{margin:0 0 6px;font-size:15px}.mergebox.ready{border-color:var(--ok)}
 .err{background:var(--bad-soft);border:1px solid var(--bad);padding:12px 16px;border-radius:8px;max-width:760px}
 .tree{list-style:none;margin:0;padding:0}.tree li a{display:flex;justify-content:space-between;gap:8px;padding:5px 6px;border-radius:6px;color:var(--ink);font-size:12px}
 .tree li a:hover{background:var(--sunk);text-decoration:none}.tree .p{font-family:ui-monospace,monospace;overflow-wrap:anywhere}
@@ -398,6 +414,16 @@ document.addEventListener('click',e=>{
   fm.querySelector('.what').textContent=t.dataset.path+' '+(lo===hi?L+lo:L+lo+'–'+L+hi);
   fm.body.focus();
 });
+function commentOn(bar){
+  $$('tr.form').forEach(r=>r.remove());
+  const row=document.createElement('tr'); row.className='form thread'; row.innerHTML='<td colspan="3"></td>';
+  row.firstChild.appendChild($('#lineform').content.cloneNode(true)); bar.after(row);
+  const fm=row.querySelector('form'), d=bar.dataset, L=d.side==='old'?'L':'R';
+  fm.path.value=d.path; fm.side.value=d.side; fm.start.value=d.start; fm.end.value=d.end; fm.at.value=bar.id;
+  fm.querySelector('.what').textContent=d.path+' '+L+d.start+(+d.end-1>+d.start?'–'+L+(d.end-1):'');
+  fm.body.focus();
+}
+document.addEventListener('click',e=>{const b=e.target.closest('.hunk-comment'); if(b)commentOn(b.closest('tr'))});
 document.addEventListener('keydown',e=>{
   if(e.target.closest('textarea,input,select')||e.metaKey||e.ctrlKey||e.altKey)return;
   const rows=$$('a.row');
@@ -405,8 +431,18 @@ document.addEventListener('keydown',e=>{
     if(e.key==='j'||e.key==='k'){e.preventDefault();const to=Math.max(0,Math.min(rows.length-1,i<0?0:i+(e.key==='j'?1:-1)));
       rows.forEach(r=>r.classList.remove('on'));rows[to].classList.add('on');rows[to].scrollIntoView({block:'nearest'});remember('row',to)}
     if(e.key==='Enter'&&i>=0)location.href=rows[i].href;return}
+  const bars=$$('tr.hunkbar'); let cur=bars.findIndex(b=>b.classList.contains('current'));
+  function focusBar(i){if(i<0||i>=bars.length)return; bars.forEach(b=>b.classList.remove('current')); const b=bars[i]; b.classList.add('current');
+    if(b.dataset.fold)$$('tr[data-fold="'+b.dataset.fold+'"]').forEach(x=>x.classList.remove('hidden'));
+    b.scrollIntoView({block:'center'})}
+  if(e.key==='n'||e.key==='j'){e.preventDefault();let i=bars.findIndex((b,k)=>k>cur&&!b.classList.contains('done')&&!b.classList.contains('refused'));focusBar(i<0?Math.min(cur+1,bars.length-1):i);return}
+  if(e.key==='p'||e.key==='k'){e.preventDefault();focusBar(Math.max(0,cur-1));return}
+  if(e.key==='a'&&cur>=0){e.preventDefault();const b=bars[cur].querySelector('form.approve:not(.reject) button');if(b)b.click();return}
+  if(e.key==='x'&&cur>=0){e.preventDefault();const b=bars[cur].querySelector('form.reject button');if(b)b.click();return}
+  if(e.key==='c'&&cur>=0){e.preventDefault();commentOn(bars[cur]);return}
+  if(e.key==='m'){const m=$('#merge');if(m){e.preventDefault();m.scrollIntoView({block:'center'})}return}
   if(e.key==='s'){document.body.classList.toggle('no-stack');remember('stack',document.body.classList.contains('no-stack')?'off':'on')}
-  const tab={t:'timeline',f:'files',c:'commits'}[e.key]; if(tab){const a=$('.tray nav a[data-tab="'+tab+'"]'); if(a)a.click()}
+  const tab={t:'timeline',f:'files'}[e.key]; if(tab){const a=$('.tray nav a[data-tab="'+tab+'"]'); if(a)a.click()}
 });
 $$('.tray nav a').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();
   if(a.classList.contains('on')&&!document.body.classList.contains('no-tray')){document.body.classList.add('no-tray');return}
@@ -414,6 +450,12 @@ $$('.tray nav a').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();
   $$('.tray nav a').forEach(b=>b.classList.toggle('on',b===a));
   $$('.tray .pane').forEach(p=>p.hidden=p.dataset.tab!==a.dataset.tab); remember('tab',a.dataset.tab)}));
 const saved=recall('tab'); if(saved){const a=$('.tray nav a[data-tab="'+saved+'"]'); if(a&&!a.classList.contains('on'))a.click()}
+(function(){const bars=$$('tr.hunkbar'); if(!bars.length)return;
+  const h=location.hash.slice(1), at=bars.findIndex(b=>b.id===h);
+  let i=bars.findIndex((b,k)=>k>=Math.max(0,at)&&!b.classList.contains('done')&&!b.classList.contains('refused')); if(i<0&&at>=0)i=at;
+  if(i<0)return; bars[i].classList.add('current');
+  if(h){if(bars[i].dataset.fold)$$('tr[data-fold="'+bars[i].dataset.fold+'"]').forEach(x=>x.classList.remove('hidden'));
+    bars[i].scrollIntoView({block:'center'})}})();
 const r=+recall('row'); const rows=$$('a.row'); if(rows.length){rows.forEach(x=>x.classList.remove('on'));(rows[r]||rows[0]).classList.add('on')}
 """
 
@@ -653,20 +695,37 @@ def pr_page(repo, oid, rev_id, token, tab="conversation", below=None, note=""):
                   f'<label><input type="radio" name="event" value="approve"><span>Approve<small>Your verdict on this revision: accept.</small></span></label>'
                   f'<label><input type="radio" name="event" value="request_changes"><span>Request changes<small>Your verdict on this revision: reject.</small></span></label>'
                   f'<div class="row-end"><button class="btn blue">Submit review</button></div></form></div></details>')
+    total, done, refused, first = progress(rev, files, repo.me)
+    pct = int(100 * done / total) if total else 100
+    merge_btn = (f'<a class="meter" href="#{first or "merge"}" data-goto="{first or "merge"}" title="n: next hunk, a: approve it">'
+                 f'<i><b style="width:{pct}%"></b></i>{done}/{total} hunks{f", {refused} not" if refused else ""}</a>')
     if status == "merged":
-        merge_btn = f'<span class="pill merged">{ICON_MERGED} Merged</span>'
+        mergebox = f'<div class="mergebox" id="merge"><h3>{ICON_MERGED} Merged</h3><div class="mut">This change is on main.</div></div>'
     elif not num:
-        merge_btn = '<span class="pill plain">not from a pull request</span>'
+        mergebox = ('<div class="mergebox" id="merge"><h3>Not from a pull request</h3><div class="mut">'
+                    'Only changes that came from the forge are merged from here.</div></div>')
     elif below:
-        merge_btn = f'<span class="pill plain">merge {E(below)} first</span>'
+        mergebox = (f'<div class="mergebox" id="merge"><h3>Stacked on {E(below)}</h3><div class="mut">Merge that one first; '
+                    f'this one then moves onto main by itself.</div></div>')
+    elif refused and first is None:
+        mergebox = (f'<div class="mergebox" id="merge"><h3><span class="no-mark">✗</span> {refused} hunk{"s" * (refused != 1)} not approved</h3>'
+                    f'<p class="mut" style="margin:0 0 12px">Everything is read. Send it back: this records your verdict on the revision as '
+                    f'request changes, with the note below, and it reaches GitHub with scripts/export-review.</p>'
+                    f'<form method="post" action="/act">{hidden}<input type="hidden" name="kind" value="review">'
+                    f'<input type="hidden" name="event" value="request_changes"><textarea name="body" id="send-back" placeholder="What should change"></textarea>'
+                    f'<div class="actions"><button class="btn" style="border-color:var(--bad);color:var(--bad)">Request changes</button></div></form></div>')
+    elif first is not None:
+        left = total - done - refused
+        mergebox = (f'<div class="mergebox" id="merge"><h3>{left} hunk{"s" * (left != 1)} still to read</h3>'
+                    f'<div class="mut">Merging opens once every hunk is approved. <a href="#{first}" data-goto="{first}">Go to the next one</a> '
+                    f'(<kbd>n</kbd>, then <kbd>a</kbd>).</div></div>')
     else:
-        merge_btn = (f'<details class="pop"><summary class="btn go">Merge <kbd style="color:inherit;border-color:rgba(255,255,255,.5)">▾</kbd></summary>'
-                     f'<div class="popbox"><h3>Rebase and merge #{num}</h3><p class="mut" style="margin:0 0 8px">'
-                     f'Your gh account approves the pull request on GitHub and rebase-merges it, but only if GitHub still has '
-                     f'<span class="mono">{rev["oid"][:7]}</span>, the revision you are looking at, and its checks passed. '
-                     f'Pull requests stacked on it then move onto the new main, and its branch is deleted.</p>'
-                     f'<form method="post" action="/act">{hidden}<input type="hidden" name="kind" value="land">'
-                     f'<div class="row-end"><button class="btn go">Rebase and merge</button></div></form></div></details>')
+        mergebox = (f'<div class="mergebox ready" id="merge"><h3><span class="ok-mark">✓</span> Every hunk approved</h3>'
+                    f'<p class="mut" style="margin:0 0 12px">Merging records your approval here and on GitHub, where your gh account '
+                    f'rebase-merges #{num}, but only if GitHub still has <span class="mono">{rev["oid"][:7]}</span>, the revision you read, '
+                    f'and its checks passed. Pull requests stacked on it then move onto the new main, and its branch is deleted.</p>'
+                    f'<form method="post" action="/act">{hidden}<input type="hidden" name="kind" value="land">'
+                    f'<button class="btn go">Rebase and merge #{num}</button></form></div>')
     rev_links = (" · " + " ".join(
         f'<a href="/pr/{oid}?t={token}&rev={r["id"]}">{"<b>" if r is rev else ""}r{i + 1}{"</b>" if r is rev else ""}</a>'
         for i, r in enumerate(revs))) if len(revs) > 1 else ""
@@ -698,6 +757,7 @@ def pr_page(repo, oid, rev_id, token, tab="conversation", below=None, note=""):
     if note:
         middle.append(f'<div class="desc"><b>What the merge did</b><pre class="log mono">{E(note)}</pre></div>')
     middle.append(files_html(repo, rev, files, all_, hidden))
+    middle.append(mergebox)
 
     # Right: the timeline, the files, the commits.
     events = [(revs[0]["description"][0]["timestamp"], 0,
@@ -752,13 +812,79 @@ def pr_page(repo, oid, rev_id, token, tab="conversation", below=None, note=""):
     tray = (f'<aside class="tray"><nav>'
             f'<a href="#" data-tab="timeline" class="on">Timeline <kbd>t</kbd></a>'
             f'<a href="#" data-tab="files">Files {len(files)} <kbd>f</kbd></a>'
-            f'<a href="#" data-tab="commits">Commits {len(commits)} <kbd>c</kbd></a></nav>'
+            f'<a href="#" data-tab="commits">Commits {len(commits)}</a></nav>'
             f'<div class="pane" data-tab="timeline"><ul class="tl">{timeline}</ul>{add}</div>'
             f'<div class="pane" data-tab="files" hidden><ul class="tree">{tree}</ul></div>'
             f'<div class="pane" data-tab="commits" hidden><ul class="commits">{commit_list or "<li class=mut>No commits.</li>"}</ul></div>'
             f'</aside>')
     body = f'<main class="pr">{stack}<section class="code">{"".join(middle)}</section>{tray}</main>'
     return page(f"#{num or oid[:7]} {patch['title']}", body, token, bar=bar)
+
+
+APPROVED = "\u2705"  # a hunk you are fine with
+REJECTED = "\u274c"  # a hunk you are not
+
+
+def hunks_of(f):
+    """The changed runs of a file, each as the rows it spans and the lines it covers on one
+    side: the new side when it adds anything, the old side when it only removes."""
+    out, cur = [], None
+    for i, (kind, o, n, _) in enumerate(f["rows"]):
+        if kind in ("add", "del"):
+            if cur is None:
+                cur = {"first": i, "last": i, "new": [], "old": []}
+            cur["last"] = i
+            (cur["new"] if kind == "add" else cur["old"]).append(n if kind == "add" else o)
+        elif cur is not None:
+            out.append(cur)
+            cur = None
+    if cur is not None:
+        out.append(cur)
+    for h in out:
+        side = "new" if h["new"] else "old"
+        lines = h[side]
+        h.update(side=side, start=min(lines), end=max(lines) + 1, lines=set(lines))
+    return out
+
+
+def approved_lines(rev, me, emoji=APPROVED):
+    """Lines you marked on this revision, by (path, side): approved, or with REJECTED, not.
+    Each mark is a Radicle reaction on a code location, signed like everything else."""
+    out = {}
+    for r in rev.get("reactions") or []:
+        loc = r.get("location") or {}
+        if r.get("emoji") != emoji or me not in (r.get("authors") or []) or loc.get("commit") != rev["oid"]:
+            continue
+        for side in ("new", "old"):
+            rng = loc.get(side)
+            if rng and rng.get("type") == "lines":
+                out.setdefault((loc["path"], side), set()).update(range(rng["range"]["start"], rng["range"]["end"]))
+    return out
+
+
+def verdicts(rev, files, me):
+    """For every hunk, keyed (file index, hunk index): "yes", "no" or None."""
+    yes, no = approved_lines(rev, me), approved_lines(rev, me, REJECTED)
+    out = {}
+    for fi, f in enumerate(files):
+        for hi, h in enumerate(hunks_of(f)):
+            key = (f["path"], h["side"])
+            out[(fi, hi)] = ("no" if h["lines"] & no.get(key, set())
+                             else "yes" if h["lines"] <= yes.get(key, set()) else None)
+    return out
+
+
+def progress(rev, files, me):
+    """(hunks in all, approved, rejected, anchor of the first one still open)."""
+    v = verdicts(rev, files, me)
+    first = next((f"h-{fi}-{hi}" for (fi, hi), x in sorted(v.items()) if x is None), None)
+    return len(v), sum(x == "yes" for x in v.values()), sum(x == "no" for x in v.values()), first
+
+
+def approve_form(hidden, ranges, active, label, cls, at, mark="approve"):
+    return (f'<form method="post" action="/act" class="approve {mark}">{hidden}<input type="hidden" name="kind" value="{mark}">'
+            f'<input type="hidden" name="ranges" value="{E(json.dumps(ranges))}"><input type="hidden" name="active" value="{1 if active else 0}">'
+            f'<input type="hidden" name="at" value="{at}"><button class="btn small {cls}">{label}</button></form>')
 
 
 def files_html(repo, rev, files, all_, hidden):
@@ -770,9 +896,15 @@ def files_html(repo, rev, files, all_, hidden):
             placed.setdefault(a, []).append(c)
         elif c.get("location"):
             elsewhere.append(c)
+    decided = verdicts(rev, files, repo.me)
     parts = []
     for fi, f in enumerate(files):
         path = f["path"]
+        hunks = hunks_of(f)
+        ok = {hi for hi in range(len(hunks)) if decided[(fi, hi)] == "yes"}
+        bad = {hi for hi in range(len(hunks)) if decided[(fi, hi)] == "no"}
+        end_of = {h["last"]: hi for hi, h in enumerate(hunks)}
+        in_hunk = {i: hi for hi, h in enumerate(hunks) for i in range(h["first"], h["last"] + 1)}
         rows, keep = [], set()
         changed = [i for i, r in enumerate(f["rows"]) if r[0] in ("add", "del")]
         for i, (kind, o, n, text) in enumerate(f["rows"]):
@@ -782,7 +914,8 @@ def files_html(repo, rev, files, all_, hidden):
                 continue
             if kind != "ctx" or any(abs(i - j) <= 3 for j in changed):
                 keep.add(len(rows))
-            rows.append(f'<tr class="{kind}"><td class="n old" data-side="old" data-line="{o or ""}">{o or ""}</td>'
+            done = " done" if in_hunk.get(i) in ok else " refused" if in_hunk.get(i) in bad else ""
+            rows.append(f'<tr class="{kind}{done}"><td class="n old" data-side="old" data-line="{o or ""}">{o or ""}</td>'
                         f'<td class="n new" data-side="new" data-line="{n or ""}">{n or ""}</td>'
                         f'<td class="c">{E(text) or " "}</td></tr>')
             for key in ((path, "new", n), (path, "old", o)):
@@ -791,27 +924,57 @@ def files_html(repo, rev, files, all_, hidden):
                         keep.add(len(rows) - 1)
                         keep.add(len(rows))
                         rows.append(f'<tr class="thread"><td colspan="3">{thread(repo, c, all_, hidden)}</td></tr>')
+            if i in end_of:
+                # Under the hunk, in reading order: you read it, then you say it is fine.
+                hi = end_of[i]
+                h = hunks[hi]
+                rng = [[path, h["side"], h["start"], h["end"]]]
+                span = f'{"R" if h["side"] == "new" else "L"}{h["start"]}' + (
+                    f'–{h["end"] - 1}' if h["end"] - 1 > h["start"] else "")
+                at = f"h-{fi}-{hi}"
+                if hi in ok:
+                    state = '<span class="ok-mark">✓ approved</span>'
+                    control = approve_form(hidden, rng, False, "Undo", "", at)
+                elif hi in bad:
+                    state = '<span class="no-mark">✗ not this</span>'
+                    control = approve_form(hidden, rng, False, "Undo", "", at, "reject")
+                else:
+                    state = ""
+                    control = (approve_form(hidden, rng, True, "Approve <kbd>a</kbd>", "go", at)
+                               + approve_form(hidden, rng, True, "Not this <kbd>x</kbd>", "", at, "reject")
+                               + '<button type="button" class="btn small hunk-comment">Comment <kbd>c</kbd></button>')
+                keep.add(len(rows))
+                rows.append(f'<tr class="hunkbar{" done" if hi in ok else " refused" if hi in bad else ""}" id="{at}" '
+                            f'data-path="{E(path)}" data-side="{h["side"]}" data-start="{h["start"]}" data-end="{h["end"]}"><td colspan="3">'
+                            f'<span class="mut mono">hunk {hi + 1} of {len(hunks)} · {span}</span>{state}{control}</td></tr>')
         if not changed:
             keep.update(range(len(rows)))
         body = "".join(fold(rows, keep, f"f{fi}")) if not f["binary"] else '<tr><td class="c mut">Binary file not shown.</td></tr>'
         title = path if not f["old_path"] or f["old_path"] == path else f"{f['old_path']} → {path}"
         plus = sum(1 for r in f["rows"] if r[0] == "add")
         minus = sum(1 for r in f["rows"] if r[0] == "del")
+        left_ranges = [[path, h["side"], h["start"], h["end"]] for hi, h in enumerate(hunks) if hi not in ok and hi not in bad]
+        tally = (f'{len(ok)}/{len(hunks)} hunks approved' + (f', {len(bad)} not' if bad else "")) if hunks else "nothing to approve"
+        foot = (f'<div class="ffoot{" done" if hunks and len(ok) == len(hunks) else ""}"><span>{tally}</span>'
+                + (approve_form(hidden, left_ranges, True, f"Approve the rest of {E(path)}", "go", f"f-{fi}") if left_ranges
+                   else '<span class="ok-mark">✓ file approved</span>' if hunks and len(ok) == len(hunks) else "")
+                + "</div>")
         parts.append(f'<div class="file" id="f-{fi}"><div class="fhead"><span class="path">{E(title or "?")}</span>'
                      f'<span class="add-n">+{plus}</span><span class="del-n">−{minus}</span>'
-                     f'<span class="mut" style="margin-left:auto;font-size:12px">click a line number to comment</span></div>'
-                     f'<table class="d" data-path="{E(path or "")}">{body}</table></div>')
+                     f'<span class="mut" style="margin-left:auto;font-size:12px">{tally}</span></div>'
+                     f'<table class="d" data-path="{E(path or "")}">{body}</table>{foot}</div>')
     left = [c for cs in placed.values() for c in cs] + elsewhere
     if left:
         parts.append('<div class="file"><div class="fhead"><span class="path">Comments on lines outside this revision\'s diff</span></div>'
                      + "".join(f'<div style="padding:10px 12px">{excerpt_of(c, rev)}{thread(repo, c, all_, hidden)}</div>'
                                for c in left) + "</div>")
     parts.append(f'<template id="lineform"><div class="thread-box"><form method="post" action="/act" style="padding:10px 12px">{hidden}'
-                 f'<input type="hidden" name="kind" value="comment"><input type="hidden" name="path">'
-                 f'<input type="hidden" name="side"><input type="hidden" name="start"><input type="hidden" name="end">'
+                 f'<input type="hidden" name="path"><input type="hidden" name="side"><input type="hidden" name="start">'
+                 f'<input type="hidden" name="end"><input type="hidden" name="at">'
                  f'<div class="mut mono what" style="margin-bottom:6px"></div><textarea name="body" required placeholder="Leave a comment"></textarea>'
                  f'<div class="actions"><button type="button" class="btn" onclick="this.closest(\'tr\').remove()">Cancel</button>'
-                 f'<button class="btn blue">Comment</button></div></form></div></template>')
+                 f'<button class="btn" name="kind" value="approve-lines" formnovalidate>Approve these lines</button>'
+                 f'<button class="btn blue" name="kind" value="comment">Comment</button></div></form></div></template>')
     return "".join(parts)
 
 
@@ -924,6 +1087,17 @@ def land(repo, oid):
            if (c.get("conclusion") or c.get("state") or "").upper() not in ("SUCCESS", "NEUTRAL", "SKIPPED")]
     if bad:
         raise Refused(f"checks not passed on #{num}: {', '.join(bad)}")
+    total, done, refused, _ = progress(rev, diff(rev["base"], rev["oid"]), repo.me)
+    if done < total:
+        raise Refused(f"{total - done} of {total} hunks are not approved by you; merging waits for every one")
+
+    # Every hunk approved is an approval of the revision, so it is recorded as one.
+    mine = rev["reviews"].get(repo.me)
+    if not mine or mine.get("verdict") != "accept":
+        review = repo.my_review(oid, rev["id"])
+        repo.act(oid, "Accept", {"type": "review.edit.v2", "review": review, "verdict": "accept",
+                                 "summary": text_of((mine or {}).get("summary", [])) or "Every hunk approved."})
+        log.append("recorded your approval of the revision in Radicle")
 
     gh("pr", "review", num, "--repo", slug, "--approve")
     log.append(f"approved #{num} as {who}")
@@ -1041,6 +1215,25 @@ def act(repo, form):
                                                  "summary": body or text_of(mine.get("summary", []))})
         else:
             raise Refused("choose comment, approve or request changes")
+    elif kind in ("approve", "approve-lines", "reject"):
+        commit = repo.show(oid)["revisions"][revision]["oid"]
+        if kind in ("approve", "reject"):
+            try:
+                ranges = json.loads(get("ranges"))
+            except ValueError:
+                raise Refused("bad ranges")
+            active = get("active") != "0"
+        else:
+            ranges = [[get("path"), get("side"), get("start"), get("end")]]
+            active = True
+        for path, side, start, end in ranges:
+            start, end = int(start), int(end)
+            if side not in ("new", "old") or not path or start < 1 or end <= start:
+                raise Refused("bad range")
+            mark = REJECTED if kind == "reject" else APPROVED
+            repo.act(oid, ("Refuse lines" if mark == REJECTED else "Approve lines") if active else "Withdraw mark",
+                     {"type": "revision.react", "revision": revision, "reaction": mark, "active": active,
+                      "location": {"commit": commit, "path": path, side: {"type": "lines", "range": {"start": start, "end": end}}}})
     elif kind == "land":
         NOTES[oid] = land(repo, oid)
     elif kind in ("resolve", "unresolve"):
@@ -1113,9 +1306,9 @@ def serve(port, open_browser, announce=print):
                 oid, revision = act(repo, form)
             except Refused as error:
                 return self.fail(error)
-            tab = (form.get("tab") or ["conversation"])[0]
-            tab = tab if tab in ("conversation", "commits", "files") else "conversation"
-            self.send(303, "", where=f"/pr/{oid}?t={token}&tab={tab}&rev={revision}")
+            at = (form.get("at") or [""])[0]
+            at = f"#{at}" if re.fullmatch(r"[a-z]-[0-9-]+", at) else ""
+            self.send(303, "", where=f"/pr/{oid}?t={token}&rev={revision}{at}")
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{server.server_address[1]}/?t={token}"
@@ -1304,7 +1497,7 @@ def self_test():
                   and "<b>carol</b>" in page1 and "imported by" in page1 and "show " in page1)
             code, conv = get(f"/pr/{p1}")
             check("the conversation shows the comment with the lines it is about",
-                  "&lt;why&gt; this?" in conv and 'data-goto="c-' in conv and "Rebase and merge" in conv)
+                  "&lt;why&gt; this?" in conv and 'data-goto="c-' in conv and 'id="merge"' in conv and "still to read" in conv)
             code, commits = get(f"/pr/{p1}?tab=commits")
             check("the commits tab lists the commit", code == 200 and ">one<" in commits)
             code, page2 = get(f"/pr/{p2}?tab=files")
@@ -1413,7 +1606,27 @@ def self_test():
             del st["prs"]["1"]["head_override"]
             with open(state, "w") as f:
                 json.dump(st, f)
+            check("merging waits until every hunk is approved", post(kind="land", patch=p1, revision=p1) == 400
+                  and not any(c[:2] == ["pr", "merge"] for c in gh_state()["log"]))
+            hunk = json.dumps([["f.txt", "new", 20, 21]])
+            post(kind="reject", patch=p1, revision=p1, ranges=hunk, active="1", at="h-0-0")
+            code, page1 = get(f"/pr/{p1}")
+            check("a hunk can be refused, and the merge box then offers to send it back",
+                  "✗ not this" in page1 and "Request changes" in page1 and "1 not" in page1)
+            post(kind="reject", patch=p1, revision=p1, ranges=hunk, active="0", at="h-0-0")
+            check("approving a hunk goes back to where you were",
+                  post(kind="approve", patch=p1, revision=p1, ranges=hunk, active="1", at="h-0-0") == 303)
+            reacts = show(p1)["revisions"][p1]["reactions"]
+            check("an approval is a signed reaction on those lines",
+                  any(r["emoji"] == "\u2705" and r["location"]["new"]["range"] == {"start": 20, "end": 21} for r in reacts)
+                  and not any(r["emoji"] == "\u274c" for r in reacts))
+            code, page1 = get(f"/pr/{p1}")
+            check("with every hunk approved, the merge button is at the bottom",
+                  "✓ approved" in page1 and "Every hunk approved" in page1
+                  and page1.index("Every hunk approved") > page1.index("✓ approved"))
             check("landing the bottom of the stack", post(kind="land", patch=p1, revision=p1) == 303)
+            check("and the revision's verdict is now accept",
+                  next(iter(show(p1)["revisions"][p1]["reviews"].values()))["verdict"] == "accept")
             calls = gh_state()["log"]
             check("approved, then merged with the reviewed head pinned",
                   ["pr", "review", "1", "--repo", "o/r", "--approve"] in calls
