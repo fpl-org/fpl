@@ -1,0 +1,3 @@
+why = "a module with code and only example tests has no property test"
+run = "python scripts/props"
+expect = "fpl.ok has code but no property test"

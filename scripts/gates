@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""scripts/gates — proof that every check of the gate still refuses what it is there to refuse.
+
+    scripts/gates [case ...]      (default: every case in quality/bad)
+
+A check that passes everything looks exactly like a check that found nothing wrong. So each
+check keeps a bad example in quality/bad/<case>/: a few files laid over a small fixture
+package (quality/bad/_base/), and a case.toml that says why the example is bad, which command
+must refuse it, and a piece of text the refusal must contain:
+
+    why = "a branch no test takes fails the coverage gate"
+    run = "coverage run ... && coverage report ..."
+    expect = "Coverage failure"
+
+For each case the command runs twice, in a fresh copy of the harness: on the fixture alone,
+where it must pass, and with the bad example laid over it, where it must fail and say
+`expect`. The first run is the control: without it, a command that fails for an unrelated
+reason (a missing module, a typo in its own flags) would count as having caught something.
+
+Runs in the worktree's .venv (make gates). Exit 0: every check refused its example; 1: not.
+"""
+
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import tomllib
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+HERE = Path.cwd()
+BAD = HERE / "quality" / "bad"
+
+
+def lay(case: str | None, into: Path) -> None:
+    """A fresh fixture worktree: the harness, the base package, and the case's files over it."""
+    shutil.copytree(
+        HERE / "quality", into / "quality", ignore=shutil.ignore_patterns("bad", "__pycache__")
+    )
+    (into / "scripts").symlink_to(HERE / "scripts")
+    shutil.copytree(BAD / "_base", into, dirs_exist_ok=True)
+    if case:
+        shutil.copytree(
+            BAD / case, into, dirs_exist_ok=True, ignore=shutil.ignore_patterns("case.toml")
+        )
+
+
+def run(command: str, cwd: Path) -> tuple[int, str]:
+    env = {
+        "PATH": f"{Path(sys.executable).parent}:{os.environ.get('PATH', '')}",
+        "PYTHONPATH": f"{cwd / 'quality'}:{cwd}",
+        "HOME": str(cwd),
+        "HYPOTHESIS_PROFILE": "quick",
+    }
+    done = subprocess.run(
+        ["bash", "-c", command], cwd=cwd, env=env, capture_output=True, text=True, check=False
+    )
+    return done.returncode, done.stdout + done.stderr
+
+
+def trial(case: str) -> list[str]:
+    """What went wrong with one case: empty when its check passed the fixture and refused the
+    bad example."""
+    spec = tomllib.loads((BAD / case / "case.toml").read_text())
+    problems = []
+    with tempfile.TemporaryDirectory() as tmp:
+        control = Path(tmp) / "control"
+        bad = Path(tmp) / "bad"
+        lay(None, control)
+        lay(case, bad)
+        code, out = run(spec["run"], control)
+        if code != 0:
+            problems.append(
+                f"the fixture alone fails it, so the case proves nothing:\n{_tail(out)}"
+            )
+        code, out = run(spec["run"], bad)
+        if code == 0:
+            problems.append(f"it let the bad example through ({spec['why']})")
+        elif spec["expect"] not in out:
+            problems.append(f"it failed, but without saying '{spec['expect']}':\n{_tail(out)}")
+    return problems
+
+
+def _tail(out: str) -> str:
+    return "\n".join("    " + line for line in out.strip().splitlines()[-12:])
+
+
+def main(argv: list[str]) -> int:
+    cases = argv or sorted(p.name for p in BAD.iterdir() if (p / "case.toml").is_file())
+    unknown = [c for c in cases if not (BAD / c / "case.toml").is_file()]
+    if unknown:
+        print(f"gates: no such case: {', '.join(unknown)}", file=sys.stderr)
+        return 2
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(trial, cases))
+    failed = 0
+    for case, problems in zip(cases, results, strict=True):
+        why = tomllib.loads((BAD / case / "case.toml").read_text())["why"]
+        if problems:
+            failed += 1
+            for p in problems:
+                print(f"gates: {case}: {p}")
+        else:
+            print(f"gates: {case}: refused, as it must: {why}")
+    print(f"gates: {len(cases) - failed} of {len(cases)} checks refuse their bad example")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
