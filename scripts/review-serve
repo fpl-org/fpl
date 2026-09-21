@@ -8,7 +8,8 @@
 Serves a page on 127.0.0.1 that reads the repository's Radicle patches and nothing else,
 laid out like a mailbox: the open patches down the left, a patch stacked on another indented
 under it, and the chosen one on the right with every changed file whole and the comments at
-the lines they are about. j and k move through the list.
+the lines they are about. j and k move through the list; each move is an ordinary page
+load, with no frames, so it works in any browser.
 
 What you write on the page goes into the patch, signed with your Radicle key, as the
 Radicle CLI would write it: a line comment or a comment on the whole revision goes into
@@ -267,7 +268,7 @@ details summary{cursor:pointer}
 body.mail{height:100vh;display:flex;flex-direction:column}body.mail main{flex:1;min-height:0;padding:0;max-width:none;margin:0;width:100%}
 .split{height:100%;display:grid;grid-template-columns:minmax(260px,360px) 1fr}
 .split aside{overflow:auto;border-right:1px solid var(--ln);background:var(--card)}
-.split iframe{width:100%;height:100%;border:0;background:var(--bg)}
+.split .pane{overflow:auto;padding:16px 20px}.split .pane>*{max-width:1200px}
 .pad{padding:10px 14px;margin:0;font-size:12px}
 a.item{display:block;padding:9px 14px 9px calc(14px + var(--depth) * 14px);border-bottom:1px solid var(--ln);
 border-left:3px solid transparent;color:var(--fg);text-decoration:none}
@@ -305,8 +306,7 @@ document.addEventListener('click',e=>{
 
 
 def page(title, body, token, chrome=True, script=SCRIPT, cls=""):
-    """A whole page; without chrome it is the reading pane of the index, which has its own
-    header."""
+    """A whole page, with the header unless chrome is off."""
     head = (f'<header><h1><a href="/?t={token}" target="_top">review</a> <span class="mut">· {E(title)}</span></h1></header>'
             if chrome else "")
     return f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -355,16 +355,15 @@ def thread_html(root, all_, ctx):
     return f'<div class="thread">{"".join(out)}{reply}</div>'
 
 
-def patch_page(repo, oid, rev_id, token, embed=False):
+def patch_body(repo, oid, rev_id, token):
+    """The right-hand side: one patch on one revision, as HTML."""
     patch = repo.show(oid)
     revs = revisions(patch)
     rev = patch["revisions"].get(rev_id) if rev_id else revs[-1]
     if rev is None:
         raise Refused(f"no revision {rev_id} in patch {oid[:7]}")
     hidden = (f'<input type="hidden" name="t" value="{token}"><input type="hidden" name="patch" value="{oid}">'
-              f'<input type="hidden" name="revision" value="{rev["id"]}">'
-              + ('<input type="hidden" name="embed" value="1">' if embed else ""))
-    pane = "&embed=1" if embed else ""
+              f'<input type="hidden" name="revision" value="{rev["id"]}">')
     ctx = {"me": repo.me, "hidden": hidden}
     all_ = comments_of(rev)
     roots = [c for c in all_.values() if root_of(c, all_) is c]
@@ -374,12 +373,12 @@ def patch_page(repo, oid, rev_id, token, embed=False):
         (placed.setdefault(a, []) if a and a[1] != "file" else general).append(c)
 
     num = forge_number(patch)
-    parts = ([f'<h2 class="ptitle">{E(patch["title"])}</h2>'] if embed else [])
+    parts = [f'<h2 class="ptitle">{E(patch["title"])}</h2>']
     parts += [f'<p class="mut">patch <code>{oid[:7]}</code> by {E(short(patch["author"]["id"]))}'
              f'{f" · GitHub #{num}" if num else ""} · {E(patch["state"]["status"])}</p>']
     if len(revs) > 1:
         links = " ".join(
-            f'<a href="/patch/{oid}?t={token}&rev={r["id"]}{pane}">{"<b>" if r is rev else ""}{i + 1}: {r["oid"][:7]}{"</b>" if r is rev else ""}</a>'
+            f'<a href="/?t={token}&p={oid}&rev={r["id"]}">{"<b>" if r is rev else ""}{i + 1}: {r["oid"][:7]}{"</b>" if r is rev else ""}</a>'
             for i, r in enumerate(revs))
         parts.append(f'<p>revisions: {links}</p>')
     described = text_of(rev["description"]).strip()
@@ -438,60 +437,67 @@ def patch_page(repo, oid, rev_id, token, embed=False):
                  f'<input type="hidden" name="side"><input type="hidden" name="start"><input type="hidden" name="end">'
                  f'<div class="mut what"></div><textarea name="body" required></textarea>'
                  f'<div class="row"><button class="pri">comment</button></div></form></template>')
-    return page(patch["title"], "".join(parts), token, chrome=not embed)
+    return "".join(parts)
 
 
 MAIL = """
-const items=[...document.querySelectorAll('a.item')], pane=document.querySelector('iframe');
-function pick(i){if(!items.length)return;i=Math.max(0,Math.min(items.length-1,i));
-  items.forEach(a=>a.classList.remove('on'));const a=items[i];a.classList.add('on');
-  a.scrollIntoView({block:'nearest'});
-  if(pane.dataset.oid!==a.dataset.oid){pane.dataset.oid=a.dataset.oid;pane.src=a.href}
-  history.replaceState(null,'','#'+a.dataset.oid)}
-items.forEach((a,i)=>a.addEventListener('click',e=>{e.preventDefault();pick(i)}));
+// No frames: some browsers load nothing into one (the app's own browser pane is one of
+// them), so the page is the whole mailbox and moving is a plain page load.
+const items=[...document.querySelectorAll('a.item')];
+const on=items.findIndex(a=>a.classList.contains('on'));
+if(on>=0) items[on].scrollIntoView({block:'nearest'});
 document.addEventListener('keydown',e=>{if(e.target.closest('textarea,input'))return;
-  const i=items.findIndex(a=>a.classList.contains('on'));
-  if(e.key==='j'||e.key==='ArrowDown'){e.preventDefault();pick(i+1)}
-  if(e.key==='k'||e.key==='ArrowUp'){e.preventDefault();pick(i-1)}});
-const h=location.hash.slice(1); pick(Math.max(0,items.findIndex(a=>a.dataset.oid===h)));
+  const to=(e.key==='j'||e.key==='ArrowDown')?on+1:(e.key==='k'||e.key==='ArrowUp')?on-1:null;
+  if(to===null||!items[to])return; e.preventDefault(); location.href=items[to].href});
 """
 
 
-def index_page(repo, token):
+def index_page(repo, token, chosen=None, rev=None):
     """The mailbox: open patches down the left in stack order, the chosen one on the right."""
     patches = repo.patches()
     open_, children = graph(patches)
-    rows = []
+    order = []
 
     def walk(up, depth):
         for oid in children.get(up, []):
-            p = open_[oid]
-            rev = latest(p)
-            num = forge_number(p)
-            n = sum(len(comments_of(r)) for r in p["revisions"].values())
-            verdicts = [r.get("verdict") for r in rev["reviews"].values() if r.get("verdict")]
-            below = open_.get(up)
-            onto = (f"onto #{forge_number(below)}" if below and forge_number(below)
-                    else f"onto {up[:7]}" if below else "onto main")
-            meta = [f"#{num}" if num else oid[:7], onto]
-            if n:
-                meta.append(f"{n} comment{'s' * (n != 1)}")
-            meta += verdicts
-            rows.append(
-                f'<a class="item" data-oid="{oid}" style="--depth:{depth}" target="pane" '
-                f'href="/patch/{oid}?t={token}&embed=1">'
-                f'<span class="t">{"↳ " if depth else ""}{E(p["title"])}</span>'
-                f'<span class="m">{E(" · ".join(meta))}</span></a>')
+            order.append((oid, up, depth))
             walk(oid, depth + 1)
 
     walk(None, 0)
+    if chosen not in patches:
+        chosen = order[0][0] if order else None
+    rows = []
+    for oid, up, depth in order:
+        p = open_[oid]
+        rev_ = latest(p)
+        num = forge_number(p)
+        n = sum(len(comments_of(r)) for r in p["revisions"].values())
+        verdicts = [r.get("verdict") for r in rev_["reviews"].values() if r.get("verdict")]
+        below = open_.get(up)
+        onto = (f"onto #{forge_number(below)}" if below and forge_number(below)
+                else f"onto {up[:7]}" if below else "onto main")
+        meta = [f"#{num}" if num else oid[:7], onto]
+        if n:
+            meta.append(f"{n} comment{'s' * (n != 1)}")
+        meta += verdicts
+        rows.append(
+            f'<a class="item{" on" if oid == chosen else ""}" style="--depth:{depth}" '
+            f'href="/?t={token}&p={oid}">'
+            f'<span class="t">{"↳ " if depth else ""}{E(p["title"])}</span>'
+            f'<span class="m">{E(" · ".join(meta))}</span></a>')
     closed = len(patches) - len(open_)
     listing = "".join(rows) or ('<p class="mut pad">No open patches. '
                                 '<code>scripts/import-review --open</code> brings the pull requests in.</p>')
+    if chosen:
+        try:
+            right = patch_body(repo, chosen, rev, token)
+        except Refused as error:
+            right = f'<p class="err">{E(str(error))}</p>'
+    else:
+        right = ""
     body = (f'<div class="split"><aside><p class="mut pad">{len(open_)} open, {closed} closed or merged'
-            f' · j/k to move</p>{listing}</aside>'
-            f'<iframe name="pane" title="patch"></iframe></div>')
-    return page("open patches", body, token, script=MAIL, cls="mail")
+            f' · j/k to move</p>{listing}</aside><section class="pane">{right}</section></div>')
+    return page("open patches", body, token, script=SCRIPT + MAIL, cls="mail")
 
 
 def act(repo, form):
@@ -576,10 +582,9 @@ def serve(port, open_browser, announce=print):
             try:
                 m = re.fullmatch(r"/patch/([0-9a-f]{40})", url.path)
                 if url.path == "/":
-                    self.send(200, index_page(repo, token))
+                    self.send(200, index_page(repo, token, q.get("p", [None])[0], q.get("rev", [None])[0]))
                 elif m:
-                    self.send(200, patch_page(repo, m.group(1), q.get("rev", [None])[0], token,
-                                              embed=q.get("embed", [""])[0] == "1"))
+                    self.send(303, "", where=f"/?t={token}&p={m.group(1)}")
                 else:
                     self.send(404, "not found\n", "text/plain")
             except Refused as error:
@@ -594,8 +599,7 @@ def serve(port, open_browser, announce=print):
                 oid, revision = act(repo, form)
             except Refused as error:
                 return self.fail(error)
-            pane = "&embed=1" if form.get("embed", [""])[0] == "1" else ""
-            self.send(303, "", where=f"/patch/{oid}?t={token}&rev={revision}{pane}")
+            self.send(303, "", where=f"/?t={token}&p={oid}&rev={revision}")
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{server.server_address[1]}/?t={token}"
@@ -732,17 +736,17 @@ def self_test():
             check("and draws the second under the first",
                   index.index("first") < index.index("second") and "--depth:1" in index
                   and "onto " + p1[:7] in index)
-            code, pane = get(f"/patch/{p1}?embed=1")
-            check("the reading pane has no header of its own", code == 200 and "<header>" not in pane
-                  and 'name="embed" value="1"' in pane)
+            check("the first patch is open beside the list, without a frame",
+                  "<iframe" not in index and 'class="pane"' in index and "line 40" in index)
+            check("an old /patch/ address still leads there", get(f"/patch/{p1}")[0] == 303)
             check("without the token there is nothing", get("/", t="wrong")[0] == 403)
 
-            code, page1 = get(f"/patch/{p1}")
+            code, page1 = get(f"/?p={p1}")
             check("a patch page renders the whole file", code == 200 and "line 1" in page1 and "line 40" in page1)
             check("the imported comment sits under line 20, escaped, named",
                   page1.index("line 20") < page1.index("&lt;why&gt; this?") < page1.index("line 21")
                   and "<b>carol</b> on <a" in page1 and "imported by" in page1)
-            code, page2 = get(f"/patch/{p2}")
+            code, page2 = get(f"/?p={p2}")
             check("a stacked patch shows only its own layer", "g.txt" in page2 and "f.txt" not in page2)
 
             check("a post without the token is refused", post(t="x", kind="comment", patch=p1,
@@ -787,7 +791,7 @@ def self_test():
             review = next(iter(show(p1)["revisions"][p1]["reviews"].values()))
             check("and can be changed, keeping the summary",
                   review["verdict"] == "reject" and text_of(review["summary"]) == "good")
-            code, page1 = get(f"/patch/{p1}")
+            code, page1 = get(f"/?p={p1}")
             check("the page shows it all back",
                   "rename this" in page1 and "because" in page1 and ">resolved<" in page1 and "reject" in page1)
             check("a bad id is refused, not crashed", post(kind="comment", patch="zz", revision=p1, body="x") == 400)
