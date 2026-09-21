@@ -367,6 +367,12 @@ tr.hunkbar.refused>td{background:var(--bad-soft)}tr.hunkbar.done>td{background:v
 .meter i b{display:block;height:100%;background:var(--ok)}
 .mergebox{max-width:900px;border:1px solid var(--line);border-radius:8px;background:var(--surface);padding:16px;margin-top:8px}
 .mergebox h3{margin:0 0 6px;font-size:15px}.mergebox.ready{border-color:var(--ok)}
+.queue{max-width:1100px;margin:0 auto;padding-block:20px 80px;padding-inline:16px}
+.qitem{margin-bottom:40px;padding-bottom:28px;border-bottom:2px dashed var(--line)}
+.qhead{display:flex;gap:12px;align-items:flex-start;margin-bottom:12px}.qhead h2{margin:0;font-size:18px;text-wrap:balance}
+.qhead h2 a{color:var(--ink)}.qpos{flex:none;width:28px;height:28px;border-radius:50%;background:var(--acc-soft);color:var(--acc);
+display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-variant-numeric:tabular-nums}
+.queue .end{text-align:center}
 .err{background:var(--bad-soft);border:1px solid var(--bad);padding:12px 16px;border-radius:8px;max-width:760px}
 .tree{list-style:none;margin:0;padding:0}.tree li a{display:flex;justify-content:space-between;gap:8px;padding:5px 6px;border-radius:6px;color:var(--ink);font-size:12px}
 .tree li a:hover{background:var(--sunk);text-decoration:none}.tree .p{font-family:ui-monospace,monospace;overflow-wrap:anywhere}
@@ -408,7 +414,7 @@ document.addEventListener('click',e=>{
   t.querySelectorAll('td.n[data-side="'+side+'"]').forEach(c=>{const l=+c.dataset.line;if(l>=lo&&l<=hi){c.closest('tr').classList.add('sel');last=c.closest('tr')}});
   $$('tr.form').forEach(r=>r.remove());
   const row=document.createElement('tr'); row.className='form thread'; row.innerHTML='<td colspan="3"></td>';
-  row.firstChild.appendChild($('#lineform').content.cloneNode(true)); last.after(row);
+  row.firstChild.appendChild(document.getElementById(t.dataset.form).content.cloneNode(true)); last.after(row);
   const fm=row.querySelector('form'), L=side==='old'?'L':'R';
   fm.path.value=t.dataset.path; fm.side.value=side; fm.start.value=lo; fm.end.value=hi+1;
   fm.querySelector('.what').textContent=t.dataset.path+' '+(lo===hi?L+lo:L+lo+'–'+L+hi);
@@ -417,7 +423,7 @@ document.addEventListener('click',e=>{
 function commentOn(bar){
   $$('tr.form').forEach(r=>r.remove());
   const row=document.createElement('tr'); row.className='form thread'; row.innerHTML='<td colspan="3"></td>';
-  row.firstChild.appendChild($('#lineform').content.cloneNode(true)); bar.after(row);
+  row.firstChild.appendChild(document.getElementById(bar.closest('table').dataset.form).content.cloneNode(true)); bar.after(row);
   const fm=row.querySelector('form'), d=bar.dataset, L=d.side==='old'?'L':'R';
   fm.path.value=d.path; fm.side.value=d.side; fm.start.value=d.start; fm.end.value=d.end; fm.at.value=bar.id;
   fm.querySelector('.what').textContent=d.path+' '+L+d.start+(+d.end-1>+d.start?'–'+L+(d.end-1):'');
@@ -440,7 +446,7 @@ document.addEventListener('keydown',e=>{
   if(e.key==='a'&&cur>=0){e.preventDefault();const b=bars[cur].querySelector('form.approve:not(.reject) button');if(b)b.click();return}
   if(e.key==='x'&&cur>=0){e.preventDefault();const b=bars[cur].querySelector('form.reject button');if(b)b.click();return}
   if(e.key==='c'&&cur>=0){e.preventDefault();commentOn(bars[cur]);return}
-  if(e.key==='m'){const m=$('#merge');if(m){e.preventDefault();m.scrollIntoView({block:'center'})}return}
+  if(e.key==='m'){const m=$('.mergebox.ready')||$('.mergebox');if(m){e.preventDefault();m.scrollIntoView({block:'center'})}return}
   if(e.key==='s'){document.body.classList.toggle('no-stack');remember('stack',document.body.classList.contains('no-stack')?'off':'on')}
   const tab={t:'timeline',f:'files'}[e.key]; if(tab){const a=$('.tray nav a[data-tab="'+tab+'"]'); if(a)a.click()}
 });
@@ -695,37 +701,11 @@ def pr_page(repo, oid, rev_id, token, tab="conversation", below=None, note=""):
                   f'<label><input type="radio" name="event" value="approve"><span>Approve<small>Your verdict on this revision: accept.</small></span></label>'
                   f'<label><input type="radio" name="event" value="request_changes"><span>Request changes<small>Your verdict on this revision: reject.</small></span></label>'
                   f'<div class="row-end"><button class="btn blue">Submit review</button></div></form></div></details>')
-    total, done, refused, first = progress(rev, files, repo.me)
+    total, done, refused, first = progress(rev, files, repo.me, patch)
     pct = int(100 * done / total) if total else 100
     merge_btn = (f'<a class="meter" href="#{first or "merge"}" data-goto="{first or "merge"}" title="n: next hunk, a: approve it">'
                  f'<i><b style="width:{pct}%"></b></i>{done}/{total} hunks{f", {refused} not" if refused else ""}</a>')
-    if status == "merged":
-        mergebox = f'<div class="mergebox" id="merge"><h3>{ICON_MERGED} Merged</h3><div class="mut">This change is on main.</div></div>'
-    elif not num:
-        mergebox = ('<div class="mergebox" id="merge"><h3>Not from a pull request</h3><div class="mut">'
-                    'Only changes that came from the forge are merged from here.</div></div>')
-    elif below:
-        mergebox = (f'<div class="mergebox" id="merge"><h3>Stacked on {E(below)}</h3><div class="mut">Merge that one first; '
-                    f'this one then moves onto main by itself.</div></div>')
-    elif refused and first is None:
-        mergebox = (f'<div class="mergebox" id="merge"><h3><span class="no-mark">✗</span> {refused} hunk{"s" * (refused != 1)} not approved</h3>'
-                    f'<p class="mut" style="margin:0 0 12px">Everything is read. Send it back: this records your verdict on the revision as '
-                    f'request changes, with the note below, and it reaches GitHub with scripts/export-review.</p>'
-                    f'<form method="post" action="/act">{hidden}<input type="hidden" name="kind" value="review">'
-                    f'<input type="hidden" name="event" value="request_changes"><textarea name="body" id="send-back" placeholder="What should change"></textarea>'
-                    f'<div class="actions"><button class="btn" style="border-color:var(--bad);color:var(--bad)">Request changes</button></div></form></div>')
-    elif first is not None:
-        left = total - done - refused
-        mergebox = (f'<div class="mergebox" id="merge"><h3>{left} hunk{"s" * (left != 1)} still to read</h3>'
-                    f'<div class="mut">Merging opens once every hunk is approved. <a href="#{first}" data-goto="{first}">Go to the next one</a> '
-                    f'(<kbd>n</kbd>, then <kbd>a</kbd>).</div></div>')
-    else:
-        mergebox = (f'<div class="mergebox ready" id="merge"><h3><span class="ok-mark">✓</span> Every hunk approved</h3>'
-                    f'<p class="mut" style="margin:0 0 12px">Merging records your approval here and on GitHub, where your gh account '
-                    f'rebase-merges #{num}, but only if GitHub still has <span class="mono">{rev["oid"][:7]}</span>, the revision you read, '
-                    f'and its checks passed. Pull requests stacked on it then move onto the new main, and its branch is deleted.</p>'
-                    f'<form method="post" action="/act">{hidden}<input type="hidden" name="kind" value="land">'
-                    f'<button class="btn go">Rebase and merge #{num}</button></form></div>')
+    mergebox = mergebox_html(rev, hidden, status, num, below, total, done, refused, first)
     rev_links = (" · " + " ".join(
         f'<a href="/pr/{oid}?t={token}&rev={r["id"]}">{"<b>" if r is rev else ""}r{i + 1}{"</b>" if r is rev else ""}</a>'
         for i, r in enumerate(revs))) if len(revs) > 1 else ""
@@ -756,7 +736,7 @@ def pr_page(repo, oid, rev_id, token, tab="conversation", below=None, note=""):
         middle.append(f'<details class="desc" open><summary>Description</summary><div class="md" style="margin-top:8px">{md(desc)}</div></details>')
     if note:
         middle.append(f'<div class="desc"><b>What the merge did</b><pre class="log mono">{E(note)}</pre></div>')
-    middle.append(files_html(repo, rev, files, all_, hidden))
+    middle.append(files_html(repo, rev, files, all_, hidden, patch))
     middle.append(mergebox)
 
     # Right: the timeline, the files, the commits.
@@ -862,22 +842,55 @@ def approved_lines(rev, me, emoji=APPROVED):
     return out
 
 
-def verdicts(rev, files, me):
-    """For every hunk, keyed (file index, hunk index): "yes", "no" or None."""
+def signature(f, h):
+    """What a hunk says, independent of where it sits: the file and its changed lines. A
+    restack moves a hunk to other line numbers on another base; this stays the same."""
+    return f["path"], tuple((k, t) for k, _, _, t in f["rows"][h["first"]:h["last"] + 1])
+
+
+def marks_by_content(patch, rev, me):
+    """Hunks you judged on earlier revisions of this patch, by signature: a patch that was
+    moved onto a new main keeps the approvals of the hunks that did not change."""
+    yes, no = set(), set()
+    for other in (patch or {}).get("revisions", {}).values():
+        if other["id"] == rev["id"] or not other.get("reactions"):
+            continue
+        try:
+            files = diff(other["base"], other["oid"])
+        except Refused:
+            continue
+        v = verdicts(other, files, me)
+        for fi, f in enumerate(files):
+            for hi, h in enumerate(hunks_of(f)):
+                if v[(fi, hi)] == "yes":
+                    yes.add(signature(f, h))
+                elif v[(fi, hi)] == "no":
+                    no.add(signature(f, h))
+    return yes, no
+
+
+def verdicts(rev, files, me, patch=None):
+    """For every hunk, keyed (file index, hunk index): "yes", "no" or None. A mark on this
+    revision decides; failing that, the same hunk judged on an earlier revision does."""
     yes, no = approved_lines(rev, me), approved_lines(rev, me, REJECTED)
+    old_yes, old_no = marks_by_content(patch, rev, me) if patch else (set(), set())
     out = {}
     for fi, f in enumerate(files):
         for hi, h in enumerate(hunks_of(f)):
             key = (f["path"], h["side"])
-            out[(fi, hi)] = ("no" if h["lines"] & no.get(key, set())
-                             else "yes" if h["lines"] <= yes.get(key, set()) else None)
+            here = ("no" if h["lines"] & no.get(key, set())
+                    else "yes" if h["lines"] <= yes.get(key, set()) else None)
+            if here is None and (old_yes or old_no):
+                sig = signature(f, h)
+                here = "no" if sig in old_no else "yes" if sig in old_yes else None
+            out[(fi, hi)] = here
     return out
 
 
-def progress(rev, files, me):
+def progress(rev, files, me, patch=None, p=""):
     """(hunks in all, approved, rejected, anchor of the first one still open)."""
-    v = verdicts(rev, files, me)
-    first = next((f"h-{fi}-{hi}" for (fi, hi), x in sorted(v.items()) if x is None), None)
+    v = verdicts(rev, files, me, patch)
+    first = next((f"{p}h-{fi}-{hi}" for (fi, hi), x in sorted(v.items()) if x is None), None)
     return len(v), sum(x == "yes" for x in v.values()), sum(x == "no" for x in v.values()), first
 
 
@@ -887,7 +900,39 @@ def approve_form(hidden, ranges, active, label, cls, at, mark="approve"):
             f'<input type="hidden" name="at" value="{at}"><button class="btn small {cls}">{label}</button></form>')
 
 
-def files_html(repo, rev, files, all_, hidden):
+def mergebox_html(rev, hidden, status, num, below, total, done, refused, first, p=""):
+    """The end of a change, where reading it leads: merge, send back, or keep reading."""
+    if status == "merged":
+        return f'<div class="mergebox" id="{p}merge"><h3>{ICON_MERGED} Merged</h3><div class="mut">This change is on main.</div></div>'
+    elif not num:
+        return (f'<div class="mergebox" id="{p}merge"><h3>Not from a pull request</h3><div class="mut">'
+                    'Only changes that came from the forge are merged from here.</div></div>')
+    elif below:
+        return (f'<div class="mergebox" id="{p}merge"><h3>Waits for {E(below)}</h3><div class="mut">That one is ahead of it in the '
+                    f'queue. When it merges, this one moves onto main by itself and its merge opens here; approvals of '
+                    f'hunks that did not change carry over.</div></div>')
+    elif refused and first is None:
+        return (f'<div class="mergebox" id="{p}merge"><h3><span class="no-mark">✗</span> {refused} hunk{"s" * (refused != 1)} not approved</h3>'
+                    f'<p class="mut" style="margin:0 0 12px">Everything is read. Send it back: this records your verdict on the revision as '
+                    f'request changes, with the note below, and it reaches GitHub with scripts/export-review.</p>'
+                    f'<form method="post" action="/act">{hidden}<input type="hidden" name="kind" value="review">'
+                    f'<input type="hidden" name="event" value="request_changes"><textarea name="body" id="send-back" placeholder="What should change"></textarea>'
+                    f'<div class="actions"><button class="btn" style="border-color:var(--bad);color:var(--bad)">Request changes</button></div></form></div>')
+    elif first is not None:
+        left = total - done - refused
+        return (f'<div class="mergebox" id="{p}merge"><h3>{left} hunk{"s" * (left != 1)} still to read</h3>'
+                    f'<div class="mut">Merging opens once every hunk is approved. <a href="#{first}" data-goto="{first}">Go to the next one</a> '
+                    f'(<kbd>n</kbd>, then <kbd>a</kbd>).</div></div>')
+    else:
+        return (f'<div class="mergebox ready" id="{p}merge"><h3><span class="ok-mark">✓</span> Every hunk approved</h3>'
+                    f'<p class="mut" style="margin:0 0 12px">Merging records your approval here and on GitHub, where your gh account '
+                    f'rebase-merges #{num}, but only if GitHub still has <span class="mono">{rev["oid"][:7]}</span>, the revision you read, '
+                    f'and its checks passed. Pull requests stacked on it then move onto the new main, and its branch is deleted.</p>'
+                    f'<form method="post" action="/act">{hidden}<input type="hidden" name="kind" value="land">'
+                    f'<button class="btn go">Rebase and merge #{num}</button></form></div>')
+
+
+def files_html(repo, rev, files, all_, hidden, patch=None, p=""):
     roots = [c for c in all_.values() if root_of(c, all_) is c]
     placed, elsewhere = {}, []
     for c in sorted(roots, key=lambda c: c["at"]):
@@ -896,7 +941,7 @@ def files_html(repo, rev, files, all_, hidden):
             placed.setdefault(a, []).append(c)
         elif c.get("location"):
             elsewhere.append(c)
-    decided = verdicts(rev, files, repo.me)
+    decided = verdicts(rev, files, repo.me, patch)
     parts = []
     for fi, f in enumerate(files):
         path = f["path"]
@@ -931,7 +976,7 @@ def files_html(repo, rev, files, all_, hidden):
                 rng = [[path, h["side"], h["start"], h["end"]]]
                 span = f'{"R" if h["side"] == "new" else "L"}{h["start"]}' + (
                     f'–{h["end"] - 1}' if h["end"] - 1 > h["start"] else "")
-                at = f"h-{fi}-{hi}"
+                at = f"{p}h-{fi}-{hi}"
                 if hi in ok:
                     state = '<span class="ok-mark">✓ approved</span>'
                     control = approve_form(hidden, rng, False, "Undo", "", at)
@@ -949,26 +994,26 @@ def files_html(repo, rev, files, all_, hidden):
                             f'<span class="mut mono">hunk {hi + 1} of {len(hunks)} · {span}</span>{state}{control}</td></tr>')
         if not changed:
             keep.update(range(len(rows)))
-        body = "".join(fold(rows, keep, f"f{fi}")) if not f["binary"] else '<tr><td class="c mut">Binary file not shown.</td></tr>'
+        body = "".join(fold(rows, keep, f"{p}f{fi}")) if not f["binary"] else '<tr><td class="c mut">Binary file not shown.</td></tr>'
         title = path if not f["old_path"] or f["old_path"] == path else f"{f['old_path']} → {path}"
         plus = sum(1 for r in f["rows"] if r[0] == "add")
         minus = sum(1 for r in f["rows"] if r[0] == "del")
         left_ranges = [[path, h["side"], h["start"], h["end"]] for hi, h in enumerate(hunks) if hi not in ok and hi not in bad]
         tally = (f'{len(ok)}/{len(hunks)} hunks approved' + (f', {len(bad)} not' if bad else "")) if hunks else "nothing to approve"
         foot = (f'<div class="ffoot{" done" if hunks and len(ok) == len(hunks) else ""}"><span>{tally}</span>'
-                + (approve_form(hidden, left_ranges, True, f"Approve the rest of {E(path)}", "go", f"f-{fi}") if left_ranges
+                + (approve_form(hidden, left_ranges, True, f"Approve the rest of {E(path)}", "go", f"{p}f-{fi}") if left_ranges
                    else '<span class="ok-mark">✓ file approved</span>' if hunks and len(ok) == len(hunks) else "")
                 + "</div>")
-        parts.append(f'<div class="file" id="f-{fi}"><div class="fhead"><span class="path">{E(title or "?")}</span>'
+        parts.append(f'<div class="file" id="{p}f-{fi}"><div class="fhead"><span class="path">{E(title or "?")}</span>'
                      f'<span class="add-n">+{plus}</span><span class="del-n">−{minus}</span>'
                      f'<span class="mut" style="margin-left:auto;font-size:12px">{tally}</span></div>'
-                     f'<table class="d" data-path="{E(path or "")}">{body}</table>{foot}</div>')
+                     f'<table class="d" data-path="{E(path or "")}" data-form="{p}lineform">{body}</table>{foot}</div>')
     left = [c for cs in placed.values() for c in cs] + elsewhere
     if left:
         parts.append('<div class="file"><div class="fhead"><span class="path">Comments on lines outside this revision\'s diff</span></div>'
                      + "".join(f'<div style="padding:10px 12px">{excerpt_of(c, rev)}{thread(repo, c, all_, hidden)}</div>'
                                for c in left) + "</div>")
-    parts.append(f'<template id="lineform"><div class="thread-box"><form method="post" action="/act" style="padding:10px 12px">{hidden}'
+    parts.append(f'<template id="{p}lineform"><div class="thread-box"><form method="post" action="/act" style="padding:10px 12px">{hidden}'
                  f'<input type="hidden" name="path"><input type="hidden" name="side"><input type="hidden" name="start">'
                  f'<input type="hidden" name="end"><input type="hidden" name="at">'
                  f'<div class="mut mono what" style="margin-bottom:6px"></div><textarea name="body" required placeholder="Leave a comment"></textarea>'
@@ -976,6 +1021,64 @@ def files_html(repo, rev, files, all_, hidden):
                  f'<button class="btn" name="kind" value="approve-lines" formnovalidate>Approve these lines</button>'
                  f'<button class="btn blue" name="kind" value="comment">Comment</button></div></form></div></template>')
     return "".join(parts)
+
+
+def queue_order(patches):
+    """The open patches in the order they merge: the queue, head first."""
+    open_, children = graph(patches)
+    out = []
+
+    def walk(up):
+        for o in children.get(up, []):
+            out.append((o, up))
+            walk(o)
+
+    walk(None)
+    return open_, out
+
+
+def queue_page(repo, token):
+    """The whole queue on one page, head first: read a change, approve its hunks, merge it at
+    its end, and keep scrolling into the next one."""
+    patches = repo.patches()
+    open_, order = queue_order(patches)
+    sections, first_open = [], None
+    for qi, (oid, up) in enumerate(order):
+        patch = open_[oid]
+        rev = latest(patch)
+        num = forge_number(patch)
+        p = f"q{qi}-"
+        below = (f"#{forge_number(open_[up])}" if up and forge_number(open_[up]) else up[:7] if up else None)
+        hidden = (f'<input type="hidden" name="t" value="{token}"><input type="hidden" name="patch" value="{oid}">'
+                  f'<input type="hidden" name="revision" value="{rev["id"]}"><input type="hidden" name="view" value="queue">')
+        try:
+            files = diff(rev["base"], rev["oid"])
+        except Refused as error:
+            sections.append(f'<section class="qitem"><h2>{E(patch["title"])}</h2><p class="err">{E(str(error))}</p></section>')
+            continue
+        all_ = comments_of(rev)
+        total, done, refused, first = progress(rev, files, repo.me, patch, p)
+        first_open = first_open or first
+        desc = text_of(rev["description"]).strip() or text_of(revisions(patch)[0]["description"]).strip()
+        sections.append(
+            f'<section class="qitem" id="{p}top"><div class="qhead"><span class="qpos">{qi + 1}</span>'
+            f'<div><h2><a href="/pr/{oid}?t={token}">{E(patch["title"])}</a> <span class="mut">#{num or oid[:7]}</span></h2>'
+            f'<div class="mut">{done}/{total} hunks approved{f", {refused} not" if refused else ""} · '
+            f'{"head of the queue" if not up else "after " + E(below)}</div></div></div>'
+            + (f'<details class="desc"><summary>Description</summary><div class="md" style="margin-top:8px">{md(desc)}</div></details>' if desc else "")
+            + files_html(repo, rev, files, all_, hidden, patch, p)
+            + mergebox_html(rev, hidden, patch["state"]["status"], num, below, total, done, refused, first, p)
+            + "</section>")
+    bar = (f'<header class="bar"><span class="crumbs"><a href="/?t={token}">Pull requests</a> / queue</span>'
+           f'<h1>The merge queue, head first</h1><div class="tools"><span class="mut" style="font-size:13px">'
+           f'<kbd>n</kbd> next hunk · <kbd>a</kbd> approve · <kbd>x</kbd> not this · <kbd>c</kbd> comment · <kbd>m</kbd> merge</span>'
+           + (f' <a class="btn" href="#{first_open}" data-goto="{first_open}">Next open hunk</a>' if first_open else "")
+           + '</div></header>')
+    notes = "".join(f'<div class="desc"><b>What the merge did</b><pre class="log mono">{E(NOTES.pop(o))}</pre></div>'
+                    for o in list(NOTES))
+    body = (f'<main class="queue">{notes}{"".join(sections) or "<p class=mut>The queue is empty.</p>"}'
+            f'<p class="mut end">End of the queue.</p></main>')
+    return page("Merge queue", body, token, bar=bar)
 
 
 def index_page(repo, token):
@@ -1018,7 +1121,8 @@ def index_page(repo, token):
         '<div class="list"><div class="empty">No open pull requests here. '
         '<code>scripts/import-review --open</code> brings them in from the forge.</div></div>')
     body = (f'<main class="inbox"><h1>Pull requests</h1><p class="lede">{len(open_)} open, {closed} merged or closed, '
-            f'held in Radicle. <kbd>j</kbd> <kbd>k</kbd> to move, <kbd>enter</kbd> to open.</p>{sections}</main>')
+            f'held in Radicle. <kbd>j</kbd> <kbd>k</kbd> to move, <kbd>enter</kbd> to open.</p>'
+            f'<p><a class="btn go" href="/queue?t={token}">Read the queue, head first</a></p>{sections}</main>')
     return page("Pull requests", body, token)
 
 
@@ -1087,7 +1191,7 @@ def land(repo, oid):
            if (c.get("conclusion") or c.get("state") or "").upper() not in ("SUCCESS", "NEUTRAL", "SKIPPED")]
     if bad:
         raise Refused(f"checks not passed on #{num}: {', '.join(bad)}")
-    total, done, refused, _ = progress(rev, diff(rev["base"], rev["oid"]), repo.me)
+    total, done, refused, _ = progress(rev, diff(rev["base"], rev["oid"]), repo.me, patch)
     if done < total:
         raise Refused(f"{total - done} of {total} hunks are not approved by you; merging waits for every one")
 
@@ -1121,41 +1225,53 @@ def land(repo, oid):
     # The patches stacked on this one still carry its old commits. Each is replayed onto
     # the new main without them, in a worktree of its own, and pushed as the machine
     # account, whose branches these are.
-    for child_oid, child in repo.patches().items():
-        crev = latest(child)
-        if child["state"]["status"] != "open" or crev["base"] != rev["oid"]:
-            continue
-        cm = re.search(r"GitHub-PR: \S+#(\d+)", text_of(crev["description"])) or next(
-            (re.search(r"GitHub-PR: \S+#(\d+)", text_of(r["description"])) for r in child["revisions"].values()
-             if "GitHub-PR:" in text_of(r["description"])), None)
-        if not cm:
-            continue
-        cnum = cm.group(1)
-        cinfo = json.loads(gh("pr", "view", cnum, "--repo", slug, "--json", "headRefName,headRefOid").stdout)
-        work = tempfile.mkdtemp(prefix="fpl-restack-")
-        run("git", "worktree", "add", "-q", "--detach", work, cinfo["headRefOid"])
-        try:
-            moved = run("git", "-C", work, "rebase", "-q", "--onto", main, rev["oid"], ok=False)
-            if moved.returncode != 0:
-                run("git", "-C", work, "rebase", "--abort", ok=False)
-                log.append(f"#{cnum} does not replay cleanly onto the new main; left as it is")
+    importer = os.path.join(os.path.dirname(os.path.abspath(__file__)), "import-review")
+
+    def restack(old_parent, new_parent, onto_main):
+        """Replay every open patch based on old_parent onto new_parent, then the ones based on
+        those, all the way up the queue."""
+        for child in list(repo.patches().values()):
+            crev = latest(child)
+            if child["state"]["status"] != "open" or crev["base"] != old_parent:
                 continue
-            new = run("git", "-C", work, "rev-parse", "HEAD").stdout.strip()
-            run("git", *credential_args(), "push", "-q",
-                f"--force-with-lease=refs/heads/{cinfo['headRefName']}:{cinfo['headRefOid']}",
-                remote, f"{new}:refs/heads/{cinfo['headRefName']}")
-            gh("pr", "edit", cnum, "--repo", slug, "--base", "main")
-            log.append(f"moved #{cnum} onto main: {cinfo['headRefOid'][:7]} → {new[:7]}")
-            importer = os.path.join(os.path.dirname(os.path.abspath(__file__)), "import-review")
-            if os.path.exists(importer) and run(sys.executable, importer, cnum, ok=False).returncode == 0:
-                log.append(f"imported the new head of #{cnum} as a revision")
-            else:
-                log.append(f"run scripts/import-review {cnum} to see its new head here")
-        finally:
-            run("git", "worktree", "remove", "--force", work, ok=False)
+            cm = next((re.search(r"GitHub-PR: \S+#(\d+)", text_of(r["description"])) for r in child["revisions"].values()
+                       if "GitHub-PR:" in text_of(r["description"])), None)
+            if not cm:
+                continue
+            cnum = cm.group(1)
+            cinfo = json.loads(gh("pr", "view", cnum, "--repo", slug, "--json", "headRefName,headRefOid").stdout)
+            work = tempfile.mkdtemp(prefix="fpl-restack-")
+            run("git", "worktree", "add", "-q", "--detach", work, cinfo["headRefOid"])
+            try:
+                moved = run("git", "-C", work, "rebase", "-q", "--onto", new_parent, old_parent, ok=False)
+                if moved.returncode != 0:
+                    run("git", "-C", work, "rebase", "--abort", ok=False)
+                    log.append(f"#{cnum} does not replay cleanly; it and what follows it are left as they are")
+                    continue
+                new = run("git", "-C", work, "rev-parse", "HEAD").stdout.strip()
+                run("git", *credential_args(), "push", "-q",
+                    f"--force-with-lease=refs/heads/{cinfo['headRefName']}:{cinfo['headRefOid']}",
+                    remote, f"{new}:refs/heads/{cinfo['headRefName']}")
+                if onto_main:
+                    gh("pr", "edit", cnum, "--repo", slug, "--base", "main")
+                log.append(f"moved #{cnum} up: {cinfo['headRefOid'][:7]} → {new[:7]}" + (", now onto main" if onto_main else ""))
+                if os.path.exists(importer) and run(sys.executable, importer, cnum, ok=False).returncode == 0:
+                    log.append(f"imported the new head of #{cnum} as a revision")
+                else:
+                    log.append(f"run scripts/import-review {cnum} to see its new head here")
+            finally:
+                run("git", "worktree", "remove", "--force", work, ok=False)
+            restack(crev["oid"], new, False)
+
+    # The rest of the queue still carries this patch's old commits. Each patch is replayed
+    # onto its new predecessor, in a worktree of its own, and pushed as the machine
+    # account, whose branches these are.
+    restack(rev["oid"], main, True)
 
     gone = gh("api", "-X", "DELETE", f"repos/{slug}/git/refs/heads/{info['headRefName']}", ok=False)
+    there = gh("api", f"repos/{slug}/branches/{info['headRefName']}", ok=False).returncode == 0
     log.append(f"deleted the branch {info['headRefName']}" if gone.returncode == 0
+               else f"the branch {info['headRefName']} was already gone" if not there
                else f"could not delete the branch {info['headRefName']}")
     log.append("your local main is untouched; git pull when you are ready")
     return "\n".join(log)
@@ -1284,6 +1400,8 @@ def serve(port, open_browser, announce=print):
                     self.send(303, "", where=f"/pr/{old}?t={token}")
                 elif url.path == "/":
                     self.send(200, index_page(repo, token))
+                elif url.path == "/queue":
+                    self.send(200, queue_page(repo, token))
                 elif m and url.path.startswith("/patch/"):
                     self.send(303, "", where=f"/pr/{m.group(1)}?t={token}")
                 elif m:
@@ -1307,7 +1425,9 @@ def serve(port, open_browser, announce=print):
             except Refused as error:
                 return self.fail(error)
             at = (form.get("at") or [""])[0]
-            at = f"#{at}" if re.fullmatch(r"[a-z]-[0-9-]+", at) else ""
+            at = f"#{at}" if re.fullmatch(r"[a-z0-9-]+", at) else ""
+            if (form.get("view") or [""])[0] == "queue":
+                return self.send(303, "", where=f"/queue?t={token}{at}")
             self.send(303, "", where=f"/pr/{oid}?t={token}&rev={revision}{at}")
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
@@ -1606,6 +1726,14 @@ def self_test():
             del st["prs"]["1"]["head_override"]
             with open(state, "w") as f:
                 json.dump(st, f)
+            code, queue = get("/queue")
+            check("the queue reads head first, each change with its own hunks and merge box",
+                  code == 200 and queue.index("first") < queue.index("second") and "head of the queue" in queue
+                  and 'id="q0-h-0-0"' in queue and 'id="q1-h-0-0"' in queue and 'id="q1-merge"' in queue
+                  and 'value="queue"' in queue)
+            check("a mark made in the queue comes back to the queue, at the next hunk",
+                  post(kind="approve", patch=p2, revision=p2, ranges=json.dumps([["g.txt", "new", 1, 2]]),
+                       active="1", at="q1-h-0-0", view="queue") == 303)
             check("merging waits until every hunk is approved", post(kind="land", patch=p1, revision=p1) == 400
                   and not any(c[:2] == ["pr", "merge"] for c in gh_state()["log"]))
             hunk = json.dumps([["f.txt", "new", 20, 21]])
@@ -1643,7 +1771,17 @@ def self_test():
             check("and retargeted to main", gh_state()["prs"]["2"]["base"] == "main")
             check("the landed branch is gone", not forge_ref("refs/heads/b1"))
             code, page1 = get(f"/pr/{p1}")
-            check("the page says what happened", "rebase-merged #1" in page1 and "moved #2 onto main" in page1)
+            check("the page says what happened", "rebase-merged #1" in page1 and "moved #2 up" in page1
+                  and "now onto main" in page1)
+            # #2 comes back as a new revision on the new main; the hunk approved before the
+            # move is the same hunk, so it stays approved.
+            sh("git", "fetch", "-q", "github", "b2")
+            moved = sh("git", "rev-parse", "FETCH_HEAD").stdout.strip()
+            sh("git", "push", f"--push-option=patch.base={main}", "--push-option=patch.message=moved",
+               "rad", f"+{moved}:refs/heads/patches/{p2}")
+            check("the stacked patch has a new revision", len(show(p2)["revisions"]) == 2)
+            code, page2 = get(f"/pr/{p2}")
+            check("and the approval of its unchanged hunk carried over", "1/1 hunks" in page2 and "✓ approved" in page2)
         finally:
             server.terminate()
             server.wait()
