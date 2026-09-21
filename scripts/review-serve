@@ -18,11 +18,19 @@ reject is the verdict of your review. A comment in a review can be marked resolv
 Comments imported from the forge (scripts/import-review) sit on the revision itself, where
 Radicle has no resolve; they can be answered.
 
-It does not merge and it does not talk to the forge. The page is for one person on one
-machine: it binds to 127.0.0.1, and a write needs the token that is in the address this
-prints, so another site open in the same browser cannot post to it.
+A patch that came from a pull request and sits at the bottom of its stack can be landed
+from the page: your gh account approves it and rebase-merges it, as scripts/land would, but
+only while the forge still has the commit you reviewed and its checks passed. The merge is
+then recorded in Radicle, the patches stacked on it are replayed onto the new main and
+pushed as the machine account, and the landed branch is deleted. Your checkout's main is
+left alone.
 
-Needs rad (`scripts/layer on radicle`) and a repository that went through `rad init`. The
+The page is for one person on one machine: it binds to 127.0.0.1, and a write needs the
+token that is in the address this prints, so another site open in the same browser cannot
+post to it, let alone land something.
+
+Needs rad (`scripts/layer on radicle`) and a repository that went through `rad init`, and
+gh for landing (`scripts/layer on github`). The
 commits of a patch must be in this clone; a patch pushed from here has them, one that
 came in from elsewhere needs a `git fetch rad` first.
 """
@@ -265,6 +273,7 @@ button.pri{background:var(--acc);color:var(--card);border-color:var(--acc)}
 .err{background:var(--del);padding:8px 12px;border-radius:4px}
 .tag{font-size:11px;border:1px solid var(--ln);border-radius:9px;padding:0 6px;color:var(--mut)}
 details summary{cursor:pointer}
+pre.log{white-space:pre-wrap;margin:0}
 body.mail{height:100vh;display:flex;flex-direction:column}body.mail main{flex:1;min-height:0;padding:0;max-width:none;margin:0;width:100%}
 .split{height:100%;display:grid;grid-template-columns:minmax(260px,360px) 1fr}
 .split aside{overflow:auto;border-right:1px solid var(--ln);background:var(--card)}
@@ -355,8 +364,9 @@ def thread_html(root, all_, ctx):
     return f'<div class="thread">{"".join(out)}{reply}</div>'
 
 
-def patch_body(repo, oid, rev_id, token):
-    """The right-hand side: one patch on one revision, as HTML."""
+def patch_body(repo, oid, rev_id, token, below=None, note=""):
+    """The right-hand side: one patch on one revision, as HTML. `below` is the open patch
+    this one is stacked on, if any; `note` is what the last landing said."""
     patch = repo.show(oid)
     revs = revisions(patch)
     rev = patch["revisions"].get(rev_id) if rev_id else revs[-1]
@@ -399,6 +409,17 @@ def patch_body(repo, oid, rev_id, token):
                     f'<button name="verdict" value="reject">reject</button>'
                     f'<span class="mut">revision {rev["oid"][:7]} onto {rev["base"][:7]}</span></div></form>')
     parts.append(f'<div class="card"><h2>reviews</h2>{"".join(reviews)}{verdict_form}</div>')
+    if note:
+        parts.insert(1, f'<div class="card"><h2>landing</h2><pre class="c1 code log">{E(note)}</pre></div>')
+    if num and patch["state"]["status"] == "open" and rev is revs[-1]:
+        if below:
+            land = f'<span class="mut">stacked on {E(below)}; land that one first.</span>'
+        else:
+            land = (f'<form method="post" action="/act" class="row">{hidden}<input type="hidden" name="kind" value="land">'
+                    f'<button class="pri">approve and merge #{num}</button><span class="mut">as your gh account, '
+                    f'rebase onto main, only if GitHub still has {rev["oid"][:7]} and its checks passed; '
+                    f'then the patches above are moved onto the new main.</span></form>')
+        parts.append(f'<div class="card"><h2>land</h2><div class="c1">{land}</div></div>')
 
     parts.append('<div class="card"><h2>conversation</h2>'
                  + "".join(thread_html(c, all_, ctx) for c in general)
@@ -452,6 +473,9 @@ document.addEventListener('keydown',e=>{if(e.target.closest('textarea,input'))re
 """
 
 
+NOTES = {}  # what the last landing of a patch said, shown once
+
+
 def index_page(repo, token, chosen=None, rev=None):
     """The mailbox: open patches down the left in stack order, the chosen one on the right."""
     patches = repo.patches()
@@ -490,7 +514,9 @@ def index_page(repo, token, chosen=None, rev=None):
                                 '<code>scripts/import-review --open</code> brings the pull requests in.</p>')
     if chosen:
         try:
-            right = patch_body(repo, chosen, rev, token)
+            up = next((u for o, u, _ in order if o == chosen), None)
+            below = f"#{forge_number(open_[up])}" if up and forge_number(open_[up]) else (up or "")[:7] or None
+            right = patch_body(repo, chosen, rev, token, below=below, note=NOTES.pop(chosen, ""))
         except Refused as error:
             right = f'<p class="err">{E(str(error))}</p>'
     else:
@@ -498,6 +524,134 @@ def index_page(repo, token, chosen=None, rev=None):
     body = (f'<div class="split"><aside><p class="mut pad">{len(open_)} open, {closed} closed or merged'
             f' · j/k to move</p>{listing}</aside><section class="pane">{right}</section></div>')
     return page("open patches", body, token, script=SCRIPT + MAIL, cls="mail")
+
+
+# Landing. The forge is still where main is merged, so this does what scripts/land does,
+# as the person at the page: their gh account approves and merges. The rails are the same
+# ones, and one more that only this page can check: the forge must still have the commit that
+# was reviewed here.
+
+
+def gh(*args, ok=True):
+    return run("gh", *args, ok=ok)
+
+
+def machine_login():
+    common = os.path.abspath(run("git", "rev-parse", "--git-common-dir").stdout.strip())
+    try:
+        with open(os.path.join(common, "agent-identity")) as f:
+            email = f.readline().strip()
+    except OSError:
+        return None
+    m = re.match(r"\d+\+([^@]+)@users\.noreply\.github\.com$", email)
+    return m.group(1) if m else None
+
+
+def forge_remote():
+    for remote in run("git", "remote").stdout.split():
+        if "github.com" in run("git", "config", "--get", f"remote.{remote}.url", ok=False).stdout:
+            return remote
+    raise Refused("no remote on github.com")
+
+
+def credential_args():
+    common = os.path.abspath(run("git", "rev-parse", "--git-common-dir").stdout.strip())
+    cred = os.path.join(common, "agent-credentials")
+    if not os.access(cred, os.R_OK):
+        raise Refused("no .git/agent-credentials: the patches above cannot be moved as the machine account")
+    return ["-c", "credential.helper=", "-c", f"credential.helper=store --file={cred}"]
+
+
+def land(repo, oid):
+    """Approve and rebase-merge the patch's pull request, record the merge in Radicle, and
+    move the patches stacked on it onto the new main. Returns what happened, for the page."""
+    log = []
+    patch = repo.show(oid)
+    rev = latest(patch)
+    m = next((re.search(r"GitHub-PR: (\S+)#(\d+)", text_of(r["description"]))
+              for r in patch["revisions"].values()
+              if re.search(r"GitHub-PR: ", text_of(r["description"]))), None)
+    if not m:
+        raise Refused("this patch did not come from a pull request")
+    slug, num = m.group(1), m.group(2)
+    who = gh("api", "user", "--jq", ".login").stdout.strip()
+    if who == machine_login():
+        raise Refused(f"gh is logged in as {who}, the account that filed the pull request; "
+                      "switch gh to your own account (gh auth switch)")
+    info = json.loads(gh("pr", "view", num, "--repo", slug, "--json",
+                         "state,baseRefName,headRefName,headRefOid,statusCheckRollup").stdout)
+    if info["state"] != "OPEN":
+        raise Refused(f"#{num} is {info['state'].lower()} on the forge")
+    if info["baseRefName"] != "main":
+        raise Refused(f"#{num} is based on {info['baseRefName']}; land that one first")
+    if info["headRefOid"] != rev["oid"]:
+        raise Refused(f"the forge has {info['headRefOid'][:7]} for #{num}, and {rev['oid'][:7]} is what is "
+                      "shown here; scripts/import-review it and look again")
+    bad = [c.get("name") or c.get("context") for c in info.get("statusCheckRollup") or []
+           if (c.get("conclusion") or c.get("state") or "").upper() not in ("SUCCESS", "NEUTRAL", "SKIPPED")]
+    if bad:
+        raise Refused(f"checks not passed on #{num}: {', '.join(bad)}")
+
+    gh("pr", "review", num, "--repo", slug, "--approve")
+    log.append(f"approved #{num} as {who}")
+    gh("pr", "merge", num, "--repo", slug, "--rebase", "--match-head-commit", rev["oid"])
+    log.append(f"rebase-merged #{num} onto main")
+    remote = forge_remote()
+    run("git", "fetch", "-q", remote, "main")
+    main = run("git", "rev-parse", f"refs/remotes/{remote}/main").stdout.strip()
+    log.append(f"{remote}/main is now {main[:7]}")
+
+    # Radicle counts a patch as merged when its delegate says so and the commit is on the
+    # delegate's main, so main goes to Radicle first.
+    pushed = run("git", "push", "-q", "rad", f"refs/remotes/{remote}/main:refs/heads/main", ok=False)
+    if pushed.returncode == 0:
+        repo.act(oid, "Merge", {"type": "merge", "revision": rev["id"], "commit": main})
+        log.append(f"recorded the merge in Radicle at {main[:7]}")
+    else:
+        log.append("could not push main to rad, so the patch stays open in Radicle: "
+                   + (pushed.stderr or pushed.stdout).strip().splitlines()[-1])
+
+    # The patches stacked on this one still carry its old commits. Each is replayed onto
+    # the new main without them, in a worktree of its own, and pushed as the machine
+    # account, whose branches these are.
+    for child_oid, child in repo.patches().items():
+        crev = latest(child)
+        if child["state"]["status"] != "open" or crev["base"] != rev["oid"]:
+            continue
+        cm = re.search(r"GitHub-PR: \S+#(\d+)", text_of(crev["description"])) or next(
+            (re.search(r"GitHub-PR: \S+#(\d+)", text_of(r["description"])) for r in child["revisions"].values()
+             if "GitHub-PR:" in text_of(r["description"])), None)
+        if not cm:
+            continue
+        cnum = cm.group(1)
+        cinfo = json.loads(gh("pr", "view", cnum, "--repo", slug, "--json", "headRefName,headRefOid").stdout)
+        work = tempfile.mkdtemp(prefix="fpl-restack-")
+        run("git", "worktree", "add", "-q", "--detach", work, cinfo["headRefOid"])
+        try:
+            moved = run("git", "-C", work, "rebase", "-q", "--onto", main, rev["oid"], ok=False)
+            if moved.returncode != 0:
+                run("git", "-C", work, "rebase", "--abort", ok=False)
+                log.append(f"#{cnum} does not replay cleanly onto the new main; left as it is")
+                continue
+            new = run("git", "-C", work, "rev-parse", "HEAD").stdout.strip()
+            run("git", *credential_args(), "push", "-q",
+                f"--force-with-lease=refs/heads/{cinfo['headRefName']}:{cinfo['headRefOid']}",
+                remote, f"{new}:refs/heads/{cinfo['headRefName']}")
+            gh("pr", "edit", cnum, "--repo", slug, "--base", "main")
+            log.append(f"moved #{cnum} onto main: {cinfo['headRefOid'][:7]} → {new[:7]}")
+            importer = os.path.join(os.path.dirname(os.path.abspath(__file__)), "import-review")
+            if os.path.exists(importer) and run(sys.executable, importer, cnum, ok=False).returncode == 0:
+                log.append(f"imported the new head of #{cnum} as a revision")
+            else:
+                log.append(f"run scripts/import-review {cnum} to see its new head here")
+        finally:
+            run("git", "worktree", "remove", "--force", work, ok=False)
+
+    gone = gh("api", "-X", "DELETE", f"repos/{slug}/git/refs/heads/{info['headRefName']}", ok=False)
+    log.append(f"deleted the branch {info['headRefName']}" if gone.returncode == 0
+               else f"could not delete the branch {info['headRefName']}")
+    log.append("your local main is untouched; git pull when you are ready")
+    return "\n".join(log)
 
 
 def act(repo, form):
@@ -539,6 +693,8 @@ def act(repo, form):
         summary = body or text_of(mine.get("summary", []))
         repo.act(oid, verdict.capitalize(), {"type": "review.edit.v2", "review": review,
                                              "verdict": verdict, "summary": summary})
+    elif kind == "land":
+        NOTES[oid] = land(repo, oid)
     elif kind in ("resolve", "unresolve"):
         repo.act(oid, kind.capitalize(), {"type": f"review.comment.{kind}",
                                           "review": get("review"), "comment": get("comment")})
@@ -635,6 +791,44 @@ def main(argv):
     return 0
 
 
+FAKE_GH = r"""#!/usr/bin/env python3
+import json, os, subprocess, sys, tempfile
+state = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "gh.json")
+with open(state) as f:
+    st = json.load(f)
+args = sys.argv[1:]
+st["log"].append(args)
+git = lambda *a: subprocess.run(["git", "-C", st["forge"], *a], capture_output=True, text=True).stdout.strip()
+out = ""
+if args[:2] == ["api", "user"]:
+    out = st["login"]
+elif args[:2] == ["pr", "view"]:
+    pr = st["prs"][args[2]]
+    out = json.dumps({"state": pr["state"], "baseRefName": pr["base"], "headRefName": pr["head"],
+                      "headRefOid": pr.get("head_override") or git("rev-parse", pr["head"]),
+                      "statusCheckRollup": []})
+elif args[:2] == ["pr", "merge"]:
+    pr = st["prs"][args[2]]
+    want = args[args.index("--match-head-commit") + 1]
+    if git("rev-parse", pr["head"]) != want:
+        sys.exit("head moved")
+    work = tempfile.mkdtemp()
+    run = lambda *a: subprocess.run(["git", "-C", work, *a], check=True, capture_output=True)
+    subprocess.run(["git", "clone", "-q", st["forge"], work], check=True)
+    run("checkout", "-q", pr["head"])
+    run("-c", "user.name=f", "-c", "user.email=f@f", "rebase", "-q", "origin/main")
+    run("push", "-q", "origin", "HEAD:main")
+    pr["state"] = "MERGED"
+elif args[:2] == ["pr", "edit"]:
+    st["prs"][args[2]]["base"] = args[args.index("--base") + 1]
+elif args[:3] == ["api", "-X", "DELETE"]:
+    git("update-ref", "-d", "refs/heads/" + args[3].rsplit("/", 1)[1])
+with open(state, "w") as f:
+    json.dump(st, f)
+print(out)
+"""
+
+
 # The self-test: a throwaway Radicle home with two stacked patches and one imported
 # comment, the server started on it, and the page driven over HTTP as a browser would.
 
@@ -649,7 +843,7 @@ def self_test():
         checks.append((name, bool(ok)))
 
     with tempfile.TemporaryDirectory() as tmp:
-        env = dict(os.environ, RAD_HOME=f"{tmp}/home", RAD_PASSPHRASE="self-test",
+        env = dict(os.environ, PATH=f"{tmp}/bin:{os.environ['PATH']}", RAD_HOME=f"{tmp}/home", RAD_PASSPHRASE="self-test",
                    GIT_CONFIG_GLOBAL="/dev/null", GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
                    GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
         env.pop("SSH_AUTH_SOCK", None)
@@ -677,12 +871,13 @@ def self_test():
         one = commit("f.txt", "".join(f"line {i}{' <b>' if i == 20 else ''}\n" for i in range(1, 41)), "one")
         two = commit("g.txt", "new\n", "two")
 
-        def push(head, below, title):
+        def push(head, below, title, num):
             out = sh("git", "push", f"--push-option=patch.base={below}",
-                     f"--push-option=patch.message={title}", "rad", f"{head}:refs/patches")
+                     f"--push-option=patch.message={title}",
+                     f"--push-option=patch.message=GitHub-PR: o/r#{num}", "rad", f"{head}:refs/patches")
             return re.search(r"Patch ([0-9a-f]{40})", out.stderr + out.stdout).group(1)
 
-        p1, p2 = push(one, base, "first"), push(two, one, "second")
+        p1, p2 = push(one, base, "first", 1), push(two, one, "second", 2)
         rid = sh("rad", ".").stdout.strip()
 
         def show(p):
@@ -729,13 +924,15 @@ def self_test():
                     with opener.open(urllib.request.Request(f"{root}/act", data=data)) as r:
                         return r.status
                 except urllib.error.HTTPError as e:
+                    if os.environ.get("FPL_SELFTEST_DEBUG"):
+                        print(re.findall(r"class=\"err\">([^<]*)", e.read().decode()), file=sys.stderr)
                     return e.code
 
             code, index = get("/")
             check("the index lists both patches", code == 200 and "first" in index and "second" in index)
             check("and draws the second under the first",
                   index.index("first") < index.index("second") and "--depth:1" in index
-                  and "onto " + p1[:7] in index)
+                  and "onto #1" in index)
             check("the first patch is open beside the list, without a frame",
                   "<iframe" not in index and 'class="pane"' in index and "line 40" in index)
             check("an old /patch/ address still leads there", get(f"/patch/{p1}")[0] == 303)
@@ -795,6 +992,77 @@ def self_test():
             check("the page shows it all back",
                   "rename this" in page1 and "because" in page1 and ">resolved<" in page1 and "reject" in page1)
             check("a bad id is refused, not crashed", post(kind="comment", patch="zz", revision=p1, body="x") == 400)
+
+            # Landing, against a forge that is a bare repository and a gh that answers
+            # from a file. Someone else lands a commit on main first, so the rebase-merge
+            # really rewrites, and the patch stacked on the landed one has to move.
+            forge = f"{tmp}/forge.git"
+            sh("git", "init", "-q", "--bare", "-b", "main", forge)
+            sh("git", "config", f"url.{forge}.insteadOf", "https://github.com/o/r.git")
+            sh("git", "remote", "add", "github", "https://github.com/o/r.git")
+            sh("git", "push", "-q", "github", f"{base}:refs/heads/main", f"{one}:refs/heads/b1",
+               f"{two}:refs/heads/b2")
+            other = f"{tmp}/other"
+            sh("git", "clone", "-q", forge, other)
+            with open(f"{other}/h.txt", "w") as f:
+                f.write("elsewhere\n")
+            sh("git", "-C", other, "add", "h.txt")
+            sh("git", "-C", other, "commit", "-q", "-m", "elsewhere")
+            sh("git", "-C", other, "push", "-q", "origin", "HEAD:main")
+            gitdir = sh("git", "rev-parse", "--absolute-git-dir").stdout.strip()
+            with open(f"{gitdir}/agent-identity", "w") as f:
+                f.write("1+machine@users.noreply.github.com\n")
+            with open(f"{gitdir}/agent-credentials", "w") as f:
+                f.write("https://machine:x@github.com\n")
+            state = f"{tmp}/gh.json"
+            with open(state, "w") as f:
+                json.dump({"login": "machine", "prs": {"1": {"head": "b1", "base": "main", "state": "OPEN"},
+                                                        "2": {"head": "b2", "base": "b1", "state": "OPEN"}},
+                           "forge": forge, "log": []}, f)
+            os.makedirs(f"{tmp}/bin")
+            with open(f"{tmp}/bin/gh", "w") as f:
+                f.write(FAKE_GH)
+            os.chmod(f"{tmp}/bin/gh", 0o755)
+
+            def gh_state():
+                with open(state) as f:
+                    return json.load(f)
+
+            def forge_ref(ref):
+                return sh("git", "-C", forge, "rev-parse", "-q", "--verify", ref, ok=False).stdout.strip()
+
+            check("landing as the account that filed the pull request is refused",
+                  post(kind="land", patch=p1, revision=p1) == 400
+                  and not any(c[:2] == ["pr", "merge"] for c in gh_state()["log"]))
+            st = gh_state()
+            st["login"] = "psj"
+            st["prs"]["1"]["head_override"] = "0" * 40
+            with open(state, "w") as f:
+                json.dump(st, f)
+            check("landing when the forge has another head is refused",
+                  post(kind="land", patch=p1, revision=p1) == 400)
+            st = gh_state()
+            del st["prs"]["1"]["head_override"]
+            with open(state, "w") as f:
+                json.dump(st, f)
+            check("landing the bottom of the stack", post(kind="land", patch=p1, revision=p1) == 303)
+            calls = gh_state()["log"]
+            check("approved, then merged with the reviewed head pinned",
+                  ["pr", "review", "1", "--repo", "o/r", "--approve"] in calls
+                  and any(c[:3] == ["pr", "merge", "1"] and "--match-head-commit" in c
+                          and c[c.index("--match-head-commit") + 1] == one for c in calls))
+            main = forge_ref("main")
+            check("the forge's main has the patch, rewritten onto what landed before",
+                  main and main != one
+                  and "one" in sh("git", "-C", forge, "log", "-1", "--format=%s", main).stdout)
+            check("the patch is merged in Radicle too", show(p1)["state"]["status"] == "merged")
+            b2 = forge_ref("b2")
+            check("the patch above was moved onto the new main, without the landed commits",
+                  b2 and b2 != two and sh("git", "-C", forge, "rev-parse", f"{b2}^").stdout.strip() == main)
+            check("and retargeted to main", gh_state()["prs"]["2"]["base"] == "main")
+            check("the landed branch is gone", not forge_ref("refs/heads/b1"))
+            code, page1 = get(f"/?p={p1}")
+            check("the page says what happened", "rebase-merged #1" in page1 and "moved #2 onto main" in page1)
         finally:
             server.terminate()
             server.wait()
