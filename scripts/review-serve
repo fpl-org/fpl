@@ -6,11 +6,16 @@
     scripts/review-serve [--fresh] [--port <n>] [--no-open]
     scripts/review-serve --self-test        run against a throwaway Radicle home
 
-Serves a page on 127.0.0.1 that reads the repository's Radicle patches and nothing else,
-laid out like a mailbox: the open patches down the left, a patch stacked on another indented
-under it, and the chosen one on the right with every changed file whole and the comments at
-the lines they are about. j and k move through the list; each move is an ordinary page
-load, with no frames, so it works in any browser.
+Serves one page on 127.0.0.1 that reads the repository's Radicle patches and nothing else:
+the queue of open patches, head first, as one surface to read down, with the last few
+merged ones above it, grey. Every changed file is there whole; long unchanged stretches
+are hatched in the gutter and fold when you click the hatching (z near you, Z all), but
+nothing is folded unless you fold it. Under each hunk you say what you think of it:
+approve (→, or drag the hunk right), not this (←, or drag it left), or comment (c); ↓ and ↑
+go to the next and previous hunk, u undoes. At the end of a pull request the page stops;
+scroll on and a gate fills, and past it you are in the next one, the same going back up.
+Left is the queue as a tree, with the commits of each pull request; right is the timeline,
+files and commits of the one in view. [ and ] fold the two panels away.
 
 What you write on the page goes into the patch, signed with your Radicle key, as the
 Radicle CLI would write it: a line comment or a comment on the whole revision goes into
@@ -19,10 +24,10 @@ reject is the verdict of your review. A comment in a review can be marked resolv
 Comments imported from the forge (scripts/import-review) sit on the revision itself, where
 Radicle has no resolve; they can be answered.
 
-A patch that came from a pull request and sits at the bottom of its stack can be landed
+A patch that came from a pull request and is the head of the queue can be landed
 from the page: your gh account approves it and rebase-merges it, as scripts/land would, but
 only while the forge still has the commit you reviewed and its checks passed. The merge is
-then recorded in Radicle, the patches stacked on it are replayed onto the new main and
+then recorded in Radicle, the patches after it are replayed onto the new main and
 pushed as the machine account, and the landed branch is deleted. Your checkout's main is
 left alone.
 
@@ -262,11 +267,11 @@ E = html.escape
 STYLE = """
 :root{--ground:#f7f8fa;--surface:#fff;--sunk:#f1f3f6;--line:#e1e4ea;--ink:#16181d;--mut:#5f6673;
 --acc:#3451c7;--acc-soft:#e8ecfb;--ok:#2b8a3e;--ok-soft:#e6f4ea;--bad:#c92a2a;--bad-soft:#fdecec;
---merged:#6741d9;--add:#e9f7ec;--add-n:#d3efda;--del:#fcecec;--del-n:#f8d7d7;--sel:#fff3bf;--fold:#eef1fb;
+--merged:#6741d9;--hatch:rgba(95,102,115,.3);--add:#e9f7ec;--add-n:#d3efda;--del:#fcecec;--del-n:#f8d7d7;--sel:#fff3bf;--fold:#eef1fb;
 color-scheme:light}
 @media (prefers-color-scheme:dark){:root{--ground:#0e1014;--surface:#15181d;--sunk:#1b1f26;--line:#272c35;
 --ink:#e6e8ec;--mut:#8b929e;--acc:#8ea2f5;--acc-soft:#1f2640;--ok:#51cf66;--ok-soft:#15281b;--bad:#ff8787;
---bad-soft:#2e1719;--merged:#b197fc;--add:#14261a;--add-n:#1d3a25;--del:#2b1618;--del-n:#46201f;--sel:#3d3413;
+--bad-soft:#2e1719;--merged:#b197fc;--hatch:rgba(139,146,158,.32);--add:#14261a;--add-n:#1d3a25;--del:#2b1618;--del-n:#46201f;--sel:#3d3413;
 --fold:#1b2033;color-scheme:dark}}
 *{box-sizing:border-box}
 html,body{height:100%}
@@ -333,7 +338,7 @@ text-align:center;border-radius:4px;background:var(--acc);color:var(--surface);f
 tr.add td.c{background:var(--add)}tr.add td.n{background:var(--add-n)}tr.del td.c{background:var(--del)}tr.del td.n{background:var(--del-n)}
 tr.fold td{background:var(--fold);color:var(--acc);cursor:pointer;padding:3px 10px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:12px}
 tr.hidden{display:none}tr.sel td{background:var(--sel)!important}
-tr.thread>td{padding:8px 12px 10px 108px;background:var(--sunk);white-space:normal;word-break:normal;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+tr.thread>td{padding:8px 12px 10px 120px;background:var(--sunk);white-space:normal;word-break:normal;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
 /* comments */
 .thread-box{max-width:760px;background:var(--surface);border:1px solid var(--line);border-radius:8px}
 .cm{display:grid;grid-template-columns:24px 1fr;gap:4px 10px;padding:10px 12px;border-top:1px solid var(--line)}
@@ -354,7 +359,7 @@ tr.thread>td{padding:8px 12px 10px 108px;background:var(--sunk);white-space:norm
 .merge{border:1px solid var(--line);border-radius:8px;padding:12px;margin-top:16px}
 .merge h3{margin:0 0 4px;font-size:14px}
 pre.log{white-space:pre-wrap;margin:8px 0 0;font-size:12px}
-tr.hunkbar>td{padding:6px 12px 6px 108px;background:var(--surface);border-top:1px solid var(--line);border-bottom:1px solid var(--line);
+tr.hunkbar>td{padding:6px 12px 6px 120px;background:var(--surface);border-top:1px solid var(--line);border-bottom:1px solid var(--line);
 font:13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;white-space:normal}
 tr.hunkbar>td{display:table-cell}tr.hunkbar .approve{display:inline;margin-left:12px}tr.hunkbar .ok-mark{margin-left:12px}
 tr.hunkbar.current>td{box-shadow:inset 3px 0 0 var(--acc);background:var(--acc-soft)}
@@ -394,78 +399,345 @@ a.row.stacked{padding-left:calc(14px + var(--depth) * 22px)}
 .empty{padding:14px;color:var(--mut)}
 @media (max-width:1000px){.pr{display:block;height:auto}.stack,.tray{width:auto;border:0;border-bottom:1px solid var(--line)}
 .stack ol{flex-direction:column-reverse}.code{padding:16px}.tray .pane{max-height:none}tr.thread>td{padding-left:12px}}
+
+/* one surface: the queue down the middle, panels either side */
+body{display:flex;flex-direction:column;height:100vh;overflow:hidden}
+.bar{position:static;flex:none}
+.bar .meter{min-width:0}
+.btn.icon{padding:4px 8px}
+.shell{flex:1;min-height:0;display:grid;grid-template-columns:auto minmax(0,1fr) auto}
+.shell>.stack{width:290px;overflow:auto}
+#surface{position:relative;overflow:auto;padding:16px 24px 45vh;overscroll-behavior:contain}
+html,body,#surface{overscroll-behavior-x:none}
+.shell>.tray{width:380px;overflow:auto;display:block}
+.tray nav{position:sticky;top:0;background:var(--surface);z-index:1}
+.traypr[hidden],.pane[hidden]{display:none}
+body.no-stack .shell>.stack,body.no-tray .shell>.tray{display:none}
+.stack .sh{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}.stack .sh h2{margin:0}
+.tree-q{list-style:none;margin:0;padding:0}
+.tree-q .row{display:grid;grid-template-columns:18px 1fr;align-items:start}
+.disc{border:0;background:none;color:var(--mut);cursor:pointer;padding:9px 0 0;font-size:10px;line-height:1;transition:transform .12s}
+.disc[aria-expanded=true]{transform:rotate(90deg)}
+.stack .tree-q .row a{display:grid;grid-template-columns:14px 1fr;gap:8px;padding:6px 8px;border-radius:6px;color:var(--ink);font-size:13px;line-height:1.35}
+.stack .tree-q .row a:hover{background:var(--sunk);text-decoration:none}
+.stack .ti.on>.row a{background:var(--acc-soft);font-weight:600}
+.stack .ti.merged .row a{color:var(--mut)}
+.tc{list-style:none;margin:0 0 6px 22px;padding:0 0 0 10px;border-left:1px solid var(--line)}
+.stack .tc a{display:block;padding:3px 6px;border-radius:4px;font-size:12px;color:var(--ink);line-height:1.35}
+.stack .tc a:hover{background:var(--sunk);text-decoration:none}.stack .tc a.on{background:var(--acc-soft)}.tc .mono{color:var(--mut)}
+.trunkline{display:flex;gap:8px;align-items:center;padding:6px 8px 6px 26px;color:var(--mut);font-size:12px;
+border-top:1px dashed var(--line);border-bottom:1px dashed var(--line);margin:6px 0}
+/* a pull request */
+.sec{max-width:1100px;margin:0 auto;padding-top:4px}
+.shead{display:flex;gap:12px;align-items:flex-start;margin:4px 0 12px}
+.shead .st{flex:1;min-width:0}.shead h2{margin:0;font-size:18px;text-wrap:balance}
+.shead .meta{font-size:12px}.sact{display:flex;gap:8px;align-items:center}
+.qpos.merged{background:transparent;color:var(--merged);border:1px solid var(--merged)}
+.sec.merged .shead h2{color:var(--merged)}
+.sec.merged .files,.sec.merged .desc,.sec.merged .mergebox,.sec.merged .cview{filter:grayscale(1);opacity:.5}
+.sec.merged form,.sec.merged .replyform,.sec.merged .hunkbar button{display:none}
+.sec.merging .mergebox{border-color:var(--merged);animation:merging 1.2s ease-in-out infinite}
+@keyframes merging{50%{box-shadow:0 0 0 4px color-mix(in srgb,var(--merged) 25%,transparent)}}
+.sec.just{box-shadow:inset 3px 0 0 var(--merged)}
+.sec.merging form.land button{background:var(--merged);border-color:var(--merged)}
+.sec.just .mergebox{border-color:var(--merged);background:color-mix(in srgb,var(--merged) 8%,var(--surface))}.merged-mark{color:var(--merged)}
+.sec.just .shead h2{color:var(--merged)}
+.sec.just .files,.sec.just .desc{filter:grayscale(1);opacity:.5;transition:filter .6s,opacity .6s}
+.cbanner{display:flex;gap:12px;align-items:center;justify-content:space-between;background:var(--acc-soft);
+border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:13px}
+.note{max-width:1100px;margin:0 auto 16px;background:var(--surface);border:1px solid var(--merged);border-radius:8px;padding:10px 14px}
+.note summary{cursor:pointer;color:var(--merged);font-weight:600;font-size:13px}
+/* the gate between two pull requests: scroll on past the wall and it fills */
+.gate{position:relative;max-width:1100px;margin:28px auto;height:56px;border:1px dashed var(--line);border-radius:10px;
+display:flex;align-items:center;justify-content:center;color:var(--mut);font-size:13px;overflow:hidden;background:var(--surface)}
+.gate i{position:absolute;inset:0 auto 0 0;width:calc(var(--p,0) * 100%);background:var(--acc-soft)}
+.gate.up i{inset:0 0 0 auto}
+.gate.armed i{background:var(--ok-soft)}
+.gate span{position:relative;padding:0 16px;text-align:center}
+.end{text-align:center}
+/* the gutter: unchanged stretches are hatched, and a click there folds one */
+table.d td.g{width:10px;min-width:10px;padding:0}
+tr[data-run] td.g{background-image:repeating-linear-gradient(135deg,var(--hatch) 0 1.5px,transparent 1.5px 5px);cursor:pointer}
+tr[data-run] td.g:hover{background-color:var(--acc-soft)}
+tr.rs td.g{border-top:1px solid var(--line)}tr.re td.g{border-bottom:1px solid var(--line)}
+tr.folded td{background:var(--fold);color:var(--acc);cursor:pointer;padding:3px 10px;
+font:12px -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+tr.folded td.g{padding:0;background-image:repeating-linear-gradient(135deg,var(--hatch) 0 1.5px,transparent 1.5px 5px)}
+/* a hunk and its bar */
+tr.hunkbar .ok-mark,tr.hunkbar .no-mark,tr.hunkbar [data-do=undo]{display:none}
+tr.hunkbar.done .ok-mark,tr.hunkbar.refused .no-mark{display:inline;margin-left:12px}
+tr.hunkbar.done [data-do=undo],tr.hunkbar.refused [data-do=undo]{display:inline-flex}
+tr.hunkbar.done [data-do=approve],tr.hunkbar.done [data-do=reject],tr.hunkbar.refused [data-do=approve],
+tr.hunkbar.refused [data-do=reject],tr.hunkbar.done .drag-hint,tr.hunkbar.refused .drag-hint{display:none}
+tr.hunkbar button{margin-left:8px}.drag-hint{margin-left:12px;font-size:12px}
+.ffoot .ok-mark{display:none}.ffoot.done .ok-mark{display:inline}.ffoot.done [data-do=rest]{display:none}
+tbody.hk{cursor:grab}
+tbody.hk.lean-yes td{background-image:linear-gradient(rgba(43,138,62,calc(var(--p) * .22)),rgba(43,138,62,calc(var(--p) * .22)))}
+tbody.hk.lean-no td{background-image:linear-gradient(rgba(201,42,42,calc(var(--p) * .22)),rgba(201,42,42,calc(var(--p) * .22)))}
+tbody.hk.armed{outline:2px solid var(--ok)}tbody.hk.armed.lean-no{outline-color:var(--bad)}
+body.swiping,body.swiping *{user-select:none;cursor:grabbing!important}
+#toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--ink);color:var(--surface);
+padding:8px 12px;border-radius:8px;font-size:13px;display:flex;gap:12px;align-items:center;z-index:20;box-shadow:0 8px 24px rgba(0,0,0,.2)}
+#toast[hidden]{display:none}#toast button{background:none;border:0;color:var(--acc-soft);font:inherit;font-weight:600;cursor:pointer}
+@media (max-width:1000px){.shell{display:block;overflow:auto}.shell>.stack,.shell>.tray{width:auto}#surface{overflow:visible}}
+.shell>.stack ol{display:block}
+.stack .tc[hidden]{display:none}
+#cur-meter[hidden]{display:none}
+.stack .trunkline .node{display:inline-block;flex:none;margin:0}
+.stack .ti.on .tc a{background:none;font-weight:400}.stack .ti .tc a.on{background:var(--acc-soft)}
 @media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
 """
 
-SCRIPT = """
-const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+SCRIPT = r"""
+const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
+const T=document.body.dataset.t, S=$('#surface');
+const calm=matchMedia('(prefers-reduced-motion: reduce)').matches;
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 function remember(k,v){try{localStorage.setItem('review.'+k,v)}catch(e){}}
 function recall(k){try{return localStorage.getItem('review.'+k)}catch(e){return null}}
-if(recall('stack')==='off')document.body.classList.add('no-stack');
+
+/* panels */
+function panel(name,on){document.body.classList.toggle('no-'+name,!on);remember(name,on?'on':'off')}
+function flip(name){panel(name,document.body.classList.contains('no-'+name))}
+if(recall('stack')==='off')panel('stack',false);
+if(recall('tray')==='off')panel('tray',false);
+$$('[data-toggle]').forEach(b=>b.addEventListener('click',()=>flip(b.dataset.toggle)));
+
+/* where things are on the surface */
+const posOf=el=>el.getBoundingClientRect().top-S.getBoundingClientRect().top+S.scrollTop;
+const secOf=el=>el&&el.closest('section.sec');
+const secs=()=>$$('section.sec[id]');
+let passUntil=0;
+function go(top,smooth=true){passUntil=Date.now()+(smooth?1400:300);S.scrollTo({top,behavior:smooth&&!calm?'smooth':'auto'})}
+function jump(el,smooth=true){if(el)go(posOf(el)-12,smooth)}
+function center(el,smooth=true){if(!el)return;const h=el.getBoundingClientRect().height,v=S.clientHeight;
+  go(posOf(el)-Math.max(12,(v-Math.min(h,v*.8))/2),smooth)}
+
+/* the tree, and which pull request you are in */
+function inView(){const y=S.scrollTop+S.clientHeight*.3;let c=null;for(const s of secs()){if(posOf(s)<=y)c=s}return c||secs()[0]}
+let shown=null;
+function meter(sec){const t=+sec.dataset.total,d=+sec.dataset.done,r=+sec.dataset.refused,m=$('#cur-meter');
+  $('#cur-title').textContent=(sec.dataset.num?'#'+sec.dataset.num+' · ':'')+sec.dataset.title;
+  if(sec.classList.contains('merged')){m.hidden=true;return}
+  m.hidden=false;$('b',m).style.width=(t?100*d/t:100)+'%';$('span',m).textContent=d+'/'+t+' hunks'+(r?', '+r+' not':'')}
+function spy(){const s=inView();if(!s||s===shown)return;shown=s;
+  $$('.ti').forEach(t=>t.classList.toggle('on',t.dataset.for===s.id));
+  const on=$('.ti.on');if(on){const st=$('.shell>.stack'),r=on.getBoundingClientRect(),q=st.getBoundingClientRect();
+    if(r.top<q.top||r.bottom>q.bottom)st.scrollTop+=r.top-q.top-q.height/3}
+  $$('.traypr').forEach(t=>t.hidden=t.dataset.for!==s.id);tab(recall('tab')||'timeline');meter(s)}
+let spyQueued=false;
+S.addEventListener('scroll',()=>{if(!spyQueued){spyQueued=true;requestAnimationFrame(()=>{spyQueued=false;spy()})}});
+function tab(name){$$('.tray nav a').forEach(a=>a.classList.toggle('on',a.dataset.tab===name));
+  $$('.traypr:not([hidden]) .pane').forEach(p=>p.hidden=p.dataset.tab!==name);remember('tab',name)}
+$$('.tray nav a').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();tab(a.dataset.tab)}));
+function disclose(li,open){const b=$('.disc',li),o=$('.tc',li);if(!b||!o)return;b.setAttribute('aria-expanded',open);o.hidden=!open}
 document.addEventListener('click',e=>{
-  const f=e.target.closest('tr.fold'); if(f){$$('tr[data-fold="'+f.dataset.id+'"]').forEach(r=>r.classList.remove('hidden'));f.remove();return}
-  const go=e.target.closest('[data-goto]'); if(go){const t=document.getElementById(go.dataset.goto);
-    if(t){e.preventDefault();const tr=t.closest('tr'); if(tr&&tr.dataset.fold){$$('tr[data-fold="'+tr.dataset.fold+'"]').forEach(r=>r.classList.remove('hidden'))}
-      t.scrollIntoView({block:'center'}); t.animate?.([{outline:'2px solid var(--acc)'},{outline:'2px solid transparent'}],{duration:1400})}return}
-  const n=e.target.closest('td.n'); if(!n) return;
-  const tr=n.closest('tr'), t=tr.closest('table'), side=n.dataset.side, line=+n.dataset.line;
-  if(!line) return;
+  const d=e.target.closest('.disc');if(d){const li=d.closest('.ti');disclose(li,d.getAttribute('aria-expanded')!=='true');return}
+  const all=e.target.closest('[data-expand-all]');if(all){const open=all.textContent.startsWith('Expand');
+    $$('.ti').forEach(li=>disclose(li,open));all.textContent=open?'Collapse all':'Expand all';return}
+  const j=e.target.closest('[data-jump]');if(j){e.preventDefault();whole($('#'+j.dataset.jump));jump($('#'+j.dataset.jump));return}
+  const c=e.target.closest('[data-commit]');if(c){e.preventDefault();showCommit(c);return}
+  const w=e.target.closest('[data-whole]');if(w){const s=secOf(w);whole(s);jump(s);return}
+  const g=e.target.closest('[data-goto]');if(g){const t=document.getElementById(g.dataset.goto);if(t){e.preventDefault();whole(secOf(t));center(t);
+    t.animate?.([{outline:'2px solid var(--acc)'},{outline:'2px solid transparent'}],{duration:1400})}return}
+});
+async function showCommit(a){const s=$('#'+a.dataset.sec);if(!s)return;
+  $$('.tc a.on').forEach(x=>x.classList.remove('on'));a.classList.add('on');
+  const r=await fetch('/commit/'+s.dataset.oid+'/'+a.dataset.commit+'?t='+T),html=await r.text();
+  const cv=$('.cview',s);cv.innerHTML=r.ok?html:'<p class="err">'+html+'</p>';cv.hidden=false;$('.files',s).hidden=true;jump(s)}
+function whole(s){if(!s)return;const cv=$('.cview',s);if(cv&&!cv.hidden){cv.hidden=true;cv.innerHTML='';$('.files',s).hidden=false;
+  $$('.tc a.on').forEach(x=>x.classList.remove('on'))}}
+
+/* folding: nothing is folded until you fold it */
+function foldRun(id,fold){const rows=$$('tr[data-run="'+id+'"]'),ph=$('tr.folded[data-ph="'+id+'"]');if(!rows.length)return;
+  if(fold&&!ph){rows.forEach(r=>r.hidden=true);const t=document.createElement('tr');t.className='folded';t.dataset.ph=id;
+    t.innerHTML='<td class="g"></td><td colspan="3">▸ '+rows.length+' unchanged lines</td>';rows[0].before(t)}
+  else if(!fold&&ph){rows.forEach(r=>r.hidden=false);ph.remove()}}
+const runIds=()=>[...new Set($$('tr[data-run]').map(r=>r.dataset.run))];
+function foldNear(){const mid=S.scrollTop+S.clientHeight/2;let best=null,dist=1e12;
+  for(const id of runIds()){const ph=$('tr.folded[data-ph="'+id+'"]'),rows=$$('tr[data-run="'+id+'"]');
+    const a=ph?posOf(ph):posOf(rows[0]),b=ph?a:posOf(rows[rows.length-1]);const d=mid<a?a-mid:mid>b?mid-b:0;if(d<dist){dist=d;best=id}}
+  if(best){const was=!!$('tr.folded[data-ph="'+best+'"]');keep(()=>foldRun(best,!was))}}
+function foldAll(){const ids=runIds(),any=ids.some(id=>!$('tr.folded[data-ph="'+id+'"]'));keep(()=>ids.forEach(id=>foldRun(id,any)));
+  toast(any?'Unchanged stretches folded (Z unfolds)':'Everything unfolded')}
+function keep(change){const a=cur&&cur.closest('tbody')||inView(),before=a?posOf(a)-S.scrollTop:0;change();
+  if(a){passUntil=Date.now()+300;S.scrollTop=posOf(a)-before}}
+document.addEventListener('click',e=>{const g=e.target.closest('tr[data-run] td.g');if(g){keep(()=>foldRun(g.parentNode.dataset.run,true));return}
+  const f=e.target.closest('tr.folded');if(f)keep(()=>foldRun(f.dataset.ph,false))});
+
+/* line comments: click a line number, shift-click to extend */
+document.addEventListener('click',e=>{
+  const n=e.target.closest('td.n');if(!n)return;const tr=n.closest('tr'),t=tr.closest('table'),side=n.dataset.side,line=+n.dataset.line;
+  if(!line||!t.dataset.form)return;
   window.pick=(e.shiftKey&&window.pick&&window.pick.t===t&&window.pick.side===side)?{...window.pick,end:line}:{t,side,start:line,end:line};
-  const p=window.pick, lo=Math.min(p.start,p.end), hi=Math.max(p.start,p.end);
-  t.querySelectorAll('tr').forEach(r=>r.classList.remove('sel'));
-  let last=null;
+  const p=window.pick,lo=Math.min(p.start,p.end),hi=Math.max(p.start,p.end);
+  $$('tr.sel').forEach(r=>r.classList.remove('sel'));let last=null;
   t.querySelectorAll('td.n[data-side="'+side+'"]').forEach(c=>{const l=+c.dataset.line;if(l>=lo&&l<=hi){c.closest('tr').classList.add('sel');last=c.closest('tr')}});
-  $$('tr.form').forEach(r=>r.remove());
-  const row=document.createElement('tr'); row.className='form thread'; row.innerHTML='<td colspan="3"></td>';
-  row.firstChild.appendChild(document.getElementById(t.dataset.form).content.cloneNode(true)); last.after(row);
-  const fm=row.querySelector('form'), L=side==='old'?'L':'R';
-  fm.path.value=t.dataset.path; fm.side.value=side; fm.start.value=lo; fm.end.value=hi+1;
-  fm.querySelector('.what').textContent=t.dataset.path+' '+(lo===hi?L+lo:L+lo+'–'+L+hi);
-  fm.body.focus();
+  const fm=form(last,t);fm.path.value=t.dataset.path;fm.side.value=side;fm.start.value=lo;fm.end.value=hi+1;
+  fm.at.value=(secOf(t)||{}).id||'';fm.querySelector('.what').textContent=t.dataset.path+' '+(side==='old'?'L':'R')+lo+(lo===hi?'':'–'+hi);fm.body.focus()});
+function form(after,t){$$('tr.form').forEach(r=>r.remove());const row=document.createElement('tr');row.className='form thread';
+  row.innerHTML='<td colspan="4"></td>';row.firstChild.appendChild(document.getElementById(t.dataset.form).content.cloneNode(true));after.after(row);
+  return row.querySelector('form')}
+function commentOn(bar){const d=bar.dataset,fm=form(bar,bar.closest('table'));fm.path.value=d.path;fm.side.value=d.side;
+  fm.start.value=d.start;fm.end.value=d.end;fm.at.value=bar.id;
+  fm.querySelector('.what').textContent=d.path+' '+(d.side==='old'?'L':'R')+d.start+(+d.end-1>+d.start?'–'+(d.end-1):'');fm.body.focus()}
+
+/* marks */
+const bars=()=>$$('tr.hunkbar').filter(b=>!secOf(b).classList.contains('merged')&&!b.closest('.files').hidden);
+const stateOf=b=>b.classList.contains('done')?'approve':b.classList.contains('refused')?'reject':null;
+let cur=null;
+function focusBar(b,smooth=true){if(!b)return;$$('tr.hunkbar.current').forEach(x=>x.classList.remove('current'));
+  b.classList.add('current');cur=b;center(b.closest('tbody'),smooth)}
+function nextBar(){const all=bars();let i=all.indexOf(cur);
+  if(i<0||!visible(cur)){const y=S.scrollTop;i=all.findIndex(b=>posOf(b)>=y)-1}
+  focusBar(all.find((b,k)=>k>i&&!stateOf(b))||all[i+1])}
+function prevBar(){const all=bars();let i=all.indexOf(cur);
+  if(i<0||!visible(cur)){const y=S.scrollTop+S.clientHeight;i=all.findIndex(b=>posOf(b)>y);if(i<0)i=all.length}
+  focusBar(all[Math.max(0,i-1)])}
+function visible(el){const r=el.getBoundingClientRect(),q=S.getBoundingClientRect();return r.bottom>q.top&&r.top<q.bottom}
+function setState(b,s){b.classList.toggle('done',s==='approve');b.classList.toggle('refused',s==='reject');
+  $$('tr.add,tr.del',b.closest('tbody')).forEach(r=>{r.classList.toggle('done',s==='approve');r.classList.toggle('refused',s==='reject')})}
+async function send(sec,fields){const body=new URLSearchParams({t:T,patch:sec.dataset.oid,revision:sec.dataset.rev,ajax:'1',...fields});
+  const r=await fetch('/act',{method:'POST',body});let j={};try{j=await r.json()}catch(e){j={error:'no answer from the page server'}}
+  if(!r.ok||j.error)throw new Error(j.error||('status '+r.status));return j}
+const undos=[];
+async function decide(b,what){const s=secOf(b),was=stateOf(b);if(what===was)return;
+  setState(b,what);
+  try{if(was)await send(s,{kind:was,ranges:b.dataset.ranges,active:'0'});
+    await send(s,{kind:what,ranges:b.dataset.ranges,active:'1'})}
+  catch(e){setState(b,was);toast('Not saved: '+e.message);return}
+  undos.push({b,was});toast(what==='approve'?'Approved':'Marked: not this',true);refresh(s)}
+async function withdraw(b){const s=secOf(b),was=stateOf(b);if(!was)return;setState(b,null);
+  try{await send(s,{kind:was,ranges:b.dataset.ranges,active:'0'})}catch(e){setState(b,was);toast('Not saved: '+e.message);return}
+  undos.push({b,was});refresh(s)}
+async function undo(){const u=undos.pop();if(!u){toast('Nothing to undo');return}
+  const s=secOf(u.b),now=stateOf(u.b);setState(u.b,u.was);
+  try{if(now)await send(s,{kind:now,ranges:u.b.dataset.ranges,active:'0'});
+    if(u.was)await send(s,{kind:u.was,ranges:u.b.dataset.ranges,active:'1'})}catch(e){toast('Undo failed: '+e.message)}
+  focusBar(u.b);toast('Undone');refresh(s)}
+async function rest(btn){const f=btn.closest('.file'),s=secOf(f),open=$$('tr.hunkbar',f).filter(b=>!stateOf(b));if(!open.length)return;
+  open.forEach(b=>setState(b,'approve'));
+  try{await send(s,{kind:'approve',active:'1',ranges:JSON.stringify(open.flatMap(b=>JSON.parse(b.dataset.ranges)))})}
+  catch(e){open.forEach(b=>setState(b,null));toast('Not saved: '+e.message);return}
+  open.forEach(b=>undos.push({b,was:null}));toast('Approved the rest of the file');refresh(s)}
+function tallies(s){$$('.file',s).forEach(f=>{const bs=$$('tr.hunkbar',f);if(!bs.length)return;
+  const ok=bs.filter(b=>stateOf(b)==='approve').length,no=bs.filter(b=>stateOf(b)==='reject').length;
+  const text=ok+'/'+bs.length+' hunks approved'+(no?', '+no+' not':'');$$('.tally',f).forEach(t=>t.textContent=text);
+  const foot=$('.ffoot',f);if(foot)foot.classList.toggle('done',ok===bs.length)})}
+async function refresh(s){tallies(s);let j;try{const r=await fetch('/status/'+s.dataset.oid+'?t='+T);j=await r.json()}catch(e){return}
+  if(j.error)return;
+  for(const [id,v] of Object.entries(j.hunks)){const b=document.getElementById(id);if(b)setState(b,v==='yes'?'approve':v==='no'?'reject':null)}
+  Object.assign(s.dataset,{total:j.total,done:j.done,refused:j.refused});tallies(s);
+  const st=$('.shead .status',s);if(st)st.textContent=st.textContent.replace(/^\d+\/\d+ hunks approved(, \d+ not)?/,j.done+'/'+j.total+' hunks approved'+(j.refused?', '+j.refused+' not':''));
+  const n=$('.ti[data-for="'+s.id+'"] .num');if(n)n.textContent=n.textContent.replace(/· \d+\/\d+$/,'· '+j.done+'/'+j.total);
+  const mb=$('.mergebox',s);if(mb)mb.outerHTML=j.mergebox;if(s===shown)meter(s)}
+document.addEventListener('click',e=>{const b=e.target.closest('[data-do]');if(!b)return;const bar=b.closest('tr.hunkbar');
+  if(b.dataset.do==='rest')return rest(b);if(!bar)return;cur=bar;
+  if(b.dataset.do==='undo')return withdraw(bar);fly(bar,b.dataset.do)});
+document.addEventListener('click',e=>{const b=e.target.closest('.hunk-comment');if(b)commentOn(b.closest('tr'))});
+let toastTimer;
+function toast(text,canUndo){const t=$('#toast');t.innerHTML='';const s=document.createElement('span');s.textContent=text;t.append(s);
+  if(canUndo){const u=document.createElement('button');u.textContent='Undo (u)';u.onclick=undo;t.append(u)}
+  t.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.hidden=true,4000)}
+
+/* swipe a hunk: right is approve, left is not this; short of the line it springs back */
+const reach=()=>Math.min(160,S.clientWidth*.18);
+function lean(tb,dx){const p=Math.max(-1,Math.min(1,dx/reach()));tb.style.transition='none';
+  tb.style.transform='translateX('+dx+'px) rotate('+(dx/80)+'deg)';tb.style.setProperty('--p',Math.abs(p));
+  tb.classList.toggle('lean-yes',dx>0);tb.classList.toggle('lean-no',dx<0);tb.classList.toggle('armed',Math.abs(dx)>=reach())}
+function settle(tb){tb.style.transition=calm?'none':'transform .2s ease-out';tb.style.transform='';
+  tb.classList.remove('lean-yes','lean-no','armed');tb.style.removeProperty('--p')}
+function release(tb,dx){const bar=$('tr.hunkbar',tb);if(!bar||Math.abs(dx)<reach()){settle(tb);return}
+  cur=bar;fly(bar,dx>0?'approve':'reject',dx)}
+function fly(bar,what,from){const tb=bar.closest('tbody'),dir=what==='approve'?1:-1;
+  if(calm||!tb){decide(bar,what);setTimeout(nextBar,50);return}
+  lean(tb,from??dir*reach());requestAnimationFrame(()=>{tb.style.transition='transform .16s ease-in,opacity .16s';
+    tb.style.transform='translateX('+(dir*S.clientWidth*.5)+'px) rotate('+(dir*6)+'deg)';tb.style.opacity='0'});
+  decide(bar,what);
+  setTimeout(()=>{tb.style.transition='none';tb.style.transform='';tb.classList.remove('lean-yes','lean-no','armed');
+    requestAnimationFrame(()=>{tb.style.transition='opacity .18s';tb.style.opacity=''});nextBar()},170)}
+let drag=null;
+S.addEventListener('pointerdown',e=>{if(e.button!==0)return;const tb=e.target.closest('tbody.hk');
+  if(!tb||secOf(tb).classList.contains('merged')||e.target.closest('button,a,textarea,input,form,td.n,td.g,.thread-box'))return;
+  drag={tb,x:e.clientX,y:e.clientY,dx:0,on:false,id:e.pointerId}});
+window.addEventListener('pointermove',e=>{if(!drag||e.pointerId!==drag.id)return;const dx=e.clientX-drag.x,dy=e.clientY-drag.y;
+  if(!drag.on){if(Math.abs(dx)>12&&Math.abs(dx)>Math.abs(dy)*1.5){drag.on=true;getSelection().removeAllRanges();document.body.classList.add('swiping')}
+    else if(Math.abs(dy)>12)drag=null;return}
+  e.preventDefault();drag.dx=dx;lean(drag.tb,dx)});
+function endDrag(){if(!drag)return;const d=drag;drag=null;document.body.classList.remove('swiping');if(d.on)release(d.tb,d.dx)}
+window.addEventListener('pointerup',endDrag);window.addEventListener('pointercancel',endDrag);
+
+/* the gates: at the end of a pull request the page stops; scroll on and the gate fills, and
+   past the line you are in the next one. The same going back up. */
+const FULL=650;let pull={g:null,dir:0,p:0,at:0,hold:false},swipe={tb:null,dx:0,timer:0};
+function fill(g,dir,p){$$('.gate').forEach(x=>{if(x!==g){x.style.setProperty('--p',0);x.classList.remove('armed','up')}});if(!g)return;
+  g.style.setProperty('--p',Math.min(1,p/FULL));g.classList.toggle('armed',p>=FULL);g.classList.toggle('up',dir<0);
+  $('span',g).textContent=dir<0?g.dataset.up:g.dataset.down}
+function free(){if(pull.g){pull={g:null,dir:0,p:0,at:0,hold:false};fill(null)}return false}
+function wall(dy){if(Date.now()<passUntil||!dy)return false;const top=S.scrollTop,h=S.clientHeight,gs=$$('.gate');let g,limit;
+  if(dy>0){g=gs.find(x=>posOf(x)+x.offsetHeight>=top+h-1);if(!g)return false;limit=posOf(g)+g.offsetHeight-h;
+    if(top+dy<=limit)return free();if(top<limit)S.scrollTop=limit
+  }else{g=gs.filter(x=>posOf(x)<=top+1).pop();if(!g)return false;limit=posOf(g);
+    if(top+dy>=limit)return free();if(top>limit)S.scrollTop=limit}
+  // Arriving at the wall, the rest of that flick is absorbed: only a new push, after a
+  // pause, fills the gate. So momentum stops you at the end instead of carrying you over.
+  const now=Date.now();
+  if(pull.g!==g||pull.dir!==Math.sign(dy)){pull={g,dir:Math.sign(dy),p:0,at:now,hold:true};fill(g,pull.dir,0);return true}
+  if(pull.hold){const gap=now-pull.at;pull.at=now;if(gap<180)return true;pull.hold=false}
+  pull.p+=Math.abs(dy);pull.at=now;fill(g,pull.dir,pull.p);
+  if(pull.p>=FULL){const d=pull.dir;pull={g:null,dir:0,p:0,at:0,hold:false};
+    setTimeout(()=>fill(null),300);
+    if(d>0)go(posOf(g)+g.offsetHeight);else go(Math.max(0,posOf(g)-S.clientHeight));}
+  return true}
+(function decay(){if(pull.g&&!pull.hold&&Date.now()-pull.at>140){pull.p*=.82;if(pull.p<8){pull.p=0;fill(null);pull.g=null}else fill(pull.g,pull.dir,pull.p)}
+  requestAnimationFrame(decay)})();
+S.addEventListener('wheel',e=>{
+  if(Math.abs(e.deltaX)>Math.abs(e.deltaY)){const tb=e.target.closest('tbody.hk');if(!tb||secOf(tb).classList.contains('merged'))return;
+    e.preventDefault();if(swipe.tb!==tb)swipe={tb,dx:0,timer:0};swipe.dx-=e.deltaX;lean(tb,swipe.dx);clearTimeout(swipe.timer);
+    swipe.timer=setTimeout(()=>{const {tb,dx}=swipe;swipe={tb:null,dx:0,timer:0};release(tb,dx)},160);return}
+  if(wall(e.deltaY))e.preventDefault()},{passive:false});
+let touchY=null;
+S.addEventListener('touchstart',e=>{touchY=e.touches[0].clientY},{passive:true});
+S.addEventListener('touchmove',e=>{if(touchY===null)return;const y=e.touches[0].clientY,dy=touchY-y;touchY=y;if(wall(dy))e.preventDefault()},{passive:false});
+
+/* merging: purple while it runs, grey when done, then on to the next one */
+document.addEventListener('submit',async e=>{const f=e.target;if(!f.classList.contains('land'))return;e.preventDefault();
+  const s=secOf(f),b=$('button',f);$$('.err',f.parentNode).forEach(x=>x.remove());
+  s.classList.add('merging');b.disabled=true;b.textContent='Merging…';
+  try{await send(s,{kind:'land'})}catch(err){s.classList.remove('merging');b.disabled=false;b.textContent='Try again';
+    const p=document.createElement('p');p.className='err';p.textContent=err.message;f.after(p);return}
+  const all=secs(),next=all[all.indexOf(s)+1];
+  s.classList.remove('merging');s.classList.add('just');
+  $('.mergebox',s).innerHTML='<h3 class="merged-mark">Merged</h3><div class="mut">'+(next?'On to '+(next.dataset.num?'#'+next.dataset.num:'the next one')+', which is now on the new main.':'The queue is empty.')+'</div>';
+  const node=$('.ti[data-for="'+s.id+'"] .node');if(node)node.classList.add('merged');await sleep(calm?0:900);
+  if(next){jump(next);await sleep(calm?0:800)}
+  location.replace('/?t='+T+'&n='+Date.now()+(next?'#'+next.id:''))});
+
+/* keys */
+document.addEventListener('keydown',e=>{if(e.target.closest('textarea,input,select')||e.metaKey||e.ctrlKey||e.altKey)return;const k=e.key;
+  const act=f=>{e.preventDefault();f()};
+  if(k==='ArrowDown'||k==='j'||k==='n')act(nextBar);
+  else if(k==='ArrowUp'||k==='k'||k==='p')act(prevBar);
+  else if((k==='ArrowRight'||k==='a')&&cur)act(()=>fly(cur,'approve'));
+  else if((k==='ArrowLeft'||k==='x')&&cur)act(()=>fly(cur,'reject'));
+  else if(k==='c'&&cur)act(()=>commentOn(cur));
+  else if(k==='u')act(undo);
+  else if(k==='z')act(foldNear);
+  else if(k==='Z')act(foldAll);
+  else if(k==='[')act(()=>flip('stack'));
+  else if(k===']')act(()=>flip('tray'));
+  else if(k==='t'||k==='f')act(()=>{if(document.body.classList.contains('no-tray'))flip('tray');tab(k==='t'?'timeline':'files')});
+  else if(k==='m')act(()=>{const s=inView(),m=s&&$('.mergebox',s);if(m)center(m)});
 });
-function commentOn(bar){
-  $$('tr.form').forEach(r=>r.remove());
-  const row=document.createElement('tr'); row.className='form thread'; row.innerHTML='<td colspan="3"></td>';
-  row.firstChild.appendChild(document.getElementById(bar.closest('table').dataset.form).content.cloneNode(true)); bar.after(row);
-  const fm=row.querySelector('form'), d=bar.dataset, L=d.side==='old'?'L':'R';
-  fm.path.value=d.path; fm.side.value=d.side; fm.start.value=d.start; fm.end.value=d.end; fm.at.value=bar.id;
-  fm.querySelector('.what').textContent=d.path+' '+L+d.start+(+d.end-1>+d.start?'–'+L+(d.end-1):'');
-  fm.body.focus();
-}
-document.addEventListener('click',e=>{const b=e.target.closest('.hunk-comment'); if(b)commentOn(b.closest('tr'))});
-document.addEventListener('keydown',e=>{
-  if(e.target.closest('textarea,input,select')||e.metaKey||e.ctrlKey||e.altKey)return;
-  const rows=$$('a.row');
-  if(rows.length){const i=rows.findIndex(r=>r.classList.contains('on'));
-    if(e.key==='j'||e.key==='k'){e.preventDefault();const to=Math.max(0,Math.min(rows.length-1,i<0?0:i+(e.key==='j'?1:-1)));
-      rows.forEach(r=>r.classList.remove('on'));rows[to].classList.add('on');rows[to].scrollIntoView({block:'nearest'});remember('row',to)}
-    if(e.key==='Enter'&&i>=0)location.href=rows[i].href;return}
-  const bars=$$('tr.hunkbar'); let cur=bars.findIndex(b=>b.classList.contains('current'));
-  function focusBar(i){if(i<0||i>=bars.length)return; bars.forEach(b=>b.classList.remove('current')); const b=bars[i]; b.classList.add('current');
-    if(b.dataset.fold)$$('tr[data-fold="'+b.dataset.fold+'"]').forEach(x=>x.classList.remove('hidden'));
-    b.scrollIntoView({block:'center'})}
-  if(e.key==='n'||e.key==='j'){e.preventDefault();let i=bars.findIndex((b,k)=>k>cur&&!b.classList.contains('done')&&!b.classList.contains('refused'));focusBar(i<0?Math.min(cur+1,bars.length-1):i);return}
-  if(e.key==='p'||e.key==='k'){e.preventDefault();focusBar(Math.max(0,cur-1));return}
-  if(e.key==='a'&&cur>=0){e.preventDefault();const b=bars[cur].querySelector('form.approve:not(.reject) button');if(b)b.click();return}
-  if(e.key==='x'&&cur>=0){e.preventDefault();const b=bars[cur].querySelector('form.reject button');if(b)b.click();return}
-  if(e.key==='c'&&cur>=0){e.preventDefault();commentOn(bars[cur]);return}
-  if(e.key==='m'){const m=$('.mergebox.ready')||$('.mergebox');if(m){e.preventDefault();m.scrollIntoView({block:'center'})}return}
-  if(e.key==='s'){document.body.classList.toggle('no-stack');remember('stack',document.body.classList.contains('no-stack')?'off':'on')}
-  const tab={t:'timeline',f:'files'}[e.key]; if(tab){const a=$('.tray nav a[data-tab="'+tab+'"]'); if(a)a.click()}
-});
-$$('.tray nav a').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();
-  if(a.classList.contains('on')&&!document.body.classList.contains('no-tray')){document.body.classList.add('no-tray');return}
-  document.body.classList.remove('no-tray');
-  $$('.tray nav a').forEach(b=>b.classList.toggle('on',b===a));
-  $$('.tray .pane').forEach(p=>p.hidden=p.dataset.tab!==a.dataset.tab); remember('tab',a.dataset.tab)}));
-const saved=recall('tab'); if(saved){const a=$('.tray nav a[data-tab="'+saved+'"]'); if(a&&!a.classList.contains('on'))a.click()}
-(function(){const bars=$$('tr.hunkbar'); if(!bars.length)return;
-  const h=location.hash.slice(1), at=bars.findIndex(b=>b.id===h);
-  let i=bars.findIndex((b,k)=>k>=Math.max(0,at)&&!b.classList.contains('done')&&!b.classList.contains('refused')); if(i<0&&at>=0)i=at;
-  if(i<0)return; bars[i].classList.add('current');
-  if(h){if(bars[i].dataset.fold)$$('tr[data-fold="'+bars[i].dataset.fold+'"]').forEach(x=>x.classList.remove('hidden'));
-    bars[i].scrollIntoView({block:'center'})}})();
-const r=+recall('row'); const rows=$$('a.row'); if(rows.length){rows.forEach(x=>x.classList.remove('on'));(rows[r]||rows[0]).classList.add('on')}
+
+/* arriving: at the hunk or pull request in the address, else at the head of the queue */
+(function(){const h=location.hash.slice(1),t=h&&document.getElementById(h);
+  const first=secs().find(s=>!s.classList.contains('merged'));
+  if(t&&t.matches('tr.hunkbar'))focusBar(t,false);
+  else if(t){if(t.matches('section.sec'))jump(t,false);else center(t,false)}
+  else if(first)jump(first,false);
+  if(!cur){const s=t?secOf(t):first;const b=s&&$$('tr.hunkbar',s).find(x=>!stateOf(x));if(b){b.classList.add('current');cur=b}}
+  spy()})();
 """
 
 
@@ -554,32 +826,6 @@ def excerpt_of(c, rev):
             f'<table class="d">{rows}</table></div>')
 
 
-def fold(rows, keep, fid):
-    """Rows of a whole file, with long runs away from any change folded behind one row that
-    opens them, as the forge does; the lines are all there, only hidden."""
-    out, run_, n = [], [], 0
-    for i, row in enumerate(rows):
-        if i in keep:
-            if len(run_) > 1:
-                n += 1
-                out.append(f'<tr class="fold" data-id="{fid}-{n}"><td colspan="3">⋯ show {len(run_)} unchanged lines</td></tr>')
-                out += [r.replace("<tr ", f'<tr data-fold="{fid}-{n}" ', 1).replace('class="', 'class="hidden ', 1) for r in run_]
-            else:
-                out += run_
-            run_ = []
-            out.append(row)
-        else:
-            run_.append(row)
-    if len(run_) > 1:
-        n += 1
-        out.append(f'<tr class="fold" data-id="{fid}-{n}"><td colspan="3">⋯ show {len(run_)} unchanged lines</td></tr>')
-        out += [r.replace("<tr ", f'<tr data-fold="{fid}-{n}" ', 1).replace('class="', 'class="hidden ', 1) for r in run_]
-    else:
-        out += run_
-    return out
-
-
-
 def forge_slug(patch):
     for r in patch["revisions"].values():
         m = re.search(r"GitHub-PR: (\S+)#\d+", text_of(r["description"]))
@@ -591,20 +837,9 @@ def forge_slug(patch):
 NOTES = {}  # what the last landing of a patch said, shown once
 
 
-def stack_below(patches, oid):
-    """The open patch this one is stacked on, as the page names it, or None."""
-    open_, children = graph(patches)
-    for up, kids in children.items():
-        if oid in kids and up:
-            return f"#{forge_number(open_[up])}" if forge_number(open_[up]) else up[:7]
-    return None
-
-
-
-
 def page(title, body, token, script=SCRIPT, bar=""):
     return f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{E(title)}</title><style>{STYLE}</style></head><body>
+<title>{E(title)}</title><style>{STYLE}</style></head><body data-t="{token}">
 {bar}{body}<script>{script}</script></body></html>"""
 
 
@@ -654,95 +889,61 @@ def where_of(c):
     return f"{loc['path']} {L}{a}" + (f"–{L}{b}" if b > a else "")
 
 
-def comment_count(p):
-    n = len(comments_of(latest(p)))
-    return f" · {n} comment{'s' * (n != 1)}" if n else ""
+RUN = 6  # an unchanged stretch at least this long, away from any change, gets a fold handle
 
 
-def stack_chain(patches, oid):
-    """The stack this patch is in, from the bottom up: every open patch it sits on, itself,
-    and every open patch that sits on it."""
-    open_, children = graph(patches)
-    up = {k: parent for parent, kids in children.items() for k in kids}
-    chain, cur = [], oid
-    while cur:
-        chain.insert(0, cur)
-        cur = up.get(cur)
-    cur = oid
-    while children.get(cur):
-        cur = children[cur][0]
-        chain.append(cur)
-    return [(o, patches[o]) for o in chain if o in patches]
+def rows_html(entries, fid):
+    """The rows of a file as table bodies. entries are (row html, keep, hunk anchor or None).
+    The rows of one hunk, with its comments and its bar, share a tbody, so the hunk can move
+    as one. Long unchanged stretches are marked for folding, and never folded: what you have
+    not seen should be what you chose not to see."""
+    marks = [None] * len(entries)
+    i = n = 0
+    while i < len(entries):
+        if entries[i][1] or entries[i][2] is not None:
+            i += 1
+            continue
+        j = i
+        while j < len(entries) and not entries[j][1] and entries[j][2] is None:
+            j += 1
+        if j - i >= RUN:
+            n += 1
+            for k in range(i, j):
+                marks[k] = (f"{fid}-{n}", " rs" if k == i else " re" if k == j - 1 else "")
+        i = j
+    out, cur = [], object()
+    for (row, _, group), mark in zip(entries, marks):
+        if group != cur:
+            if out:
+                out.append("</tbody>")
+            out.append(f'<tbody class="hk" data-hunk="{group}">' if group else "<tbody>")
+            cur = group
+        if mark:
+            edge = mark[1].strip()
+            row = row.replace('<tr class="', f'<tr data-run="{mark[0]}" class="{edge + " " if edge else ""}', 1)
+        out.append(row)
+    if out:
+        out.append("</tbody>")
+    return "".join(out)
 
 
-def pr_page(repo, oid, rev_id, token, tab="conversation", below=None, note=""):
-    patches = repo.patches()
-    patch = patches.get(oid) or repo.show(oid)
-    revs = revisions(patch)
-    rev = patch["revisions"].get(rev_id) if rev_id else revs[-1]
-    if rev is None:
-        raise Refused(f"no revision {rev_id} in patch {oid[:7]}")
-    num = forge_number(patch)
-    status = patch["state"]["status"]
-    hidden = (f'<input type="hidden" name="t" value="{token}"><input type="hidden" name="patch" value="{oid}">'
-              f'<input type="hidden" name="revision" value="{rev["id"]}">')
-    commits = [line.split("\x1f") for line in run(
+def sid_of(patch, oid):
+    """The anchor of a pull request on the page."""
+    n = forge_number(patch)
+    return f"pr-{n}" if n else f"pr-{oid[:7]}"
+
+
+def commits_of(rev):
+    return [line.split("\x1f") for line in run(
         "git", "log", "--reverse", "--format=%H\x1f%an\x1f%s\x1f%cs", f"{rev['base']}..{rev['oid']}", ok=False
     ).stdout.splitlines() if line]
-    all_ = comments_of(rev)
-    files = diff(rev["base"], rev["oid"])
-    adds = sum(1 for f in files for r in f["rows"] if r[0] == "add")
-    dels = sum(1 for f in files for r in f["rows"] if r[0] == "del")
+
+
+def tray_html(repo, patch, rev, all_, hidden, commits, files, p, sid):
+    """The right-hand panel for one pull request: its timeline, its files, its commits. The
+    page shows the one for the pull request you are reading."""
+    revs = revisions(patch)
     who = repo.name(patch["author"]["id"])
-
-    # The header: where you are, what this is, and the two things you do here.
-    state = {"open": ("open", "Open"), "merged": ("merged", "Merged")}.get(status, ("closed", status.capitalize()))
-    review_pop = (f'<details class="pop"><summary class="btn">Review <kbd>▾</kbd></summary><div class="popbox">'
-                  f'<form method="post" action="/act">{hidden}<input type="hidden" name="kind" value="review">'
-                  f'<h3>Review revision {revs.index(rev) + 1}</h3><textarea name="body" id="review-body" placeholder="Summary (optional for a verdict)"></textarea>'
-                  f'<label><input type="radio" name="event" value="comment" checked><span>Comment<small>Feedback without a verdict.</small></span></label>'
-                  f'<label><input type="radio" name="event" value="approve"><span>Approve<small>Your verdict on this revision: accept.</small></span></label>'
-                  f'<label><input type="radio" name="event" value="request_changes"><span>Request changes<small>Your verdict on this revision: reject.</small></span></label>'
-                  f'<div class="row-end"><button class="btn blue">Submit review</button></div></form></div></details>')
-    total, done, refused, first = progress(rev, files, repo.me, patch)
-    pct = int(100 * done / total) if total else 100
-    merge_btn = (f'<a class="meter" href="#{first or "merge"}" data-goto="{first or "merge"}" title="n: next hunk, a: approve it">'
-                 f'<i><b style="width:{pct}%"></b></i>{done}/{total} hunks{f", {refused} not" if refused else ""}</a>')
-    mergebox = mergebox_html(rev, hidden, status, num, below, total, done, refused, first)
-    rev_links = (" · " + " ".join(
-        f'<a href="/pr/{oid}?t={token}&rev={r["id"]}">{"<b>" if r is rev else ""}r{i + 1}{"</b>" if r is rev else ""}</a>'
-        for i, r in enumerate(revs))) if len(revs) > 1 else ""
-    bar = (f'<header class="bar"><span class="crumbs"><a href="/?t={token}">Pull requests</a> / #{num or oid[:7]}</span>'
-           f'<h1>{E(patch["title"])}</h1><span class="pill {state[0]}">{state[1]}</span>'
-           f'<div class="tools"><button class="btn" type="button" onclick="document.body.classList.toggle(\'no-stack\')">Stack <kbd>s</kbd></button>'
-           f'{review_pop}{merge_btn}</div></header>')
-
-    # Left: the stack, trunk at the bottom.
-    chain = stack_chain(patches, oid) if oid in patches else [(oid, patch)]
-    items = [f'<li><a href="#" onclick="return false"><span class="node trunk"></span><span>main</span></a></li>']
-    for o, p in chain:
-        n = forge_number(p)
-        items.append(f'<li class="{"on" if o == oid else ""}"><a href="/pr/{o}?t={token}">'
-                     f'<span class="node {"merged" if p["state"]["status"] == "merged" else ""}"></span>'
-                     f'<span>{E(p["title"])}<span class="num">#{n or o[:7]}{comment_count(p)}</span></span></a></li>')
-    stack = f'<aside class="stack"><h2>Stack</h2><ol>{"".join(items)}</ol></aside>'
-
-    # Middle: the change itself.
-    desc = text_of(rev["description"]).strip() or text_of(revs[0]["description"]).strip()
-    middle = [f'<div class="summary"><span><b>{E(who)}</b> wants to merge {len(commits)} commit{"s" * (len(commits) != 1)} '
-              f'into {E(below or "main")}</span><span>{len(files)} file{"s" * (len(files) != 1)}</span>'
-              f'<span class="add-n">+{adds}</span><span class="del-n">−{dels}</span>'
-              f'<span class="mono">{rev["oid"][:7]}</span>{rev_links}'
-              + (f' · <a href="https://github.com/{E(forge_slug(patch))}/pull/{num}">on GitHub</a>' if num else "")
-              + '</div>']
-    if desc:
-        middle.append(f'<details class="desc" open><summary>Description</summary><div class="md" style="margin-top:8px">{md(desc)}</div></details>')
-    if note:
-        middle.append(f'<div class="desc"><b>What the merge did</b><pre class="log mono">{E(note)}</pre></div>')
-    middle.append(files_html(repo, rev, files, all_, hidden, patch))
-    middle.append(mergebox)
-
-    # Right: the timeline, the files, the commits.
     events = [(revs[0]["description"][0]["timestamp"], 0,
                f'<li>{avatar(who, True)}<div class="who"><b>{E(who)}</b> <span class="mut">opened this · '
                f'{when(revs[0]["description"][0]["timestamp"])}</span></div></li>')]
@@ -751,7 +952,6 @@ def pr_page(repo, oid, rev_id, token, tab="conversation", below=None, note=""):
                        f'<li><span class="dot" style="background:var(--mut)">{ICON_PUSH}</span><div class="who">'
                        f'<b>{E(repo.name(r["author"]["id"]))}</b> <span class="mut">pushed revision {i} · '
                        f'{when(r["description"][0]["timestamp"])}</span></div></li>'))
-    general = []
     for c in all_.values():
         if root_of(c, all_) is not c:
             continue
@@ -767,7 +967,6 @@ def pr_page(repo, oid, rev_id, token, tab="conversation", below=None, note=""):
                            f'<span class="mut">{more}</span>{resolved_tag}</div>'
                            f'<div class="body clamp md">{md(body)}</div></li>'))
         else:
-            general.append(c)
             events.append((c["at"], 2, f'<li style="display:block">{thread(repo, c, all_, hidden)}</li>'))
     for author, review in rev["reviews"].items():
         verdict = review.get("verdict")
@@ -783,29 +982,25 @@ def pr_page(repo, oid, rev_id, token, tab="conversation", below=None, note=""):
                               + (f'<div class="body md">{md(summary)}</div>' if summary else "") + "</li>"))
     timeline = "".join(e[2] for e in sorted(events, key=lambda e: (e[0], e[1])))
     add = (f'<form method="post" action="/act" style="margin-top:16px">{hidden}<input type="hidden" name="kind" value="comment">'
-           f'<textarea name="body" id="add-comment" required placeholder="Comment on the whole change"></textarea>'
-           f'<div class="actions"><button class="btn blue">Comment</button></div></form>')
+           f'<textarea name="body" required placeholder="Comment on the whole change"></textarea>'
+           f'<div class="actions"><button class="btn blue">Comment</button></div></form>') if hidden else ""
     tree = "".join(
-        f'<li><a href="#f-{i}" data-goto="f-{i}"><span class="p">{E(f["path"] or "?")}</span><span>'
+        f'<li><a href="#{p}f-{i}" data-goto="{p}f-{i}"><span class="p">{E(f["path"] or "?")}</span><span>'
         f'<span class="add-n">+{sum(1 for r in f["rows"] if r[0] == "add")}</span> '
         f'<span class="del-n">−{sum(1 for r in f["rows"] if r[0] == "del")}</span></span></a></li>'
         for i, f in enumerate(files))
-    commit_list = "".join(f'<li><div>{E(s)}</div><div class="mut mono">{h[:7]} · {E(a)} · {E(d)}</div></li>'
-                          for h, a, s, d in commits)
-    tray = (f'<aside class="tray"><nav>'
-            f'<a href="#" data-tab="timeline" class="on">Timeline <kbd>t</kbd></a>'
-            f'<a href="#" data-tab="files">Files {len(files)} <kbd>f</kbd></a>'
-            f'<a href="#" data-tab="commits">Commits {len(commits)}</a></nav>'
+    commit_list = "".join(
+        f'<li><a href="#" data-commit="{h}" data-sec="{sid}">{E(s)}</a><div class="mut mono">{h[:7]} · {E(a)} · {E(d)}</div></li>'
+        for h, a, s, d in commits)
+    return (f'<div class="traypr" data-for="{sid}" hidden>'
             f'<div class="pane" data-tab="timeline"><ul class="tl">{timeline}</ul>{add}</div>'
             f'<div class="pane" data-tab="files" hidden><ul class="tree">{tree}</ul></div>'
             f'<div class="pane" data-tab="commits" hidden><ul class="commits">{commit_list or "<li class=mut>No commits.</li>"}</ul></div>'
-            f'</aside>')
-    body = f'<main class="pr">{stack}<section class="code">{"".join(middle)}</section>{tray}</main>'
-    return page(f"#{num or oid[:7]} {patch['title']}", body, token, bar=bar)
+            f'</div>')
 
 
-APPROVED = "\u2705"  # a hunk you are fine with
-REJECTED = "\u274c"  # a hunk you are not
+APPROVED = "✅"  # a hunk you are fine with
+REJECTED = "❌"  # a hunk you are not
 
 
 def hunks_of(f):
@@ -897,45 +1092,40 @@ def progress(rev, files, me, patch=None, p=""):
     return len(v), sum(x == "yes" for x in v.values()), sum(x == "no" for x in v.values()), first
 
 
-def approve_form(hidden, ranges, active, label, cls, at, mark="approve"):
-    return (f'<form method="post" action="/act" class="approve {mark}">{hidden}<input type="hidden" name="kind" value="{mark}">'
-            f'<input type="hidden" name="ranges" value="{E(json.dumps(ranges))}"><input type="hidden" name="active" value="{1 if active else 0}">'
-            f'<input type="hidden" name="at" value="{at}"><button class="btn small {cls}">{label}</button></form>')
-
-
 def mergebox_html(rev, hidden, status, num, below, total, done, refused, first, p=""):
     """The end of a change, where reading it leads: merge, send back, or keep reading."""
     if status == "merged":
         return f'<div class="mergebox" id="{p}merge"><h3>{ICON_MERGED} Merged</h3><div class="mut">This change is on main.</div></div>'
     elif not num:
         return (f'<div class="mergebox" id="{p}merge"><h3>Not from a pull request</h3><div class="mut">'
-                    'Only changes that came from the forge are merged from here.</div></div>')
+                'Only changes that came from the forge are merged from here.</div></div>')
     elif below:
         return (f'<div class="mergebox" id="{p}merge"><h3>Waits for {E(below)}</h3><div class="mut">That one is ahead of it in the '
-                    f'queue. When it merges, this one moves onto main by itself and its merge opens here; approvals of '
-                    f'hunks that did not change carry over.</div></div>')
+                f'queue. When it merges, this one moves onto main by itself and its merge opens here; approvals of '
+                f'hunks that did not change carry over.</div></div>')
     elif refused and first is None:
         return (f'<div class="mergebox" id="{p}merge"><h3><span class="no-mark">✗</span> {refused} hunk{"s" * (refused != 1)} not approved</h3>'
-                    f'<p class="mut" style="margin:0 0 12px">Everything is read. Send it back: this records your verdict on the revision as '
-                    f'request changes, with the note below, and it reaches GitHub with scripts/export-review.</p>'
-                    f'<form method="post" action="/act">{hidden}<input type="hidden" name="kind" value="review">'
-                    f'<input type="hidden" name="event" value="request_changes"><textarea name="body" id="send-back" placeholder="What should change"></textarea>'
-                    f'<div class="actions"><button class="btn" style="border-color:var(--bad);color:var(--bad)">Request changes</button></div></form></div>')
+                f'<p class="mut" style="margin:0 0 12px">Everything is read. Send it back: this records your verdict on the revision as '
+                f'request changes, with the note below, and it reaches GitHub with scripts/export-review.</p>'
+                f'<form method="post" action="/act">{hidden}<input type="hidden" name="kind" value="review">'
+                f'<input type="hidden" name="event" value="request_changes"><textarea name="body" placeholder="What should change"></textarea>'
+                f'<div class="actions"><button class="btn" style="border-color:var(--bad);color:var(--bad)">Request changes</button></div></form></div>')
     elif first is not None:
         left = total - done - refused
         return (f'<div class="mergebox" id="{p}merge"><h3>{left} hunk{"s" * (left != 1)} still to read</h3>'
-                    f'<div class="mut">Merging opens once every hunk is approved. <a href="#{first}" data-goto="{first}">Go to the next one</a> '
-                    f'(<kbd>n</kbd>, then <kbd>a</kbd>).</div></div>')
-    else:
-        return (f'<div class="mergebox ready" id="{p}merge"><h3><span class="ok-mark">✓</span> Every hunk approved</h3>'
-                    f'<p class="mut" style="margin:0 0 12px">Merging records your approval here and on GitHub, where your gh account '
-                    f'rebase-merges #{num}, but only if GitHub still has <span class="mono">{rev["oid"][:7]}</span>, the revision you read, '
-                    f'and its checks passed. Pull requests stacked on it then move onto the new main, and its branch is deleted.</p>'
-                    f'<form method="post" action="/act">{hidden}<input type="hidden" name="kind" value="land">'
-                    f'<button class="btn go">Rebase and merge #{num}</button></form></div>')
+                f'<div class="mut">Merging opens once every hunk is approved. <a href="#{first}" data-goto="{first}">Go to the next one</a> '
+                f'(<kbd>↓</kbd>, then <kbd>→</kbd>).</div></div>')
+    return (f'<div class="mergebox ready" id="{p}merge"><h3><span class="ok-mark">✓</span> Every hunk approved</h3>'
+            f'<p class="mut" style="margin:0 0 12px">Merging records your approval here and on GitHub, where your gh account '
+            f'rebase-merges #{num}, but only if GitHub still has <span class="mono">{rev["oid"][:7]}</span>, the revision you read, '
+            f'and its checks passed. Pull requests after it then move onto the new main, and its branch is deleted.</p>'
+            f'<form method="post" action="/act" class="land">{hidden}<input type="hidden" name="kind" value="land">'
+            f'<button class="btn go">Rebase and merge #{num}</button></form></div>')
 
 
-def files_html(repo, rev, files, all_, hidden, patch=None, p=""):
+def files_html(repo, rev, files, all_, hidden, patch=None, p="", readonly=False):
+    """Every changed file whole, each hunk followed by its bar: approve, not this, comment.
+    readonly leaves the bars and forms out, for a merged change or a single commit."""
     roots = [c for c in all_.values() if root_of(c, all_) is c]
     placed, elsewhere = {}, []
     for c in sorted(roots, key=lambda c: c["at"]):
@@ -944,85 +1134,85 @@ def files_html(repo, rev, files, all_, hidden, patch=None, p=""):
             placed.setdefault(a, []).append(c)
         elif c.get("location"):
             elsewhere.append(c)
-    decided = verdicts(rev, files, repo.me, patch)
+    decided = {} if readonly else verdicts(rev, files, repo.me, patch)
     parts = []
     for fi, f in enumerate(files):
         path = f["path"]
         hunks = hunks_of(f)
-        ok = {hi for hi in range(len(hunks)) if decided[(fi, hi)] == "yes"}
-        bad = {hi for hi in range(len(hunks)) if decided[(fi, hi)] == "no"}
+        ok = {hi for hi in range(len(hunks)) if decided.get((fi, hi)) == "yes"}
+        bad = {hi for hi in range(len(hunks)) if decided.get((fi, hi)) == "no"}
         end_of = {h["last"]: hi for hi, h in enumerate(hunks)}
         in_hunk = {i: hi for hi, h in enumerate(hunks) for i in range(h["first"], h["last"] + 1)}
-        rows, keep = [], set()
-        changed = [i for i, r in enumerate(f["rows"]) if r[0] in ("add", "del")]
+        near = set()
+        for j, r in enumerate(f["rows"]):
+            if r[0] in ("add", "del"):
+                near.update(range(j - 3, j + 4))
+        entries = []
         for i, (kind, o, n, text) in enumerate(f["rows"]):
+            hi = in_hunk.get(i)
+            group = f"{p}h-{fi}-{hi}" if hi is not None and not readonly else None
             if kind == "hunk":
-                rows.append(f'<tr class="hunk"><td class="n"></td><td class="n"></td><td class="c mut">{E(text)}</td></tr>')
-                keep.add(len(rows) - 1)
+                entries.append((f'<tr class="hunk"><td class="g"></td><td class="n"></td><td class="n"></td>'
+                                f'<td class="c mut">{E(text)}</td></tr>', True, None))
                 continue
-            if kind != "ctx" or any(abs(i - j) <= 3 for j in changed):
-                keep.add(len(rows))
-            done = " done" if in_hunk.get(i) in ok else " refused" if in_hunk.get(i) in bad else ""
-            rows.append(f'<tr class="{kind}{done}"><td class="n old" data-side="old" data-line="{o or ""}">{o or ""}</td>'
-                        f'<td class="n new" data-side="new" data-line="{n or ""}">{n or ""}</td>'
-                        f'<td class="c">{E(text) or " "}</td></tr>')
+            state = " done" if hi in ok else " refused" if hi in bad else ""
+            entries.append((f'<tr class="{kind}{state}"><td class="g"></td>'
+                            f'<td class="n old" data-side="old" data-line="{o or ""}">{o or ""}</td>'
+                            f'<td class="n new" data-side="new" data-line="{n or ""}">{n or ""}</td>'
+                            f'<td class="c">{E(text) or " "}</td></tr>', i in near, group))
             for key in ((path, "new", n), (path, "old", o)):
                 if key[2] is not None and key in placed:
                     for c in placed.pop(key):
-                        keep.add(len(rows) - 1)
-                        keep.add(len(rows))
-                        rows.append(f'<tr class="thread"><td colspan="3">{thread(repo, c, all_, hidden)}</td></tr>')
-            if i in end_of:
-                # Under the hunk, in reading order: you read it, then you say it is fine.
+                        entries[-1] = (entries[-1][0], True, group)
+                        entries.append((f'<tr class="thread"><td colspan="4">{thread(repo, c, all_, hidden)}</td></tr>', True, group))
+            if i in end_of and not readonly:
+                # Under the hunk, in reading order: you read it, then you say what you think.
                 hi = end_of[i]
                 h = hunks[hi]
-                rng = [[path, h["side"], h["start"], h["end"]]]
+                rng = json.dumps([[path, h["side"], h["start"], h["end"]]])
                 span = f'{"R" if h["side"] == "new" else "L"}{h["start"]}' + (
                     f'–{h["end"] - 1}' if h["end"] - 1 > h["start"] else "")
-                at = f"{p}h-{fi}-{hi}"
-                if hi in ok:
-                    state = '<span class="ok-mark">✓ approved</span>'
-                    control = approve_form(hidden, rng, False, "Undo", "", at)
-                elif hi in bad:
-                    state = '<span class="no-mark">✗ not this</span>'
-                    control = approve_form(hidden, rng, False, "Undo", "", at, "reject")
-                else:
-                    state = ""
-                    control = (approve_form(hidden, rng, True, "Approve <kbd>a</kbd>", "go", at)
-                               + approve_form(hidden, rng, True, "Not this <kbd>x</kbd>", "", at, "reject")
-                               + '<button type="button" class="btn small hunk-comment">Comment <kbd>c</kbd></button>')
-                keep.add(len(rows))
-                rows.append(f'<tr class="hunkbar{" done" if hi in ok else " refused" if hi in bad else ""}" id="{at}" '
-                            f'data-path="{E(path)}" data-side="{h["side"]}" data-start="{h["start"]}" data-end="{h["end"]}"><td colspan="3">'
-                            f'<span class="mut mono">hunk {hi + 1} of {len(hunks)} · {span}</span>{state}{control}</td></tr>')
-        if not changed:
-            keep.update(range(len(rows)))
-        body = "".join(fold(rows, keep, f"{p}f{fi}")) if not f["binary"] else '<tr><td class="c mut">Binary file not shown.</td></tr>'
+                state = " done" if hi in ok else " refused" if hi in bad else ""
+                entries.append((
+                    f'<tr class="hunkbar{state}" id="{group}" data-path="{E(path)}" data-side="{h["side"]}" '
+                    f'data-start="{h["start"]}" data-end="{h["end"]}" data-ranges="{E(rng)}"><td colspan="4">'
+                    f'<span class="mut mono">hunk {hi + 1} of {len(hunks)} · {span}</span>'
+                    f'<span class="ok-mark">✓ approved</span><span class="no-mark">✗ not this</span>'
+                    f'<button type="button" class="btn small go" data-do="approve">Approve <kbd>→</kbd></button>'
+                    f'<button type="button" class="btn small" data-do="reject">Not this <kbd>←</kbd></button>'
+                    f'<button type="button" class="btn small hunk-comment">Comment <kbd>c</kbd></button>'
+                    f'<button type="button" class="btn small" data-do="undo">Undo</button>'
+                    f'<span class="drag-hint mut">or drag the hunk ⇆</span></td></tr>', True, group))
+        body = (rows_html(entries, f"{p}f{fi}") if not f["binary"]
+                else '<tbody><tr><td class="c mut">Binary file not shown.</td></tr></tbody>')
         title = path if not f["old_path"] or f["old_path"] == path else f"{f['old_path']} → {path}"
         plus = sum(1 for r in f["rows"] if r[0] == "add")
         minus = sum(1 for r in f["rows"] if r[0] == "del")
-        left_ranges = [[path, h["side"], h["start"], h["end"]] for hi, h in enumerate(hunks) if hi not in ok and hi not in bad]
-        tally = (f'{len(ok)}/{len(hunks)} hunks approved' + (f', {len(bad)} not' if bad else "")) if hunks else "nothing to approve"
-        foot = (f'<div class="ffoot{" done" if hunks and len(ok) == len(hunks) else ""}"><span>{tally}</span>'
-                + (approve_form(hidden, left_ranges, True, f"Approve the rest of {E(path)}", "go", f"{p}f-{fi}") if left_ranges
-                   else '<span class="ok-mark">✓ file approved</span>' if hunks and len(ok) == len(hunks) else "")
-                + "</div>")
+        tally = "" if readonly else (
+            (f'{len(ok)}/{len(hunks)} hunks approved' + (f', {len(bad)} not' if bad else "")) if hunks else "nothing to approve")
+        foot = "" if readonly or not hunks else (
+            f'<div class="ffoot{" done" if len(ok) == len(hunks) else ""}"><span class="tally">{tally}</span>'
+            f'<button type="button" class="btn small go" data-do="rest">Approve the rest of this file</button>'
+            f'<span class="ok-mark">✓ file approved</span></div>')
+        form = "" if readonly else f' data-form="{p}lineform"'
         parts.append(f'<div class="file" id="{p}f-{fi}"><div class="fhead"><span class="path">{E(title or "?")}</span>'
                      f'<span class="add-n">+{plus}</span><span class="del-n">−{minus}</span>'
-                     f'<span class="mut" style="margin-left:auto;font-size:12px">{tally}</span></div>'
-                     f'<table class="d" data-path="{E(path or "")}" data-form="{p}lineform">{body}</table>{foot}</div>')
+                     f'<span class="mut tally" style="margin-left:auto;font-size:12px">{tally}</span></div>'
+                     f'<table class="d" data-path="{E(path or "")}"{form}>{body}</table>{foot}</div>')
     left = [c for cs in placed.values() for c in cs] + elsewhere
     if left:
         parts.append('<div class="file"><div class="fhead"><span class="path">Comments on lines outside this revision\'s diff</span></div>'
                      + "".join(f'<div style="padding:10px 12px">{excerpt_of(c, rev)}{thread(repo, c, all_, hidden)}</div>'
                                for c in left) + "</div>")
-    parts.append(f'<template id="{p}lineform"><div class="thread-box"><form method="post" action="/act" style="padding:10px 12px">{hidden}'
-                 f'<input type="hidden" name="path"><input type="hidden" name="side"><input type="hidden" name="start">'
-                 f'<input type="hidden" name="end"><input type="hidden" name="at">'
-                 f'<div class="mut mono what" style="margin-bottom:6px"></div><textarea name="body" required placeholder="Leave a comment"></textarea>'
-                 f'<div class="actions"><button type="button" class="btn" onclick="this.closest(\'tr\').remove()">Cancel</button>'
-                 f'<button class="btn" name="kind" value="approve-lines" formnovalidate>Approve these lines</button>'
-                 f'<button class="btn blue" name="kind" value="comment">Comment</button></div></form></div></template>')
+    if not readonly:
+        base_hidden = re.sub(r'<input type="hidden" name="at"[^>]*>', "", hidden)
+        parts.append(f'<template id="{p}lineform"><div class="thread-box"><form method="post" action="/act" style="padding:10px 12px">{base_hidden}'
+                     f'<input type="hidden" name="path"><input type="hidden" name="side"><input type="hidden" name="start">'
+                     f'<input type="hidden" name="end"><input type="hidden" name="at">'
+                     f'<div class="mut mono what" style="margin-bottom:6px"></div><textarea name="body" required placeholder="Leave a comment"></textarea>'
+                     f'<div class="actions"><button type="button" class="btn" onclick="this.closest(\'tr\').remove()">Cancel</button>'
+                     f'<button class="btn" name="kind" value="approve-lines" formnovalidate>Approve these lines</button>'
+                     f'<button class="btn blue" name="kind" value="comment">Comment</button></div></form></div></template>')
     return "".join(parts)
 
 
@@ -1040,93 +1230,166 @@ def queue_order(patches):
     return open_, out
 
 
-def queue_page(repo, token):
-    """The whole queue on one page, head first: read a change, approve its hunks, merge it at
-    its end, and keep scrolling into the next one."""
+def merged_at(patch):
+    return max([m.get("timestamp") or 0 for m in (patch.get("merges") or {}).values()] or [0])
+
+
+MERGED_SHOWN = 3  # merged changes kept above the head of the queue, to look back at
+
+
+def hidden_for(token, oid, rev, sid):
+    return (f'<input type="hidden" name="t" value="{token}"><input type="hidden" name="patch" value="{oid}">'
+            f'<input type="hidden" name="revision" value="{rev["id"]}"><input type="hidden" name="at" value="{sid}">')
+
+
+def section_html(repo, oid, patch, below, token, pos):
+    """One pull request on the page: its head, its description, every file, its merge box.
+    A merged one is there to look back at and takes no marks."""
+    rev = latest(patch)
+    num = forge_number(patch)
+    sid = sid_of(patch, oid)
+    p = f"{sid}-"
+    merged = patch["state"]["status"] == "merged"
+    hidden = hidden_for(token, oid, rev, sid)
+    files = diff(rev["base"], rev["oid"])
+    all_ = comments_of(rev)
+    commits = commits_of(rev)
+    if merged:
+        total = done = refused = 0
+        first = None
+        status = f'Merged{" · " + when(merged_at(patch)) if merged_at(patch) else ""}'
+    else:
+        total, done, refused, first = progress(rev, files, repo.me, patch, p)
+        status = (f'{done}/{total} hunks approved{f", {refused} not" if refused else ""} · '
+                  f'{"head of the queue" if not below else "after " + E(below)}')
+    revs = revisions(patch)
+    review_pop = "" if merged else (
+        f'<details class="pop"><summary class="btn small">Review <kbd>▾</kbd></summary><div class="popbox">'
+        f'<form method="post" action="/act">{hidden}<input type="hidden" name="kind" value="review">'
+        f'<h3>Review revision {len(revs)}</h3><textarea name="body" placeholder="Summary (optional for a verdict)"></textarea>'
+        f'<label><input type="radio" name="event" value="comment" checked><span>Comment<small>Feedback without a verdict.</small></span></label>'
+        f'<label><input type="radio" name="event" value="approve"><span>Approve<small>Your verdict on this revision: accept.</small></span></label>'
+        f'<label><input type="radio" name="event" value="request_changes"><span>Request changes<small>Your verdict on this revision: reject.</small></span></label>'
+        f'<div class="row-end"><button class="btn blue">Submit review</button></div></form></div></details>')
+    link = f'<a class="btn small" href="https://github.com/{E(forge_slug(patch))}/pull/{num}">GitHub</a>' if num else ""
+    desc = text_of(rev["description"]).strip() or text_of(revs[0]["description"]).strip()
+    adds = sum(1 for f in files for r in f["rows"] if r[0] == "add")
+    dels = sum(1 for f in files for r in f["rows"] if r[0] == "del")
+    badge = (f'<span class="qpos merged">{ICON_MERGED}</span>' if merged else f'<span class="qpos">{pos}</span>')
+    head = (f'<div class="shead">{badge}<div class="st"><h2>{E(patch["title"])} <span class="mut">#{num or oid[:7]}</span></h2>'
+            f'<div class="mut status">{status}</div>'
+            f'<div class="mut meta">{E(repo.name(patch["author"]["id"]))} · {len(commits)} commit{"s" * (len(commits) != 1)} · '
+            f'{len(files)} file{"s" * (len(files) != 1)} <span class="add-n">+{adds}</span> <span class="del-n">−{dels}</span> · '
+            f'<span class="mono">{rev["oid"][:7]}</span></div></div>'
+            f'<div class="sact">{review_pop}{link}</div></div>')
+    body = (head
+            + (f'<details class="desc"{"" if merged else " open"}><summary>Description</summary>'
+               f'<div class="md" style="margin-top:8px">{md(desc)}</div></details>' if desc else "")
+            + '<div class="cview" hidden></div>'
+            + f'<div class="files">{files_html(repo, rev, files, all_, hidden, patch, p, readonly=merged)}</div>'
+            + mergebox_html(rev, hidden, patch["state"]["status"], num, below, total, done, refused, first, p))
+    section = (f'<section class="sec{" merged" if merged else ""}" id="{sid}" data-oid="{oid}" data-rev="{rev["id"]}" '
+               f'data-num="{num or ""}" data-title="{E(patch["title"])}" data-total="{total}" data-done="{done}" '
+               f'data-refused="{refused}">{body}</section>')
+    tray = tray_html(repo, patch, rev, all_, "" if merged else hidden, commits, files, p, sid)
+    commit_items = "".join(
+        f'<li><a href="#" data-commit="{h}" data-sec="{sid}"><span class="mono">{h[:7]}</span> {E(s)}</a></li>'
+        for h, a, s, d in commits)
+    tree = (f'<li class="ti{" merged" if merged else ""}" data-for="{sid}"><div class="row">'
+            f'<button type="button" class="disc" aria-expanded="false" aria-label="Show the commits">▸</button>'
+            f'<a href="#{sid}" data-jump="{sid}"><span class="node{" merged" if merged else ""}"></span>'
+            f'<span>{E(patch["title"])}<span class="num">#{num or oid[:7]}'
+            f'{" · merged" if merged else f" · {done}/{total}"}</span></span></a></div>'
+            f'<ol class="tc" hidden>{commit_items or "<li class=mut>No commits.</li>"}</ol></li>')
+    return sid, section, tray, tree
+
+
+def surface(repo, token):
+    """The one page: the queue, head first, as one surface to read down, with the last few
+    merged changes above it. Left the queue as a tree, right the panel of the change in view."""
     patches = repo.patches()
     open_, order = queue_order(patches)
-    sections, first_open = [], None
-    for qi, (oid, up) in enumerate(order):
-        patch = open_[oid]
-        rev = latest(patch)
-        num = forge_number(patch)
-        p = f"q{qi}-"
-        below = (f"#{forge_number(open_[up])}" if up and forge_number(open_[up]) else up[:7] if up else None)
-        hidden = (f'<input type="hidden" name="t" value="{token}"><input type="hidden" name="patch" value="{oid}">'
-                  f'<input type="hidden" name="revision" value="{rev["id"]}"><input type="hidden" name="view" value="queue">')
+    merged = sorted(((o, p) for o, p in patches.items() if p["state"]["status"] == "merged"),
+                    key=lambda op: merged_at(op[1]))[-MERGED_SHOWN:]
+    items = [(o, p, None) for o, p in merged]
+    for o, up in order:
+        items.append((o, open_[o], f"#{forge_number(open_[up])}" if up and forge_number(open_[up]) else up[:7] if up else None))
+    parts, trays, tree_m, tree_o, pos = [], [], [], [], 0
+    prev = None
+    for o, p, below in items:
+        is_merged = p["state"]["status"] == "merged"
+        if not is_merged:
+            pos += 1
         try:
-            files = diff(rev["base"], rev["oid"])
+            sid, section, tray, tree = section_html(repo, o, p, below, token, pos)
         except Refused as error:
-            sections.append(f'<section class="qitem"><h2>{E(patch["title"])}</h2><p class="err">{E(str(error))}</p></section>')
+            parts.append(f'<section class="sec"><h2>{E(p["title"])}</h2><p class="err">{E(str(error))}</p></section>')
             continue
-        all_ = comments_of(rev)
-        total, done, refused, first = progress(rev, files, repo.me, patch, p)
-        first_open = first_open or first
-        desc = text_of(rev["description"]).strip() or text_of(revisions(patch)[0]["description"]).strip()
-        sections.append(
-            f'<section class="qitem" id="{p}top"><div class="qhead"><span class="qpos">{qi + 1}</span>'
-            f'<div><h2><a href="/pr/{oid}?t={token}">{E(patch["title"])}</a> <span class="mut">#{num or oid[:7]}</span></h2>'
-            f'<div class="mut">{done}/{total} hunks approved{f", {refused} not" if refused else ""} · '
-            f'{"head of the queue" if not up else "after " + E(below)}</div></div></div>'
-            + (f'<details class="desc"><summary>Description</summary><div class="md" style="margin-top:8px">{md(desc)}</div></details>' if desc else "")
-            + files_html(repo, rev, files, all_, hidden, patch, p)
-            + mergebox_html(rev, hidden, patch["state"]["status"], num, below, total, done, refused, first, p)
-            + "</section>")
-    bar = (f'<header class="bar"><span class="crumbs"><a href="/?t={token}">Pull requests</a> / queue</span>'
-           f'<h1>The merge queue, head first</h1><div class="tools"><span class="mut" style="font-size:13px">'
-           f'<kbd>n</kbd> next hunk · <kbd>a</kbd> approve · <kbd>x</kbd> not this · <kbd>c</kbd> comment · <kbd>m</kbd> merge</span>'
-           + (f' <a class="btn" href="#{first_open}" data-goto="{first_open}">Next open hunk</a>' if first_open else "")
-           + '</div></header>')
-    notes = "".join(f'<div class="desc"><b>What the merge did</b><pre class="log mono">{E(NOTES.pop(o))}</pre></div>'
+        if prev:
+            title, num = E(p["title"]), forge_number(p) or o[:7]
+            parts.append(f'<div class="gate" data-to="{sid}" data-back="{prev[0]}" '
+                         f'data-down="Keep scrolling for #{num} · {title}" data-up="Pull back to #{prev[1]} · {E(prev[2])}">'
+                         f'<i></i><span>#{num} · {title}</span></div>')
+        parts.append(section)
+        trays.append(tray)
+        (tree_m if is_merged else tree_o).append(tree)
+        prev = (sid, forge_number(p) or o[:7], p["title"])
+    notes = "".join(f'<details class="note" open><summary>What the merge did</summary><pre class="log mono">{E(NOTES.pop(o))}</pre></details>'
                     for o in list(NOTES))
-    body = (f'<main class="queue">{notes}{"".join(sections) or "<p class=mut>The queue is empty.</p>"}'
-            f'<p class="mut end">End of the queue.</p></main>')
+    empty = "" if order else '<p class="mut end">The queue is empty. <code>scripts/review --serve</code> imports what the forge has.</p>'
+    stack = (f'<aside class="stack"><div class="sh"><h2>Queue</h2>'
+             f'<button type="button" class="btn small" data-expand-all>Expand all</button></div>'
+             f'<ol class="tree-q">{"".join(tree_m)}<li class="trunkline"><span class="node trunk"></span>main</li>'
+             f'{"".join(tree_o)}</ol></aside>')
+    tray = (f'<aside class="tray"><nav><a href="#" data-tab="timeline" class="on">Timeline <kbd>t</kbd></a>'
+            f'<a href="#" data-tab="files">Files <kbd>f</kbd></a><a href="#" data-tab="commits">Commits</a></nav>'
+            f'{"".join(trays)}</aside>')
+    bar = (f'<header class="bar"><button type="button" class="btn icon" data-toggle="stack" title="Queue panel ([)">☰ <kbd>[</kbd></button>'
+           f'<span class="crumbs">Queue</span><h1 id="cur-title"></h1>'
+           f'<span class="meter" id="cur-meter"><i><b></b></i><span></span></span>'
+           f'<div class="tools"><span class="mut keys"><kbd>↓</kbd> next · <kbd>→</kbd> approve · <kbd>←</kbd> not this · '
+           f'<kbd>c</kbd> comment · <kbd>u</kbd> undo · <kbd>z</kbd> fold · <kbd>m</kbd> merge</span>'
+           f'<button type="button" class="btn icon" data-toggle="tray" title="Side panel (])"><kbd>]</kbd> Panel</button></div></header>')
+    body = (f'<div class="shell">{stack}<main id="surface">{notes}{"".join(parts)}{empty}'
+            f'<p class="mut end">End of the queue.</p></main>{tray}</div><div id="toast" hidden></div>')
     return page("Merge queue", body, token, bar=bar)
 
 
-def index_page(repo, token):
-    """Pull requests by what they need from you, in stack order within each group."""
+def status_of(repo, oid, token):
+    """Where one pull request stands, for the page to redraw after a mark: every hunk's
+    verdict, the counts, and its merge box."""
     patches = repo.patches()
-    open_, children = graph(patches)
-    order = []
+    open_, order = queue_order(patches)
+    patch = patches.get(oid)
+    if patch is None:
+        raise Refused("no such patch")
+    up = dict(order).get(oid)
+    below = f"#{forge_number(open_[up])}" if up and forge_number(open_[up]) else up[:7] if up else None
+    rev = latest(patch)
+    sid = sid_of(patch, oid)
+    p = f"{sid}-"
+    files = diff(rev["base"], rev["oid"])
+    v = verdicts(rev, files, repo.me, patch)
+    total, done, refused = len(v), sum(x == "yes" for x in v.values()), sum(x == "no" for x in v.values())
+    first = next((f"{p}h-{fi}-{hi}" for (fi, hi), x in sorted(v.items()) if x is None), None)
+    return {"total": total, "done": done, "refused": refused, "first": first,
+            "hunks": {f"{p}h-{fi}-{hi}": x for (fi, hi), x in v.items()},
+            "mergebox": mergebox_html(rev, hidden_for(token, oid, rev, sid), patch["state"]["status"],
+                                      forge_number(patch), below, total, done, refused, first, p)}
 
-    def walk(up, depth):
-        for o in children.get(up, []):
-            order.append((o, up, depth))
-            walk(o, depth + 1)
 
-    walk(None, 0)
-    groups = {"Needs your review": [], "Changes requested": [], "Approved": []}
-    for o, up, depth in order:
-        p = open_[o]
-        rev = latest(p)
-        mine = rev["reviews"].get(repo.me, {}).get("verdict")
-        others = [r.get("verdict") for a, r in rev["reviews"].items() if a != repo.me and r.get("verdict")]
-        group = ("Approved" if mine == "accept" else "Changes requested" if mine == "reject" or "reject" in others
-                 else "Needs your review")
-        num = forge_number(p)
-        n = sum(len(comments_of(r)) for r in p["revisions"].values())
-        below = open_.get(up)
-        stacked = (f" · stacked on #{forge_number(below)}" if below and forge_number(below)
-                   else f" · stacked on {up[:7]}" if below else "")
-        opened = when(p["revisions"][o]["description"][0]["timestamp"]) if o in p["revisions"] else ""
-        files = len(run("git", "diff", "--name-only", rev["base"], rev["oid"], ok=False).stdout.split())
-        groups[group].append(
-            f'<a class="row{" stacked" if depth else ""}" style="--depth:{depth}" href="/pr/{o}?t={token}">'
-            f'<span style="color:var(--ok);padding-top:2px">{ICON_PR}</span>'
-            f'<span><span class="t">{"↳ " if depth else ""}{E(p["title"])}</span>'
-            f'<span class="m">#{num or o[:7]} · {E(repo.name(p["author"]["id"]))} · opened {opened}{stacked}</span></span>'
-            f'<span class="r">{files} file{"s" * (files != 1)}{f" · {ICON_COMMENT} {n}" if n else ""}</span></a>')
-    closed = len(patches) - len(open_)
-    sections = "".join(
-        f'<div class="section"><h2>{name} · {len(rows)}</h2><div class="list">{"".join(rows)}</div></div>'
-        for name, rows in groups.items() if rows) or (
-        '<div class="list"><div class="empty">No open pull requests here. '
-        '<code>scripts/import-review --open</code> brings them in from the forge.</div></div>')
-    body = (f'<main class="inbox"><h1>Pull requests</h1><p class="lede">{len(open_)} open, {closed} merged or closed, '
-            f'held in Radicle. <kbd>j</kbd> <kbd>k</kbd> to move, <kbd>enter</kbd> to open.</p>'
-            f'<p><a class="btn go" href="/queue?t={token}">Read the queue, head first</a></p>{sections}</main>')
-    return page("Pull requests", body, token)
+def commit_view(repo, oid, sha):
+    """One commit of a pull request, to read on its own. Marks stay on the whole change."""
+    patch = repo.show(oid)
+    rev = latest(patch)
+    if sha not in run("git", "rev-list", f"{rev['base']}..{rev['oid']}", ok=False).stdout.split():
+        raise Refused("that commit is not in this pull request")
+    parent = run("git", "rev-parse", f"{sha}^", ok=False).stdout.strip() or rev["base"]
+    subject = run("git", "log", "-1", "--format=%s", sha).stdout.strip()
+    files = diff(parent, sha)
+    return (f'<div class="cbanner"><span>Commit <span class="mono">{sha[:7]}</span> alone: <b>{E(subject)}</b>. '
+            f'Marks are made on the whole change.</span><button type="button" class="btn small" data-whole>Show the whole change</button></div>'
+            + files_html(repo, rev, files, {}, "", None, f"c{sha[:7]}-", readonly=True))
 
 
 # Landing. The forge is still where main is merged, so this does what scripts/land does,
@@ -1422,6 +1685,9 @@ def act(repo, form):
     return oid, revision
 
 
+ACTING = threading.Lock()  # one write to Radicle at a time: marks can come fast
+
+
 def serve(port, open_browser, announce=print):
     repo = Repo()
     token = secrets.token_urlsafe(18)
@@ -1459,19 +1725,19 @@ def serve(port, open_browser, announce=print):
                 m = re.fullmatch(r"/(?:pr|patch)/([0-9a-f]{40})", url.path)
                 old = q.get("p", [None])[0]
                 if url.path == "/" and old and re.fullmatch(r"[0-9a-f]{40}", old):
-                    self.send(303, "", where=f"/pr/{old}?t={token}")
-                elif url.path == "/":
-                    self.send(200, index_page(repo, token))
-                elif url.path == "/queue":
-                    self.send(200, queue_page(repo, token))
-                elif m and url.path.startswith("/patch/"):
-                    self.send(303, "", where=f"/pr/{m.group(1)}?t={token}")
-                elif m:
-                    oid = m.group(1)
-                    tab = q.get("tab", ["conversation"])[0]
-                    tab = tab if tab in ("conversation", "commits", "files") else "conversation"
-                    self.send(200, pr_page(repo, oid, q.get("rev", [None])[0], token, tab,
-                                           below=stack_below(repo.patches(), oid), note=NOTES.pop(oid, "")))
+                    m = re.fullmatch(r"/pr/(.*)", f"/pr/{old}")
+                st = re.fullmatch(r"/status/([0-9a-f]{40})", url.path)
+                cv = re.fullmatch(r"/commit/([0-9a-f]{40})/([0-9a-f]{40})", url.path)
+                if m:
+                    # A pull request is a place on the one page now.
+                    patch = repo.show(m.group(1))
+                    self.send(303, "", where=f"/?t={token}#{sid_of(patch, m.group(1))}")
+                elif url.path in ("/", "/queue"):
+                    self.send(200, surface(repo, token))
+                elif st:
+                    self.send(200, json.dumps(status_of(repo, st.group(1), token)), "application/json")
+                elif cv:
+                    self.send(200, commit_view(repo, cv.group(1), cv.group(2)))
                 else:
                     self.send(404, "not found\n", "text/plain")
             except Refused as error:
@@ -1482,15 +1748,20 @@ def serve(port, open_browser, announce=print):
             form = urllib.parse.parse_qs(self.rfile.read(length).decode(), keep_blank_values=True)
             if not self.allowed() or form.get("t", [""])[0] != token:
                 return self.send(403, "forbidden\n", "text/plain")
+            quiet = (form.get("ajax") or [""])[0] == "1"
             try:
-                oid, revision = act(repo, form)
+                with ACTING:
+                    act(repo, form)
             except Refused as error:
+                if quiet:
+                    return self.send(400, json.dumps({"error": str(error)}), "application/json")
                 return self.fail(error)
+            if quiet:
+                # A mark made on the page, which redraws itself; no reload, so no lost place.
+                return self.send(200, json.dumps({"ok": True}), "application/json")
             at = (form.get("at") or [""])[0]
             at = f"#{at}" if re.fullmatch(r"[a-z0-9-]+", at) else ""
-            if (form.get("view") or [""])[0] == "queue":
-                return self.send(303, "", where=f"/queue?t={token}{at}")
-            self.send(303, "", where=f"/pr/{oid}?t={token}&rev={revision}{at}")
+            self.send(303, "", where=f"/?t={token}{at}")
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{server.server_address[1]}/?t={token}"
@@ -1694,27 +1965,39 @@ def self_test():
                         print(re.findall(r"class=\"err\">([^<]*)", e.read().decode()), file=sys.stderr)
                     return e.code
 
-            code, index = get("/")
-            check("the index lists both patches", code == 200 and "first" in index and "second" in index)
-            check("and draws the second under the first",
-                  index.index("first") < index.index("second") and "--depth:1" in index
-                  and "stacked on #1" in index)
-            check("each links to its own pull request page", f"/pr/{p1}?" in index and "<iframe" not in index)
-            check("an old /patch/ address still leads there", get(f"/patch/{p1}")[0] == 303)
-            check("without the token there is nothing", get("/", t="wrong")[0] == 403)
+            def section(html, sid):
+                i = html.index(f'id="{sid}"')
+                return html[i:html.index("</section>", i)]
 
-            code, page1 = get(f"/pr/{p1}?tab=files")
-            check("the files tab has the whole file, the unchanged part folded", code == 200 and "line 1" in page1 and "line 40" in page1)
+            code, page = get("/")
+            check("one page, the queue head first", code == 200 and page.index('id="pr-1"') < page.index('id="pr-2"'))
+            check("with a gate between the two", page.index('id="pr-1"') < page.index('class="gate"') < page.index('id="pr-2"'))
+            check("and the tree: main, then #1, then #2 under it",
+                  page.index('class="trunkline"') < page.index('data-for="pr-1"') < page.index('data-for="pr-2"'))
+            check("an old /pr/ address leads to its place on the page",
+                  get(f"/pr/{p1}")[0] == 303 and get(f"/patch/{p1}")[0] == 303)
+            check("the list is gone", get("/list")[0] == 404)
+            check("without the token there is nothing", get("/", t="wrong")[0] == 403)
+            one_ = section(page, "pr-1")
+            check("the whole file is there and nothing is folded",
+                  "line 1<" in one_ and "line 40<" in one_ and 'class="hidden' not in one_ and "show " not in one_)
+            check("long unchanged stretches carry a fold handle", 'data-run="pr-1-f0-1"' in one_)
             check("the imported comment sits under line 20, escaped, named",
-                  page1.index("line 20") < page1.index("&lt;why&gt; this?") < page1.index("line 21")
-                  and "<b>carol</b>" in page1 and "imported by" in page1 and "show " in page1)
-            code, conv = get(f"/pr/{p1}")
-            check("the conversation shows the comment with the lines it is about",
-                  "&lt;why&gt; this?" in conv and 'data-goto="c-' in conv and 'id="merge"' in conv and "still to read" in conv)
-            code, commits = get(f"/pr/{p1}?tab=commits")
-            check("the commits tab lists the commit", code == 200 and ">one<" in commits)
-            code, page2 = get(f"/pr/{p2}?tab=files")
-            check("a stacked patch shows only its own layer", "g.txt" in page2 and "f.txt" not in page2)
+                  one_.index("line 20") < one_.index("&lt;why&gt; this?") < one_.index("line 21")
+                  and "<b>carol</b>" in one_ and "imported by" in one_)
+            check("each hunk is one body, with its bar", '<tbody class="hk" data-hunk="pr-1-h-0-0">' in one_
+                  and 'id="pr-1-h-0-0"' in one_ and 'data-do="approve"' in one_)
+            check("the panel has its timeline, files and commits",
+                  'class="traypr" data-for="pr-1"' in page and "&lt;why&gt; this?" in page and 'data-goto="pr-1-f-0"' in page)
+            two_ = section(page, "pr-2")
+            check("a stacked patch shows only its own layer", "g.txt" in two_ and "f.txt" not in two_)
+            code, cview = get(f"/commit/{p1}/{one}")
+            check("a commit can be read on its own", code == 200 and "line 20 &lt;b&gt;" in cview and "hunkbar" not in cview)
+            check("but only one of that pull request", get(f"/commit/{p1}/{two}")[0] == 400)
+            code, st = get(f"/status/{p1}")
+            st = json.loads(st) if code == 200 else {}
+            check("the status of a pull request, for the page to redraw",
+                  st.get("total") == 1 and st.get("hunks") == {"pr-1-h-0-0": None} and "still to read" in st.get("mergebox", ""))
 
             check("a post without the token is refused", post(t="x", kind="comment", patch=p1,
                                                               revision=p1, body="no") == 403)
@@ -1761,7 +2044,7 @@ def self_test():
             check("the review form comments without a verdict",
                   post(kind="review", event="comment", patch=p1, revision=p1, body="general words") == 303
                   and any(c["body"] == "general words" for c in next(iter(show(p1)["revisions"][p1]["reviews"].values()))["comments"]["comments"].values()))
-            code, page1 = get(f"/pr/{p1}")
+            page1 = section(get("/")[1], "pr-1") + get("/")[1]
             check("the conversation shows it all back",
                   "rename this" in page1 and "because" in page1 and ">resolved<" in page1
                   and "requested changes" in page1 and "general words" in page1)
@@ -1833,18 +2116,18 @@ def self_test():
             code, queue = get("/queue")
             check("the queue reads head first, each change with its own hunks and merge box",
                   code == 200 and queue.index("first") < queue.index("second") and "head of the queue" in queue
-                  and 'id="q0-h-0-0"' in queue and 'id="q1-h-0-0"' in queue and 'id="q1-merge"' in queue
-                  and 'value="queue"' in queue)
-            check("a mark made in the queue comes back to the queue, at the next hunk",
+                  and 'id="pr-1-h-0-0"' in queue and 'id="pr-2-h-0-0"' in queue and 'id="pr-2-merge"' in queue)
+            check("a mark from the page is answered, not redirected",
                   post(kind="approve", patch=p2, revision=p2, ranges=json.dumps([["g.txt", "new", 1, 2]]),
-                       active="1", at="q1-h-0-0", view="queue") == 303)
+                       active="1", ajax="1") == 200)
+            check("and a refused one says why", post(kind="approve", patch=p2, revision=p2, ranges="[[", ajax="1") == 400)
             check("merging waits until every hunk is approved", post(kind="land", patch=p1, revision=p1) == 400
                   and not any(c[:2] == ["pr", "merge"] for c in gh_state()["log"]))
             hunk = json.dumps([["f.txt", "new", 20, 21]])
             post(kind="reject", patch=p1, revision=p1, ranges=hunk, active="1", at="h-0-0")
-            code, page1 = get(f"/pr/{p1}")
+            page1 = section(get("/")[1], "pr-1")
             check("a hunk can be refused, and the merge box then offers to send it back",
-                  "✗ not this" in page1 and "Request changes" in page1 and "1 not" in page1)
+                  'class="hunkbar refused"' in page1 and "Request changes" in page1 and "1 not" in page1)
             post(kind="reject", patch=p1, revision=p1, ranges=hunk, active="0", at="h-0-0")
             check("approving a hunk goes back to where you were",
                   post(kind="approve", patch=p1, revision=p1, ranges=hunk, active="1", at="h-0-0") == 303)
@@ -1852,10 +2135,10 @@ def self_test():
             check("an approval is a signed reaction on those lines",
                   any(r["emoji"] == "\u2705" and r["location"]["new"]["range"] == {"start": 20, "end": 21} for r in reacts)
                   and not any(r["emoji"] == "\u274c" for r in reacts))
-            code, page1 = get(f"/pr/{p1}")
+            page1 = section(get("/")[1], "pr-1")
             check("with every hunk approved, the merge button is at the bottom",
-                  "✓ approved" in page1 and "Every hunk approved" in page1
-                  and page1.index("Every hunk approved") > page1.index("✓ approved"))
+                  'class="hunkbar done"' in page1 and "Every hunk approved" in page1
+                  and page1.index("Every hunk approved") > page1.index('class="hunkbar done"'))
             check("landing the bottom of the stack", post(kind="land", patch=p1, revision=p1) == 303)
             check("and the revision's verdict is now accept",
                   next(iter(show(p1)["revisions"][p1]["reviews"].values()))["verdict"] == "accept")
@@ -1874,7 +2157,7 @@ def self_test():
                   b2 and b2 != two and sh("git", "-C", forge, "rev-parse", f"{b2}^").stdout.strip() == main)
             check("and retargeted to main", gh_state()["prs"]["2"]["base"] == "main")
             check("the landed branch is gone", not forge_ref("refs/heads/b1"))
-            code, page1 = get(f"/pr/{p1}")
+            code, page1 = get("/")
             check("the page says what happened", "rebase-merged #1" in page1 and "moved #2 up" in page1
                   and "now onto main" in page1)
             # #2 comes back as a new revision on the new main; the hunk approved before the
@@ -1884,8 +2167,12 @@ def self_test():
             sh("git", "push", f"--push-option=patch.base={main}", "--push-option=patch.message=moved",
                "rad", f"+{moved}:refs/heads/patches/{p2}")
             check("the stacked patch has a new revision", len(show(p2)["revisions"]) == 2)
-            code, page2 = get(f"/pr/{p2}")
-            check("and the approval of its unchanged hunk carried over", "1/1 hunks" in page2 and "✓ approved" in page2)
+            page = get("/")[1]
+            page2 = section(page, "pr-2")
+            check("and the approval of its unchanged hunk carried over", "1/1 hunks" in page2 and 'class="hunkbar done"' in page2)
+            check("the merged one stays above the head, to look back at, without marks",
+                  page.index('class="sec merged" id="pr-1"') < page.index('id="pr-2"')
+                  and 'data-do="approve"' not in section(page, "pr-1"))
         finally:
             server.terminate()
             server.wait()
