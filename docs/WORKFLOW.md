@@ -203,11 +203,14 @@ the agent. `--self-test` runs it in a throwaway Radicle home without the network
 scripts/review --serve       the open patches, in the browser
 ```
 
-reads the patches and nothing else, and lays them out like a mailbox: the open patches down
-the left, a patch based on another one's head indented under it, and the chosen one on the
-right, on its latest revision, with every changed file whole and each comment under the
-lines it is about. `j` and `k` move through the list. Only what is in Radicle shows:
-`scripts/import-review --open` first, to bring the pull requests in. What you write there goes into the
+reads the patches and nothing else. The first page lists the open pull requests by what they
+need from you (your review, changes, merging), a stacked one indented under the one it sits
+on. A pull request opens laid out the way stacked-review tools lay it out: the stack on the
+left with main at the bottom, the changed files in the middle with every file whole behind
+folds and each comment under its lines, and a tray on the right with the timeline, the file
+tree and the commits. Review and Merge are in the header. Keys: `s` stack, `t` `f` `c` the
+tray, `j` `k` and enter on the list. Only what is in Radicle shows: `scripts/import-review
+--open` first, to bring the pull requests in. What you write there goes into the
 patch under your key, the way the Radicle CLI writes it: a line comment into your review of
 the revision, a reply into the thread it answers, accept or reject as your review's verdict.
 Comments in a review can be resolved; imported ones cannot, because Radicle keeps them on
