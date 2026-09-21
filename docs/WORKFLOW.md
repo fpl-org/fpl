@@ -177,6 +177,28 @@ here. CI on the forge is a courtesy to the contributor; the gate is the pijul re
 append-only exports, a PR on the latest `main` reused as is, a PR on an older `main` merged
 in under the lander's name with the contributor's commit kept, and the refusal to rewrite.
 
+## Bring the review home
+
+```
+scripts/import-review <number>...   those pull requests, into Radicle patches
+scripts/import-review --open        every open one
+```
+
+The code already has a home that is not the forge; the conversation about it did not. This
+carries a pull request into a Radicle patch in the repository: the head as a revision, based
+on the branch below so a stack shows one layer at a time, and every comment, line comment,
+reply and verdict as a comment on that revision, at the same lines. After the import the
+patch is the record, and it replicates like the rest.
+
+A comment arrives signed by whoever ran the import, since the forge user has no key. Its first
+line says who wrote it on the forge, when, and links it: a claim, not a signature. The link is
+also how a second run skips it, so importing twice changes nothing. The Radicle review itself
+stays empty, because Radicle keeps one review per signer per revision, and that one is for
+the verdict of whoever runs the import.
+
+It pushes to the `rad` remote and so needs `rad` (`scripts/layer on radicle`) and the key in
+the agent. `--self-test` runs it in a throwaway Radicle home without the network.
+
 ## The agent's credential
 
 `.git/agent-credentials`, mode 600, one line:

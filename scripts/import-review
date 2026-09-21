@@ -1,0 +1,536 @@
+#!/usr/bin/env python3
+"""scripts/import-review — bring a pull request and its review from the forge into Radicle.
+
+    scripts/import-review <number>...        those pull requests
+    scripts/import-review --open             every open pull request
+    scripts/import-review --dump <number>    print what the forge has, as JSON, and stop
+    scripts/import-review --bundle <file>    import from such a dump instead of the forge
+    scripts/import-review --self-test        run against a throwaway Radicle home
+
+Review is meant to live in the repository, next to the code, as a Radicle patch: a
+signed object that replicates with the rest and stays readable when the forge is gone.
+People who find the project on the forge still review there. This carries what they
+wrote into the patch, once. After that the patch is the record; the forge thread is where
+it happened to be typed.
+
+One pull request becomes one patch, found again by the line `GitHub-PR: <owner>/<repo>#<n>`
+in its description. The branch head becomes a revision, based on the merge base with the
+pull request's base, so a pull request in a stack shows only its own commits. A new head
+on the forge becomes a new revision on the next run.
+
+Every comment becomes a comment on the revision it was made against, at the same lines
+when it was made on code, and a reply stays a reply. A review that approves or asks for
+changes becomes a comment saying so; its line comments come in on their own.
+
+Radicle signs each operation with the key of whoever runs this, and the forge user has
+no key. So the signature says who imported the comment, and the first line of its body
+says who wrote it on the forge, when, and where: a claim with a link, not a signature.
+That link is also how a second run knows a comment is already in, so running this twice
+changes nothing.
+
+Comments do not go into a Radicle review. Radicle keeps one review per signer per
+revision, and every imported comment has the same signer; the review is left free for the
+verdict of whoever runs this.
+
+Needs rad (`scripts/layer on radicle`), a repository that went through `rad init`, and a
+remote on github.com. Reads the forge with the machine account's token (docs/WORKFLOW.md);
+reading needs no particular account, only access to the repository.
+"""
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import urllib.error
+import urllib.request
+
+PATCH = "xyz.radicle.patch"
+
+
+def die(message, code=1):
+    print(f"import-review: {message}", file=sys.stderr)
+    sys.exit(code)
+
+
+def run(*cmd, stdin=None, ok=True):
+    try:
+        done = subprocess.run(cmd, input=stdin, capture_output=True, text=True)
+    except FileNotFoundError:
+        die(f"{cmd[0]} not found" + ("; scripts/layer on radicle" if cmd[0] == "rad" else ""))
+    if ok and done.returncode != 0:
+        die(f"{' '.join(cmd[:3])} failed: {(done.stderr or done.stdout).strip()}")
+    return done
+
+
+def git(*args, ok=True):
+    return run("git", *args, ok=ok)
+
+
+# The forge.
+
+
+def forge_remote():
+    """The remote on github.com: the one main tracks if it is there, else the only one."""
+    remotes = [
+        r for r in git("remote").stdout.split() if "github.com" in git("remote", "get-url", r).stdout
+    ]
+    tracked = git("config", "branch.main.remote", ok=False).stdout.strip()
+    if tracked in remotes:
+        return tracked
+    if len(remotes) == 1:
+        return remotes[0]
+    die("no single remote on github.com" if remotes else "no remote on github.com")
+
+
+def credentials_file():
+    common = git("rev-parse", "--git-common-dir").stdout.strip()
+    path = os.path.join(os.path.abspath(common), "agent-credentials")
+    return path if os.access(path, os.R_OK) else None
+
+
+def token():
+    if os.environ.get("FPL_FORGE_TOKEN"):
+        return os.environ["FPL_FORGE_TOKEN"]
+    cred = credentials_file()
+    if cred:
+        with open(cred) as f:
+            for line in f:
+                m = re.match(r"https://[^:]+:([^@]+)@github\.com", line.strip())
+                if m:
+                    return m.group(1)
+    if shutil.which("gh"):
+        done = run("gh", "auth", "token", ok=False)
+        if done.returncode == 0 and done.stdout.strip():
+            return done.stdout.strip()
+    die("no token: set FPL_FORGE_TOKEN, or see .git/agent-credentials in docs/WORKFLOW.md")
+
+
+def slug_of(remote):
+    url = git("remote", "get-url", remote).stdout.strip()
+    slug = re.sub(r"\.git$", "", url.split("github.com", 1)[1].lstrip(":/"))
+    if slug.count("/") != 1:
+        die(f"cannot read owner/repo from '{url}'")
+    return slug
+
+
+def api(path, secret):
+    """GET, following the pages. The token goes in a header and nowhere else."""
+    out, url = [], f"https://api.github.com{path}"
+    while url:
+        request = urllib.request.Request(
+            url,
+            headers={
+                "Authorization": f"Bearer {secret}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request) as response:
+                page = json.load(response)
+                link = response.headers.get("Link", "")
+        except urllib.error.HTTPError as error:
+            die(f"{path}: {error.code} {error.reason}")
+        if not isinstance(page, list):
+            return page
+        out += page
+        m = re.search(r'<([^>]+)>;\s*rel="next"', link)
+        url = m.group(1) if m else None
+    return out
+
+
+def fetch(slug, number, secret):
+    """Everything the forge holds about one pull request that this imports."""
+    pr = f"/repos/{slug}/pulls/{number}"
+    return {
+        "pr": api(pr, secret),
+        "reviews": api(f"{pr}/reviews?per_page=100", secret),
+        "review_comments": api(f"{pr}/comments?per_page=100", secret),
+        "comments": api(f"/repos/{slug}/issues/{number}/comments?per_page=100", secret),
+    }
+
+
+def open_numbers(slug, secret):
+    return [p["number"] for p in api(f"/repos/{slug}/pulls?state=open&per_page=100", secret)]
+
+
+# Radicle.
+
+
+class Repo:
+    def __init__(self):
+        self.rid = run("rad", ".", ok=False).stdout.strip()
+        if not self.rid.startswith("rad:"):
+            die("this is not a Radicle repository; run rad init first")
+
+    def patches(self):
+        out = run("rad", "cob", "list", "--repo", self.rid, "--type", PATCH).stdout.split()
+        return {oid: self.show(oid) for oid in out}
+
+    def show(self, oid):
+        return json.loads(
+            run("rad", "cob", "show", "--repo", self.rid, "--type", PATCH, "--object", oid).stdout
+        )
+
+    def act(self, oid, message, action):
+        """One operation with one action; returns the operation's id, which for a comment
+        is the comment's id."""
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:
+            f.write(json.dumps(action) + "\n")
+        try:
+            done = run(
+                "rad", "cob", "update", "--repo", self.rid, "--type", PATCH,
+                "--object", oid, "--message", message, f.name,
+            )
+        finally:
+            os.unlink(f.name)
+        return done.stdout.strip().splitlines()[-1]
+
+    def push(self, head, base, refspec_dst, messages):
+        """A revision, through the remote helper, which also puts the commits in storage."""
+        options = [f"--push-option=patch.base={base}"]
+        options += [f"--push-option=patch.message={m}" for m in messages]
+        done = git("push", *options, "rad", f"{head}:{refspec_dst}")
+        m = re.search(r"Patch ([0-9a-f]{40}) (opened|updated)", done.stderr + done.stdout)
+        return m.group(1) if m else None
+
+
+def marker(slug, number):
+    return f"GitHub-PR: {slug}#{number}"
+
+
+def bodies(patch):
+    """Every comment body in the patch, which is where the links of imported ones are."""
+    for revision in patch["revisions"].values():
+        for comment in revision["discussion"]["comments"].values():
+            yield comment["body"]
+
+
+def find(patches, mark):
+    for oid, patch in patches.items():
+        for revision in patch["revisions"].values():
+            if any(mark in d["body"] for d in revision["description"]):
+                return oid
+    return None
+
+
+def have(commit):
+    return git("cat-file", "-e", f"{commit}^{{commit}}", ok=False).returncode == 0
+
+
+def ensure(remote, number, *commits):
+    """The pull request's commits, fetched from the forge when they are not here."""
+    if all(have(c) for c in commits):
+        return
+    cred = credentials_file()
+    helper = ["-c", "credential.helper=", "-c", f"credential.helper=store --file={cred}"] if cred else []
+    git(*helper, "fetch", "--no-auto-gc", "-q", remote,
+        f"refs/pull/{number}/head", f"refs/pull/{number}/merge", ok=False)
+    missing = [c[:7] for c in commits if not have(c)]
+    if missing:
+        die(f"#{number}: commits {', '.join(missing)} are neither here nor on {remote}")
+
+
+def when(stamp):
+    return stamp.replace("T", " ").replace("Z", " UTC") if stamp else "?"
+
+
+VERDICTS = {"APPROVED": "approved", "CHANGES_REQUESTED": "asked for changes"}
+
+
+def items(bundle):
+    """The comments of a pull request in the order they were written, each with what it
+    needs to become a revision comment."""
+    out = []
+    for c in bundle["comments"]:
+        out.append(dict(key=c["html_url"], at=c["created_at"], who=c["user"]["login"],
+                        body=c["body"] or "", commit=None, where=None, reply=None, id=c["id"]))
+    for r in bundle["reviews"]:
+        verdict = VERDICTS.get(r["state"])
+        if not verdict and not (r.get("body") or "").strip():
+            continue  # a review that is only its line comments; those come in below
+        text = (r.get("body") or "").strip()
+        out.append(dict(key=r["html_url"], at=r["submitted_at"], who=r["user"]["login"],
+                        body=f"{verdict}.\n\n{text}".strip() if verdict else text,
+                        commit=r.get("commit_id"), where=None, reply=None, id=r["id"]))
+    for c in bundle["review_comments"]:
+        out.append(dict(key=c["html_url"], at=c["created_at"], who=c["user"]["login"],
+                        body=c["body"] or "", commit=c.get("commit_id"), where=c,
+                        reply=c.get("in_reply_to_id"), id=c["id"]))
+    return sorted(out, key=lambda i: (i["at"] or "", i["id"]))
+
+
+def location(c):
+    """A forge line comment's place, in Radicle's terms. The forge counts lines from 1 and
+    includes both ends; Radicle counts from 1 and leaves the end out."""
+    if c.get("line") is None:
+        return None  # a comment on a line that is no longer in the diff, or on the file
+    last = c["line"]
+    first = c.get("start_line") or last
+    lines = {"type": "lines", "range": {"start": first, "end": last + 1}}
+    side = "old" if c.get("side") == "LEFT" else "new"
+    return {"commit": c["commit_id"], "path": c["path"], side: lines}
+
+
+def import_one(repo, remote, bundle, patches):
+    pr = bundle["pr"]
+    slug, number = pr["base"]["repo"]["full_name"], pr["number"]
+    head, tip = pr["head"]["sha"], pr["base"]["sha"]
+    mark = marker(slug, number)
+    ensure(remote, number, head, tip)
+    base = git("merge-base", tip, head).stdout.strip()
+
+    oid = find(patches, mark)
+    if oid is None:
+        # A push option is one line, and the helper joins them as paragraphs, so the push
+        # carries the title and the marker, and the description follows as an edit.
+        title = " ".join(pr["title"].split())
+        oid = repo.push(head, base, "refs/patches", [title, mark])
+        if not oid:
+            die(f"#{number}: rad did not say which patch it opened")
+        body = (pr.get("body") or "").replace("\r\n", "\n").strip()
+        description = "\n\n".join(x for x in [body, f"{mark}\n{pr['html_url']}"] if x)
+        repo.act(oid, "Import the description", {"type": "revision.edit", "revision": oid,
+                                                  "description": description})
+        print(f"#{number}: opened patch {oid[:7]}", file=sys.stderr)
+    patch = repo.show(oid)
+    by_oid = {r["oid"]: rid for rid, r in patch["revisions"].items()}
+    if head not in by_oid:
+        repo.push(head, base, f"refs/heads/patches/{oid}", [f"New head on the forge: {head[:7]}"])
+        print(f"#{number}: new revision for {head[:7]}", file=sys.stderr)
+        patch = repo.show(oid)
+        by_oid = {r["oid"]: rid for rid, r in patch["revisions"].items()}
+    latest = max(patch["revisions"].values(), key=lambda r: r["description"][0]["timestamp"])["id"]
+
+    seen = "\n".join(bodies(patch))
+    # The forge id of a comment already in, mapped to its Radicle id, so a reply finds its
+    # parent across runs.
+    ids = {}
+    for revision in patch["revisions"].values():
+        for cid, comment in revision["discussion"]["comments"].items():
+            m = re.search(r"#discussion_r(\d+)", comment["body"].split("\n", 1)[0])
+            if m:
+                ids[int(m.group(1))] = cid
+
+    added = 0
+    for item in items(bundle):
+        if item["key"] in seen:
+            continue
+        revision = by_oid.get(item["commit"], latest)
+        action = {
+            "type": "revision.comment",
+            "revision": revision,
+            "body": f"{item['who']} on GitHub, {when(item['at'])}: {item['key']}\n\n{item['body']}".rstrip(),
+        }
+        if item["where"] is not None:
+            where = location(item["where"])
+            if where and have(where["commit"]):
+                action["location"] = where
+            if item["reply"] in ids:
+                action["replyTo"] = ids[item["reply"]]
+        cid = repo.act(oid, f"Import {item['key']}", action)
+        ids[item["id"]] = cid
+        added += 1
+    print(oid)
+    print(f"#{number}: {added} comment{'s' * (added != 1)} imported into {oid[:7]}", file=sys.stderr)
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__.split("\n\n")[1])
+        return 0 if argv else 2
+    if argv[0] == "--bundle":
+        if len(argv) != 2:
+            die("usage: scripts/import-review --bundle <file>", 2)
+        with open(argv[1]) as f:
+            bundles = json.load(f)
+        bundles = bundles if isinstance(bundles, list) else [bundles]
+        repo = Repo()
+        patches = repo.patches()
+        remote = forge_remote() if any(not (have(b["pr"]["head"]["sha"]) and have(b["pr"]["base"]["sha"])) for b in bundles) else None
+        for b in bundles:
+            import_one(repo, remote, b, patches)
+            patches = repo.patches()
+        return 0
+
+    remote = forge_remote()
+    slug, secret = slug_of(remote), token()
+    if argv[0] == "--dump":
+        if len(argv) != 2 or not argv[1].isdigit():
+            die("usage: scripts/import-review --dump <number>", 2)
+        json.dump(fetch(slug, int(argv[1]), secret), sys.stdout, indent=1)
+        print()
+        return 0
+    if argv == ["--open"]:
+        numbers = open_numbers(slug, secret)
+    elif all(a.lstrip("#").isdigit() for a in argv):
+        numbers = [int(a.lstrip("#")) for a in argv]
+    else:
+        die("usage: scripts/import-review <number>... | --open", 2)
+    repo = Repo()
+    patches = repo.patches()
+    for n in numbers:
+        import_one(repo, remote, fetch(slug, n, secret), patches)
+        patches = repo.patches()
+    return 0
+
+
+# The self-test: a throwaway Radicle home, a repository with a stack of two branches, and
+# two pull requests as the forge would describe them. No network.
+
+
+def self_test():
+    me = os.path.abspath(__file__)
+    checks = []
+
+    def check(name, ok):
+        checks.append((name, bool(ok)))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        env = dict(os.environ, RAD_HOME=f"{tmp}/home", RAD_PASSPHRASE="self-test",
+                   GIT_CONFIG_GLOBAL="/dev/null", GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
+                   GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+        env.pop("SSH_AUTH_SOCK", None)
+        repo = f"{tmp}/repo"
+        os.makedirs(repo)
+
+        def sh(*cmd, ok=True):
+            done = subprocess.run(cmd, cwd=repo, env=env, capture_output=True, text=True)
+            if ok and done.returncode != 0:
+                sys.exit(f"self-test: {' '.join(cmd)}\n{done.stdout}{done.stderr}")
+            return done
+
+        def rev(ref):
+            return sh("git", "rev-parse", ref).stdout.strip()
+
+        def commit(path, text, message):
+            with open(os.path.join(repo, path), "w") as f:
+                f.write(text)
+            sh("git", "add", path)
+            sh("git", "commit", "-q", "-m", message)
+            return rev("HEAD")
+
+        sh("rad", "auth", "--alias", "selftest")
+        sh("git", "init", "-q", "-b", "main")
+        commit("f.txt", "a\nb\nc\n", "init")
+        sh("rad", "init", "--name", "selftest", "--description", "x", "--default-branch",
+           "main", "--private", "--no-confirm", "--no-seed")
+        sh("git", "remote", "add", "github", "https://github.com/o/r.git")
+        main_tip = rev("main")
+        sh("git", "switch", "-q", "-c", "one")
+        one = commit("f.txt", "a\nB\nc\n", "capitalise b")
+        sh("git", "switch", "-q", "-c", "two")
+        two = commit("f.txt", "a\nB\nc\nd\n", "add d")
+        sh("git", "switch", "-q", "main")
+
+        def pr(n, head, base, ref):
+            url = f"https://github.com/o/r/pull/{n}"
+            return {"number": n, "title": f"pr {n}", "body": f"body of {n}", "html_url": url,
+                    "head": {"sha": head}, "base": {"sha": base, "ref": ref,
+                                                    "repo": {"full_name": "o/r"}}}
+
+        first = {
+            "pr": dict(pr(1, one, main_tip, "main"), body="body of 1"),
+            "comments": [{"id": 11, "html_url": "https://github.com/o/r/pull/1#issuecomment-11",
+                          "created_at": "2026-09-20T10:00:00Z", "user": {"login": "carol"},
+                          "body": "thanks"}],
+            "reviews": [
+                {"id": 21, "html_url": "https://github.com/o/r/pull/1#pullrequestreview-21",
+                 "submitted_at": "2026-09-20T10:05:00Z", "user": {"login": "dave"},
+                 "state": "COMMENTED", "body": "", "commit_id": one},
+                {"id": 22, "html_url": "https://github.com/o/r/pull/1#pullrequestreview-22",
+                 "submitted_at": "2026-09-20T10:09:00Z", "user": {"login": "erin"},
+                 "state": "APPROVED", "body": "fine by me", "commit_id": one},
+            ],
+            "review_comments": [
+                {"id": 31, "html_url": "https://github.com/o/r/pull/1#discussion_r31",
+                 "created_at": "2026-09-20T10:05:00Z", "user": {"login": "dave"},
+                 "body": "why a capital?", "commit_id": one, "path": "f.txt",
+                 "line": 2, "start_line": None, "side": "RIGHT", "in_reply_to_id": None},
+                {"id": 32, "html_url": "https://github.com/o/r/pull/1#discussion_r32",
+                 "created_at": "2026-09-20T10:07:00Z", "user": {"login": "alice"},
+                 "body": "house style", "commit_id": one, "path": "f.txt",
+                 "line": 2, "start_line": None, "side": "RIGHT", "in_reply_to_id": 31},
+            ],
+        }
+        second = {"pr": pr(2, two, one, "one"), "comments": [], "reviews": [], "review_comments": []}
+        bundle = f"{tmp}/bundle.json"
+        with open(bundle, "w") as f:
+            json.dump([first, second], f)
+
+        def imp(path=bundle, ok=True):
+            return sh(sys.executable, me, "--bundle", path, ok=ok)
+
+        def patches():
+            rid = sh("rad", ".").stdout.strip()
+            out = sh("rad", "cob", "list", "--repo", rid, "--type", PATCH).stdout.split()
+            return {o: json.loads(sh("rad", "cob", "show", "--repo", rid, "--type", PATCH,
+                                     "--object", o).stdout) for o in out}
+
+        imp()
+        ps = patches()
+        check("one patch per pull request", len(ps) == 2)
+        p1 = next(p for p in ps.values() if p["title"] == "pr 1")
+        p2 = next(p for p in ps.values() if p["title"] == "pr 2")
+        r1 = next(iter(p1["revisions"].values()))
+        r2 = next(iter(p2["revisions"].values()))
+        check("the description carries the marker", "GitHub-PR: o/r#1" in r1["description"][0]["body"])
+        check("and then the pull request's own text, newlines kept",
+              r1["description"][-1]["body"].startswith("body of 1\n\nGitHub-PR: o/r#1\nhttps://"))
+        check("the revision is the head", r1["oid"] == one)
+        check("a stacked pull request is based on the branch below", r2["base"] == one)
+        cs = r1["discussion"]["comments"]
+        by = {c["body"].split(" ", 1)[0]: (cid, c) for cid, c in cs.items()}
+        check("four comments: plain, line, reply, verdict", len(cs) == 4)
+        check("a review of only line comments adds nothing of its own",
+              not any("pullrequestreview-21" in c["body"] for c in cs.values()))
+        check("each names who wrote it and links it",
+              all(" on GitHub, 2026-09-20 " in c["body"] and "https://" in c["body"] for c in cs.values()))
+        dave = by["dave"][1]
+        check("a line comment keeps its place",
+              dave.get("location", {}).get("new") == {"type": "lines", "range": {"start": 2, "end": 3}}
+              and dave["location"]["path"] == "f.txt" and dave["location"]["commit"] == one)
+        check("a reply stays a reply", by["alice"][1].get("replyTo") == by["dave"][0])
+        check("a verdict comes in as words", by["erin"][1]["body"].split("\n\n", 1)[1].startswith("approved."))
+        check("the reviews are left free", r1["reviews"] == {})
+
+        imp()
+        check("a second run changes nothing", patches() == ps)
+
+        # The forge moves on: a new head for #1 and one more reply.
+        sh("git", "switch", "-q", "one")
+        newer = commit("f.txt", "a\nB\nc\n\n", "trailing line")
+        sh("git", "switch", "-q", "main")
+        first["pr"]["head"]["sha"] = newer
+        first["review_comments"].append(
+            {"id": 33, "html_url": "https://github.com/o/r/pull/1#discussion_r33",
+             "created_at": "2026-09-21T09:00:00Z", "user": {"login": "dave"},
+             "body": "ok", "commit_id": one, "path": "f.txt", "line": 2, "start_line": None,
+             "side": "RIGHT", "in_reply_to_id": 31})
+        with open(bundle, "w") as f:
+            json.dump([first], f)
+        imp()
+        p1 = next(p for p in patches().values() if p["title"] == "pr 1")
+        revs = p1["revisions"].values()
+        check("a new head is a new revision", sorted(r["oid"] for r in revs) == sorted([one, newer]))
+        old = next(r for r in revs if r["oid"] == one)["discussion"]["comments"]
+        late = [c for c in old.values() if "discussion_r33" in c["body"]]
+        check("a comment made against the old head stays on the old revision", len(late) == 1)
+        check("and a reply across runs still finds its parent",
+              late and late[0].get("replyTo") == by["dave"][0])
+
+    failed = [name for name, ok in checks if not ok]
+    for name in failed:
+        print(f"FAIL {name}", file=sys.stderr)
+    print(f"import-review: self-test {'ok' if not failed else 'FAILED'} "
+          f"({len(checks)} checks, {len(failed)} failed)")
+    sys.exit(1 if failed else 0)
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] == ["--self-test"]:
+        self_test()
+    sys.exit(main(sys.argv[1:]) or 0)
