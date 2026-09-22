@@ -6,7 +6,7 @@
 name = "fpl"
 version = "0"
 requires-python = ">=3.12,<3.13"
-dependencies = ["lark"]
+dependencies = ["lark", "icontract"]
 
 [tool.deptry]
 known_first_party = ["fpl"]
