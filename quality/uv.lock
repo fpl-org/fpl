@@ -12,6 +12,18 @@ wheels = [
 ]
 
 [[package]]
+name = "asttokens"
+version = "2.4.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "six" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/45/1d/f03bcb60c4a3212e15f99a56085d93093a497718adf828d050b9d675da81/asttokens-2.4.1.tar.gz", hash = "sha256:b03869718ba9a6eb027e134bfdf69f38a236d681c83c160d510768af11254ba0", size = 62284, upload-time = "2023-10-26T10:03:05.06Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/45/86/4736ac618d82a20d87d2f92ae19441ebc7ac9e7a581d7e58bbe79233b24a/asttokens-2.4.1-py2.py3-none-any.whl", hash = "sha256:051ed49c3dcae8913ea7cd08e46a606dba30b79993209636c4875bc1d637bc24", size = 27764, upload-time = "2023-10-26T10:03:01.789Z" },
+]
+
+[[package]]
 name = "attrs"
 version = "26.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -261,6 +273,7 @@ dependencies = [
     { name = "deptry" },
     { name = "hypothesis" },
     { name = "hypothesis-crosshair" },
+    { name = "icontract" },
     { name = "import-linter" },
     { name = "lark" },
     { name = "mutmut" },
@@ -280,6 +293,7 @@ requires-dist = [
     { name = "deptry" },
     { name = "hypothesis" },
     { name = "hypothesis-crosshair" },
+    { name = "icontract" },
     { name = "import-linter" },
     { name = "lark", specifier = "==1.3.1" },
     { name = "mutmut" },
@@ -376,6 +390,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/56/a7/0ffe2c2cf0826af282e3e3b81a2b5f84f704c687fbe50827d7d43603a774/hypothesis_crosshair-0.0.30.tar.gz", hash = "sha256:37f5cd3b44911d34b01f19615e1667f10db311548abc499ed834e57113b56f8b", size = 14387, upload-time = "2026-07-25T15:58:57.118Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0f/0c/bd2cdefb9a1dfdb2892c523bdc6d1c84fa4584b809eb6f311d6cf5bcd6b6/hypothesis_crosshair-0.0.30-py3-none-any.whl", hash = "sha256:094b9d48056b4e5bb8f208a99b0887e689fb4c6794550715cd65d6c2ae67d1f4", size = 16658, upload-time = "2026-07-25T15:58:56.111Z" },
+]
+
+[[package]]
+name = "icontract"
+version = "2.7.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "asttokens" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/41/93/8a7d5850d848cba73aa094b961459d8101b7c96837b2e8dc91083adcf7ae/icontract-2.7.3.tar.gz", hash = "sha256:df37a43d86d532407bc6b84dea29dd9f7ece794b73211769fa8a33a76b8ed145", size = 68361, upload-time = "2026-01-29T13:11:14.724Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ee/aa/ffc16b7ed17e052e7d2140e66336f829e9383f61f31249c4d181e12fcdea/icontract-2.7.3-py3-none-any.whl", hash = "sha256:8fb0f93f71211416f214f37c01b8017fdc8c079d70159f49f0ddcc10918c14d0", size = 40983, upload-time = "2026-01-29T13:11:13.198Z" },
 ]
 
 [[package]]
