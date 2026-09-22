@@ -17,7 +17,8 @@ Python tools for the same jobs.
 make fix      ruff's safe fixes, then the formatter
 make quick    lint, format, tests; stops at the first failure. Seconds. The inner loop.
 make check    the one gate. Green means done.
-make harden   check, then the long search: 20x the examples, CrossHair, mutation testing
+make harden   check, then the long search: 20x the examples, CrossHair on every property
+              and every contract, mutation testing
 make ready    harden, then a known-vulnerability audit of the pinned tools
 make gates    proof that each check still refuses a bad example
 ```
@@ -38,7 +39,7 @@ make gates    proof that each check still refuses a bad example
 | `vulture` | code nothing uses |
 | `pylint` duplicate-code | six or more lines repeated |
 
-On the milestone-0 skeleton `make check` takes about 6 seconds and `make harden` about 2½
+On the milestone-0 skeleton `make check` takes about 6 seconds and `make harden` about 3
 minutes, almost all of it CrossHair.
 
 ## CRAP
@@ -69,6 +70,52 @@ are in `quality/noslop_pytest.py`, loaded by every test run:
 
 On Linux, CrossHair's solver needs libstdc++ on the loader path; the dev shell sets it
 (docs/DEVSHELL.md), and `make harden` stops with a message if it does not load.
+
+## Contracts
+
+A function may state what it needs and what it promises with icontract:
+
+```python
+def inside(result: Span, source: str) -> bool:
+    ...
+
+@icontract.require(reported)
+@icontract.ensure(inside)
+def where(source: str, line: int, column: int) -> Span:
+```
+
+The predicates are named, typed functions, not lambdas: strict pyright refuses a lambda's
+unknown parameters, and a name says what is promised. icontract checks them on every call,
+so a test that reaches the function checks its contract too, and mutation testing sees a
+contract as another way a mutant gets killed. `make harden` then runs `crosshair check` over
+`fpl/` with the icontract kind: for each contract it solves for an input that breaks it, up
+to `CONTRACT_SECONDS` of CPU per condition, and reports the call. That is the difference
+from a property test: a property is checked on the inputs Hypothesis draws, a contract on
+the inputs a solver finds, and `where()` above was refuted at the end of a line before any
+test drew that case.
+
+A precondition is part of the contract, not a way out of it: `reported` says what Lark
+delivers, so the solver does not spend its budget on positions Lark never gives. It is
+tested through the callers that satisfy it.
+
+## Metatheory
+
+A language has properties its implementation must keep, and they are stated as properties,
+under Hypothesis in `make check` and CrossHair in `make harden`, from the moment the module
+they concern has code (`scripts/props` requires a property test then anyway):
+
+- `parse.py`: every program the grammar derives (`hypothesis.extra.lark.from_lark`) parses
+  without an Earley ambiguity, not only the example corpus.
+- `desugar.py`: desugaring preserves meaning: evaluating a surface program and evaluating
+  its core translation give the same result, for programs derived from the grammar.
+- `ast_surface.py` and `ast_core.py`, once there is a printer: print then parse is the
+  identity on the AST.
+- `types.py`: progress and preservation: a well-typed core term is a value or takes a
+  step, and the step keeps its type.
+- The backend, when it exists: the interpreter and the compiled program print the same
+  output for every conformance example and for derived programs.
+
+These are the tests that make the layered frontend of docs/STACK.md more than a layout.
 
 ## Mutants
 
