@@ -3,6 +3,7 @@
 from functools import cache
 from pathlib import Path
 
+import icontract
 from lark import Lark, Token, Tree, UnexpectedInput
 
 from fpl.errors import FplError, Span
@@ -25,13 +26,31 @@ def parse(source: str, grammar: Path = GRAMMAR) -> Tree[Token]:
     try:
         return parser(grammar).parse(source)  # pyright: ignore[reportUnknownMemberType] -- lark types its text argument loosely
     except UnexpectedInput as failure:
-        raise FplError(where(source, failure), "unexpected input") from failure
+        raise FplError(where(source, failure.line, failure.column), "unexpected input") from failure
 
 
-def where(source: str, failure: UnexpectedInput) -> Span:
+def within(source: str, line: int, col: int) -> bool:
+    """Line and column name a character of the source, or the position just past a line."""
+    lines = source.split("\n")
+    return 1 <= line <= len(lines) and 1 <= col <= len(lines[line - 1]) + 1
+
+
+def reported(source: str, line: int, column: int) -> bool:
+    """What Lark reports for a failure: a position within the source, or line -1 for its end."""
+    return line == -1 or within(source, line, column)
+
+
+def inside(result: Span, source: str) -> bool:
+    """The position given is within the source."""
+    return within(source, result.line, result.col)
+
+
+@icontract.require(reported)
+@icontract.ensure(inside)
+def where(source: str, line: int, column: int) -> Span:
     """The position of a parse failure. Lark gives -1 for the end of the input; that is the
     position just after the last character."""
-    if failure.line >= 1:
-        return Span(failure.line, failure.column)
+    if line >= 1:
+        return Span(line, column)
     lines = source.split("\n")
     return Span(len(lines), len(lines[-1]) + 1)

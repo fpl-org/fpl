@@ -7,7 +7,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from fpl.errors import FplError, Span
-from fpl.parse import parse
+from fpl.parse import parse, within
 
 # A grammar for the tests only; the language's own is the maintainer's (fpl/grammar.lark).
 WORDS = "start: WORD+\n%import common.WORD\n%import common.WS\n%ignore WS\n"
@@ -61,3 +61,14 @@ def test_an_early_end_points_just_past_the_last_character(tmp_path: Path) -> Non
         "a": Span(1, 2),
         "a\n": Span(2, 1),
     }
+
+
+@given(st.text(alphabet="ab\n", max_size=20), st.integers(-2, 6))
+def test_within_names_a_character_or_the_position_just_past_a_line(source: str, line: int) -> None:
+    lines = source.split("\n")
+    on_a_line = line in range(1, len(lines) + 1)
+    width = len(lines[line - 1]) if on_a_line else 0
+    # Every column around the line, not a drawn one: the edge at width + 1 is the whole point,
+    # and a random draw misses it often enough to let a mutant of the edge live.
+    for col in range(-1, width + 4):
+        assert within(source, line, col) == (on_a_line and 1 <= col <= width + 1)
