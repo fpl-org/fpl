@@ -5,7 +5,8 @@
 #   make fix      rewrite what can be rewritten: ruff's safe fixes, then the formatter
 #   make quick    the inner loop, seconds: lint, format, and the tests, stopping at the first
 #   make check    the one gate; green here means done (AGENTS.md)
-#   make harden   the long search: 20x the examples, CrossHair on every property, mutants
+#   make harden   the long search: 20x the examples, CrossHair on every property and every
+#                 contract, mutants
 #   make ready    check + harden + a known-vulnerability audit; before a PR leaves draft
 #   make gates    proof that each check still bites: its self-test and a bad example it refuses
 
@@ -16,6 +17,8 @@ Q        := quality
 VENV     := .venv
 BIN      := $(VENV)/bin
 OUT      := .noslop
+# CPU seconds CrossHair spends looking for a counterexample to one contract (make harden).
+CONTRACT_SECONDS := 20
 export PYTHONPATH := $(CURDIR)/$(Q):$(CURDIR)
 export UV_PROJECT_ENVIRONMENT := $(CURDIR)/$(VENV)
 export UV_PYTHON_DOWNLOADS := never
@@ -73,6 +76,7 @@ harden: check
 	  'on Linux the dev shell puts libstdc++ on LD_LIBRARY_PATH (docs/DEVSHELL.md)' >&2; exit 1; }
 	HYPOTHESIS_PROFILE=harden $(BIN)/pytest -q -n auto
 	HYPOTHESIS_PROFILE=symbolic $(BIN)/pytest -q -n auto
+	$(BIN)/crosshair check fpl --analysis_kind=icontract --per_condition_timeout=$(CONTRACT_SECONDS)
 	$(BIN)/python scripts/mutants
 
 ready: harden

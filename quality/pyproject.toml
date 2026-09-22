@@ -18,6 +18,7 @@ dependencies = [
   "pytest",
   "pytest-xdist",
   "hypothesis",
+  "icontract",
   # coverage
   "coverage[toml]",
   # structure

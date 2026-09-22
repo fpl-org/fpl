@@ -52,6 +52,8 @@ def run(command: str, cwd: Path) -> tuple[int, str]:
         "PYTHONPATH": f"{cwd / 'quality'}:{cwd}",
         "HOME": str(cwd),
         "HYPOTHESIS_PROFILE": "quick",
+        # CrossHair's solver needs libstdc++ on Linux; the dev shell sets this (docs/DEVSHELL.md)
+        "LD_LIBRARY_PATH": os.environ.get("LD_LIBRARY_PATH", ""),
     }
     done = subprocess.run(
         ["bash", "-c", command], cwd=cwd, env=env, capture_output=True, text=True, check=False
