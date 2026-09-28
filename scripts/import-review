@@ -193,7 +193,9 @@ class Repo:
         """A revision, through the remote helper, which also puts the commits in storage."""
         options = [f"--push-option=patch.base={base}"]
         options += [f"--push-option=patch.message={m}" for m in messages]
-        done = git("push", *options, "rad", f"{head}:{refspec_dst}")
+        # A pull request that was rebased has a head that does not descend from the last
+        # one; a revision is a new version, not a continuation, so the push is forced.
+        done = git("push", *options, "rad", f"+{head}:{refspec_dst}")
         m = re.search(r"Patch ([0-9a-f]{40}) (opened|updated)", done.stderr + done.stdout)
         return m.group(1) if m else None
 
@@ -538,6 +540,18 @@ def self_test():
         check("a comment made against the old head stays on the old revision", len(late) == 1)
         check("and a reply across runs still finds its parent",
               late and late[0].get("replyTo") == by["dave"][0])
+
+        # The pull request is rebased onto something else: its new head does not descend
+        # from the old one, and it still becomes a revision.
+        sh("git", "switch", "-q", "--detach", main_tip)
+        rebased = commit("f.txt", "a\nB!\nc\n", "capitalise b, again")
+        sh("git", "switch", "-q", "main")
+        first["pr"]["head"]["sha"] = rebased
+        with open(bundle, "w") as f:
+            json.dump([first], f)
+        imp()
+        p1 = next(p for p in patches().values() if p["title"] == "pr 1")
+        check("a rebased head becomes a revision too", rebased in {r["oid"] for r in p1["revisions"].values()})
 
         # A comment written in the review, put on the forge by scripts/export-review, and
         # answered there.
