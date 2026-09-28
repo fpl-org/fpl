@@ -7,7 +7,7 @@ from hypothesis import strategies as st
 from fpl.ast_surface import Cell, Enclosure, Frame, Line, Program, Text, Word
 from fpl.errors import FplError, Span
 from fpl.lex import prelex
-from fpl.parse import parse, placed, where, within
+from fpl.parse import GRAMMAR, FplIndenter, parse, parser, placed, where, within
 
 SOURCE = st.text(alphabet="ab1 \t\n|;⍝“”「」⟦⟧⟨⟩[](){}¶\u00b4→$#/.\r\f", max_size=40)
 
@@ -145,3 +145,15 @@ def test_a_failure_lark_cannot_place_is_at_the_end_of_the_source() -> None:
 def test_a_block_comment_opening_a_line_keeps_its_tabs() -> None:
     """HOLES.md block-comment-at-line-start: the comment and the spaces after it go, tabs stay."""
     assert parse("a\n\t⟦c⟧ b\n") == parse("a\n\tb\n")
+
+
+def test_the_indenter_reads_terminals_the_grammar_makes() -> None:
+    """One tab per level, over terminals the grammar makes or declares: a renamed terminal would
+    leave the indenter counting nothing."""
+    made = {terminal.name for terminal in parser().terminals}
+    indenter = FplIndenter()
+    brackets = [*indenter.OPEN_PAREN_types, *indenter.CLOSE_PAREN_types]
+    assert {indenter.NL_type, *brackets} <= made
+    declared = f"%declare {indenter.INDENT_type} {indenter.DEDENT_type}"
+    assert declared in GRAMMAR.read_text()
+    assert indenter.tab_len == 1
