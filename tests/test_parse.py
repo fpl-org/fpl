@@ -140,3 +140,8 @@ def test_the_affix_pass_reads_token_shape(
 
 def test_a_failure_lark_cannot_place_is_at_the_end_of_the_source() -> None:
     assert placed("ab\nc", prelex("ab\nc"), None) == Span(2, 2) == where("ab\nc", -1, -1)
+
+
+def test_a_block_comment_opening_a_line_keeps_its_tabs() -> None:
+    """HOLES.md block-comment-at-line-start: the comment and the spaces after it go, tabs stay."""
+    assert parse("a\n\t⟦c⟧ b\n") == parse("a\n\tb\n")
