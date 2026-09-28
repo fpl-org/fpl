@@ -176,3 +176,9 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Default in force: printer.py imports test_fpl.py, whose unguarded top-level battery then runs twice; RESULTS shows only one extra line of it
 - Closes by: Caesura, guarding test_fpl.py's battery with if __name__ == '__main__'
 - Evidence: handoff/SHAR-syntax.org:1203 "Seams" (#+RESULTS: check-run, examples2 printed twice); session logs/wf0a-filtered.txt against logs/wf0a-expected.txt
+
+## fon-unwritable
+- Depends on it: fpl/fon.py (write, embed), tests/test_fon.py::test_json_embeds_and_reads_back
+- Default in force: a text holding an unbalanced “ or 「, or a symbol that spells another kind (1, #a, true), has no FON spelling; write gives the text as is and read refuses it or reads another value; the JSON property draws texts without “ and ”; a JSON key that is not a plain symbol is kept as text
+- Closes by: design, an escape in strings or a statement that such values are outside the profile
+- Evidence: handoff/SHAR-syntax.org:621 "FON-data" (no escape; its strategy filters balanced quotes)
