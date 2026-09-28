@@ -47,6 +47,8 @@ _RANGLE: "⟩"
 NOTE.2: /(;(?!;)|⍝)[^\n]*(\r?\n\t*(;(?!;)|⍝)[^\n]*)*/  // one token with its continuations, so they never reach the indenter
 DOC.2: /;;+[^\n]*/
 
-_NL: /(\r?\n\t*)+/                    // indentation is tabs only: one tab per level, a counter, no width comparison
+_NL: /(\r?\n[\t\f ]*)*\r?\n\t*/  // indentation is tabs only: one tab per level, a counter, no width comparison;
+                                    // a blank line in the run may hold tabs, spaces and form feeds (a page separator),
+                                    // so it stays blank; only the last line's tabs are indentation
 %declare _INDENT _DEDENT
 %ignore /[ \f]+/                      // spaces (and a form feed, the page separator) only; tabs are cell boundaries

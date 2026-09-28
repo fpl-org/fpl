@@ -177,6 +177,20 @@ def test_print_is_idempotent_on_programs_derived_from_the_grammar(source: str) -
     canonical(clean(source))
 
 
+@given(st.text(alphabet="\t \f", max_size=6))
+def test_a_blank_line_is_part_of_its_blank_run_whatever_it_holds(blank: str) -> None:
+    """Tabs, spaces and form feeds (a page separator) on a line between two lines leave no
+    line behind, so the source prints without it; a space right after the tabs that open a
+    line is refused, as on any line."""
+    source = f"a\n\tx\n{blank}\n\ty\n"
+    try:
+        tree = parse(source)
+    except FplError as refused:
+        assert str(refused).endswith("indentation must be tabs")
+        return
+    assert render(tree) == "a\n\tx\n\ty\n"
+
+
 @pytest.mark.parametrize("program", CORPUS, ids=[p.stem for p in CORPUS])
 def test_print_keeps_the_tree_of_the_corpus(program: Path) -> None:
     source = program.read_text()
@@ -195,6 +209,9 @@ def test_print_keeps_the_tree_of_the_corpus(program: Path) -> None:
         ("\n\n\tx\n", "\n\tx\n"),
         ("\n", ""),
         ("| ; x\n", "|\t; x\n"),
+        ("a\n\f\nb\n", "a\nb\n"),
+        ("a\n\f \nb\n", "a\nb\n"),
+        ("a\n\t\f\nb\n", "a\nb\n"),
         ("a;x\n;y\n\tb | c ⍝ g\n", "a\t;x\n\t;y\n\tb | c\t⍝ g\n"),
         ("\ta\tb ; n\n\t\t\t; m\n", "a\tb\t; n\n\t\t; m\n"),
         (";;;; f\n;;; s\n\n;; d\nf ; t\n", ";;;; f\n;;; s\n;; d\nf\t; t\n"),
