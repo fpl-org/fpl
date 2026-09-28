@@ -36,6 +36,7 @@ with the tools a laptop has.
 | `pristine` | an uncommitted change to a policy file (below) |
 | `ruff check`, `ruff format --check` | lint findings, including cyclomatic complexity over 8 (`quality/ruff.toml`); unformatted code |
 | `pyright`, strict | anything strict mode refuses, and a `match` that misses a case (`quality/pyright.json`) |
+| `mypy`, strict | the same code as the reference implementation of the typing PEPs reads it, with unreachable code and unused ignores as errors (`quality/mypy.ini`) |
 | `scripts/escapes` | a waiver that does not name its rule and give a reason |
 | `scripts/props` | a module with code that no property test imports |
 | `pytest` under `coverage` | a failing test; less than 100% line and branch coverage (`quality/coveragerc`) |
@@ -157,10 +158,13 @@ Every way out of a check names what it waives and says why, after ` -- `:
 ```
 # noqa: E731 -- <reason>
 # pyright: ignore[reportUnknownMemberType] -- <reason>
+# type: ignore[arg-type] -- <reason>
 # pragma: no cover -- <reason>
 ```
 
-`# type: ignore` is refused outright, since pyright's own form names the rule.
+`# type: ignore` is mypy's form and waives mypy alone: pyright is configured not to honour it
+(`enableTypeIgnoreComments: false`), so a line that both checkers refuse carries two waivers,
+each with its reason. A bare `# type: ignore` is refused.
 
 ## Policy
 

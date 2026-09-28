@@ -60,6 +60,7 @@ check: venv pristine
 	$(BIN)/ruff check --config $(Q)/ruff.toml fpl tests
 	$(BIN)/ruff format --config $(Q)/ruff.toml --check fpl tests
 	pyright --project $(Q)/pyright.json
+	$(BIN)/mypy --config-file $(Q)/mypy.ini fpl tests
 	$(BIN)/python scripts/escapes fpl tests
 	$(BIN)/python scripts/props
 	$(BIN)/coverage erase --rcfile=$(Q)/coveragerc

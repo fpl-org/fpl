@@ -10,11 +10,12 @@ see what was waived and judge whether it still holds:
 
     # noqa: E731 -- <reason>
     # pyright: ignore[reportUnknownMemberType] -- <reason>
+    # type: ignore[arg-type] -- <reason>
     # pragma: no cover -- <reason>
     # pragma: no mutate -- <reason>
 
-`# type: ignore` is refused outright: pyright's own form names the rule. Exit 0: none bare;
-1: some; 2: usage.
+`# type: ignore` is mypy's; pyright is told not to honour it (quality/pyright.json), so each
+checker is waived only in its own form. Exit 0: none bare; 1: some; 2: usage.
 """
 
 import re
@@ -23,7 +24,11 @@ import tempfile
 from pathlib import Path
 
 RULES = [
-    (re.compile(r"#\s*type:\s*ignore"), None, "use '# pyright: ignore[<rule>] -- <reason>'"),
+    (
+        re.compile(r"#\s*type:\s*ignore(?P<rest>.*)"),
+        re.compile(r"^\[[\w-]+(,\s*[\w-]+)*\]\s+--\s+\S"),
+        "name the code and give a reason: '# type: ignore[<code>] -- <reason>'",
+    ),
     (
         re.compile(r"#\s*noqa\b(?P<rest>.*)"),
         re.compile(r"^:\s*[A-Z]+\d+(,\s*[A-Z]+\d+)*\s+--\s+\S"),
@@ -70,12 +75,14 @@ def self_test() -> int:
         "y = g()  # pyright: ignore[reportUnknownMemberType] -- lark types it loosely",
         "if z:  # pragma: no cover -- only on Windows",
         "w = 1  # pragma: no mutate -- the constant is the spec",
+        "y = g()  # type: ignore[arg-type] -- lark's stub takes str only",
         "plain = 'no waiver here'",
     ]
     bad = [
         "x = f()  # noqa",
         "x = f()  # noqa: E731",
         "y = g()  # type: ignore",
+        "y = g()  # type: ignore[arg-type]",
         "y = g()  # pyright: ignore",
         "y = g()  # pyright: ignore[reportAny]",
         "if z:  # pragma: no cover",
