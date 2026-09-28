@@ -7,8 +7,9 @@
 #   scripts/review -b <base> …      against another base (the branch below, in a stack)
 #   scripts/review -s               side by side instead of one column
 #   scripts/review -o <file>        write the page there and do not open it
-#   scripts/review --serve          the Radicle patches, with their comments, and a page to
-#                                   add yours (scripts/review-serve)
+#   scripts/review --serve          stop a running page, import the open pull requests,
+#                                   and serve the Radicle patches with their comments and
+#                                   a page to add yours (scripts/review-serve --fresh)
 #
 # A forge shows a hunk and a few lines around it, and folds the rest away. A hunk is
 # not reviewable on its own: whether a variable already exists, whether `set -e` bites
@@ -21,7 +22,7 @@ set -euo pipefail
 
 if [ "${1:-}" = --serve ]; then
 	shift
-	exec "$(dirname "$0")/review-serve" "$@"
+	exec "$(dirname "$0")/review-serve" --fresh "$@"
 fi
 
 die() {
