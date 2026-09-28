@@ -1,0 +1,33 @@
+# quality/ruff.toml — format and lint for every implementation worktree (docs/QUALITY.md).
+# Harness policy: an attempt cannot edit it; changing it takes a [policy] commit at the root.
+
+target-version = "py312"
+line-length = 100
+
+[lint]
+select = [
+  "E", "W", "F",   # pycodestyle, pyflakes
+  "I",             # import order
+  "B",             # bugbear: likely bugs
+  "UP",            # modern syntax for 3.12
+  "SIM", "C4", "PIE", "RET",  # simpler forms
+  "C90",           # McCabe complexity, see max-complexity
+  "ARG",           # unused arguments
+  "ERA",           # commented-out code
+  "BLE",           # blind `except Exception`
+  "PT",            # pytest idioms
+  "N",             # naming
+  "PL",            # pylint's rules that ruff has
+  "RUF",
+  "PGH",           # blanket `# type: ignore` and `# noqa`
+]
+ignore = [
+  "PLR2004",       # magic numbers: tests are made of them
+]
+
+[lint.mccabe]
+# CRAP <= 8 at the 100% coverage the gate demands is complexity <= 8 (quality/crap.toml).
+max-complexity = 8
+
+[lint.per-file-ignores]
+"tests/**" = ["PLR0913"]

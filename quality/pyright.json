@@ -1,0 +1,17 @@
+// quality/pyright.json — strict typing for every implementation worktree (docs/STACK.md,
+// docs/QUALITY.md). Paths are relative to this file.
+{
+  "include": ["../fpl", "../tests"],
+  "pythonVersion": "3.12",
+  "venvPath": "..",
+  "venv": ".venv",
+  "typeCheckingMode": "strict",
+  "reportMatchNotExhaustive": "error",
+  "reportUnnecessaryTypeIgnoreComment": "error",
+  "reportImplicitOverride": "error",
+  "reportUninitializedInstanceVariable": "error",
+  "reportPropertyTypeMismatch": "error",
+  "reportMissingSuperCall": "none",
+  "reportUnusedCallResult": "none",
+  "executionEnvironments": [{ "root": "..", "extraPaths": [".."] }]
+}

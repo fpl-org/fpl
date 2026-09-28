@@ -1,0 +1,20 @@
+# quality/coveragerc — coverage policy for every implementation worktree (docs/QUALITY.md).
+# Every line and every branch of fpl/ runs under the tests, or the gate is red.
+
+[run]
+branch = True
+source = fpl
+data_file = .noslop/coverage.db
+
+[report]
+fail_under = 100
+show_missing = True
+skip_covered = True
+# The only lines that need not run. A bare `pragma: no cover` is refused by scripts/escapes.
+exclude_also =
+    if __name__ == .__main__.:
+    if TYPE_CHECKING:
+    assert_never\(
+
+[json]
+output = .noslop/coverage.json

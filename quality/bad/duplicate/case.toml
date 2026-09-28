@@ -1,0 +1,3 @@
+why = "the same eight lines in two places"
+run = "pylint --rcfile=/dev/null --persistent=n --score=n --disable=all --enable=duplicate-code --min-similarity-lines=6 --ignore-imports=yes --ignore-signatures=yes fpl"
+expect = "R0801"

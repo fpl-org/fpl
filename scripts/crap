@@ -1,0 +1,239 @@
+#!/usr/bin/env python3
+"""scripts/crap — the CRAP score of every function, and a gate on the worst of them.
+
+    scripts/crap [--source fpl] [--coverage .noslop/coverage.json] [--policy quality/crap.toml]
+    scripts/crap --self-test
+
+CRAP(m) = C^2 * (1 - p)^3 + C, as Martin's crap4clj computes it, where C is the cyclomatic
+complexity of function m (radon, which counts 1 + decision points) and p the share of m's
+executable lines and branch destinations that the tests ran (coverage.py's JSON report,
+with branch measurement on). At full coverage CRAP is C; untested, it is C^2 + C.
+
+A function whose score is above the policy's `max` fails the gate. So does a function the
+coverage report does not know, since its p cannot be measured and would otherwise be
+guessed. The report also counts wrappers, functions whose whole body is one call: a hard
+complexity limit invites splitting a function into pieces that only pass it along, and
+Martin's own experiment found exactly that. They are counted, not refused; docs/QUALITY.md.
+
+Runs in the worktree's .venv (make check), since radon lives there. Exit 0: every function
+within the limit; 1: some not, or the coverage report is missing; 2: usage.
+"""
+
+import ast
+import json
+import sys
+import tomllib
+from dataclasses import dataclass
+from pathlib import Path
+
+
+@dataclass(frozen=True)
+class Score:
+    """One function's numbers."""
+
+    path: str
+    name: str
+    line: int
+    complexity: int
+    coverage: float | None
+    wrapper: bool
+
+    @property
+    def crap(self) -> float | None:
+        return None if self.coverage is None else crap(self.complexity, self.coverage)
+
+
+def crap(complexity: int, coverage: float) -> float:
+    """CRAP for complexity C and coverage p: C^2 (1 - p)^3 + C."""
+    return complexity**2 * (1 - coverage) ** 3 + complexity
+
+
+def functions(tree: ast.Module) -> dict[int, tuple[str, int, int, bool]]:
+    """Every function and method by the line of its `def`: its qualified name, the first and
+    last line of its body, and whether that body (after a docstring) is a single call or
+    `return` of a call. The body, not the `def`: the `def` line runs when the module is
+    imported, so counting it would credit the tests with a line they never had to reach."""
+    out: dict[int, tuple[str, int, int, bool]] = {}
+
+    def walk(node: ast.AST, prefix: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
+                body = child.body
+                if (
+                    body
+                    and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)
+                ):
+                    body = body[1:]
+                one = len(body) == 1 and (
+                    (isinstance(body[0], ast.Return) and isinstance(body[0].value, ast.Call))
+                    or (isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Call))
+                )
+                out[child.lineno] = (
+                    prefix + child.name,
+                    child.body[0].lineno,
+                    child.end_lineno or child.lineno,
+                    one,
+                )
+                walk(child, prefix + child.name + ".")
+            elif isinstance(child, ast.ClassDef):
+                walk(child, prefix + child.name + ".")
+            else:
+                walk(child, prefix)
+
+    walk(tree, "")
+    return out
+
+
+def measure(source: Path, coverage: dict[str, object]) -> list[Score]:
+    from radon.complexity import cc_visit  # the worktree's .venv has it; the self-test fakes it
+
+    files = coverage.get("files", {})
+    assert isinstance(files, dict)
+    scores: list[Score] = []
+    for path in sorted(source.rglob("*.py")):
+        text = path.read_text()
+        spans = functions(ast.parse(text))
+        record = files.get(str(path)) or files.get(path.as_posix())
+        seen: set[int] = set()
+        for block in cc_visit(text):
+            for fn in [block, *getattr(block, "methods", []), *getattr(block, "closures", [])]:
+                if type(fn).__name__ != "Function" or fn.lineno in seen:
+                    continue
+                seen.add(fn.lineno)
+                name, first, end, wrapper = spans.get(
+                    fn.lineno, (fn.name, fn.lineno, fn.endline, False)
+                )
+                scores.append(
+                    Score(
+                        str(path),
+                        name,
+                        fn.lineno,
+                        fn.complexity,
+                        share(record, first, end),
+                        wrapper,
+                    )
+                )
+    return scores
+
+
+def share(record: object, first: int, last: int) -> float | None:
+    """p for the lines first..last: hit lines and branch destinations over all of them."""
+    if not isinstance(record, dict):
+        return None
+
+    def inside(n: int) -> bool:
+        return first <= n <= last
+
+    hit = [n for n in record.get("executed_lines", []) if inside(n)]
+    missed = [n for n in record.get("missing_lines", []) if inside(n)]
+    b_hit = [b for b in record.get("executed_branches", []) if inside(b[0])]
+    b_missed = [b for b in record.get("missing_branches", []) if inside(b[0])]
+    total = len(hit) + len(missed) + len(b_hit) + len(b_missed)
+    return 1.0 if total == 0 else (len(hit) + len(b_hit)) / total
+
+
+def main(argv: list[str]) -> int:
+    if argv == ["--self-test"]:
+        return self_test()
+    opts = {
+        "--source": "fpl",
+        "--coverage": ".noslop/coverage.json",
+        "--policy": "quality/crap.toml",
+    }
+    args = list(argv)
+    while args:
+        key = args.pop(0)
+        if key not in opts or not args:
+            print(__doc__.split("\n\n")[1], file=sys.stderr)
+            return 2
+        opts[key] = args.pop(0)
+    report = Path(opts["--coverage"])
+    if not report.is_file():
+        print(
+            f"crap: no coverage report at {report}; run the tests under coverage first",
+            file=sys.stderr,
+        )
+        return 1
+    limit = tomllib.loads(Path(opts["--policy"]).read_text())["max"]
+    scores = measure(Path(opts["--source"]), json.loads(report.read_text()))
+    return verdict(scores, limit, print)
+
+
+def verdict(scores: list[Score], limit: float, say) -> int:
+    worst = sorted(scores, key=lambda s: -1 if s.crap is None else s.crap, reverse=True)
+    bad = [s for s in worst if s.crap is None or s.crap > limit]
+    for s in worst[:10]:
+        value = "  ?  " if s.crap is None else f"{s.crap:5.1f}"
+        cov = "  ?" if s.coverage is None else f"{s.coverage:4.0%}"
+        say(f"{value}  C={s.complexity:<2} p={cov}  {s.path}:{s.line} {s.name}")
+    wrappers = [s for s in scores if s.wrapper]
+    top = worst[0].crap if worst and worst[0].crap is not None else "?"
+    say(
+        f"crap: {len(scores)} functions, worst {top}, "
+        f"limit {limit}; {len(wrappers)} one-call wrappers"
+    )
+    for s in bad:
+        why = "not in the coverage report" if s.crap is None else f"CRAP {s.crap:.1f} > {limit}"
+        say(f"crap: {s.path}:{s.line} {s.name}: {why}")
+    return 1 if bad else 0
+
+
+def self_test() -> int:
+    checks: list[tuple[str, bool]] = []
+
+    def check(name: str, ok: object) -> None:
+        checks.append((name, bool(ok)))
+
+    check("full coverage leaves complexity", crap(10, 1.0) == 10)
+    check("no coverage squares it", crap(10, 0.0) == 110)
+    check("the worked example", round(crap(10, 0.8), 3) == 10.8)
+    src = (
+        "def a(x):\n    '''doc'''\n    return g(x)\n\n"
+        "class K:\n    @staticmethod\n    def b(y):\n"
+        "        if y:\n            return 1\n        return 2\n"
+    )
+    spans = functions(ast.parse(src))
+    check("a wrapper is seen past its docstring", spans[1] == ("a", 2, 3, True))
+    check(
+        "a method is named by its class, its body starts after the def",
+        spans[7] == ("K.b", 8, 10, False),
+    )
+    record = {
+        "executed_lines": [7, 8, 9],
+        "missing_lines": [10],
+        "executed_branches": [[8, 9]],
+        "missing_branches": [[8, 10]],
+    }
+    check("p counts lines and branch destinations", share(record, 7, 10) == 4 / 6)
+    check("p of an unknown file is unknown", share(None, 1, 2) is None)
+    lines: list[str] = []
+    ok = verdict([Score("f.py", "a", 1, 3, 1.0, True)], 8, lines.append)
+    check(
+        "within the limit passes and counts the wrapper",
+        ok == 0 and "1 one-call wrappers" in lines[-1],
+    )
+    lines.clear()
+    bad = verdict(
+        [Score("f.py", "b", 1, 9, 1.0, False), Score("f.py", "c", 5, 2, None, False)],
+        8,
+        lines.append,
+    )
+    check(
+        "above the limit fails, and so does an unmeasured function",
+        bad == 1
+        and any("CRAP 9.0 > 8" in x for x in lines)
+        and any("not in the coverage" in x for x in lines),
+    )
+    failed = [n for n, ok in checks if not ok]
+    for n in failed:
+        print(f"FAIL {n}", file=sys.stderr)
+    print(
+        f"crap: self-test {'FAILED' if failed else 'ok'} "
+        f"({len(checks)} checks, {len(failed)} failed)"
+    )
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
