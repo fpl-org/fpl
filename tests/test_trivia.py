@@ -1,6 +1,7 @@
 """Comments attach by level: trailing to their line, ;; to the next line or a head, ;;; and ;;;;
 to the file."""
 
+import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -43,3 +44,18 @@ def test_a_comment_by_a_head_is_its_doc_and_a_string_holds_none() -> None:
         Comment(3, 2, "doc", 2, "under"),
         Comment(5, 3, "before", None, "inner"),
     )
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("a\n\t;; x\n\t;; y\n\tb\n", [(2, "before", 4), (3, "before", 4)]),
+        ("f: x\n\n\t;; d\n", [(3, "doc", 1)]),
+        ("f: x\n;; d\ng\n", [(2, "before", 3)]),
+    ],
+)
+def test_a_comment_looks_past_comments_and_blanks_for_its_code(
+    source: str, expected: list[tuple[int, Attachment, int]]
+) -> None:
+    """An indented comment is not code; a doc sits deeper than the head above it."""
+    assert [(c.line, c.kind, c.target) for c in comments(source)] == expected

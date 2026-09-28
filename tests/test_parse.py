@@ -1,14 +1,18 @@
 """Parsing gives the surface AST or fails as one FplError inside the source, never otherwise."""
 
+from collections.abc import Iterator
+from typing import assert_never
+
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from fpl.ast_surface import Cell, Enclosure, Frame, Line, Program, Text, Word
+from fpl.ast_surface import Cell, Enclosure, Frame, Item, Line, Program, Text, Word
 from fpl.errors import FplError, Span
 from fpl.lex import prelex
 from fpl.parse import GRAMMAR, FplIndenter, parse, parser, placed, where, within
 
+AT = Span(1, 1)
 SOURCE = st.text(alphabet="ab1 \t\n|;⍝“”「」⟦⟧⟨⟩[](){}¶\u00b4→$#/.\r\f", max_size=40)
 
 
@@ -32,11 +36,61 @@ def line(*frames: tuple[Word | Text | Enclosure, ...], block: tuple[Line, ...] =
     return Line(tuple(Frame((Cell(items, here),), here) for items in frames), block, here)
 
 
+type Node = Program | Line | Frame | Cell | Item
+
+
+def children(node: Node) -> tuple[Node, ...]:
+    """The nodes directly inside a node, in order."""
+    match node:
+        case (
+            Program(lines=inner) | Frame(cells=inner) | Cell(items=inner) | Enclosure(frames=inner)
+        ):
+            return inner
+        case Line():
+            return (*node.frames, *node.block)
+        case Text():
+            return tuple(part for part in node.parts if isinstance(part, Program))
+        case Word():
+            return ()
+        case _:
+            assert_never(node)
+
+
+def spans(node: Node) -> Iterator[Span]:
+    """Every span in a node, its own first, then its children's in order."""
+    yield node.span
+    for child in children(node):
+        yield from spans(child)
+
+
 @given(SOURCE)
 def test_any_text_parses_or_fails_inside_it(source: str) -> None:
     error = failure(source)
     if error is not None:
         assert within(source, error.span.line, error.span.col)
+
+
+@given(SOURCE)
+def test_every_node_is_placed_inside_the_source(source: str) -> None:
+    if failure(source) is None:
+        assert all(within(source, at.line, at.col) for at in spans(parse(source)))
+
+
+def test_an_empty_node_starts_where_its_enclosing_node_does() -> None:
+    """HOLES.md empty-node-span."""
+    program = parse("a |\n\t[ | ] ⟨⟩ 「r」\n")
+    assert list(spans(program)) == [
+        *(Span(1, 1),) * 6,
+        *(Span(2, 2),) * 6,
+        Span(2, 8),
+        Span(2, 11),
+    ]
+
+
+def test_within_names_a_character_or_the_end_of_a_line() -> None:
+    assert within("ab", 1, 3)
+    assert not within("ab", 1, 4)
+    assert not within("ab", 2, 1)
 
 
 @pytest.mark.parametrize(
@@ -57,6 +111,10 @@ def test_any_text_parses_or_fails_inside_it(source: str) -> None:
         ("[\n]\t]", "ERROR: 2:3 ] closes nothing"),
         ("a\n]", "ERROR: 2:1 ] closes nothing"),
         ("\n\tx\n", "ERROR: 1:1 unexpected input"),
+        ("a\n[ a )\n", "ERROR: 2:5 ) does not close ["),
+        ("a\n\t b\n", "ERROR: 2:2 indentation must be tabs"),
+        ("a\n\t\t[\n\tb ]\n", "ERROR: 3:2 dedent below line 2, but its [ is still open"),
+        ("a\n\t[ b\n", "ERROR: 2:2 [ never closed"),
     ],
 )
 def test_a_refusal_is_one_error_line(source: str, expected: str) -> None:
@@ -73,9 +131,10 @@ def test_lines_frames_cells_and_blocks() -> None:
     assert program == Program((first,), here)
 
 
-def test_a_string_glued_to_a_word_is_an_item_of_its_own() -> None:
-    items = parse("a“x”\n").lines[0].frames[0].cells[0].items
-    assert items == (word("a"), Text("str", ("x",), Span(1, 2)))
+@pytest.mark.parametrize("glued", ["a", "X"])
+def test_a_string_glued_to_a_word_is_an_item_of_its_own(glued: str) -> None:
+    items = parse(glued + "“x”\n").lines[0].frames[0].cells[0].items
+    assert items == (word(glued), Text("str", ("x",), Span(1, 2)))
 
 
 def test_every_node_starts_where_it_is_written() -> None:
@@ -105,6 +164,11 @@ def test_a_string_is_read_with_its_islands_and_without_incidental_indentation() 
     assert isinstance(text, Text)
     assert isinstance(text.parts[1], Program)
     assert text.parts[1].lines[0].span == Span(3, 6)
+
+
+def test_the_indentation_a_string_drops_is_of_the_line_it_opens_on() -> None:
+    program = parse("a\nb\n\tx “p\n\tq”\n")
+    assert program.lines[1].block[0].frames[0].cells[0].items[1] == Text("str", ("p\nq",), AT)
 
 
 def test_a_block_comment_leaves_no_indentation_and_separates_words() -> None:
