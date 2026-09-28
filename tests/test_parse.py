@@ -145,6 +145,16 @@ def test_the_affix_pass_reads_token_shape(
     assert (item.prefix, item.kind, item.body, item.mods) == shape
 
 
+@pytest.mark.parametrize("opener", ["[", "“⟨", "\t"])
+def test_nesting_too_deep_to_read_is_refused(opener: str) -> None:
+    """HOLES.md nesting-depth: past the depth the build can recurse to, one error, no traceback."""
+    closer = {"[": "]", "“⟨": "⟩”", "\t": ""}[opener]
+    source = "a\n" + "".join("\t" * k + "a\n" for k in range(1, 1000))
+    if closer:
+        source = opener * 1000 + closer * 1000 + "\n"
+    assert str(failure(source)) == "ERROR: 1:1 nesting too deep to read"
+
+
 def test_a_failure_lark_cannot_place_is_at_the_end_of_the_source() -> None:
     assert placed("ab\nc", prelex("ab\nc"), None) == Span(2, 2) == where("ab\nc", -1, -1)
 
