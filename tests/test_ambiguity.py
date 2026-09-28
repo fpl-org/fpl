@@ -18,7 +18,7 @@ REWRITES = [
     ("line: frames _NL block?", "line: frames _NL"),
     ("block: _INDENT line+ _DEDENT\n", ""),
     ("%declare _INDENT _DEDENT\n", ""),
-    (r"_NL: /(\r?\n\t*)+/", r"_NL: /\n/"),
+    (r"_NL: (/\r?\n\t*/ LCOMMENT?)+", r"_NL: /\n/"),
     ("%ignore LCOMMENT\n", ""),
 ]
 
