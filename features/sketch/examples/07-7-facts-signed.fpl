@@ -1,0 +1,23 @@
+;;; ── 7. facts: signed, mountable, contradiction as a state ─────────────────
+;; substrate side, in the syntax author's spelling above; ⟨sketch⟩ on every new word
+facts/
+	seam ∈ facts -- core  full faithful	; facts are terms; the e-graph is the engine, rules/ the strategy (egglog: Datalog over an e-graph)
+	assert : e a v -- fact +st	; ⟨sketch⟩ entity attribute value; the time is the patch that carries it (Datomic)
+	retract : fact -- fact +st	; a retraction is itself a fact, never a delete
+	contradiction : facts -- pairs	; reported, not raised: a recorded state, like a pijul conflict
+	revise : facts fact -- facts +st	; ⟨sketch⟩ AGM expand/contract/revise, each an ordinary patch
+	KEYS	; allowed signers, versioned with the facts; an unknown key makes a fact nobody's
+
+../geo/facts	; someone else's facts: a directory reached by path, signed by them
+	#paris #capital-of #france assert
+	#paris #population 2100000 assert
+
+../me/facts
+	#paris #population 2165000 assert	; contradicts the mounted fact; both stand
+
+[ ../geo/facts ../me/facts ] bind →kb	; union-mount: the knowledge base is a view over both
+kb contradiction	; → [ (#paris #population 2100000 2165000) ]
+kb tax rules/saturate	; forward chaining over the union, as over any facts
+kb verify	; read-time: a signature per fact, KEYS decides who counts; nothing is refused at write time
+
+;; owed, not sketched: a reference tree — #paris here and #paris there are the same symbol, not the same city
