@@ -1,7 +1,8 @@
 """The grammar parses without an Earley ambiguity (docs/STACK.md). Programs Hypothesis derives
 from the grammar reach the corners no example was written for; they are drawn from the grammar
-with its blocks flattened, since an indenter cannot run inside a derivation. The corpus goes
-through the LALR parser, which admits one tree or none (HOLES.md: ambiguity-over-flat)."""
+with its blocks flattened, since an indenter cannot run inside a derivation (HOLES.md:
+ambiguity-over-flat). The corpus is pre-lexed and read by Earley over the whole grammar with the
+tab indenter, which keeps every derivation it finds."""
 
 from pathlib import Path
 
@@ -11,7 +12,8 @@ from hypothesis.extra.lark import from_lark
 from lark import Lark, Token, Tree
 
 from fpl.ast_surface import Program
-from fpl.parse import GRAMMAR, parse
+from fpl.lex import prelex
+from fpl.parse import GRAMMAR, FplIndenter, parse
 
 CORPUS = sorted(Path(__file__).parent.parent.glob("features/*/examples/*.fpl"))
 REWRITES = [
@@ -33,6 +35,13 @@ def flat(grammar: str) -> str:
 
 
 FLAT = Lark(flat(GRAMMAR.read_text()), parser="earley", lexer="basic", ambiguity="explicit")
+FULL = Lark(
+    GRAMMAR.read_text(),
+    parser="earley",
+    lexer="basic",
+    ambiguity="explicit",
+    postlex=FplIndenter(),
+)
 
 
 def ambiguous(tree: Tree[Token]) -> bool:
@@ -41,8 +50,10 @@ def ambiguous(tree: Tree[Token]) -> bool:
 
 
 @pytest.mark.parametrize("program", CORPUS, ids=[p.stem for p in CORPUS])
-def test_the_corpus_parses_deterministically(program: Path) -> None:
-    assert isinstance(parse(program.read_text()), Program)
+def test_the_corpus_parses_without_ambiguity(program: Path) -> None:
+    source = program.read_text()
+    assert isinstance(parse(source), Program)
+    assert not ambiguous(FULL.parse(prelex(source).code))  # pyright: ignore[reportUnknownMemberType] -- lark types its text argument loosely
 
 
 @pytest.mark.obligation("programs derived from the grammar parse without ambiguity")
