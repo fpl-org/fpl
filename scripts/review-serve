@@ -1469,17 +1469,15 @@ def credential_args():
     return ["-c", "credential.helper=", "-c", f"credential.helper=store --file={cred}"]
 
 
-def import_pr(what, head=None, base=None):
+def import_pr(what):
     """Run the sibling import-review for one pull request (or "--open" for all). Its only push
     goes to rad, where the branch-name grammar of the pre-push hook does not apply, so the
     hook is told to warn."""
     importer = os.path.join(os.path.dirname(os.path.abspath(__file__)), "import-review")
     if not os.path.exists(importer):
         return subprocess.CompletedProcess([importer], 1, "", "import-review is not next to review-serve")
-    env = dict(os.environ, FPL_BRANCH_GATE="warn")
-    if head:
-        env.update(FPL_IMPORT_HEAD=head, FPL_IMPORT_BASE=base or "")
-    return run(sys.executable, importer, str(what), ok=False, env=env)
+    return run(sys.executable, importer, str(what), ok=False,
+               env=dict(os.environ, FPL_BRANCH_GATE="warn"))
 
 
 # One page per clone. The running one leaves its pid in the git directory, so the next
@@ -1621,7 +1619,7 @@ def land(repo, oid):
                 if onto_main:
                     gh("pr", "edit", cnum, "--repo", slug, "--base", "main")
                 log.append(f"moved #{cnum} up: {cinfo['headRefOid'][:7]} → {new[:7]}" + (", now onto main" if onto_main else ""))
-                fetched = import_pr(cnum, new, new_parent)
+                fetched = import_pr(cnum)
                 if fetched.returncode == 0:
                     log.append(f"imported the new head of #{cnum} as a revision")
                 else:
@@ -2142,18 +2140,14 @@ def self_test():
             seen = []
             real_run = globals()["run"]
             globals()["run"] = lambda *cmd, ok=True, env=None: (
-                seen.append((cmd, (env or {}).get("FPL_BRANCH_GATE"), (env or {}).get("FPL_IMPORT_HEAD"),
-                             (env or {}).get("FPL_IMPORT_BASE")))
+                seen.append((cmd, (env or {}).get("FPL_BRANCH_GATE")))
                 or subprocess.CompletedProcess(cmd, 0, "", ""))
             try:
                 moved_on = import_pr(1)
-                import_pr(2, "a" * 40, "b" * 40)
             finally:
                 globals()["run"] = real_run
             check("the importer runs with the branch gate at warn, since it pushes only to rad",
                   moved_on.returncode == 0 and seen and seen[0][1] == "warn" and seen[0][0][-1] == "1")
-            check("after a restack it is told the new head and base, not left to a forge that may lag",
-                  len(seen) == 2 and seen[1][2:] == ("a" * 40, "b" * 40) and seen[0][2] is None)
             check("landing when the forge has another head is refused",
                   post(kind="land", patch=p1, revision=p1) == 400)
             st = gh_state()
