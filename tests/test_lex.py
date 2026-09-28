@@ -5,7 +5,7 @@ from hypothesis import strategies as st
 
 from fpl.ast_surface import Text
 from fpl.errors import FplError
-from fpl.lex import PLACEHOLDER, Stashed, prelex
+from fpl.lex import PLACEHOLDER, Stashed, counted, prelex
 from fpl.parse import parse
 
 PLAIN = st.text(alphabet="ab \t\n|[]“”「」⟦⟧;", max_size=30)
@@ -32,3 +32,7 @@ def test_a_string_keeps_its_interior(interior: str) -> None:
 
 def test_the_stash_holds_each_string_by_its_kind() -> None:
     assert prelex("“a” 「b」").stash == {0: Stashed("str", 1, 2, 0), 3: Stashed("raw", 5, 6, 0)}
+
+
+def test_an_opener_left_open_counts_to_none() -> None:
+    assert counted("“a“b”", 0, "”", 5) == -1
