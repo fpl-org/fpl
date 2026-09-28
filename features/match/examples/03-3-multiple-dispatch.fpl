@@ -1,0 +1,9 @@
+;;; ── 3. multiple dispatch (Julia, CLOS): patterns on every argument, typed ──
+collide : a b -- outcome
+	match
+		( _ ∈ Asteroid )	( _ ∈ Ship )	#boom
+		( _ ∈ Ship )	( _ ∈ Asteroid )	swap collide	; symmetric case delegates
+		( _ ∈ Ship )	( _ ∈ Ship )	#bounce
+		_	_	#miss	; catch-all: without it the match is partial and carries +fail
+	; static where the types are known (row 23); a dynamic site declares +fail (X20)
+

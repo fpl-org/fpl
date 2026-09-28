@@ -1,0 +1,7 @@
+;;; ── 6. Python's keywords: a record pattern in the head is the signature, values are defaults (S39) ──
+join : xs { sep “ ” end newline } -- s
+	xs sep interleave end ,	; sep and end are bound by the pattern; the caller's record unions over the defaults
+words { sep “, ” } join
+[join] { end “” } with →join-flat	; with: curry-with-union; later calls still override
+;   under python, the printer shows the call as   join(words, sep=", ")
+
