@@ -70,3 +70,15 @@
 - Default in force: the hand-off grammar with frame non-empty: a frame is empty only beside a bar (| x, a | | b), an empty enclosure is frames? absent, a blank or comment line is part of _NL; a comment line neither opens nor closes a block
 - Closes by: Caesura (syntax author), confirming or rewriting the rule in the hand-off
 - Evidence: 8a753ec fix(grammar): let a frame be empty only beside a bar; /private/tmp/claude-501/-Users-psj-dev-github-com-psjg-fpl/7c6e7589-3182-49e2-922a-0c6c40c6f1c4/scratchpad/grammar-fix/proof.log
+
+## stray-closer-refused
+- Depends on it: fpl/lex.py (_special, _brackets), tests/test_parse.py::test_a_refusal_is_one_error_line
+- Default in force: a closer with no opener (] ” 」 ⟧) or one that does not close the latest opener is refused where it stands, as an unclosed opener is; SHAR passes a stray bracket closer to Lark and a stray pair closer through as text
+- Closes by: design, by confirming that every closer must balance
+- Evidence: SHAR gram/test_fpl.py:34 (elif ch in CLOSE and stack: stack.pop()), :45-46 (only openers are special)
+
+## comment-scan-skips-strings
+- Depends on it: fpl/trivia.py (comments), tests/test_trivia.py
+- Default in force: comments are read off the pre-lexed code, so a ; inside a string or a ⟦ ⟧ comment is not a comment
+- Closes by: design, or the printer, which must round-trip both
+- Evidence: SHAR gram/test_fpl.py:265 searches the raw source line, strings included
