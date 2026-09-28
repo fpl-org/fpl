@@ -20,7 +20,7 @@ REWRITES = [
     ("line: frames (NOTE | DOC)? _NL block?", "line: frames (NOTE | DOC)? _NL"),
     ("block: _INDENT line+ _DEDENT\n", ""),
     ("%declare _INDENT _DEDENT\n", ""),
-    (r"_NL: /(\r?\n\t*)+/", r"_NL: /\n/"),
+    (r"_NL: /(\r?\n[\t\f ]*)*\r?\n\t*/", r"_NL: /\n/"),
 ]
 
 
