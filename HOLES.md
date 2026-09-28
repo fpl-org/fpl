@@ -8,9 +8,9 @@
 
 ## ambiguity-over-flat
 - Depends on it: tests/test_ambiguity.py
-- Default in force: the obligation is paid by programs drawn from the grammar with blocks removed (Earley, explicit ambiguity); the corpus goes through the LALR parser, which admits one tree or none
-- Closes by: design, by closing grammar-ambiguous-empty-line; the corpus half can then run Earley with lexer="basic" and the indenter over the full grammar, as the task first asked
-- Evidence: Earley with FplIndenter over the full grammar finds _ambig in 26 of 29 pre-lexed examples; with a line x prepended, in 3 (08-objects-are-directories, 04-4-list-patterns, 01-1-a-logic), each at an empty enclosure (⟨⟩, []); every one is grammar-ambiguous-empty-line
+- Default in force: the obligation is paid by programs drawn from the grammar with blocks removed (Earley, explicit ambiguity), since an indenter cannot run inside a derivation; the corpus is read by Earley with lexer="basic" and the tab indenter over the whole grammar
+- Closes by: an implementer, by drawing programs with indented blocks (a derivation that emits _INDENT and _DEDENT, rendered as tabs)
+- Evidence: after 8a753ec no _ambig in 2000 flat draws nor in the 29 pre-lexed examples; before it, 1814 of 2000 draws and 26 of 29 examples (/private/tmp/claude-501/-Users-psj-dev-github-com-psjg-fpl/7c6e7589-3182-49e2-922a-0c6c40c6f1c4/scratchpad/grammar-fix/proof.log)
 
 ## string-self-delimits
 - Depends on it: fpl/lex.py (_pair), fpl/parse.py (item), tests/test_parse.py
@@ -56,7 +56,7 @@
 
 ## empty-node-span
 - Depends on it: fpl/parse.py (_Build.at)
-- Default in force: a frame or line that matched no token starts where its enclosing node does
+- Default in force: a frame that matched no token (one beside a bar, | x) starts where its enclosing node does
 - Closes by: the printer's round trip, when it needs a finer position
 
 ## nesting-depth
@@ -65,8 +65,8 @@
 - Closes by: an implementer, by an iterative build or a refusal at the depth limit
 - Evidence: fpl/parse.py _Build.item -> subtrees -> frames -> frame
 
-## grammar-ambiguous-empty-line
-- Depends on it: tests/test_ambiguity.py::test_no_ambiguity_in_programs_derived_from_the_grammar (red), ambiguity-over-flat, fpl/parse.py (LALR over fpl/grammar.lark)
-- Default in force: LALR takes one tree: a blank or comment line before the first line is start's _NL*, so parse("\n") is the empty program, and an empty enclosure ([] ⟨⟩ () {}) holds no frames; the obligation stays red until the grammar changes
-- Closes by: design, with a [spec] commit to fpl/grammar.lark that lets frame match nothing in one place only (a frame of at least one cell, with frames? and _NL* taking the empty case)
-- Evidence: fpl/grammar.lark:8 (start: _NL* line*), :11 (line: frames _NL), :17 (frame may match nothing); Earley with explicit ambiguity gives _ambig on "\n" and "\n\na\n" over the block-free grammar and over the full grammar with FplIndenter; Hypothesis falsifying example program='\n'; the corpus's residual _ambig at \t⟨⟩ →acc →s (08-objects-are-directories), \t\t⟨⟩\t0 (04-4-list-patterns), [] (01-1-a-logic): frames? absent or one empty frame
+## grammar-departs-from-handoff
+- Depends on it: fpl/grammar.lark, every example
+- Default in force: the hand-off grammar with frame non-empty: a frame is empty only beside a bar (| x, a | | b), an empty enclosure is frames? absent, a blank or comment line is part of _NL; a comment line neither opens nor closes a block
+- Closes by: Caesura (syntax author), confirming or rewriting the rule in the hand-off
+- Evidence: 8a753ec fix(grammar): let a frame be empty only beside a bar; /private/tmp/claude-501/-Users-psj-dev-github-com-psjg-fpl/7c6e7589-3182-49e2-922a-0c6c40c6f1c4/scratchpad/grammar-fix/proof.log
