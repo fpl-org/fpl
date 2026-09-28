@@ -1,0 +1,38 @@
+# quality/pyproject.toml — the one Python environment of an implementation worktree.
+#
+# Not a package: a pinned set of the language's runtime stack (docs/STACK.md) and of every
+# tool the noslop gate runs (docs/QUALITY.md). `make` in a worktree syncs it into that
+# worktree's .venv with `uv sync --frozen`, so every attempt judges its code with the same
+# tools at the same versions. It lives in the harness, where an attempt cannot edit it:
+# changing a tool or a version is a policy change, made from the root, with [policy].
+
+[project]
+name = "fpl-noslop"
+version = "0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  # the implementation stack
+  "lark==1.3.1",
+  # the inner loop
+  "ruff",
+  "pytest",
+  "pytest-xdist",
+  "hypothesis",
+  "icontract",
+  # coverage
+  "coverage[toml]",
+  # structure
+  "import-linter",
+  "deptry",
+  "vulture",
+  "pylint",
+  "radon",
+  # falsification
+  "mutmut",
+  "crosshair-tool",
+  "hypothesis-crosshair",
+  "pip-audit",
+]
+
+[tool.uv]
+package = false
