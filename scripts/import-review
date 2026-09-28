@@ -228,7 +228,7 @@ def cred_args():
     return ["-c", "credential.helper=", "-c", f"credential.helper=store --file={cred}"] if cred else []
 
 
-def live(remote, number, pr):
+def live(remote, pr):
     """The heads of the pull request's branch and of its base as git has them now. Right after
     a force-push the API can still report the old ones for a while; the refs do not lag."""
     slug = pr["base"]["repo"]["full_name"]
@@ -309,7 +309,7 @@ def import_one(repo, remote, bundle, patches):
     slug, number = pr["base"]["repo"]["full_name"], pr["number"]
     head, tip = pr["head"]["sha"], pr["base"]["sha"]
     if remote and not os.environ.get("FPL_IMPORT_HEAD"):
-        head, tip = live(remote, number, pr)
+        head, tip = live(remote, pr)
     mark = marker(slug, number)
     ensure(remote, number, head, tip)
     base = git("merge-base", tip, head).stdout.strip()
