@@ -5,7 +5,7 @@ from hypothesis import strategies as st
 
 from fpl.ast_surface import Text
 from fpl.errors import FplError
-from fpl.lex import PLACEHOLDER, prelex
+from fpl.lex import PLACEHOLDER, Stashed, prelex
 from fpl.parse import parse
 
 PLAIN = st.text(alphabet="ab \t\n|[]“”「」⟦⟧;", max_size=30)
@@ -28,3 +28,7 @@ def test_every_code_character_comes_from_its_origin(source: str) -> None:
 def test_a_string_keeps_its_interior(interior: str) -> None:
     item = parse(f"“{interior}”\n").lines[0].frames[0].cells[0].items[0]
     assert item == Text("str", (interior,) if interior else (), item.span)
+
+
+def test_the_stash_holds_each_string_by_its_kind() -> None:
+    assert prelex("“a” 「b」").stash == {0: Stashed("str", 1, 2, 0), 3: Stashed("raw", 5, 6, 0)}
