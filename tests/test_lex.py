@@ -36,3 +36,7 @@ def test_the_stash_holds_each_string_by_its_kind() -> None:
 
 def test_an_opener_left_open_counts_to_none() -> None:
     assert counted("“a“b”", 0, "”", 5) == -1
+
+
+def test_a_string_placeholder_and_its_pad_keep_the_opener_offset() -> None:
+    assert prelex("“ab”").origin == (0, 0, 4, 4)
