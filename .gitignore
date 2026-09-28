@@ -21,6 +21,7 @@ mutants/
 # direnv's cache of the dev shell (docs/DEVSHELL.md)
 .direnv/
 
-# Which dev shell direnv loads in this checkout (docs/DEVSHELL.md). A per-checkout
-# choice, so it must never travel with a commit.
+# Which dev shell direnv loads in this checkout, and a person's own additions to it
+# (docs/DEVSHELL.md). Per-checkout choices, so they must never travel with a commit.
 .fpl-shell
+.envrc.local
