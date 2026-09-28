@@ -194,6 +194,7 @@ def test_print_keeps_the_tree_of_the_corpus(program: Path) -> None:
         ("[] ⟨ | ⟩\n", "[] ⟨ | ⟩\n"),
         ("\n\n\tx\n", "\n\tx\n"),
         ("\n", ""),
+        ("| ; x\n", "|\t; x\n"),
         ("a;x\n;y\n\tb | c ⍝ g\n", "a\t;x\n\t;y\n\tb | c\t⍝ g\n"),
         ("\ta\tb ; n\n\t\t\t; m\n", "a\tb\t; n\n\t\t; m\n"),
         (";;;; f\n;;; s\n\n;; d\nf ; t\n", ";;;; f\n;;; s\n;; d\nf\t; t\n"),
