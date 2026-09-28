@@ -52,3 +52,7 @@ fpl.parse.xǁ_Buildǁtext__mutmut_14 -- timeout: the mutant loops at the interio
 fpl.parse.xǁ_Buildǁtext__mutmut_17 -- timeout: the mutant finds the same island again from the interior's start, forever
 fpl.parse.xǁ_Buildǁtext__mutmut_25 -- timeout: the mutant sets the offset to -1 when no island is left, and the loop never ends
 fpl.parse.xǁ_Buildǁtext__mutmut_42 -- timeout: the mutant stops at an island without reading it, and finds it again forever
+fpl.lex.x__special__mutmut_21 -- equivalent: a line comment is the last thing in its code line, so running it past an island's end to the next newline changes no tree, span or refusal
+fpl.lex.x__special__mutmut_24 -- equivalent: a line comment is the last thing in its code line, so running it past an island's end to the next newline changes no tree, span or refusal
+fpl.print.xǁ_Outǁ__init____mutmut_4 -- equivalent: the first line is at depth 0 and opens in a word, string, enclosure or bar, so its tab count is 0 either way until a newline resets it
+fpl.print.xǁ_Outǁ__init____mutmut_5 -- equivalent: the first line is at depth 0 and opens in a word, string, enclosure or bar, so its tab count is 0 either way until a newline resets it
