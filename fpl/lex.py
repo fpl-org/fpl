@@ -100,10 +100,10 @@ def _pair(source: str, at: int, end: int, code: _Code) -> int:
     if opener == "⟦":
         if code.at_line_start():
             return len(source[after:end]) - len(source[after:end].lstrip(" ")) + after
-        code.put(" ", at, verbatim=False)
+        code.put(" ", at)
         return after
     if code.chars and code.chars[-1] not in " \t\n":
-        code.put(" ", at, verbatim=False)
+        code.put(" ", at)
     line = source.rfind("\n", 0, at) + 1
     depth = len(source[line:at]) - len(source[line:at].lstrip("\t"))
     code.stash[len(code.chars)] = Stashed(
@@ -139,7 +139,7 @@ def pairs(
         upto = found.start() if found else stop
         code.put(source[at:upto], at)
         at = _special(source, upto, stop, code) if found else stop
-    code.put("\n", stop, verbatim=False)
+    code.put("\n", stop)
     return Prelexed("".join(code.chars), (*code.origin, stop), code.stash)
 
 
