@@ -62,6 +62,11 @@ def test_the_bar_supplies_what_a_frame_lacks() -> None:
     assert run("2 | 3 +\n") == "5\n"
 
 
+def test_a_number_meets_a_number_as_a_number() -> None:
+    """[D2.3] 2 | 3 + leaves the number 5, not a strand of one."""
+    assert evaluate(desugar(parse("2 | 3 +\n"))) == ((5,),)
+
+
 def test_each_line_runs_on_a_fresh_stack() -> None:
     """draft2 examples/01-frames.fpl:2-4: one result per line; nothing a line leaves is below
     the next."""
@@ -97,7 +102,11 @@ def test_a_lone_literal_is_itself_and_literals_side_by_side_are_one_strand() -> 
 
 @pytest.mark.parametrize(
     ("source", "printed"),
-    [("1 | 2 + +\n", "1 [ 2 + + ]\n"), ("1 + | 2 swap\n", "2 [ 1 + ]\n")],
+    [
+        ("1 | 2 + +\n", "1 [ 2 + + ]\n"),
+        ("1 + | 2 swap\n", "2 [ 1 + ]\n"),
+        ("1 + | swap\n", "[ 1 + ] [ swap ]\n"),
+    ],
 )
 def test_a_frame_that_reaches_below_its_balance_is_a_section(source: str, printed: str) -> None:
     """[D2.2] the second + would take the 1 the bar carries and a value below it: the frame is
