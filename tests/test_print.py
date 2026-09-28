@@ -181,14 +181,9 @@ def test_print_is_idempotent_on_programs_derived_from_the_grammar(source: str) -
 def test_a_blank_line_is_part_of_its_blank_run_whatever_it_holds(blank: str) -> None:
     """Tabs, spaces and form feeds (a page separator) on a line between two lines leave no
     line behind, so the source prints without it; a space right after the tabs that open a
-    line is refused, as on any line."""
-    source = f"a\n\tx\n{blank}\n\ty\n"
-    try:
-        tree = parse(source)
-    except FplError as refused:
-        assert str(refused).endswith("indentation must be tabs")
-        return
-    assert render(tree) == "a\n\tx\n\ty\n"
+    line is refused, as on any line (tests/test_parse.py)."""
+    assume(not blank.lstrip("\t").startswith(" "))
+    assert render(parse(f"a\n\tx\n{blank}\n\ty\n")) == "a\n\tx\n\ty\n"
 
 
 @pytest.mark.parametrize("program", CORPUS, ids=[p.stem for p in CORPUS])
