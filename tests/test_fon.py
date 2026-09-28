@@ -122,6 +122,8 @@ def test_json_embeds_and_reads_back(j: Json) -> None:
         ("“a", "ERROR: 1:1 “ never closed"),
         ("⟨ a }\n⟩", "ERROR: 1:5 unexpected input"),
         ("a | b", "ERROR: 1:3 unexpected input"),
+        ("}", "ERROR: 1:1 unexpected input"),
+        ("a" * 4097, "ERROR: 1:1 token too long"),
     ],
 )
 def test_the_profile_refuses_in_place(document: str, error: str) -> None:
@@ -132,6 +134,13 @@ def test_the_bounds_are_parameters() -> None:
     assert refusal("⟨ ⟨ ⟩ ⟩", max_depth=1) == "ERROR: 1:3 nesting too deep"
     assert refusal("a\nabcd", max_token=3) == "ERROR: 2:1 token too long"
     assert refusal("abc", max_size=2) == "ERROR: 1:3 input too large"
+    assert read("ab", max_size=2) == Sym("ab")
+    assert read("a" * 4096) == Sym("a" * 4096)
+
+
+@pytest.mark.parametrize("sigil", ["$", "&", "#"])
+def test_a_sigil_alone_is_a_symbol(sigil: str) -> None:
+    assert read(sigil) == Sym(sigil)
     assert read("“" + "a" * 10 + "”", max_token=3) == Str("a" * 10)
 
 
