@@ -1,0 +1,12 @@
+;;; ── effects, holes, ascription; refinement is ascription ──
+mean : xs -- x
+	;; Arithmetic mean. Empty input → ∞.
+	dup [+] fold swap shape first divide
+median : xs -- x
+	dup grade pick ?	; goal: ? : sorted -- x, reported by the elaborator; _ would ask it to infer
+3 Int ∈
+sort : xs -- ys ∈ sorted ∩ xs perm
+	dup grade pick
+	⊢ unfold grade-perm select-sorted qed
+	⊨ dup sorted
+

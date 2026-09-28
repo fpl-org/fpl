@@ -1,0 +1,11 @@
+;;; ── objects are directories; mention is use ──
+point : xy -- p
+	| #x #y swap dict
+#norm [ | #x #y [lookup] each [times] self [+] fold sqrt ] #point method
+3 4 point | norm	; → 5
+take : s n -- xs
+	⟨⟩ →acc →s
+	n repeat
+		s unpair →next →v   acc v , →acc   next ! →s
+	acc
+

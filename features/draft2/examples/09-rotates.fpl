@@ -1,0 +1,5 @@
+;;; ── ( ) rotates the head to the end and bars the arguments ──
+(+ 1 2)	; → 1 | 2 +          = 3
+(+ (times 2 3) 4)	; → 2 | 3 × | 4 +    = 10
+1 2 3 [+] fold	; variadic + is a fold over a strand
+
