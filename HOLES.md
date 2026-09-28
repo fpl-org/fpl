@@ -64,3 +64,9 @@
 - Default in force: none; nesting deep enough to exhaust Python's recursion limit raises RecursionError, a traceback
 - Closes by: an implementer, by an iterative build or a refusal at the depth limit
 - Evidence: fpl/parse.py _Build.item -> subtrees -> frames -> frame
+
+## grammar-ambiguous-empty-line
+- Depends on it: tests/test_ambiguity.py::test_no_ambiguity_in_programs_derived_from_the_grammar (red), fpl/parse.py (LALR over fpl/grammar.lark)
+- Default in force: LALR takes one tree: a blank line before the first line is start's _NL*, so parse("\n") is the empty program; the obligation stays red until the grammar changes
+- Closes by: design, with a [spec] commit to fpl/grammar.lark that gives a blank line one derivation (a frame of at least one cell, or no leading _NL* in start)
+- Evidence: fpl/grammar.lark:8 (start: _NL* line*), :11 (line: frames _NL), :17 (frame may match nothing); Earley with explicit ambiguity gives _ambig on "\n" and "\n\na\n" over the block-free grammar and over the full grammar with FplIndenter; Hypothesis falsifying example program='\n'
