@@ -4,12 +4,14 @@ definitions (draft2 §frames, §currying, §( ) rotates; draft1 blocks and node;
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
+from test_parse import spans
 
-from fpl.ast_core import EFFECTS, Define, Effect
-from fpl.desugar import desugar, resugar
+from fpl.ast_core import EFFECTS, Call, Define, Effect, Push, Run, Strand
+from fpl.ast_surface import Text
+from fpl.desugar import START, desugar, listing, resugar, text
 from fpl.driver import run
 from fpl.errors import FplError
-from fpl.eval import BUILTINS
+from fpl.eval import BUILTINS, evaluate
 from fpl.parse import parse
 from fpl.print import render
 
@@ -86,6 +88,44 @@ def test_children_are_quotations_before_the_head() -> None:
     assert run(",\n\t1 2\n\t+\n") == "[ 1 2 + ]\n"
 
 
+def test_a_lone_literal_is_itself_and_literals_side_by_side_are_one_strand() -> None:
+    """[D2.1] 1‿2 is one value; the 3 beside no other literal is not a strand."""
+    assert desugar(parse("1 2 | 3 +\n")) == (
+        Run((Push(Strand((1, 2))), Push(3), Call("+", START))),
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "printed"),
+    [("1 | 2 + +\n", "1 [ 2 + + ]\n"), ("1 + | 2 swap\n", "2 [ 1 + ]\n")],
+)
+def test_a_frame_that_reaches_below_its_balance_is_a_section(source: str, printed: str) -> None:
+    """[D2.2] the second + would take the 1 the bar carries and a value below it: the frame is
+    pushed whole; a section counts as one value for the frames after it."""
+    assert run(source) == printed
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["1 dup\n", "“a” “b”\n", "1.5 | -9 +\n", CURRY + "nop : --\n1 [ + ] curry\n"],
+)
+def test_core_without_sugar_writes_back_as_its_source(source: str) -> None:
+    """A source with no bar but between two literals, no ( ) and no block but a definition's
+    body is what resugar writes for its core."""
+    assert resugar(desugar(parse(source))) == parse(source)
+
+
+def test_a_written_tree_points_at_the_start() -> None:
+    """A tree desugar writes has no source of its own: every span is 1:1, where it refuses."""
+    statements = desugar(parse(CURRY + "nop : --\n1 [ + ] curry\n“a” ⟨ 1 ⟩ 1.5\n"))
+    written = [*spans(resugar(statements)), *spans(listing(evaluate(statements)))]
+    assert set(written) == {START}
+
+
+def test_a_string_is_its_parts_in_order() -> None:
+    assert text(Text("str", ("a", "b"), START)) == "ab"
+
+
 def test_the_effect_line_is_kept_as_declared() -> None:
     """[D3.4] words/*/effect: the declared effect is kept as data (the query: hole
     effect-query)."""
@@ -110,6 +150,12 @@ def test_parentheses_rotate_the_head_to_the_end() -> None:
         ("10 | 1 2 -\n", "9 8\n"),
         ("“a” 「b」\n", "“a” “b”\n"),
         ("⟨ 1 [ 2 ] ⟩ ⟨⟩ ,\n", "⟨ 1 [ 2 ] ⟩\n"),
+        ("[ ]\n", "[]\n"),
+        ("⟨⟩\n", "⟨⟩\n"),
+        ("0.0000001\n", "0.0000001\n"),
+        ("123456789012345 | 123456789012345 times\n", "15241578753238669120562399025\n"),
+        ("1 2 | 10 times\n", "10 20\n"),
+        (": : --\n1\t2 : 3\n", "1 | 2 | 3\n"),
     ],
 )
 def test_stack_words_and_literals(source: str, printed: str) -> None:
@@ -120,6 +166,7 @@ def test_stack_words_and_literals(source: str, printed: str) -> None:
     ("source", "error"),
     [
         ("[ ] 1 +\n", "ERROR: 1:7 arithmetic on a non-number"),
+        ("1 | [ ] +\n", "ERROR: 1:9 arithmetic on a non-number"),
         ("1 2 | 1 2 3 +\n", "ERROR: 1:13 strands of unequal length"),
         ("1 | 2 ,\n", "ERROR: 1:7 , joins two quotations or two lists"),
         ("f : -- y z\n1 | f +\n", "ERROR: 2:7 stack underflow"),
@@ -134,8 +181,8 @@ def test_a_word_refuses_at_its_position(source: str, error: str) -> None:
 @pytest.mark.parametrize(
     "source",
     [
-        *("∞\n", "#x\n", "1\u00b4\n", "a/b\n", "{ 1 }\n", "()\n", "“⟨1⟩”\n", "⟨ (+ 1 2) ⟩\n"),
-        *("f : x\n", "f : x -- y | 1\n", "f : #x -- y\n", "1 2 3 fold\n"),
+        *("∞\n", "#x\n", "#1\n", "$1\n", "1\u00b4\n", "a/b\n", "{ 1 }\n", "()\n", "“⟨1⟩”\n"),
+        *("⟨ (+ 1 2) ⟩\n", "f : x\n", "f : x -- y | 1\n", "f : #x -- y\n", "1 2 3 fold\n"),
     ],
 )
 def test_what_no_part_implements_is_refused_before_running(source: str) -> None:
