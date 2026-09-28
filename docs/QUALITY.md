@@ -19,9 +19,15 @@ make quick    lint, format, tests; stops at the first failure. Seconds. The inne
 make check    the one gate. Green means done.
 make harden   check, then the long search: 20x the examples, CrossHair on every property
               and every contract, mutation testing
-make ready    harden, then a known-vulnerability audit of the pinned tools
-make gates    proof that each check still refuses a bad example
+make ready    harden, then gates, then a known-vulnerability audit of the pinned tools
+make gates    proof that each check still refuses a bad example, and the harness's own lint
 ```
+
+The same lanes run on the forge (`.github/workflows/noslop.yml`): `make check` on every push
+to a pull request, `make ready` once it is out of draft and on every push to `main`. A
+harness-only branch, which has no code to judge, runs `make gates` from the root instead:
+`make -f quality/noslop.mk gates`. The runner enters the dev shell of `flake.nix`, so it judges
+with the tools a laptop has.
 
 `make check` runs, in order:
 
@@ -164,8 +170,10 @@ worktree's `.venv` with `uv sync --frozen` the first time and whenever the lock 
 
 ## Proof that the checks bite
 
-A check that passes everything looks the same as a check that found nothing. `make gates` runs
-the self-tests of the four scripts, then `scripts/gates`: for each case in `quality/bad/`, the
+A check that passes everything looks the same as a check that found nothing. `make gates` first
+holds the harness's own Python (`scripts/crap`, `props`, `escapes`, `mutants`, `gates` and the
+pytest plugin) to the ruff rules it holds others to, then runs the self-tests of the four
+scripts, then `scripts/gates`: for each case in `quality/bad/`, the
 check runs on a small fixture package, where it must pass, and then with the case's bad example
 laid over it, where it must fail with a given message. The first run is the control; without
 it, a check that fails for an unrelated reason would count as having caught something. Adding a
