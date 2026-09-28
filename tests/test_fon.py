@@ -187,6 +187,15 @@ def test_empty_enclosures_are_written_canonically() -> None:
     ]
 
 
+def test_entries_are_written_between_single_spaces() -> None:
+    assert write(Dict(((Sym("a"), Num(Decimal(1))), (Sym("b"), Num(Decimal(2)))))) == "{ a 1 b 2 }"
+
+
+def test_a_semicolon_is_a_symbol_even_before_a_string() -> None:
+    """FON has no comments: ; is read as a symbol, and a string after it is still a string."""
+    assert read("( ; “x” )") == Tagged((Sym(";"), Str("x")))
+
+
 def test_json_keys_are_symbols_where_they_can_be() -> None:
     assert embed({"name": "Ada", "a b": None, "1": [1.5, True]}) == Dict(
         (
