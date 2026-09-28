@@ -15,6 +15,10 @@ set -euo pipefail
 mode="${FPL_BRANCH_GATE:-block}"
 [ "$mode" = "off" ] && exit 0
 
+# Radicle is not a forge with branch names of its own choosing: its remote helper keeps a
+# patch under refs/heads/patches/<id>, and a new revision of a patch is a push there. The
+# grammar is for names on the forge, so a push to a rad:// remote is not judged.
+case "${2:-}" in rad://*) exit 0 ;; esac
 lint="$(git rev-parse --show-toplevel)/scripts/branch-lint"
 [ -x "$lint" ] || exit 0
 
