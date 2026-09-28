@@ -1,9 +1,11 @@
 """The core as a step machine: a state is the stack and the code still to run, and `step` runs
 one node of it. Over the core AST only."""
 
+import operator
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
+from functools import partial
 from typing import assert_never
 
 import icontract
@@ -89,21 +91,16 @@ def operands(value: Value, span: Span) -> tuple[Number, ...]:
     return numbers
 
 
-def arithmetic(op: Callable[[Number, Number], Number]) -> Builtin:
+def arithmetic(
+    op: Callable[[Number, Number], Number], span: Span, a: Value, b: Value
+) -> tuple[Value, ...]:
     """A pervasive operator: a number meets a number, or each item of a strand; two strands
     meet item by item and must be as long."""
-
-    def apply(span: Span, a: Value, b: Value) -> tuple[Value, ...]:
-        xs, ys = operands(a, span), operands(b, span)
-        if len(xs) != len(ys) and 1 not in (len(xs), len(ys)):
-            raise FplError(span, "strands of unequal length")
-        width = max(len(xs), len(ys))
-        zs = tuple(
-            op(x, y) for x, y in zip(xs * (width // len(xs)), ys * (width // len(ys)), strict=True)
-        )
-        return (Strand(zs) if isinstance(a, Strand) or isinstance(b, Strand) else zs[0],)
-
-    return apply
+    xs, ys = operands(a, span), operands(b, span)
+    if len(xs) != len(ys) and 1 not in (len(xs), len(ys)):
+        raise FplError(span, "strands of unequal length")
+    zs = tuple(op(xs[i % len(xs)], ys[i % len(ys)]) for i in range(max(len(xs), len(ys))))
+    return (Strand(zs) if isinstance(a, Strand) or isinstance(b, Strand) else zs[0],)
 
 
 def swap(_span: Span, a: Value, b: Value) -> tuple[Value, ...]:
@@ -138,9 +135,9 @@ def join(span: Span, a: Value, b: Value) -> tuple[Value, ...]:
 
 
 BUILTINS: dict[str, Builtin] = {
-    "+": arithmetic(lambda x, y: x + y),
-    "-": arithmetic(lambda x, y: x - y),
-    "times": arithmetic(lambda x, y: x * y),
+    "+": partial(arithmetic, operator.add),
+    "-": partial(arithmetic, operator.sub),
+    "times": partial(arithmetic, operator.mul),
     "swap": swap,
     "dup": dup,
     "drop": drop,
