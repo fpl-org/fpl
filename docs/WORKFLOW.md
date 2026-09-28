@@ -209,32 +209,38 @@ scripts/review --serve       import the open pull requests, then show them in th
 stops the page this clone is already serving, if there is one, imports every open pull
 request (`scripts/import-review --open`), and serves the patches on 127.0.0.1. The page
 reads the patches and nothing else. Its address, token included, is also written to
-`.git/review-serve.pid`, so it can be opened in another browser than the default. The
-first page lists the open pull requests by what they
-need from you (your review, changes, merging), a stacked one indented under the one it sits
-on. A pull request opens laid out the way stacked-review tools lay it out: the stack on the
-left with main at the bottom, the changed files in the middle with every file whole behind
-folds and each comment under its lines, and a tray on the right with the timeline, the file
-tree and the commits.
-
-You read top to bottom and decide per hunk, in the place you read it: under each hunk are
-Approve (`a`), Not this (`x`) and Comment (`c`), and under each file a button for the rest
-of it; `n` and `p` move between hunks, and a selected range of lines can be approved on its
-own. A mark is a Radicle reaction on those lines, signed like a comment. The merge button is
-at the bottom (`m`), and it opens only when every hunk is approved; with hunks refused it
-offers to request changes instead. Merging records your approval of the revision too.
-Keys on the list: `j` `k` and enter.
+`.git/review-serve.pid`, so it can be opened in another browser than the default.
 
 Open pull requests form one queue, first in, first out: each is based on the one filed
-before it, and only the head is based on main. "Read the queue" shows the whole queue on
-one page, head first: you read a change, approve its hunks, merge it at its end, and keep
-scrolling into the next. Merging the head moves the rest of the queue up onto the new main,
-and an approval stays with a hunk as long as the hunk itself does not change. Only what is
-in Radicle shows; `scripts/review-serve` without `--fresh` serves it without importing
-first. What you write there goes into the patch under your key, the way the Radicle CLI writes it: a line comment into your review of
-the revision, a reply into the thread it answers, accept or reject as your review's verdict.
-Comments in a review can be resolved; imported ones cannot, because Radicle keeps them on
-the revision, where there is no resolve, so they are answered instead.
+before it, and only the head is based on main. The page is that queue as one surface, head
+first, with the last few merged pull requests above it in grey. On the left is the queue as
+a tree, main at the top, each pull request with its commits under it; a click on a pull
+request scrolls there, a click on a commit shows that commit alone. On the right are the
+timeline, the files and the commits of the pull request in view. `[` and `]` fold the two
+panels away.
+
+Every changed file is there whole. Long unchanged stretches are hatched in the gutter; a
+click on the hatching folds one, `z` folds the one nearest you and `Z` all of them, but
+nothing is folded unless you fold it. You read top to bottom and decide per hunk, in the
+place you read it: approve with `→` or by dragging the hunk to the right, not this with `←`
+or by dragging it to the left, comment with `c`. `↓` and `↑` move between hunks, `u` undoes
+the last mark, and a selected range of lines can be approved on its own. A mark is a
+Radicle reaction on those lines, signed like a comment. At the end of each pull request is
+its merge button (`m`), which opens only when every hunk is approved; with hunks refused it
+offers to request changes instead. Merging records your approval of the revision too, turns
+the pull request purple and then grey, and moves on to the next one, which the merge has
+moved onto the new main. An approval stays with a hunk as long as the hunk itself does not
+change.
+
+At the end of a pull request the page stops. Scroll on and a bar there fills; past the line
+you are in the next pull request. The same going back up, into the ones already merged.
+
+Only what is in Radicle shows; `scripts/review-serve` without `--fresh` serves it without
+importing first. What you write there goes into the patch under your key, the way the
+Radicle CLI writes it: a line comment into your review of the revision, a reply into the
+thread it answers, accept or reject as your review's verdict. Comments in a review can be
+resolved; imported ones cannot, because Radicle keeps them on the revision, where there is
+no resolve, so they are answered instead.
 
 ```
 scripts/export-review <number>... | --open
