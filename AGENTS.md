@@ -69,7 +69,7 @@ Full rationale in `docs/STACK.md`. In brief:
 Each worktree defines a single non-interactive check:
 
 ```
-make check   # ruff, pyright strict, 100% branch coverage, CRAP <= 8, a property test per
+make check   # ruff, pyright and mypy strict, 100% branch coverage, CRAP <= 8, a property test per
              # module, layering, dependencies, dead and duplicate code (docs/QUALITY.md)
 ```
 

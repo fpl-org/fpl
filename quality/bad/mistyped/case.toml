@@ -1,0 +1,3 @@
+why = "a function that returns a str where it declared an int, as mypy reads it"
+run = "mypy --config-file quality/mypy.ini fpl tests"
+expect = "[return-value]"

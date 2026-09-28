@@ -62,7 +62,7 @@ and `SPEC.md` are edit-protected (`[spec]` marker required).
 ## The gate (`make check` inside a worktree)
 
 A worktree's `Makefile` is `include quality/noslop.mk`. `make check` runs ruff, strict pyright
-(`reportMatchNotExhaustive=error`), the tests (unit, `test_ambiguity`, conformance) under
+(`reportMatchNotExhaustive=error`) and strict mypy, the tests (unit, `test_ambiguity`, conformance) under
 100% branch coverage, and the structural checks of `docs/QUALITY.md`: CRAP, a property test
 per module, the layering of the source tree above, declared dependencies, dead and duplicate
 code, and named waivers.

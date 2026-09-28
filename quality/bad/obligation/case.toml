@@ -1,0 +1,3 @@
+why = "a module that owes a property the language must keep, with no test that pays it"
+run = "python scripts/props"
+expect = "fpl.ok owes 'double is adding to itself'"

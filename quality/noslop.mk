@@ -7,8 +7,10 @@
 #   make check    the one gate; green here means done (AGENTS.md)
 #   make harden   the long search: 20x the examples, CrossHair on every property and every
 #                 contract, mutants
-#   make ready    check + harden + a known-vulnerability audit; before a PR leaves draft
-#   make gates    proof that each check still bites: its self-test and a bad example it refuses
+#   make ready    check + harden + gates + a known-vulnerability audit; before a PR leaves draft
+#   make gates    proof that each check still bites: the harness's own lint, its self-tests,
+#                 and a bad example each check refuses. Also what the root runs, where there
+#                 is no code to judge: make -f quality/noslop.mk gates
 
 .DEFAULT_GOAL := check
 .PHONY: fix quick check harden ready gates venv pristine clean-noslop
@@ -58,6 +60,7 @@ check: venv pristine
 	$(BIN)/ruff check --config $(Q)/ruff.toml fpl tests
 	$(BIN)/ruff format --config $(Q)/ruff.toml --check fpl tests
 	pyright --project $(Q)/pyright.json
+	$(BIN)/mypy --config-file $(Q)/mypy.ini fpl tests
 	$(BIN)/python scripts/escapes fpl tests
 	$(BIN)/python scripts/props
 	$(BIN)/coverage erase --rcfile=$(Q)/coveragerc
@@ -79,12 +82,17 @@ harden: check
 	$(BIN)/crosshair check fpl --analysis_kind=icontract --per_condition_timeout=$(CONTRACT_SECONDS)
 	$(BIN)/python scripts/mutants
 
-ready: harden
+ready: harden gates
 	@mkdir -p $(OUT)
 	uv export --project $(Q) --frozen --quiet > $(OUT)/requirements.txt
 	$(BIN)/pip-audit --progress-spinner off --requirement $(OUT)/requirements.txt --disable-pip
 
+# The harness's own Python, judged by the same ruff it judges others with.
+HARNESS := scripts/crap scripts/props scripts/escapes scripts/mutants scripts/gates $(Q)/noslop_pytest.py
+
 gates: venv
+	$(BIN)/ruff check --config $(Q)/ruff.toml $(HARNESS)
+	$(BIN)/ruff format --config $(Q)/ruff.toml --check $(HARNESS)
 	$(BIN)/python scripts/crap --self-test
 	$(BIN)/python scripts/props --self-test
 	$(BIN)/python scripts/escapes --self-test

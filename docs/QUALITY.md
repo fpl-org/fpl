@@ -19,9 +19,15 @@ make quick    lint, format, tests; stops at the first failure. Seconds. The inne
 make check    the one gate. Green means done.
 make harden   check, then the long search: 20x the examples, CrossHair on every property
               and every contract, mutation testing
-make ready    harden, then a known-vulnerability audit of the pinned tools
-make gates    proof that each check still refuses a bad example
+make ready    harden, then gates, then a known-vulnerability audit of the pinned tools
+make gates    proof that each check still refuses a bad example, and the harness's own lint
 ```
+
+The same lanes run on the forge (`.github/workflows/noslop.yml`): `make check` on every push
+to a pull request, `make ready` once it is out of draft and on every push to `main`. A
+harness-only branch, which has no code to judge, runs `make gates` from the root instead:
+`make -f quality/noslop.mk gates`. The runner enters the dev shell of `flake.nix`, so it judges
+with the tools a laptop has.
 
 `make check` runs, in order:
 
@@ -30,6 +36,7 @@ make gates    proof that each check still refuses a bad example
 | `pristine` | an uncommitted change to a policy file (below) |
 | `ruff check`, `ruff format --check` | lint findings, including cyclomatic complexity over 8 (`quality/ruff.toml`); unformatted code |
 | `pyright`, strict | anything strict mode refuses, and a `match` that misses a case (`quality/pyright.json`) |
+| `mypy`, strict | the same code as the reference implementation of the typing PEPs reads it, with unreachable code and unused ignores as errors (`quality/mypy.ini`) |
 | `scripts/escapes` | a waiver that does not name its rule and give a reason |
 | `scripts/props` | a module with code that no property test imports |
 | `pytest` under `coverage` | a failing test; less than 100% line and branch coverage (`quality/coveragerc`) |
@@ -100,9 +107,19 @@ tested through the callers that satisfy it.
 
 ## Metatheory
 
-A language has properties its implementation must keep, and they are stated as properties,
-under Hypothesis in `make check` and CrossHair in `make harden`, from the moment the module
-they concern has code (`scripts/props` requires a property test then anyway):
+A language has properties its implementation must keep. They are stated as properties, under
+Hypothesis in `make check` and CrossHair in `make harden`, and each is due from the moment
+the module it concerns has code. `quality/obligations.toml` lists them per module;
+`scripts/props` fails a module with code whose obligation no property test pays, and a test
+pays one by naming it:
+
+```python
+@pytest.mark.obligation("desugaring preserves meaning")
+@given(programs())
+def test_evaluating_the_core_gives_what_the_surface_gives(program: str) -> None:
+```
+
+The obligations:
 
 - `parse.py`: every program the grammar derives (`hypothesis.extra.lark.from_lark`) parses
   without an Earley ambiguity, not only the example corpus.
@@ -115,7 +132,9 @@ they concern has code (`scripts/props` requires a property test then anyway):
 - The backend, when it exists: the interpreter and the compiled program print the same
   output for every conformance example and for derived programs.
 
-These are the tests that make the layered frontend of docs/STACK.md more than a layout.
+These are the tests that make the layered frontend of docs/STACK.md more than a layout. The
+two that wait on a module that does not exist yet (a printer, a backend) are noted in the
+file and not owed by anyone until it does.
 
 ## Mutants
 
@@ -139,10 +158,13 @@ Every way out of a check names what it waives and says why, after ` -- `:
 ```
 # noqa: E731 -- <reason>
 # pyright: ignore[reportUnknownMemberType] -- <reason>
+# type: ignore[arg-type] -- <reason>
 # pragma: no cover -- <reason>
 ```
 
-`# type: ignore` is refused outright, since pyright's own form names the rule.
+`# type: ignore` is mypy's form and waives mypy alone: pyright is configured not to honour it
+(`enableTypeIgnoreComments: false`), so a line that both checkers refuse carries two waivers,
+each with its reason. A bare `# type: ignore` is refused.
 
 ## Policy
 
@@ -164,8 +186,10 @@ worktree's `.venv` with `uv sync --frozen` the first time and whenever the lock 
 
 ## Proof that the checks bite
 
-A check that passes everything looks the same as a check that found nothing. `make gates` runs
-the self-tests of the four scripts, then `scripts/gates`: for each case in `quality/bad/`, the
+A check that passes everything looks the same as a check that found nothing. `make gates` first
+holds the harness's own Python (`scripts/crap`, `props`, `escapes`, `mutants`, `gates` and the
+pytest plugin) to the ruff rules it holds others to, then runs the self-tests of the four
+scripts, then `scripts/gates`: for each case in `quality/bad/`, the
 check runs on a small fixture package, where it must pass, and then with the case's bad example
 laid over it, where it must fail with a given message. The first run is the control; without
 it, a check that fails for an unrelated reason would count as having caught something. Adding a

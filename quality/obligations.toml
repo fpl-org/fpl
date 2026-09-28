@@ -1,0 +1,17 @@
+# quality/obligations.toml — what each module owes the language, as property tests
+# (scripts/props, docs/QUALITY.md "Metatheory"). An obligation is due from the moment its
+# module has code, and a test pays it by carrying @pytest.mark.obligation("<name>") next to
+# its @given. Adding one here is a policy change and takes [policy].
+
+[fpl.parse]
+obligations = ["programs derived from the grammar parse without ambiguity"]
+
+[fpl.desugar]
+obligations = ["desugaring preserves meaning"]
+
+[fpl.types]
+obligations = ["progress: a well-typed term is a value or takes a step",
+               "preservation: a step keeps the type"]
+
+# Owed once there is a printer, by the module that holds it: print then parse is the identity.
+# Owed once there is a backend: the interpreter and the compiled program print the same.

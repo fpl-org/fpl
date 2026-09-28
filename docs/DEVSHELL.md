@@ -75,6 +75,15 @@ the flake. The file is git-ignored, so the choice stays in one checkout. `.envrc
 trust it all the same: it reads the lines as names, never as code, cuts each down to
 `[a-z0-9]`, and skips with an error whatever is not a layer of the flake.
 
+## Your own tools on top
+
+Tools a person wants that the project does not, an IPython or a profiler, do not go in the
+flake: they go in `.envrc.local`, git-ignored, as direnv directives, for example
+`use flake ~/dev/dotfiles#python`. `.envrc` sources it before its own `use flake`, so the
+project's tools come first on PATH and a personal `python3` never shadows the pinned one.
+Checked with two flakes on x86_64-linux, direnv 2.37.1: the project's Python 3.12 answered,
+the personal shell's extra program was there.
+
 To add a layer, add an entry to `layers`: a name of letters and digits, a `description`,
 `packages`, and optionally `extends`. Nothing else needs editing. The flake flattens `extends`
 and refuses a cycle or an unknown name with the path that led to it. The combination shells
