@@ -143,6 +143,40 @@ author of a pull request cannot approve it, which is why the two sides are two a
 (`docs/DEVSHELL.md`, "Forge tools are opt-in"), or land in the browser. `scripts/pr` needs
 neither: it calls the API with python3 from the default shell.
 
+## A public mirror of a pijul channel
+
+Not in use yet: this repository still lives in git. `scripts/mirror` and `scripts/import-pr`
+are ready for the day the code moves to pijul and a public forge becomes a mirror of it
+rather than the home of it. Needs the `pijul` layer (`scripts/layer on pijul`).
+
+The shape is three one-way flows, each piece of state with exactly one home:
+
+- **Out.** `scripts/mirror <pijul> <git> [<channel> [<branch>]]` projects a channel onto a
+  branch. It is deterministic — authors, dates and trees all come from the changes — so the
+  same changes give the same commit ids and exporting again is a no-op. Every commit carries
+  `Pijul-Change: <hash>`.
+- **In.** A pull request is fetched without any forge API (`git fetch <forge>
+  pull/<n>/head:refs/pull/<n>/head`) and `scripts/import-pr` records it as one pijul change
+  under the contributor's name, with `Git-Commit:` and `Landed-By:` in its description. The
+  record hooks run on it like on anything else.
+- **Back.** On the next export the contributor's own commit is put on the branch — reused as
+  is when it already has the right parent and tree, otherwise joined by a merge commit in the
+  lander's name. A forge that sees a pull request's commits reach its base branch shows it as
+  merged, so the contributor sees an ordinary merged PR and keeps their commit in history.
+
+**`main` in pijul only grows.** Landed is frozen. The mirror refuses (exit 3) to export a
+`main` that no longer descends from what it exported before, because that would be a force
+push on a public branch. Stacks live on other channels and go to other branches, which may be
+rewritten — `scripts/mirror -f` — exactly as a pull request branch may be on any forge.
+
+What stays two-sided: the review conversation happens where the contributor is, in the pull
+request thread. Summarise it into the change's description when landing so the reasons stay
+here. CI on the forge is a courtesy to the contributor; the gate is the pijul record hooks.
+
+`scripts/mirror --self-test` runs both scripts against a real pijul and git: determinism,
+append-only exports, a PR on the latest `main` reused as is, a PR on an older `main` merged
+in under the lander's name with the contributor's commit kept, and the refusal to rewrite.
+
 ## The agent's credential
 
 `.git/agent-credentials`, mode 600, one line:

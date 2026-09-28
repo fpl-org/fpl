@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+#
+# scripts/mirror — project a pijul channel onto a git branch, for a public forge.
+#
+#   scripts/mirror <pijul-repo> <git-repo> [<channel> [<branch>]]   (default: main main)
+#   scripts/mirror -f ...        allow the branch to be rewritten (stack branches only)
+#   scripts/mirror --self-test
+#
+# Pijul is where the work lives; the git branch is a projection of it that a forge can show.
+# The projection is deterministic -- author, committer, dates and trees all come from the
+# changes themselves -- so the same changes always give the same commit ids, and exporting
+# again is a no-op rather than a rewrite. Every commit carries `Pijul-Change: <hash>`.
+#
+# A change that came in through scripts/import-pr names the commit it was made from
+# (`Git-Commit:`). That commit is put on the branch itself: reused outright when it already
+# sits on exactly the right parent with exactly the same tree, otherwise joined by a merge
+# commit authored by whoever landed it (`Landed-By:`). Either way the contributor's own
+# commit ends up on the branch, which is what makes a forge show their pull request merged.
+#
+# The branch only grows. If the new head does not descend from the old one the export is
+# refused (exit 3): on `main` that means pijul history was rewritten, and a force push on a
+# public branch is the one thing this is built to avoid. -f is for stack branches.
+#
+# Authors: a header name is used as given ("Name <email>" or a bare name). A header that
+# carries only a key is looked up in $FPL_MIRROR_KEYS ("<name> <email> <key>" per line),
+# falling back to a short fingerprint of the key.
+#
+# Exit: 0 exported, 1 failed, 2 usage, 3 refused to rewrite the branch.
+set -euo pipefail
+
+die() { printf 'mirror: %s\n' "$1" >&2; exit "${2:-1}"; }
+
+if [ "${1:-}" = "--self-test" ]; then
+	exec "$(dirname "$0")/mirror-self-test"
+fi
+
+force=0
+[ "${1:-}" = "-f" ] && { force=1; shift; }
+[ $# -ge 2 ] || die "usage: scripts/mirror [-f] <pijul-repo> <git-repo> [<channel> [<branch>]]" 2
+src="$(cd "$1" && pwd)" dst="$2" ch="${3:-main}" branch="${4:-${3:-main}}"
+[ -d "$src/.pijul" ] || die "$src is not a pijul repository" 2
+command -v pijul >/dev/null || die "pijul not on PATH" 1
+[ -d "$dst/.git" ] || [ -f "$dst/HEAD" ] || git init -q -b main "$dst"
+dst="$(cd "$dst" && pwd)"
+
+export GIT_COMMITTER_NAME="fpl-mirror" GIT_COMMITTER_EMAIL="mirror@fpl.invalid"
+export EDITOR=false VISUAL=false
+
+order="$(pijul log --repository "$src" --channel "$ch" --hash-only </dev/null | tac)" ||
+	die "cannot read channel $ch"
+
+# Replay into a scratch copy so the source repository's working copy is never touched.
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+rmdir "$work"
+pijul clone "$src" "$work" >/dev/null 2>&1 </dev/null || die "cannot clone $src"
+# A local clone hard-links what it can; add only the changes it did not take, which are the
+# ones on channels other than the default.
+(cd "$src/.pijul/changes" && find . -type f) | while IFS= read -r f; do
+	[ -e "$work/.pijul/changes/$f" ] && continue
+	mkdir -p "$(dirname "$work/.pijul/changes/$f")"
+	cp "$src/.pijul/changes/$f" "$work/.pijul/changes/$f"
+done
+cd "$work"
+pijul channel new __mirror >/dev/null 2>&1 </dev/null || true
+pijul channel switch __mirror >/dev/null 2>&1 </dev/null
+pijul reset >/dev/null 2>&1 </dev/null
+
+field() { sed -n "s/^$1 = \"\\(.*\\)\"\$/\\1/p" | head -1; }
+
+author_of() { # change text on stdin -> "name\temail"
+	local text name key who
+	text="$(cat)"
+	name="$(field name <<<"$text")"
+	if [ -n "$name" ]; then
+		if [[ "$name" =~ ^(.*[^[:space:]])[[:space:]]*\<([^>]+)\>$ ]]; then
+			printf '%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+		else
+			printf '%s\t%s@pijul.invalid\n' "$name" "$(tr -c 'A-Za-z0-9.' '-' <<<"$name" | sed 's/-*$//')"
+		fi
+		return
+	fi
+	key="$(field key <<<"$text")"
+	if [ -n "$key" ] && [ -f "${FPL_MIRROR_KEYS:-}" ]; then
+		who="$(awk -v k="$key" '$NF==k{ $NF=""; print; exit }' "$FPL_MIRROR_KEYS")"
+		if [ -n "$who" ]; then
+			set -- $who
+			printf '%s\t%s\n' "$1" "${2:-$1@pijul.invalid}"
+			return
+		fi
+	fi
+	who="key-$(printf %s "$key" | sha256sum | cut -c1-8)"
+	printf '%s\t%s@pijul.invalid\n' "$who" "$who"
+}
+
+parent=""
+for h in $order; do
+	pijul apply "$h" >/dev/null 2>&1 </dev/null || die "cannot apply $h"
+	pijul reset >/dev/null 2>&1 </dev/null
+	text="$(pijul change "$h" </dev/null)"
+	msg="$(field message <<<"$text")"
+	[ -n "$msg" ] || continue # the root change
+
+	# The tree, straight from the tracked files; no working directory on the git side.
+	idx="$(mktemp)"; rm -f "$idx"
+	pijul list </dev/null | LC_ALL=C sort | while IFS= read -r f; do
+		[ -f "$f" ] || continue
+		mode=100644; [ -x "$f" ] && mode=100755
+		printf '%s blob %s\t%s\n' "$mode" "$(git -C "$dst" hash-object -w --stdin <"$f")" "$f"
+	done | GIT_INDEX_FILE="$idx" git -C "$dst" update-index --add --index-info
+	tree="$(GIT_INDEX_FILE="$idx" git -C "$dst" write-tree)"
+	rm -f "$idx"
+
+	ts="$(field timestamp <<<"$text")"
+	IFS=$'\t' read -r aname aemail < <(author_of <<<"$text")
+	export GIT_AUTHOR_DATE="$ts" GIT_COMMITTER_DATE="$ts"
+
+	gc="$(grep -o 'Git-Commit: [0-9a-f]\{40\}' <<<"$text" | head -1 | cut -d' ' -f2 || true)"
+	if [ -n "$gc" ] && git -C "$dst" cat-file -e "$gc^{commit}" 2>/dev/null; then
+		if [ "$(git -C "$dst" rev-parse "$gc^{tree}")" = "$tree" ] &&
+			[ "$(git -C "$dst" rev-parse -q --verify "$gc^" 2>/dev/null || true)" = "$parent" ]; then
+			parent="$gc"
+			continue
+		fi
+		lander="$(grep -o 'Landed-By: [^"\\]*' <<<"$text" | head -1 | cut -d' ' -f2- || true)"
+		if [[ "$lander" =~ ^(.*[^[:space:]])[[:space:]]*\<([^>]+)\>$ ]]; then
+			aname="${BASH_REMATCH[1]}" aemail="${BASH_REMATCH[2]}"
+		fi
+		parent="$(GIT_AUTHOR_NAME="$aname" GIT_AUTHOR_EMAIL="$aemail" git -C "$dst" commit-tree "$tree" \
+			${parent:+-p "$parent"} -p "$gc" \
+			-m "Merge: $msg" -m "Pijul-Change: $h"$'\n'"Git-Commit: $gc")"
+		continue
+	fi
+	parent="$(GIT_AUTHOR_NAME="$aname" GIT_AUTHOR_EMAIL="$aemail" git -C "$dst" commit-tree "$tree" \
+		${parent:+-p "$parent"} -m "$msg" -m "Pijul-Change: $h")"
+done
+
+[ -n "$parent" ] || die "channel $ch has nothing to export"
+old="$(git -C "$dst" rev-parse -q --verify "refs/heads/$branch" 2>/dev/null || true)"
+if [ -n "$old" ] && [ "$old" != "$parent" ] && [ "$force" = 0 ] &&
+	! git -C "$dst" merge-base --is-ancestor "$old" "$parent"; then
+	printf 'mirror: %s would be rewritten (%s is not an ancestor of %s)\n' \
+		"$branch" "${old:0:12}" "${parent:0:12}" >&2
+	printf 'mirror: pijul history under %s changed; -f only for a stack branch\n' "$ch" >&2
+	exit 3
+fi
+git -C "$dst" update-ref "refs/heads/$branch" "$parent"
+printf '%s\n' "$parent"
