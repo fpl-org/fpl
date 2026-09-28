@@ -50,7 +50,7 @@ def ambiguous(tree: Tree[Token]) -> bool:
 
 
 @pytest.mark.parametrize("program", CORPUS, ids=[p.stem for p in CORPUS])
-def test_the_corpus_parses_without_ambiguity(program: Path) -> None:
+def test_no_ambiguity_in_the_corpus(program: Path) -> None:
     source = program.read_text()
     assert isinstance(parse(source), Program)
     assert not ambiguous(FULL.parse(prelex(source).code))  # pyright: ignore[reportUnknownMemberType] -- lark types its text argument loosely
