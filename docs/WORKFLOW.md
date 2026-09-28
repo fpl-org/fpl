@@ -216,7 +216,13 @@ of it; `n` and `p` move between hunks, and a selected range of lines can be appr
 own. A mark is a Radicle reaction on those lines, signed like a comment. The merge button is
 at the bottom (`m`), and it opens only when every hunk is approved; with hunks refused it
 offers to request changes instead. Merging records your approval of the revision too.
-Keys on the list: `j` `k` and enter. Only what is in Radicle shows: `scripts/import-review
+Keys on the list: `j` `k` and enter.
+
+Open pull requests form one queue, first in, first out: each is based on the one filed
+before it, and only the head is based on main. "Read the queue" shows the whole queue on
+one page, head first: you read a change, approve its hunks, merge it at its end, and keep
+scrolling into the next. Merging the head moves the rest of the queue up onto the new main,
+and an approval stays with a hunk as long as the hunk itself does not change. Only what is in Radicle shows: `scripts/import-review
 --open` first, to bring the pull requests in. What you write there goes into the
 patch under your key, the way the Radicle CLI writes it: a line comment into your review of
 the revision, a reply into the thread it answers, accept or reject as your review's verdict.
