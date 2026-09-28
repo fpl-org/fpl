@@ -1,7 +1,5 @@
 """Running a program never lets anything but an FplError out."""
 
-from pathlib import Path
-
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
@@ -11,14 +9,12 @@ from fpl.errors import FplError
 
 
 @given(st.text(max_size=40))
-def test_nothing_runs_before_there_is_a_language(source: str) -> None:
+def test_nothing_runs_yet(source: str) -> None:
     with pytest.raises(FplError):
-        run(source, Path("/nonexistent/grammar.lark"))
+        run(source)
 
 
-def test_a_parse_is_not_yet_a_run(tmp_path: Path) -> None:
-    grammar = tmp_path / "g.lark"
-    grammar.write_text('start: "x"\n')
+def test_a_parse_is_not_yet_a_run() -> None:
     with pytest.raises(FplError) as caught:
-        run("x", grammar)
+        run("x\n")
     assert str(caught.value) == "ERROR: 1:1 no evaluator yet"
