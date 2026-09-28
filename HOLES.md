@@ -29,9 +29,9 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 
 ## grammar-departs-from-handoff
 - Depends on it: fpl/grammar.lark, every example
-- Default in force: PSJ's decisions of 2026-09-29: the hand-off's one frame rule (frames: frame (_BAR frame)*, a frame may be empty) for lines and enclosures; an enclosure takes frames without ?, so [] ⟨⟩ () {} are one empty frame (bars + 1 frames, the base case, distinct from [ | ]); start: line* without _NL*, so an empty line is only the first line of a file that opens blank; comments are NOTE and DOC tokens on their line (line: frames (NOTE | DOC)? _NL block?), no longer ignored, and _NL is the hand-off's blank run again
+- Default in force: PSJ's decisions of 2026-09-29: the hand-off's one frame rule (frames: frame (_BAR frame)*, a frame may be empty) for lines and enclosures; an enclosure takes frames without ?, so [] ⟨⟩ () {} are one empty frame (bars + 1 frames, the base case, distinct from [ | ]); start: line* without _NL*, so an empty line is only the first line of a file that opens blank; comments are NOTE and DOC tokens on their line (line: frames (NOTE | DOC)? _NL block?), no longer ignored, and _NL is the hand-off's blank run again, whose lines but the last may hold tabs, spaces and form feeds (form-feed-line)
 - Closes by: Caesura (syntax author), folding these decisions into the hand-off's grammar and its prose
-- Evidence: 61399de fix(grammar): keep comments as tokens and read [] as one empty frame; session grammar-fix/proof2.log (LALR no conflicts, 29/29 examples, Earley _ambig 0/29 and 0/2000 flat draws); earlier 8a753ec
+- Evidence: 61399de fix(grammar): keep comments as tokens and read [] as one empty frame; session grammar-fix/proof2.log (LALR no conflicts, 29/29 examples, Earley _ambig 0/29 and 0/2000 flat draws); earlier 8a753ec; proof3.log after bd41245, the same counts
 
 ## grammar-comment-word
 - Depends on it: fpl/grammar.lark:15
@@ -76,10 +76,10 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Evidence: SHAR SHAPE has → only; shared decision (f) "->x (→x) is mortal"
 
 ## trailing-comment-glued
-- Depends on it: fpl/trivia.py
-- Default in force: the first run of ; on a line is its comment, also when glued to code (x; note)
-- Closes by: design
-- Evidence: SHAR gram/test_fpl.py:265 requires whitespace before ;; the grammar's TOKEN excludes ; (x; note)
+- Depends on it: fpl/grammar.lark (TOKEN, NOTE), fpl/parse.py (_Build.comment), fpl/print.py (comment)
+- Default in force: ; self-delimits, as the grammar's TOKEN excludes it, so x; note is the word x and a note on its line, also when glued; the printer sets the note apart in a cell of its own (x\t; note)
+- Closes by: design, confirming that ; needs no whitespace before it
+- Evidence: SHAR gram/test_fpl.py:265 requires whitespace before ;; fpl/grammar.lark TOKEN (x; note)
 
 ## empty-node-span
 - Depends on it: fpl/parse.py (_Build.at)
@@ -98,12 +98,6 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Default in force: a closer with no opener (] ” 」 ⟧) or one that does not close the latest opener is refused where it stands, as an unclosed opener is; SHAR passes a stray bracket closer to Lark and a stray pair closer through as text
 - Closes by: design, by confirming that every closer must balance
 - Evidence: SHAR gram/test_fpl.py:34 (elif ch in CLOSE and stack: stack.pop()), :45-46 (only openers are special)
-
-## comment-scan-skips-strings
-- Depends on it: fpl/trivia.py (comments), tests/test_trivia.py
-- Default in force: comments are read off the pre-lexed code, so a ; inside a string or a ⟦ ⟧ comment is not a comment
-- Closes by: design, or the printer, which must round-trip both
-- Evidence: SHAR gram/test_fpl.py:265 searches the raw source line, strings included
 
 ## snippet-split
 - Depends on it: features/{draft1,draft2,draft3,server,sketch,match}/examples/*.fpl; tests/test_conformance.py::test_example[*]; tests/test_ambiguity.py::test_no_ambiguity_in_the_corpus[*]
@@ -215,6 +209,18 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 
 ## empty-first-line
 - Depends on it: fpl/grammar.lark (start), fpl/print.py (render)
-- Default in force: a file that opens with blank lines has one empty first line, and "\n\tx" gives that line a block; a blank source ("", "\n") is that one line and prints as the empty text; a form-feed-only line between lines is an empty line too, which prints as a blank line that reads back as none; no example opens blank (PSJ: leading blank lines are not useful, a refusal is acceptable)
+- Default in force: a file that opens with blank lines has one empty first line, and "\n\tx" gives that line a block; a blank source ("", "\n") is that one line and prints as the empty text; no example opens blank (PSJ: leading blank lines are not useful, a refusal is acceptable)
 - Closes by: PSJ or Caesura, keeping it or refusing a blank first line
 - Evidence: session grammar-fix/proof2.log; tests/test_parse.py::test_only_the_first_line_is_empty_and_it_may_hold_a_block
+
+## form-feed-line
+- Depends on it: fpl/grammar.lark (_NL), tests/test_print.py::test_a_blank_line_is_part_of_its_blank_run_whatever_it_holds
+- Default in force: a form feed is the page separator, ignored like a space; a line holding only tabs, spaces and form feeds inside a blank run is part of the run, so it leaves no line and prints as nothing; only the last line's tabs are indentation, so a form feed before a line's tabs leaves it at depth 0 as before
+- Closes by: Caesura or PSJ, confirming the form feed as a page separator, or refusing it outside strings and comments
+- Evidence: bd41245 fix(grammar): read a line of form feeds as part of its blank run; session grammar-fix/proof3.log, ffcheck.log
+
+## note-blank-note
+- Depends on it: fpl/print.py (render), fpl/grammar.lark (NOTE), tests/test_print.py::test_print_then_parse_is_the_identity
+- Default in force: a note, a blank line, then a ; line with no code (kept as a note line, comment-levels-vs-corpus) parse as two notes, but the printer drops the blank line, so they read back as one note continued; render∘parse is still idempotent on text
+- Closes by: an implementer, printing the blank line before such a note, or the builder refusing the standalone ; (comment-levels-vs-corpus)
+- Evidence: session grammar-fix/ffcheck.log (";⍝.\n\n;x" prints ";⍝.\n;x\n", one note of two lines)
