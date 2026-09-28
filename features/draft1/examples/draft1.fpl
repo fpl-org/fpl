@@ -1,0 +1,40 @@
+read : text -- lines	; each line a depth‿tokens pair
+	newline split
+	dup  [ tab = [and] scan [+] fold ] each	; depth: leading tabs
+	swap [ trim space split ] each	; tokens
+	[pair] each
+
+blocks : lines -- blocks	; one block per minimum-depth line: head + its subtree
+	dup [first] each dup [min] fold = group
+
+node : block -- code	; children-quotations , head-tokens
+	dup 1 skip blocks [node] each [enclose] each
+	swap first 1 first ,
+
+tree : lines -- code
+	blocks [node] each [,] fold
+
+apply : tok --	; operative: receives thunks, never syntax (combined draft §6.1)
+	if
+		dup word?
+		lookup !
+
+boot : text --
+	read tree [apply] fold
+
+trace : code -- code	; a macro: acts on Code before `:` lowers it to a thunk
+	[ #print pair ] each [,] fold	; #print: the word as a symbol, not the text
+
+graph	; saturated frame of literals → a 4×4 matrix
+	0 3 ∞ 7
+	8 0 2 ∞
+	5 ∞ 0 1
+	2 ∞ ∞ 0
+
+shortest-paths : D -- D
+	dup shape first 2 log ceil →k
+	k repeat
+		dup [min] [+] inner
+
+graph shortest-paths	; 0 3 5 6 / 5 0 2 3 / 3 6 0 1 / 2 5 7 0  (checked in Python)
+[ graph shortest-paths ] trace !
