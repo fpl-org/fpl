@@ -344,6 +344,17 @@ def embed(json: Json) -> Value:
     """A JSON value as FON: null is absence, a number an exact decimal, an object a Dict keyed
     by symbols where the key reads back as one, else by text."""
     match json:
+        case list():
+            return List(tuple(embed(item) for item in json))
+        case dict():
+            return Dict(tuple((_key(key), embed(item)) for key, item in json.items()))
+        case _:
+            return _scalar(json)
+
+
+def _scalar(json: bool | float | str | None) -> Leaf:
+    """A JSON scalar as FON."""
+    match json:
         case None:
             return Absent()
         case bool():
@@ -352,10 +363,6 @@ def embed(json: Json) -> Value:
             return Num(Decimal(repr(json)))
         case str():
             return Str(json)
-        case list():
-            return List(tuple(embed(item) for item in json))
-        case dict():
-            return Dict(tuple((_key(key), embed(item)) for key, item in json.items()))
         case _:
             assert_never(json)
 
