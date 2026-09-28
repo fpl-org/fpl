@@ -56,3 +56,9 @@ fpl.lex.x__special__mutmut_21 -- equivalent: a line comment is the last thing in
 fpl.lex.x__special__mutmut_24 -- equivalent: a line comment is the last thing in its code line, so running it past an island's end to the next newline changes no tree, span or refusal
 fpl.print.xǁ_Outǁ__init____mutmut_4 -- equivalent: the first line is at depth 0 and opens in a word, string, enclosure or bar, so its tab count is 0 either way until a newline resets it
 fpl.print.xǁ_Outǁ__init____mutmut_5 -- equivalent: the first line is at depth 0 and opens in a word, string, enclosure or bar, so its tab count is 0 either way until a newline resets it
+fpl.lex.x__pair__mutmut_11 -- equivalent: counted returns -1 or an offset past the opener, never 0
+fpl.lex.x__pair__mutmut_12 -- equivalent: counted returns -1 or an offset past the opener, never 0
+fpl.lex.x__pair__mutmut_41 -- equivalent: rfind reads a start of None as 0
+fpl.lex.x__pair__mutmut_48 -- equivalent: a newline at offset 0 makes line 1 blank, and parse refuses a tab opening line 2 while FON ignores the depth, so no string read has tabs before it on line 2
+fpl.lex.x_counted__mutmut_18 -- equivalent: both callers test counted's result with < 0, where -1 and -2 agree
+fpl.parse.xǁ_Buildǁtext__mutmut_44 -- equivalent: a string's interior starts after its opener, so a ⟨ in it is never at offset 0
