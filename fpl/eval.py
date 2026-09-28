@@ -1,7 +1,6 @@
 """The core as a step machine: a state is the stack and the code still to run, and `step` runs
 one node of it. Over the core AST only."""
 
-import operator
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
@@ -135,9 +134,9 @@ def join(span: Span, a: Value, b: Value) -> tuple[Value, ...]:
 
 
 BUILTINS: dict[str, Builtin] = {
-    "+": partial(arithmetic, operator.add),
-    "-": partial(arithmetic, operator.sub),
-    "times": partial(arithmetic, operator.mul),
+    "+": partial(arithmetic, lambda x, y: x + y),
+    "-": partial(arithmetic, lambda x, y: x - y),
+    "times": partial(arithmetic, lambda x, y: x * y),
     "swap": swap,
     "dup": dup,
     "drop": drop,
