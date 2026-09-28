@@ -67,12 +67,10 @@ def comments(source: str) -> tuple[Comment, ...]:
     """Every ; comment of a source that pre-lexes, classified. Strings are not searched."""
     lexed, lines = prelex(source), Lines(source)
     code = lexed.code.split("\n")
-    starts = [0]
-    for line in code:
-        starts.append(starts[-1] + len(line) + 1)
+    starts = Lines(lexed.code).starts
 
-    def at(k: int | None) -> int | None:
-        return None if k is None else lines.span(lexed.origin[starts[k]]).line
+    def at(k: int) -> int:
+        return lines.span(lexed.origin[starts[k]]).line
 
     found: list[Comment] = []
     for k, line in enumerate(code):
@@ -82,8 +80,8 @@ def comments(source: str) -> tuple[Comment, ...]:
         text = line[level.end() :].strip()
         size = len(level.group())
         if line[: level.start()].strip():
-            found.append(Comment(at(k) or 0, size, "trailing", at(k), text))
+            found.append(Comment(at(k), size, "trailing", at(k), text))
             continue
         kind, target = _own_line(code, k, size)
-        found.append(Comment(at(k) or 0, size, kind, at(target), text))
+        found.append(Comment(at(k), size, kind, None if target is None else at(target), text))
     return tuple(found)
