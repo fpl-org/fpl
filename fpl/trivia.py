@@ -39,17 +39,27 @@ def _depth(line: str) -> int:
     return len(line) - len(line.lstrip("\t"))
 
 
+def _code_line(lines: list[str], indices: range) -> int | None:
+    """The first code line among the indices, in their order."""
+    return next((n for n in indices if _code(lines[n])), None)
+
+
+def _head(lines: list[str], k: int | None) -> int | None:
+    """Line k when it is a code line that opens a definition (name: ...)."""
+    return k if k is not None and HEAD.match(lines[k]) else None
+
+
 def _own_line(lines: list[str], k: int, level: int) -> tuple[Attachment, int | None]:
     """What a comment alone on code line k attaches to, as a code line index."""
     depth = _depth(lines[k])
     if depth == 0 and level >= 3:
         return ("file" if level >= 4 else "section"), None
-    after = next((n for n in range(k + 1, len(lines)) if _code(lines[n])), None)
-    before = next((n for n in range(k - 1, -1, -1) if _code(lines[n])), None)
-    if after is not None and HEAD.match(lines[after]):
+    after = _code_line(lines, range(k + 1, len(lines)))
+    if _head(lines, after) is not None:
         return "doc", after
-    if before is not None and HEAD.match(lines[before]) and depth > _depth(lines[before]):
-        return "doc", before
+    above = _head(lines, _code_line(lines, range(k - 1, -1, -1)))
+    if above is not None and depth > _depth(lines[above]):
+        return "doc", above
     return "before", after
 
 
