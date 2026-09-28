@@ -115,6 +115,10 @@ def test_within_names_a_character_or_the_end_of_a_line() -> None:
         ("a ;; d\n", "ERROR: 1:3 a ;; comment stands on a line of its own"),
         ("a | ;;; s\n", "ERROR: 1:5 a ;;; comment stands on a line of its own"),
         ("[ a ; c\n b ]\n", "ERROR: 1:5 a comment cannot stand inside an enclosure"),
+        ("[ ;; x\n]\n", "ERROR: 1:3 a comment cannot stand inside an enclosure"),
+        ("| ;; x\n", "ERROR: 1:3 a ;; comment stands on a line of its own"),
+        ("a\t \tb\n", "ERROR: 1:4 unexpected input"),
+        ("\x0ba\n", "ERROR: 1:1 unexpected input"),
         ("a\n[ a )\n", "ERROR: 2:5 ) does not close ["),
         ("a\n\t b\n", "ERROR: 2:2 indentation must be tabs"),
         ("a\n\t\t[\n\tb ]\n", "ERROR: 3:2 dedent below line 2, but its [ is still open"),
@@ -194,6 +198,19 @@ def test_a_comment_is_held_by_its_line() -> None:
         Span(3, 1),
         None,
     ]
+
+
+@pytest.mark.parametrize("source", [";; d\n", "; n\n", "⍝ n\n"])
+def test_a_comment_opening_the_source_starts_at_its_first_character(source: str) -> None:
+    comment = parse(source).lines[0].comment
+    assert comment is not None
+    assert comment.span == AT
+
+
+def test_islands_side_by_side_leave_no_empty_text_between_them() -> None:
+    text = parse("“⟨a⟩⟨b⟩”\n").lines[0].frames[0].cells[0].items[0]
+    islands = tuple(Program((line((word(w),)),), AT) for w in "ab")
+    assert text == Text("str", islands, AT)
 
 
 def test_a_string_is_read_with_its_islands_and_without_incidental_indentation() -> None:
