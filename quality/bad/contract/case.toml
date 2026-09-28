@@ -1,0 +1,3 @@
+why = "a postcondition that does not hold for every input is refuted, without a test that happens to hit it"
+run = "crosshair check fpl --analysis_kind=icontract --per_condition_timeout=20"
+expect = "false when calling"

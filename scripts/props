@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""scripts/props — every module with code in it has a property test.
+
+    scripts/props [--source fpl] [--tests tests]
+    scripts/props --self-test
+
+A module of fpl/ that defines anything (a function, a class, an assignment) needs at least one
+test file that imports it and holds a Hypothesis test: a function decorated with `given`. A
+module that is only a docstring, like a stub for a stage not written yet, needs none. Which
+properties those tests state is the maintainer's to judge; that there is one is not optional
+(docs/QUALITY.md).
+
+Exit 0: every module has one; 1: some do not; 2: usage.
+"""
+
+import ast
+import sys
+from pathlib import Path
+
+
+def has_code(tree: ast.Module) -> bool:
+    """Whether a module is more than a docstring."""
+    body = tree.body
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+        body = body[1:]
+    return bool(body)
+
+
+def imports(tree: ast.Module, package: str) -> set[str]:
+    """The modules of `package` a test file imports, as dotted names."""
+    out: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            out.update(a.name for a in node.names if a.name.startswith(package + "."))
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            if node.module.startswith(package + "."):
+                out.add(node.module)
+            elif node.module == package:
+                out.update(f"{package}.{a.name}" for a in node.names)
+    return out
+
+
+def given(tree: ast.Module) -> bool:
+    """Whether a test file holds a function decorated with Hypothesis's `given`."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            for d in node.decorator_list:
+                target = d.func if isinstance(d, ast.Call) else d
+                name = (
+                    target.attr if isinstance(target, ast.Attribute) else getattr(target, "id", "")
+                )
+                if name == "given":
+                    return True
+    return False
+
+
+def missing(source: Path, tests: Path) -> list[str]:
+    package = source.name
+    covered: set[str] = set()
+    for test in sorted(tests.rglob("*.py")):
+        tree = ast.parse(test.read_text())
+        if given(tree):
+            covered |= imports(tree, package)
+    out = []
+    for path in sorted(source.rglob("*.py")):
+        if path.name == "__init__.py" or not has_code(ast.parse(path.read_text())):
+            continue
+        dotted = ".".join(path.relative_to(source.parent).with_suffix("").parts)
+        if dotted not in covered:
+            out.append(dotted)
+    return out
+
+
+def main(argv: list[str]) -> int:
+    if argv == ["--self-test"]:
+        return self_test()
+    opts = {"--source": "fpl", "--tests": "tests"}
+    args = list(argv)
+    while args:
+        key = args.pop(0)
+        if key not in opts or not args:
+            print(__doc__.split("\n\n")[1], file=sys.stderr)
+            return 2
+        opts[key] = args.pop(0)
+    gaps = missing(Path(opts["--source"]), Path(opts["--tests"]))
+    for dotted in gaps:
+        print(f"props: {dotted} has code but no property test (a test importing it with @given)")
+    if not gaps:
+        print("props: every module with code has a property test")
+    return 1 if gaps else 0
+
+
+def self_test() -> int:
+    import tempfile
+
+    checks: list[tuple[str, bool]] = []
+
+    def check(name: str, ok: object) -> None:
+        checks.append((name, bool(ok)))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "pkg").mkdir()
+        (root / "tests").mkdir()
+        (root / "pkg" / "__init__.py").write_text("x = 1\n")
+        (root / "pkg" / "stub.py").write_text('"""Only a docstring."""\n')
+        (root / "pkg" / "a.py").write_text("def f(): return 1\n")
+        (root / "pkg" / "b.py").write_text("B = 2\n")
+        (root / "pkg" / "c.py").write_text("class C: pass\n")
+        (root / "tests" / "test_a.py").write_text(
+            "from hypothesis import given\nfrom pkg.a import f\n"
+            "@given(st.integers())\ndef test(x): ...\n"
+        )
+        (root / "tests" / "test_b.py").write_text("from pkg import b\ndef test(): ...\n")
+        (root / "tests" / "test_c.py").write_text(
+            "import hypothesis\nimport pkg.c\n@hypothesis.given(st.none())\ndef test(x): ...\n"
+        )
+        gaps = missing(root / "pkg", root / "tests")
+        check("a module tested with @given passes", "pkg.a" not in gaps)
+        check("hypothesis.given counts too", "pkg.c" not in gaps)
+        check("a plain test is not a property test", "pkg.b" in gaps)
+        check("a docstring-only stub needs none", "pkg.stub" not in gaps)
+        check("__init__ is not judged", "pkg.__init__" not in gaps and "pkg" not in gaps)
+    failed = [n for n, ok in checks if not ok]
+    for n in failed:
+        print(f"FAIL {n}", file=sys.stderr)
+    print(
+        f"props: self-test {'FAILED' if failed else 'ok'} "
+        f"({len(checks)} checks, {len(failed)} failed)"
+    )
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,3 @@
+why = "an import of a package the project does not declare, even one that happens to be installed"
+run = "deptry . --extend-exclude 'mutants|quality|scripts'"
+expect = "'lark' imported"

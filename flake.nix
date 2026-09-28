@@ -111,12 +111,13 @@
             pkgs.jujutsu # optional workflow, docs/JJ.md
             pkgs.diff2html-cli # scripts/review renders a branch as a page
 
-            # The implementation stack, docs/STACK.md: Python 3.12 + Lark, and the
-            # `make check` gate of docs/CONVENTIONS.md (ruff, pyright strict, pytest).
-            (pkgs.python312.withPackages (ps: [
-              ps.lark
-              ps.pytest
-            ]))
+            # The implementation stack, docs/STACK.md, and the noslop gate, docs/QUALITY.md.
+            # A bare Python 3.12, and uv, which syncs Lark and the gate's Python tools into
+            # each worktree's .venv at the versions quality/uv.lock pins: several of them
+            # (import-linter, deptry, CrossHair) are not in nixpkgs. pyright stays here,
+            # since it is a Node program; ruff too, for the root and for editors.
+            pkgs.python312
+            pkgs.uv
             pkgs.ruff
             pkgs.pyright
             pkgs.gnumake
@@ -127,9 +128,18 @@
             pkgs.mkShell {
               packages = base ++ extra;
 
+              # uv uses the shell's Python and never downloads one of its own.
+              UV_PYTHON = "${pkgs.python312}/bin/python3.12";
+              UV_PYTHON_DOWNLOADS = "never";
+
               # Wire the git hooks once per clone/worktree; stay silent afterwards so that
               # direnv re-entering the shell costs nothing.
               shellHook = ''
+                ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+                  # CrossHair's solver, z3, comes as a PyPI wheel linked against libstdc++,
+                  # which a Nix Python does not put on the loader path (make harden).
+                  export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+                ''}
                 if top="$(git rev-parse --show-toplevel 2>/dev/null)" \
                   && [ -x "$top/scripts/setup" ] \
                   && [ "$(git config --local --get core.hooksPath 2>/dev/null)" != ".githooks" ]; then

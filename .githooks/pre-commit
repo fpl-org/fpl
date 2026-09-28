@@ -52,10 +52,10 @@ mode="${FPL_BOUNDARY:-block}"
 top="$(git rev-parse --show-toplevel)"
 if [ -f "$top/.git" ]; then
 	side="worktree"; other="the harness"; where="the root checkout"
-	forbidden='^(docs/|\.claude/|scripts/|\.githooks/|AGENTS\.md$|CLAUDE\.md$|flake\.(nix|lock)$|\.envrc$)'
+	forbidden='^(docs/|\.claude/|scripts/|quality/|\.githooks/|AGENTS\.md$|CLAUDE\.md$|flake\.(nix|lock)$|\.envrc$)'
 else
 	side="root"; other="an implementation"; where="a worktrees/<name>/"
-	forbidden='^(fpl/|features/|tests/|pyproject\.toml$|Makefile$)'
+	forbidden='^(fpl/|features/|tests/|pyproject\.toml$|Makefile$|mutants\.allow$)'
 fi
 
 # --no-renames: a rename across the boundary must show both of its ends.
