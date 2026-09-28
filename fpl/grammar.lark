@@ -1,0 +1,51 @@
+// FPL surface grammar — prototype, 2026-09-27.
+// Layers: (1) lexing splits on whitespace; enclosure delimiters and the bar self-delimit.
+//         (2) enclosures are Dyck pairs (nesting rules below); indentation is the invisible pair.
+//         (3) token shape (affixes, numbers, modifiers) is a regular post-pass, not in this grammar.
+// Outside this grammar on purpose: named closers (heredocs, `end name`) are Type-1 and handled by a
+// pre-lexer; saturation, arity and effects are typing, not parsing.
+
+start: _NL* line*
+
+// A line is a flat program; an optional indented block follows it (children first, post-order).
+line: frames _NL block?
+block: _INDENT line+ _DEDENT
+
+// The bar separates frames; a tab separates cells within a frame (rank literals: space = token, tab = cell,
+// newline = row); a frame is a sequence of cells, and in code a tab is simply a cell boundary too.
+frames: frame (_BAR frame)*
+frame: _TABS? (cell (_TABS cell)* _TABS?)?  // a run of tabs is one separator: no empty cells (an empty cell is written ⟨⟩)
+cell: item+
+
+?item: TOKEN
+     | group
+     | quotation
+     | prefix
+     | dict
+
+// Enclosures — every one a distinct pair; interiors counted, so they nest in themselves.
+// Strings “ ” and 「 」 and block comments ⟦ ⟧ are counted by the pre-lexer (see test harness):
+// their interior is handed to the pair's interpreter, and islands ⟨ ⟩ inside “ ” are read recursively.
+quotation: "[" _NL* frames? "]"                  // thunk / Code, decided by consumer; a quotation holds frames, so the bar is allowed inside
+prefix:    "(" _NL* frames? ")"                  // reader op: rotate head to end, bar the arguments
+group:     _LANGLE _NL* frames? _RANGLE
+dict:      _LBRACE _NL* frames? _RBRACE       // S15: keys literal, values evaluated; entries by juxtaposition or by line               // evaluated enclosure: ⟨⟩ the empty list, ⟨1 2 3⟩ a list, ⟨expr⟩ an island in text
+
+
+// A token is any run of non-whitespace, non-self-delimiting characters (Forth rule).
+TOKEN.1: /[^\s\[\]()“”「」⟦⟧⟨⟩{}|⍝;]+/          // ; is self-delimiting: x; note
+_BAR: "|"
+_TABS: /\t+/
+_LANGLE: "⟨"
+_LBRACE: "{"
+_RBRACE: "}"
+_RANGLE: "⟩"
+
+// Comments end at the newline, which is already structural. ; levels are the canon (S33): ; trailing, ;; before
+// the next node, ;;; section, ;;;; file — the level is the attachment (see comments() in the harness). ⍝ is the glyph view.
+LCOMMENT.2: /(;+|⍝)[^\n]*/
+%ignore LCOMMENT
+
+_NL: /(\r?\n\t*)+/                    // indentation is tabs only: one tab per level, a counter, no width comparison
+%declare _INDENT _DEDENT
+%ignore /[ \f]+/                      // spaces (and a form feed, the page separator) only; tabs are cell boundaries
