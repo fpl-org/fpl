@@ -126,21 +126,29 @@ def _special(source: str, at: int, end: int, code: _Code) -> int:
     return after
 
 
-def prelex(source: str, start: int = 0, end: int | None = None) -> Prelexed:
-    """Pre-lex source[start:end] (all of it by default) to code the grammar reads, ending in a
-    newline. Refuses a pair never closed, a closer with no opener, and loose indentation."""
+def pairs(
+    source: str, start: int = 0, end: int | None = None, special: re.Pattern[str] = SPECIAL
+) -> Prelexed:
+    """Stash the strings and drop the block comments of source[start:end], ending the code in a
+    newline; `special` names the characters that open or close a pair or a line comment. Refuses
+    a pair never closed and a closer with no opener; indentation is not looked at."""
     stop = len(source) if end is None else end
     code, at = _Code(), start
     while at < stop:
-        found = SPECIAL.search(source, at, stop)
+        found = special.search(source, at, stop)
         upto = found.start() if found else stop
         code.put(source[at:upto], at)
         at = _special(source, upto, stop, code) if found else stop
     code.put("\n", stop, verbatim=False)
-    text = "".join(code.chars)
-    origin = (*code.origin, stop)
-    strict(source, text, origin)
-    return Prelexed(text, origin, code.stash)
+    return Prelexed("".join(code.chars), (*code.origin, stop), code.stash)
+
+
+def prelex(source: str, start: int = 0, end: int | None = None) -> Prelexed:
+    """Pre-lex source[start:end] (all of it by default) to code the grammar reads, ending in a
+    newline. Refuses a pair never closed, a closer with no opener, and loose indentation."""
+    lexed = pairs(source, start, end)
+    strict(source, lexed.code, lexed.origin)
+    return lexed
 
 
 class _RefusalError(Exception):
