@@ -64,8 +64,12 @@ def parser() -> Lark:
 
 def parse(source: str) -> Program:
     """Parse source text to the surface AST. Every refusal, the pre-lexer's, the indenter's or
-    the grammar's, is an FplError at a position inside the source; nothing else escapes."""
-    return read(source, Lines(source), 0, len(source))
+    the grammar's, is an FplError at a position inside the source; nothing else escapes.
+    Nesting deeper than the build can recurse to is refused at the source's start."""
+    try:
+        return read(source, Lines(source), 0, len(source))
+    except RecursionError:
+        raise FplError(Span(1, 1), "nesting too deep to read") from None
 
 
 def read(source: str, lines: Lines, start: int, end: int) -> Program:

@@ -60,10 +60,10 @@
 - Closes by: the printer's round trip, when it needs a finer position
 
 ## nesting-depth
-- Depends on it: fpl/parse.py (_Build is recursive)
-- Default in force: none; nesting deep enough to exhaust Python's recursion limit raises RecursionError, a traceback
-- Closes by: an implementer, by an iterative build or a refusal at the depth limit
-- Evidence: fpl/parse.py _Build.item -> subtrees -> frames -> frame
+- Depends on it: fpl/parse.py (parse, _Build is recursive), tests/test_parse.py::test_nesting_too_deep_to_read_is_refused
+- Default in force: nesting that exhausts Python's recursion limit (about 100 brackets or ⟨ ⟩ islands, a few hundred block levels) is one error, ERROR: 1:1 nesting too deep to read; it reuses the FplError every refusal is
+- Closes by: an implementer, by an iterative build that reads any depth, or design, by naming a depth limit and where it is reported
+- Evidence: fpl/parse.py _Build.item -> subtrees -> frames -> frame; RecursionError at 100 nested [ and at 400 block levels before the refusal
 
 ## grammar-departs-from-handoff
 - Depends on it: fpl/grammar.lark, every example
