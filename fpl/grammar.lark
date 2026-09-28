@@ -13,8 +13,9 @@ block: _INDENT line+ _DEDENT
 
 // The bar separates frames; a tab separates cells within a frame (rank literals: space = token, tab = cell,
 // newline = row); a frame is a sequence of cells, and in code a tab is simply a cell boundary too.
-frames: frame (_BAR frame)*
-frame: _TABS? (cell (_TABS cell)* _TABS?)?  // a run of tabs is one separator: no empty cells (an empty cell is written ⟨⟩)
+frames: frame | slot (_BAR slot)+
+?slot: frame | -> frame  // a frame is empty only beside a bar (| x): an empty line is _NL, an empty enclosure frames?
+frame: _TABS? cell (_TABS cell)* _TABS? | _TABS  // a run of tabs is one separator: no empty cells (an empty cell is written ⟨⟩)
 cell: item+
 
 ?item: TOKEN
@@ -46,6 +47,7 @@ _RANGLE: "⟩"
 LCOMMENT.2: /(;+|⍝)[^\n]*/
 %ignore LCOMMENT
 
-_NL: /(\r?\n\t*)+/                    // indentation is tabs only: one tab per level, a counter, no width comparison
+_NL: (/\r?\n\t*/ LCOMMENT?)+           // indentation is tabs only: one tab per level, a counter, no width comparison;
+                                      // a comment line is blank, so it neither opens nor closes a block
 %declare _INDENT _DEDENT
 %ignore /[ \f]+/                      // spaces (and a form feed, the page separator) only; tabs are cell boundaries
