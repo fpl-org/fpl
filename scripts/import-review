@@ -37,6 +37,8 @@ remote on github.com. Reads the forge with the machine account's token (docs/WOR
 reading needs no particular account, only access to the repository.
 """
 
+import contextlib
+import io
 import json
 import os
 import re
@@ -228,20 +230,25 @@ def cred_args():
     return ["-c", "credential.helper=", "-c", f"credential.helper=store --file={cred}"] if cred else []
 
 
-def live(remote, number, pr):
+def live(remote, pr):
     """The heads of the pull request's branch and of its base as git has them now. Right after
-    a force-push the API can still report the old ones for a while; the refs do not lag."""
+    a force-push the API can still report the old ones for a while; the refs do not lag.
+
+    Each falls back to what the API says on its own: when the base has no name, when the
+    branch lives in a fork (whose refs this remote does not have), or when the remote does
+    not list the ref."""
+    head, tip = pr["head"]["sha"], pr["base"]["sha"]
     slug = pr["base"]["repo"]["full_name"]
-    refs = [f"refs/heads/{pr['base']['ref']}"] if pr["base"].get("ref") else []
-    if pr["head"].get("ref") and ((pr["head"].get("repo") or {}).get("full_name") == slug):
-        refs.append(f"refs/heads/{pr['head']['ref']}")
+    base_ref = f"refs/heads/{pr['base']['ref']}" if pr["base"].get("ref") else None
+    same_repo = (pr["head"].get("repo") or {}).get("full_name") == slug
+    head_ref = f"refs/heads/{pr['head']['ref']}" if pr["head"].get("ref") and same_repo else None
+    refs = [r for r in (base_ref, head_ref) if r]
     if not remote or not refs:
-        return pr["head"]["sha"], pr["base"]["sha"]
+        return head, tip
     out = git(*cred_args(), "ls-remote", remote, *refs, ok=False).stdout.split()
     now = dict(zip(out[1::2], out[0::2]))
-    head = now.get(refs[-1], pr["head"]["sha"]) if len(refs) == 2 else pr["head"]["sha"]
-    tip = now.get(refs[0], pr["base"]["sha"])
-    wanted = [r for r, c in zip(refs, [tip, head]) if not have(c)]
+    head, tip = now.get(head_ref, head), now.get(base_ref, tip)
+    wanted = [r for r, c in ((base_ref, tip), (head_ref, head)) if r in now and not have(c)]
     if wanted:
         git(*cred_args(), "fetch", "--no-auto-gc", "-q", remote, *wanted, ok=False)
     return head, tip
@@ -309,7 +316,7 @@ def import_one(repo, remote, bundle, patches):
     slug, number = pr["base"]["repo"]["full_name"], pr["number"]
     head, tip = pr["head"]["sha"], pr["base"]["sha"]
     if remote and not os.environ.get("FPL_IMPORT_HEAD"):
-        head, tip = live(remote, number, pr)
+        head, tip = live(remote, pr)
     mark = marker(slug, number)
     ensure(remote, number, head, tip)
     base = git("merge-base", tip, head).stdout.strip()
@@ -618,6 +625,90 @@ def self_test():
         answer = [c for c in thread.values() if "discussion_r41" in c["body"]]
         check("and an answer to it on the forge lands in its thread here",
               len(answer) == 1 and (answer[0].get("replyTo") or answer[0].get("reply_to")) == mine)
+
+        def inside(f, *args):
+            """Call f of this module as the subprocesses above run: in the throwaway repository,
+            with its environment, quietly. A die() is returned, not raised."""
+            cwd, saved = os.getcwd(), dict(os.environ)
+            os.chdir(repo)
+            os.environ.clear()
+            os.environ.update(env)
+            try:
+                with contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    return f(*args)
+            except SystemExit as stop:
+                return stop
+            finally:
+                os.chdir(cwd)
+                os.environ.clear()
+                os.environ.update(saved)
+
+        # Right after a force-push the API still reports the old head and base; live() reads
+        # the refs instead. A bare repository stands in for the forge, so ls-remote and fetch
+        # behave for real without a network. The API below says head `one` and base `two`;
+        # the forge has `ahead` on branch one and main_tip on main.
+        forge, clone = f"{tmp}/forge.git", f"{tmp}/clone"
+        sh("git", "init", "-q", "--bare", forge)
+        sh("git", "push", "-q", forge, "main", "one")
+        sh("git", "clone", "-q", "-b", "one", forge, clone)
+        with open(f"{clone}/f.txt", "a") as f:
+            f.write("only on the forge\n")
+        sh("git", "-C", clone, "commit", "-q", "-am", "only on the forge")
+        sh("git", "-C", clone, "push", "-q", "origin", "one")
+        ahead = sh("git", "-C", clone, "rev-parse", "HEAD").stdout.strip()
+
+        def stale(head_ref, base_ref, fork=False):
+            home = {"full_name": "x/r" if fork else "o/r"}
+            return {"head": {"sha": one, "ref": head_ref, "repo": home},
+                    "base": {"sha": two, "ref": base_ref, "repo": {"full_name": "o/r"}}}
+
+        check("the forge's newest commit is not here yet", not inside(have, ahead))
+        check("live refs win over what the API says",
+              inside(live, forge, stale("one", "main")) == (ahead, main_tip))
+        check("and what they point at is fetched", inside(have, ahead))
+        check("a branch gone from the forge leaves the API's head",
+              inside(live, forge, stale("gone", "main")) == (one, main_tip))
+        check("a base the forge does not name leaves the API's base, and the head still live",
+              inside(live, forge, stale("one", None)) == (ahead, two)
+              and inside(live, forge, stale("one", "")) == (ahead, two))
+        check("a head in a fork is not read from this repository's refs",
+              inside(live, forge, stale("one", "main", fork=True)) == (one, main_tip))
+        check("without a remote the API is all there is",
+              inside(live, None, stale("one", "main")) == (one, two))
+
+        # main()'s override: whoever just pushed a head (review-serve, restacking the queue)
+        # names it and its base, and the forge's lagging answer is set aside. Only fetch is
+        # stubbed; the remote on github.com is never reached, since the override skips live().
+        sh("git", "switch", "-q", "-c", "three", two)
+        c3, c4, c5, c6, c7, c8 = (commit("f.txt", f"a\nB\nc\nd\n{'e' * i}\n", f"e{i}")
+                                  for i in range(1, 7))
+        sh("git", "switch", "-q", "main")
+        answers = {3: pr(3, c3, main_tip, "main"), 4: pr(4, c3, one, "one"),
+                   5: pr(5, c7, main_tip, "main"), 6: pr(6, c8, main_tip, "main")}
+        real_fetch = globals()["fetch"]
+        globals()["fetch"] = lambda _slug, number, _secret: {
+            "pr": json.loads(json.dumps(answers[number])),
+            "comments": [], "reviews": [], "review_comments": []}
+        env["FPL_FORGE_TOKEN"] = "unused"
+        try:
+            env.update(FPL_IMPORT_HEAD=c4, FPL_IMPORT_BASE=c3)
+            inside(main, ["3"])
+            env.update(FPL_IMPORT_HEAD=c5, FPL_IMPORT_BASE="")
+            inside(main, ["4"])
+            env.update(FPL_IMPORT_HEAD=c6, FPL_IMPORT_BASE=c5)
+            inside(main, ["5", "6"])
+        finally:
+            globals()["fetch"] = real_fetch
+            for k in ("FPL_FORGE_TOKEN", "FPL_IMPORT_HEAD", "FPL_IMPORT_BASE"):
+                env.pop(k)
+        revisions = {p["title"]: [(r["oid"], r["base"]) for r in p["revisions"].values()]
+                     for p in patches().values()}
+        check("a named head and base replace the forge's", revisions.get("pr 3") == [(c4, c3)])
+        check("an empty base leaves the forge's", revisions.get("pr 4") == [(c5, one)])
+        check("a head is named for one pull request only",
+              revisions.get("pr 5") == [(c7, main_tip)]
+              and revisions.get("pr 6") == [(c8, main_tip)])
 
     failed = [name for name, ok in checks if not ok]
     for name in failed:
