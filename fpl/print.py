@@ -1,14 +1,15 @@
 """The surface AST as canonical source; the printer is the only normaliser.
 
 Items are joined by a space, cells by a tab, frames by a bar between spaces (an empty frame
-beside a bar prints nothing); an enclosure prints as "o body c", or "oc" when empty; a block line
-carries one tab per level; no line ends in a space; a program ends in a newline. Comments are
-not in the surface AST and are not printed.
+prints nothing); an enclosure prints as "o body c", or "oc" when it holds one empty frame; a block
+line carries one tab per level; a note stands in a cell of its own after its line's code, its
+continuation lines carrying as many tabs as stand before it; a comment is printed as written; no
+code line ends in a space; a program ends in a newline, and one empty line is the empty text.
 """
 
 from typing import assert_never
 
-from fpl.ast_surface import Cell, Enclosure, Frame, Item, Line, Pair, Program, Text, Word
+from fpl.ast_surface import Cell, Comment, Enclosure, Frame, Item, Line, Pair, Program, Text, Word
 
 DELIMITERS: dict[Pair, tuple[str, str]] = {
     "quotation": ("[", "]"),
@@ -19,12 +20,13 @@ DELIMITERS: dict[Pair, tuple[str, str]] = {
 
 
 def render(program: Program) -> str:
-    """Canonical source for a program: parse(render(p)) == p for every tree whose cells hold
-    items and whose enclosures hold no lone empty frame, and render∘parse is idempotent. The
-    empty program is the empty text."""
+    """Canonical source for a program: parse(render(p)) == p for every tree the parser can
+    give (cells hold items, an enclosure holds a frame, a program a line, and only its first
+    line is empty), and render∘parse is idempotent. One empty line is the empty text."""
     out = _Out()
     out.lines(program.lines, 0)
-    return "".join(out.chunks) + "\n" if program.lines else ""
+    text = "".join(out.chunks)
+    return text + "\n" if text else ""
 
 
 class _Out:
@@ -35,13 +37,16 @@ class _Out:
         self.chunks: list[str] = []
         self.tabs = 0
         self.leading = True
+        self.column = 0
 
     def put(self, text: str) -> None:
-        """Append text, keeping count of the tabs that open the physical line it ends on."""
+        """Append text, keeping count of the tabs that open the physical line it ends on, and of
+        all the tabs on it (the column, in elastic tabstops)."""
         self.chunks.append(text)
         newline = text.rfind("\n")
         if newline >= 0:
-            self.tabs, self.leading, text = 0, True, text[newline + 1 :]
+            self.tabs, self.leading, self.column, text = 0, True, 0, text[newline + 1 :]
+        self.column += text.count("\t")
         if self.leading:
             rest = text.lstrip("\t")
             self.tabs += len(text) - len(rest)
@@ -58,9 +63,22 @@ class _Out:
         """One line and its block, one level deeper."""
         self.put("\t" * depth)
         self.frames(line.frames)
+        if line.comment is not None:
+            code = len(line.frames) > 1 or any(frame.cells for frame in line.frames)
+            self.comment(line.comment, code)
         for inner in line.block:
             self.put("\n")
             self.line(inner, depth + 1)
+
+    def comment(self, comment: Comment, code: bool) -> None:
+        """A comment as written: a note after code in a cell of its own, its continuation lines
+        aligned under it by their tabs."""
+        first, *rest = comment.lines
+        self.put("\t" if code else "")
+        column = self.column
+        self.put(first)
+        for more in rest:
+            self.put("\n" + "\t" * column + more)
 
     def frames(self, frames: tuple[Frame, ...]) -> None:
         """Frames between bars; an empty frame adds only its bar."""
@@ -95,7 +113,7 @@ class _Out:
                 assert_never(item)
 
     def enclosure(self, enclosure: Enclosure) -> None:
-        """o body c, or oc when nothing is inside."""
+        """o body c, or oc when one empty frame is inside."""
         opener, closer = DELIMITERS[enclosure.pair]
         if not any(frame.cells for frame in enclosure.frames) and len(enclosure.frames) < 2:
             self.put(opener + closer)

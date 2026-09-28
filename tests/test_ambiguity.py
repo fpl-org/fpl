@@ -17,17 +17,16 @@ from fpl.parse import GRAMMAR, FplIndenter, parse
 
 CORPUS = sorted(Path(__file__).parent.parent.glob("features/*/examples/*.fpl"))
 REWRITES = [
-    ("line: frames _NL block?", "line: frames _NL"),
+    ("line: frames (NOTE | DOC)? _NL block?", "line: frames (NOTE | DOC)? _NL"),
     ("block: _INDENT line+ _DEDENT\n", ""),
     ("%declare _INDENT _DEDENT\n", ""),
-    (r"_NL: (/\r?\n\t*/ LCOMMENT?)+", r"_NL: /\n/"),
-    ("%ignore LCOMMENT\n", ""),
+    (r"_NL: /(\r?\n\t*)+/", r"_NL: /\n/"),
 ]
 
 
 def flat(grammar: str) -> str:
-    """The grammar with its blocks removed: a line is frames and a newline, comments are not
-    ignored. Each rewrite must change the text, or the grammar has moved under this test."""
+    """The grammar with its blocks removed: a line is frames, its comment and one newline.
+    Each rewrite must change the text, or the grammar has moved under this test."""
     for old, new in REWRITES:
         assert old in grammar, old
         grammar = grammar.replace(old, new)

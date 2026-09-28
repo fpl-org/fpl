@@ -7,10 +7,10 @@ from pathlib import Path
 from typing import override
 
 import icontract
-from lark import Lark, Token, Tree, UnexpectedInput
+from lark import Lark, Token, Tree, UnexpectedInput, UnexpectedToken
 from lark.indenter import DedentError, Indenter
 
-from fpl.ast_surface import Cell, Enclosure, Frame, Item, Line, Pair, Program, Text, Word
+from fpl.ast_surface import Cell, Comment, Enclosure, Frame, Item, Line, Pair, Program, Text, Word
 from fpl.errors import FplError, Span
 from fpl.lex import BRACKETS, Lines, Prelexed, Stashed, counted, prelex, shape
 
@@ -83,6 +83,10 @@ def _tree(source: str, lexed: Prelexed) -> Tree[Token]:
     """Lark's tree for the pre-lexed code, or its failure placed in the source."""
     try:
         return parser().parse(lexed.code)  # pyright: ignore[reportUnknownMemberType] -- lark types its text argument loosely
+    except UnexpectedToken as failure:
+        comment = isinstance(failure.token, Token) and failure.token.type in {"NOTE", "DOC"}
+        message = "a comment cannot stand inside an enclosure" if comment else "unexpected input"
+        raise FplError(placed(source, lexed, failure.pos_in_stream), message) from None
     except UnexpectedInput as failure:
         raise FplError(placed(source, lexed, failure.pos_in_stream), "unexpected input") from None
     except MisindentedError as failure:
@@ -121,24 +125,39 @@ class _Build:
         return tuple(build(child, outer) for child in tree.children if isinstance(child, Tree))
 
     def line(self, tree: Tree[Token], outer: Span) -> Line:
-        """frames _NL block?"""
+        """frames (NOTE | DOC)? _NL block?; a ;; line holds its comment and no frames."""
         span = self.at(tree, outer)
-        frames, *block = tree.children
+        frames, *rest = tree.children
         assert isinstance(frames, Tree)
         lines = tuple(
             line
-            for child in block
+            for child in rest
             if isinstance(child, Tree)
             for line in self.subtrees(child, span, self.line)
         )
-        return Line(self.subtrees(frames, span, self.frame), lines, span)
+        comment = next((self.comment(c, frames) for c in rest if isinstance(c, Token)), None)
+        return Line(self.held(frames, span, comment), lines, span, comment)
+
+    def held(self, frames: Tree[Token], span: Span, comment: Comment | None) -> tuple[Frame, ...]:
+        """A line's frames; a ;; line holds none."""
+        if comment is not None and comment.level > 1:
+            return ()
+        return self.subtrees(frames, span, self.frame)
+
+    def comment(self, token: Token, frames: Tree[Token]) -> Comment:
+        """A note and its continuation lines, or a ;; comment, refused after code on its line."""
+        span = self.lines.span(self.lexed.origin[token.start_pos or 0])
+        level = 1 if token.type == "NOTE" else len(token) - len(token.lstrip(";"))
+        if level > 1 and _code(frames):
+            raise FplError(span, f"a {';' * level} comment stands on a line of its own")
+        return Comment(level, tuple(part.lstrip("\t") for part in token.split("\n")), span)
 
     def frames(self, tree: Tree[Token], outer: Span) -> tuple[Frame, ...]:
         """frame (_BAR frame)*"""
         return self.subtrees(tree, outer, self.frame)
 
     def frame(self, tree: Tree[Token], outer: Span) -> Frame:
-        """_TABS? (cell (_TABS cell)* _TABS?)?"""
+        """_TABS? (cell (_TABS cell)* _TABS?)?; empty, it starts where its enclosing node does."""
         span = self.at(tree, outer)
         return Frame(self.subtrees(tree, span, self.cell), span)
 
@@ -151,10 +170,8 @@ class _Build:
         """A token, a string placeholder, or an enclosure."""
         if isinstance(child, Tree):
             span = self.at(child, outer)
-            inside = tuple(
-                frame for sub in self.subtrees(child, span, self.frames) for frame in sub
-            )
-            return Enclosure(PAIRS[str(child.data)], inside, span)
+            (frames,) = self.subtrees(child, span, self.frames)
+            return Enclosure(PAIRS[str(child.data)], frames, span)
         start = child.start_pos or 0
         span = self.lines.span(self.lexed.origin[start])
         stashed = self.lexed.stash.get(start)
@@ -192,6 +209,13 @@ class _Build:
             raise FplError(self.lines.span(at), "⟨ never closed")
         parts.append(read(self.source, self.lines, at + 1, after - 1))
         return after
+
+
+def _code(frames: Tree[Token]) -> bool:
+    """A line's frames hold code: a bar, or a frame with cells."""
+    return len(frames.children) > 1 or any(
+        isinstance(frame, Tree) and frame.children for frame in frames.children
+    )
 
 
 def within(source: str, line: int, col: int) -> bool:
