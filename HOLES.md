@@ -29,9 +29,9 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 
 ## grammar-departs-from-handoff
 - Depends on it: fpl/grammar.lark, every example
-- Default in force: the hand-off grammar with a frame empty only beside a bar (| x, a | | b), an empty enclosure holding no frames (frames? absent), and comment-only lines folded into the _NL run: their indentation opens and closes no block
-- Closes by: Caesura (syntax author), confirming or rewriting the rules in the hand-off
-- Evidence: 8a753ec fix(grammar): let a frame be empty only beside a bar; session grammar-fix/proof.log (corpus _ambig 26/29 -> 0/29, FLAT draws 1814/2000 -> 0/2000)
+- Default in force: PSJ's decisions of 2026-09-29: the hand-off's one frame rule (frames: frame (_BAR frame)*, a frame may be empty) for lines and enclosures; an enclosure takes frames without ?, so [] ⟨⟩ () {} are one empty frame (bars + 1 frames, the base case, distinct from [ | ]); start: line* without _NL*, so an empty line is only the first line of a file that opens blank; comments are NOTE and DOC tokens on their line (line: frames (NOTE | DOC)? _NL block?), no longer ignored, and _NL is the hand-off's blank run again
+- Closes by: Caesura (syntax author), folding these decisions into the hand-off's grammar and its prose
+- Evidence: 61399de fix(grammar): keep comments as tokens and read [] as one empty frame; session grammar-fix/proof2.log (LALR no conflicts, 29/29 examples, Earley _ambig 0/29 and 0/2000 flat draws); earlier 8a753ec
 
 ## grammar-comment-word
 - Depends on it: fpl/grammar.lark:15
@@ -83,7 +83,7 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 
 ## empty-node-span
 - Depends on it: fpl/parse.py (_Build.at)
-- Default in force: a frame that matched no token (one beside a bar, | x) starts where its enclosing node does
+- Default in force: a frame that matched no token (one beside a bar, | x, or the one frame of an empty enclosure, []) starts where its enclosing node does; an empty first line starts at the newline that ends it
 - Closes by: the printer's round trip, when it needs a finer position
 - Evidence: fpl/parse.py _Build.at (tree.meta.empty); Span is field(compare=False) in fpl/ast_surface.py, so the round trip does not see it
 
@@ -182,3 +182,39 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Default in force: a text holding an unbalanced “ or 「, or a symbol that spells another kind (1, #a, true), has no FON spelling; write gives the text as is and read refuses it or reads another value; the JSON property draws texts without “ and ”; a JSON key that is not a plain symbol is kept as text
 - Closes by: design, an escape in strings or a statement that such values are outside the profile
 - Evidence: handoff/SHAR-syntax.org:621 "FON-data" (no escape; its strategy filters balanced quotes)
+
+## comment-levels
+- Depends on it: fpl/grammar.lark (NOTE, DOC), fpl/parse.py (_Build.comment), fpl/print.py (comment), fpl/trivia.py
+- Default in force: PSJ's decisions of 2026-09-29: the level is bound to position, as in Lisp. ; (and ⍝, which counts as ;) is a note after the code of its line, continued by the ; lines right under it, one token with them; a blank line ends a note; ;; ;;; ;;;; stand on a line of their own: ;; the doc of the next code line, ;;; a section, ;;;; the file; ;; or deeper after code is refused at the comment
+- Closes by: Caesura, folding the rule into the hand-off's grammar prose
+- Evidence: session grammar-fix/proof2.log; tests/test_parse.py::test_a_comment_is_held_by_its_line, tests/test_trivia.py
+
+## comment-levels-vs-corpus
+- Depends on it: fpl/parse.py (_Build.comment), features/match/examples
+- Default in force: a ; with no code before it that continues no note is kept as a note line (one empty frame and its note), not refused as the rule says, because the corpus has four: features/match/examples/04-4-list-patterns.fpl:15-16, 07-7-abc-s-keywords.fpl:2-3; no ;; is after code
+- Closes by: PSJ or Caesura rewriting those lines (as ;; or as notes after code); then the builder refuses the standalone ;
+- Evidence: session grammar-fix/measure.log, proof2.log
+
+## note-alignment
+- Depends on it: fpl/parse.py (_Build.comment), fpl/print.py (_Out.column, comment)
+- Default in force: PSJ's decision of 2026-09-29: a continuation line of a note carries as many tabs before its ; as the code line has before its own ; (elastic tabstops), and a continued note stands in its own cell; the printer sets every note in its own cell and aligns its continuations; the builder does not refuse a misaligned continuation, since the corpus has two: features/match/examples/03-3-multiple-dispatch.fpl:8 (1 tab, note at 5), 06-6-python-s-keywords.fpl:6 (0 tabs, note at 1)
+- Closes by: Caesura folding the rule into the hand-off; PSJ or Caesura realigning those lines; then the builder refuses with "a continued note aligns with the note above: N tabs"
+- Evidence: session grammar-fix/proof2.log (note alignment section)
+
+## comment-heads-block
+- Depends on it: fpl/grammar.lark (line)
+- Default in force: a comment line may head an indented block (an outline heading); no example has one
+- Closes by: Caesura, confirming or refusing it
+- Evidence: session grammar-fix/proof2.log (";;; s\n\ta" parses once, 0 heads in the corpus)
+
+## comment-in-enclosure
+- Depends on it: fpl/parse.py (_tree)
+- Default in force: a comment inside a multi-line enclosure is refused, ERROR: a comment cannot stand inside an enclosure; no example has one
+- Closes by: Caesura, giving comments a place inside enclosures if one is wanted
+- Evidence: session grammar-fix/proof2.log (0 comments inside an enclosure in the corpus); tests/test_parse.py::test_a_refusal_is_one_error_line
+
+## empty-first-line
+- Depends on it: fpl/grammar.lark (start), fpl/print.py (render)
+- Default in force: a file that opens with blank lines has one empty first line, and "\n\tx" gives that line a block; a blank source ("", "\n") is that one line and prints as the empty text; a form-feed-only line between lines is an empty line too, which prints as a blank line that reads back as none; no example opens blank (PSJ: leading blank lines are not useful, a refusal is acceptable)
+- Closes by: PSJ or Caesura, keeping it or refusing a blank first line
+- Evidence: session grammar-fix/proof2.log; tests/test_parse.py::test_only_the_first_line_is_empty_and_it_may_hold_a_block
