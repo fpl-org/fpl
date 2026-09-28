@@ -204,3 +204,4 @@ def test_json_keys_are_symbols_where_they_can_be() -> None:
             (Str("1"), List((Num(Decimal("1.5")), Bool(True)))),
         )
     )
+    assert embed({"01": None, "&zz": None}) == Dict(((Str("01"), Absent()), (Str("&zz"), Absent())))
