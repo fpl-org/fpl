@@ -7,7 +7,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from fpl.ast_surface import Cell, Enclosure, Frame, Item, Line, Program, Text, Word
+from fpl.ast_surface import Cell, Comment, Enclosure, Frame, Item, Line, Program, Text, Word
 from fpl.errors import FplError, Span
 from fpl.lex import prelex
 from fpl.parse import GRAMMAR, FplIndenter, parse, parser, placed, where, within
@@ -36,7 +36,7 @@ def line(*frames: tuple[Word | Text | Enclosure, ...], block: tuple[Line, ...] =
     return Line(tuple(Frame((Cell(items, here),), here) for items in frames), block, here)
 
 
-type Node = Program | Line | Frame | Cell | Item
+type Node = Program | Line | Comment | Frame | Cell | Item
 
 
 def children(node: Node) -> tuple[Node, ...]:
@@ -47,7 +47,9 @@ def children(node: Node) -> tuple[Node, ...]:
         ):
             return inner
         case Line():
-            return (*node.frames, *node.block)
+            return (*node.frames, *filter(None, (node.comment,)), *node.block)
+        case Comment():
+            return ()
         case Text():
             return tuple(part for part in node.parts if isinstance(part, Program))
         case Word():
@@ -82,7 +84,7 @@ def test_an_empty_node_starts_where_its_enclosing_node_does() -> None:
     assert list(spans(program)) == [
         *(Span(1, 1),) * 6,
         *(Span(2, 2),) * 6,
-        Span(2, 8),
+        *(Span(2, 8),) * 2,
         Span(2, 11),
     ]
 
@@ -110,7 +112,9 @@ def test_within_names_a_character_or_the_end_of_a_line() -> None:
         ("a\x0b\n", "ERROR: 1:2 unexpected input"),
         ("[\n]\t]", "ERROR: 2:3 ] closes nothing"),
         ("a\n]", "ERROR: 2:1 ] closes nothing"),
-        ("\n\tx\n", "ERROR: 1:1 unexpected input"),
+        ("a ;; d\n", "ERROR: 1:3 a ;; comment stands on a line of its own"),
+        ("a | ;;; s\n", "ERROR: 1:5 a ;;; comment stands on a line of its own"),
+        ("[ a ; c\n b ]\n", "ERROR: 1:5 a comment cannot stand inside an enclosure"),
         ("a\n[ a )\n", "ERROR: 2:5 ) does not close ["),
         ("a\n\t b\n", "ERROR: 2:2 indentation must be tabs"),
         ("a\n\t\t[\n\tb ]\n", "ERROR: 3:2 dedent below line 2, but its [ is still open"),
@@ -126,7 +130,9 @@ def test_lines_frames_cells_and_blocks() -> None:
     here = Span(1, 1)
     cells = (Cell((word("b"),), here), Cell((word("c"),), here))
     first = Line(
-        (Frame((Cell((word("a"),), here),), here), Frame(cells, here)), (line((word("d"),)),), here
+        (Frame((Cell((word("a"),), here),), here), Frame(cells, here)),
+        (Line(line((word("d"),)).frames, (), here, Comment(1, (";x",), here)),),
+        here,
     )
     assert program == Program((first,), here)
 
@@ -152,7 +158,42 @@ def test_enclosures_hold_frames() -> None:
         for item in program.lines[0].frames[0].cells[0].items
         if isinstance(item, Enclosure)
     ]
-    assert shown == [("quotation", 2), ("prefix", 1), ("group", 0), ("dict", 1)]
+    assert shown == [("quotation", 2), ("prefix", 1), ("group", 1), ("dict", 1)]
+
+
+@pytest.mark.parametrize("source", ["[]", "⟨⟩", "()", "{}", "[\t]", "[\n]"])
+def test_an_empty_enclosure_holds_one_empty_frame(source: str) -> None:
+    """PSJ 2026-09-29: an enclosure holds bars + 1 frames; [ | ] holds two."""
+    (item,) = parse(source + "\n").lines[0].frames[0].cells[0].items
+    assert isinstance(item, Enclosure)
+    assert item.frames == (Frame((), AT),)
+
+
+@pytest.mark.parametrize("source", ["", "\n", "\n\n\n"])
+def test_a_blank_source_is_one_empty_line(source: str) -> None:
+    assert parse(source) == Program((Line((Frame((), AT),), (), AT),), AT)
+
+
+def test_only_the_first_line_is_empty_and_it_may_hold_a_block() -> None:
+    empty = Line((Frame((), AT),), (line((word("x"),)),), AT)
+    assert parse("\n\tx\n\ny\n") == Program((empty, line((word("y"),))), AT)
+
+
+def test_a_comment_is_held_by_its_line() -> None:
+    program = parse("a ; x\n; y\n;; d\n\t⍝ g\nb\n")
+    note = Comment(1, ("; x", "; y"), Span(1, 3))
+    doc = Comment(2, (";; d",), Span(3, 1))
+    glyph = Line((Frame((), AT),), (), AT, Comment(1, ("⍝ g",), AT))
+    assert program.lines == (
+        Line(line((word("a"),)).frames, (), AT, note),
+        Line((), (glyph,), AT, doc),
+        line((word("b"),)),
+    )
+    assert [line.comment and line.comment.span for line in program.lines] == [
+        Span(1, 3),
+        Span(3, 1),
+        None,
+    ]
 
 
 def test_a_string_is_read_with_its_islands_and_without_incidental_indentation() -> None:

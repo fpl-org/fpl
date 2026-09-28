@@ -1,7 +1,7 @@
 """The surface AST: what was written, as frozen nodes, each with the Span it starts at.
 
-A program is lines; a line is frames split by the bar, and the block indented under it; a frame
-is cells split by tabs; a cell is items. Spans do not take part in equality.
+A program is lines; a line is frames split by the bar, its comment, and the block indented under
+it; a frame is cells split by tabs; a cell is items. Spans do not take part in equality.
 """
 
 from dataclasses import dataclass, field
@@ -63,12 +63,25 @@ class Frame:
 
 
 @dataclass(frozen=True)
+class Comment:
+    """A line comment, each of its lines as written from its mark on: a note (level 1, ⍝ counts
+    as ;) after the code of its line, with the ; lines right under it that continue it, or a
+    ;; ;;; ;;;; comment on a line of its own (level 2, 3, 4 ...)."""
+
+    level: int
+    lines: tuple[str, ...]
+    span: Span = field(compare=False)
+
+
+@dataclass(frozen=True)
 class Line:
-    """Frames on one line and the lines of the block indented under it."""
+    """Frames on one line, its comment, and the lines of the block indented under it. A line of
+    a ;; comment holds no frames; an empty line, one empty frame."""
 
     frames: tuple[Frame, ...]
     block: tuple["Line", ...]
     span: Span = field(compare=False)
+    comment: Comment | None = None
 
 
 @dataclass(frozen=True)
