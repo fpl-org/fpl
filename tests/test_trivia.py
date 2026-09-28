@@ -62,3 +62,9 @@ def test_a_comment_looks_past_comments_and_blanks_for_its_code(
 ) -> None:
     """A doc looks past comment lines to the next code line; a note continues over its lines."""
     assert [(c.line, c.kind, c.target) for c in comments(parse(source))] == expected
+
+
+def test_a_note_reads_as_its_lines_joined_without_their_marks() -> None:
+    assert comments(parse("a ;X one\n;two\n⍝⍝ three\n")) == (
+        Attached(1, 1, "trailing", 1, "X one two three"),
+    )
