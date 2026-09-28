@@ -73,6 +73,11 @@ def test_lines_frames_cells_and_blocks() -> None:
     assert program == Program((first,), here)
 
 
+def test_a_string_glued_to_a_word_is_an_item_of_its_own() -> None:
+    items = parse("a“x”\n").lines[0].frames[0].cells[0].items
+    assert items == (word("a"), Text("str", ("x",), Span(1, 2)))
+
+
 def test_every_node_starts_where_it_is_written() -> None:
     program = parse("x\n⟦c⟧ “a\nb” [ y ]\n")
     items = program.lines[1].frames[0].cells[0].items
