@@ -1,0 +1,16 @@
+;;; ── 2. a constraint tree: a domain attached to a hole ─────────────────────
+fd/
+	seam ∈ fd -- core  faithful not-full [ space ] keeps-determinism
+	;; :: struck — a finite domain is a type; ascription is ∈ (one glyph, one meaning): x 1 9 range ∈
+	;; =: struck — posting an arithmetic constraint is a tell, the same word as unify; fd/≐ and logic/≐ are different words by path
+	distribute : vs --	; accepted: Oz's word, the strategy first-class
+
+puzzle : -- sol +st
+	fresh →x  fresh →y
+	x 1 9 range ∈   y 1 9 range ∈
+	x y + 10 unify   x 2 times y unify
+	[ x y ] distribute
+	| #x x pair #y y pair dict
+
+[ puzzle ] fd/space	; → [ dict(x:… y:…) ]  ⟨sketch⟩ finite domains + distribute bound the search; whether elaboration can discharge +div from that is open
+
