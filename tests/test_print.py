@@ -141,6 +141,10 @@ def test_print_keeps_the_tree_of_the_corpus(program: Path) -> None:
         ("[\t]\n", "[]\n"),
         ("\tk “a\n\tb⟨c⟩” 「r\n」\n", "k “a\nb⟨c⟩” 「r\n」\n"),
         ("a\n\tx “p\n\tq”\n", "a\n\tx “p\n\tq”\n"),
+        ("X “a\nb”\n", "X “a\nb”\n"),
+        ("a\n\tx “p\n\ty” “u\n\tv”\n", "a\n\tx “p\n\ty” “u\n\tv”\n"),
+        ("“a\n b” “p\nq”\n", "“a\n b” “p\nq”\n"),
+        ("“a\n\tb\nc” “p\nq”\n", "“a\n\tb\nc” “p\nq”\n"),
         ("", ""),
     ],
 )
