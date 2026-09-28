@@ -25,8 +25,9 @@ Keep talk about the vision sober, and the harness small: `docs/notes/2026-09-19-
   docs/               settled decisions and conventions (vendor-neutral)
   .claude/            Claude Code commands, subagents, skill, hooks
   scripts/            acommit, commit-lint, restack, setup, agent-identity, new-worktree,
-                      branch-lint, layer, pr, review, land, task, rad-cob-dagtaak,
-                      mirror, import-pr, import-review
+                      branch-lint, layer, pr, review, land, task, rad-cob-dagtaak;
+                      crap, props, escapes, mutants, gates (the noslop gate)
+  quality/            the noslop gate's lanes, tool configs and pinned tools (docs/QUALITY.md)
   flake.nix, flake.lock   the dev shell: one pinned toolchain for everyone (docs/DEVSHELL.md)
   .githooks/          pre-commit, commit-msg, atomic-check, reference-transaction, pre-push
                       (all enabled by scripts/setup)
@@ -68,11 +69,17 @@ Full rationale in `docs/STACK.md`. In brief:
 Each worktree defines a single non-interactive check:
 
 ```
-make check   # lint + pyright (strict) + pytest (unit + grammar-ambiguity + conformance)
+make check   # ruff, pyright strict, 100% branch coverage, CRAP <= 8, a property test per
+             # module, layering, dependencies, dead and duplicate code (docs/QUALITY.md)
 ```
 
 `make check` green ⇔ the work is done. There is no other definition of done. Do not report a
-feature complete on a red or unrun `make check`.
+feature complete on a red or unrun `make check`. Before a PR leaves draft, `make ready` adds
+the long search: more examples, CrossHair, and mutation testing.
+
+The gate's configuration is policy: it lives in the harness (`quality/`), a change to it
+carries `[policy]` and no code, and `make check` refuses to run against an uncommitted one.
+Do not loosen a check to get to green; say which check is wrong and why.
 
 ## The oracle rule
 
@@ -88,10 +95,10 @@ features/<name>/examples/*.expected   expected stdout, or `ERROR: <line>:<col> <
 agent's job is to make `make check` green against them. If an agent writes both a feature and
 its own oracle, the oracle proves nothing.
 
-`features/*/spec.md`, `docs/DESIGN.md`, and `docs/SPEC.md` are protected two ways:
-`.githooks/commit-msg` rejects a commit touching them without the literal `[spec]` marker in
-the message, and the Claude `guard-specs` hook blocks the edit unless the session sets
-`FPL_SPEC_EDIT=1`. Other harnesses honour the `[spec]` rule by convention. If you think a spec
+`features/*/spec.md`, `features/*/examples/*`, `docs/DESIGN.md`, and `docs/SPEC.md` are
+protected two ways: `.githooks/commit-msg` rejects a commit touching them without the literal
+`[spec]` marker in the message, and the Claude `guard-specs` hook blocks the edit unless the
+session sets `FPL_SPEC_EDIT=1`. Other harnesses honour the `[spec]` rule by convention. If you think a spec
 is wrong, say so and let the maintainer decide — don't route around it.
 
 ## Commits & workflow
