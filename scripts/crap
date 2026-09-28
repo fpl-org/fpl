@@ -26,6 +26,8 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from radon.complexity import cc_visit  # the worktree's .venv has it
+
 
 @dataclass(frozen=True)
 class Score:
@@ -86,8 +88,6 @@ def functions(tree: ast.Module) -> dict[int, tuple[str, int, int, bool]]:
 
 
 def measure(source: Path, coverage: dict[str, object]) -> list[Score]:
-    from radon.complexity import cc_visit  # the worktree's .venv has it; the self-test fakes it
-
     files = coverage.get("files", {})
     assert isinstance(files, dict)
     scores: list[Score] = []

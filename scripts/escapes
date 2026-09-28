@@ -19,6 +19,7 @@ see what was waived and judge whether it still holds:
 
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 RULES = [
@@ -64,8 +65,6 @@ def main(argv: list[str]) -> int:
 
 
 def self_test() -> int:
-    import tempfile
-
     good = [
         "x = f()  # noqa: E731 -- a local predicate",
         "y = g()  # pyright: ignore[reportUnknownMemberType] -- lark types it loosely",
