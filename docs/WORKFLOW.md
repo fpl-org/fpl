@@ -129,12 +129,15 @@ gh pr create --base stack/typed-let/1 --head stack/typed-let/2
 For agent work there are two scripts, one for each side of the review:
 
 ```
-scripts/pr [-B <base>]     # the agent's side: file the branch as the machine account
+scripts/pr [<branch>]      # the agent's side: file the branch as the machine account,
+                           # on the tail of the queue
 scripts/land [<number>]    # the maintainer's side: checks, conversation, diff, then decide
 ```
 
 `scripts/pr` refuses unless the token it uses belongs to the machine account of
 `.git/agent-identity` and the branch on the forge is the commit you have; it does not push.
+It files the pull request on the tail of the queue, and refuses a branch that is not built
+on that tail, with the rebase that puts it there; `-B <base>` overrides the choice.
 `scripts/land` waits for the checks, prints the conversation, opens the diff in the browser,
 and only after Enter approves, rebase-merges, deletes the branch and updates `main`. The
 author of a pull request cannot approve it, which is why the two sides are two accounts.

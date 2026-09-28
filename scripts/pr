@@ -7,8 +7,14 @@
 #                                  lists every subject
 #   scripts/pr <branch>            that branch, without checking it out
 #   scripts/pr -t <title> -b <text>
-#   scripts/pr -B <base>           target another branch than main (the PR below, in a stack)
+#   scripts/pr -B <base>           target that branch instead of the tail of the queue
 #   scripts/pr -n                  dry run: print what would be sent
+#
+# Open pull requests form one queue, first in, first out: each is based on the one filed
+# before it, and only the head is based on main, so they merge one after another without
+# conflicts between them (docs/WORKFLOW.md). A new pull request goes on the tail: its base
+# is the branch of the last open pull request, and the branch must already contain it.
+# If it does not, this stops and says how to rebase onto it.
 #
 # Naming the branch matters when the checkout is someone's working copy: switching it to
 # the branch rewrites their files, and a session that may not delete files can leave it
@@ -35,7 +41,7 @@ die() {
 	exit 1
 }
 
-base=main title="" body="" dry=0
+base="" title="" body="" dry=0
 while getopts "t:b:B:n" opt; do
 	case "$opt" in
 	t) title="$OPTARG" ;;
@@ -97,31 +103,6 @@ git_forge() {
 	fi
 }
 
-here="$(git rev-parse "refs/heads/$branch")"
-there="$(git_forge ls-remote "$remote" "refs/heads/$branch" | cut -f1)"
-[ -n "$there" ] || die "'$branch' is not on $remote yet; push it first"
-[ "$there" = "$here" ] || die "$remote has ${there:0:7}, you have ${here:0:7}; push first"
-
-first="$(git rev-list --reverse "$remote/$base..$here" | head -n1)"
-[ -n "$first" ] || die "no commits between $remote/$base and $branch"
-count="$(git rev-list --count "$remote/$base..$here")"
-[ -n "$title" ] || title="$(git log -1 --format=%s "$first")"
-# Default body: the first paragraph of the first commit's body, as one line.
-[ -n "$body" ] || body="$(git log -1 --format=%b "$first" |
-	awk 'NF==0{exit} {printf "%s%s", sep, $0; sep=" "}')"
-# One commit speaks for itself. More than one: the first commit's paragraph describes only
-# the first change, so list them all.
-subjects=""
-[ "$count" = 1 ] || subjects="$(git log --reverse --format='- %s' "$remote/$base..$here")"$'\n\n'
-text="$(printf '%s%s\n\n%s%s commit%s, rebase-merge.' \
-	"${stack:+Stack: $stack$'\n\n'}" "$body" "$subjects" "$count" "$([ "$count" = 1 ] || echo s)")"
-
-if [ "$dry" -eq 1 ]; then
-	printf 'as:    %s\nbase:  %s\nhead:  %s\ntitle: %s\n\n%s\n' \
-		"$login" "$base" "$branch" "$title" "$text" >&2
-	exit 0
-fi
-
 # The token of the machine account. gh keeps one per account in the system keyring;
 # .git/agent-credentials is the fallback, a git credential-store file holding one
 # https://<login>:<token>@github.com line. Its login must be the machine account's: a
@@ -146,6 +127,64 @@ case "$slug" in
 */*) ;;
 *) die "cannot read owner/repo from the url of '$remote'" ;;
 esac
+
+here="$(git rev-parse "refs/heads/$branch")"
+there="$(git_forge ls-remote "$remote" "refs/heads/$branch" | cut -f1)"
+[ -n "$there" ] || die "'$branch' is not on $remote yet; push it first"
+[ "$there" = "$here" ] || die "$remote has ${there:0:7}, you have ${here:0:7}; push first"
+
+# The tail of the queue: the open pull request no other one is based on. None means the
+# queue is empty and this one is its head, on main.
+if [ -z "$base" ]; then
+	base="$(FPL_TOKEN="$token" python3 - "$slug" "$branch" <<'PY'
+import json, os, sys, urllib.request
+
+slug, branch = sys.argv[1:3]
+request = urllib.request.Request(
+    f"https://api.github.com/repos/{slug}/pulls?state=open&per_page=100",
+    headers={"Authorization": f"Bearer {os.environ['FPL_TOKEN']}", "Accept": "application/vnd.github+json"},
+)
+with urllib.request.urlopen(request) as response:
+    open_prs = json.load(response)
+filed = [p for p in open_prs if p["head"]["ref"] == branch]
+if filed:
+    print(filed[0]["base"]["ref"])  # already in the queue; the forge knows its place
+    raise SystemExit(0)
+under = {p["base"]["ref"] for p in open_prs}
+tails = [p for p in open_prs if p["head"]["ref"] not in under]
+if len(tails) > 1:
+    names = ", ".join(f"#{p['number']} {p['head']['ref']}" for p in tails)
+    sys.exit(f"pr: the queue has more than one end ({names}); give the base with -B")
+print(tails[0]["head"]["ref"] if tails else "main")
+PY
+)" || exit 1
+fi
+if [ "$base" != main ]; then
+	git_forge fetch -q "$remote" "+refs/heads/$base:refs/remotes/$remote/$base" ||
+		die "cannot fetch '$base' from $remote"
+fi
+git merge-base --is-ancestor "$remote/$base" "$here" ||
+	die "'$branch' is not on top of $base, the tail of the queue; git rebase --onto $remote/$base $remote/main $branch, push, and run this again"
+
+first="$(git rev-list --reverse "$remote/$base..$here" | head -n1)"
+[ -n "$first" ] || die "no commits between $remote/$base and $branch"
+count="$(git rev-list --count "$remote/$base..$here")"
+[ -n "$title" ] || title="$(git log -1 --format=%s "$first")"
+# Default body: the first paragraph of the first commit's body, as one line.
+[ -n "$body" ] || body="$(git log -1 --format=%b "$first" |
+	awk 'NF==0{exit} {printf "%s%s", sep, $0; sep=" "}')"
+# One commit speaks for itself. More than one: the first commit's paragraph describes only
+# the first change, so list them all.
+subjects=""
+[ "$count" = 1 ] || subjects="$(git log --reverse --format='- %s' "$remote/$base..$here")"$'\n\n'
+text="$(printf '%s%s\n\n%s%s commit%s, rebase-merge.' \
+	"${stack:+Stack: $stack$'\n\n'}" "$body" "$subjects" "$count" "$([ "$count" = 1 ] || echo s)")"
+
+if [ "$dry" -eq 1 ]; then
+	printf 'as:    %s\nbase:  %s\nhead:  %s\ntitle: %s\n\n%s\n' \
+		"$login" "$base" "$branch" "$title" "$text" >&2
+	exit 0
+fi
 
 # One round trip per step: who the token is, whether the branch is already filed, and
 # then the pull request. Anything but 'the token is the machine account' stops here.
