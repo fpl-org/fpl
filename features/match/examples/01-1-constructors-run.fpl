@@ -1,0 +1,16 @@
+;;;; Pattern matching, one sketch: Haskell shapes, Julia/CLOS multimethods, XDuce-free list patterns,
+;;;; Prolog's family, Python's keywords, ABC's keywords — all the same match (S35–S40). Name spelling, tabs.
+
+;;; ── 1. constructors run backwards: a pattern is the inverse of an injective constructor ──
+circle : r -- shape
+	#circle swap pair
+rect : w h -- shape
+	#rect swap pair pair
+
+area : shape -- n
+	match
+		( circle r ∈ pos )	r dup times π times	; guard: an ascription in the pattern, no `when`
+		( circle 0 )	0	; a literal matches by equality
+		( rect w h )	w h times
+		_	?	; wildcard row; its body is a goal the elaborator reports (S40)
+

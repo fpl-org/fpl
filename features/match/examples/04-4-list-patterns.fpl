@@ -1,0 +1,17 @@
+;;; ── 4. list patterns without a star: cons is injective, catenation is not (S38) ──
+sum : xs -- n
+	match
+		⟨⟩	0
+		( cons x xs )	xs sum x +
+zip : xs ys -- ps
+	match
+		( cons x xs )	( cons y ys )	xs ys zip x y pair cons
+		_	_	⟨⟩
+contains : x xs -- b
+	match
+		_	⟨⟩	false
+		_	( cons $x _ )	true	; $x: a pinned pattern, matches the current value of x (Elixir's ^x)
+		_	( cons _ rest )	x rest contains
+; a sequence queried as a whole is a value-level query, where a regex belongs:
+;   lines [ “err.*” regex ] find
+
