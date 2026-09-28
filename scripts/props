@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""scripts/props — every module with code in it has a property test.
+"""scripts/props — every module with code has a property test, and pays its obligations.
 
-    scripts/props [--source fpl] [--tests tests]
+    scripts/props [--source fpl] [--tests tests] [--obligations quality/obligations.toml]
     scripts/props --self-test
 
 A module of fpl/ that defines anything (a function, a class, an assignment) needs at least one
@@ -10,12 +10,22 @@ module that is only a docstring, like a stub for a stage not written yet, needs 
 properties those tests state is the maintainer's to judge; that there is one is not optional
 (docs/QUALITY.md).
 
-Exit 0: every module has one; 1: some do not; 2: usage.
+Some properties are not the maintainer's to judge but the language's to keep: desugaring
+preserves meaning, a well-typed term makes progress. Those are the module's obligations,
+listed in quality/obligations.toml, and each is due from the moment the module has code. A
+test pays one by naming it:
+
+    @pytest.mark.obligation("desugaring preserves meaning")
+    @given(programs())
+    def test_...
+
+Exit 0: every module has a property test and every obligation is paid; 1: not; 2: usage.
 """
 
 import ast
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 
 
@@ -55,27 +65,80 @@ def given(tree: ast.Module) -> bool:
     return False
 
 
-def missing(source: Path, tests: Path) -> list[str]:
-    package = source.name
-    covered: set[str] = set()
+def paid(tree: ast.Module) -> set[str]:
+    """The obligations a test file pays: the names under `pytest.mark.obligation`."""
+    out: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            for d in node.decorator_list:
+                if (
+                    isinstance(d, ast.Call)
+                    and isinstance(d.func, ast.Attribute)
+                    and d.func.attr == "obligation"
+                    and d.args
+                    and isinstance(d.args[0], ast.Constant)
+                    and isinstance(d.args[0].value, str)
+                ):
+                    out.add(d.args[0].value)
+    return out
+
+
+def properties(tests: Path, package: str) -> dict[str, set[str]]:
+    """For each module of `package` a property test imports: the obligations those tests pay."""
+    out: dict[str, set[str]] = {}
     for test in sorted(tests.rglob("*.py")):
         tree = ast.parse(test.read_text())
         if given(tree):
-            covered |= imports(tree, package)
+            for module in imports(tree, package):
+                out.setdefault(module, set()).update(paid(tree))
+    return out
+
+
+def modules(source: Path) -> list[str]:
+    """The dotted names of the modules with code, `__init__` aside."""
     out = []
     for path in sorted(source.rglob("*.py")):
-        if path.name == "__init__.py" or not has_code(ast.parse(path.read_text())):
-            continue
-        dotted = ".".join(path.relative_to(source.parent).with_suffix("").parts)
-        if dotted not in covered:
+        if path.name != "__init__.py" and has_code(ast.parse(path.read_text())):
+            out.append(".".join(path.relative_to(source.parent).with_suffix("").parts))
+    return out
+
+
+def missing(source: Path, tests: Path, owed: dict[str, list[str]] | None = None) -> list[str]:
+    """What is not there: `module` for a module without a property test, `module: obligation`
+    for an obligation no property test of that module pays."""
+    paying = properties(tests, source.name)
+    out = []
+    for dotted in modules(source):
+        if dotted not in paying:
             out.append(dotted)
+        for obligation in (owed or {}).get(dotted, []):
+            if obligation not in paying.get(dotted, set()):
+                out.append(f"{dotted}: {obligation}")
+    return out
+
+
+def obligations(path: Path) -> dict[str, list[str]]:
+    """quality/obligations.toml: module -> the obligations it owes once it has code."""
+    if not path.is_file():
+        return {}
+    out: dict[str, list[str]] = {}
+
+    def walk(table: dict[str, object], prefix: str) -> None:
+        # TOML reads `[fpl.desugar]` as a table inside a table; the dots are the module's.
+        for key, value in table.items():
+            if isinstance(value, dict):
+                walk(value, f"{prefix}{key}.")
+            elif key == "obligations" and isinstance(value, list):
+                out[prefix.rstrip(".")] = [str(x) for x in value]
+
+    walk(tomllib.loads(path.read_text()), "")
     return out
 
 
 def main(argv: list[str]) -> int:
     if argv == ["--self-test"]:
         return self_test()
-    opts = {"--source": "fpl", "--tests": "tests"}
+    opts = {"--source": "fpl", "--tests": "tests", "--obligations": "quality/obligations.toml"}
     args = list(argv)
     while args:
         key = args.pop(0)
@@ -83,11 +146,19 @@ def main(argv: list[str]) -> int:
             print(__doc__.split("\n\n")[1], file=sys.stderr)
             return 2
         opts[key] = args.pop(0)
-    gaps = missing(Path(opts["--source"]), Path(opts["--tests"]))
-    for dotted in gaps:
-        print(f"props: {dotted} has code but no property test (a test importing it with @given)")
+    owed = obligations(Path(opts["--obligations"]))
+    gaps = missing(Path(opts["--source"]), Path(opts["--tests"]), owed)
+    for gap in gaps:
+        if ":" in gap:
+            module, _, name = gap.partition(": ")
+            print(
+                f"props: {module} owes '{name}': no property test of it is marked "
+                f"@pytest.mark.obligation({name!r})"
+            )
+        else:
+            print(f"props: {gap} has code but no property test (a test importing it with @given)")
     if not gaps:
-        print("props: every module with code has a property test")
+        print("props: every module with code has a property test and pays its obligations")
     return 1 if gaps else 0
 
 
@@ -120,6 +191,15 @@ def self_test() -> int:
         check("a plain test is not a property test", "pkg.b" in gaps)
         check("a docstring-only stub needs none", "pkg.stub" not in gaps)
         check("__init__ is not judged", "pkg.__init__" not in gaps and "pkg" not in gaps)
+        (root / "tests" / "test_a.py").write_text(
+            "import pytest\nfrom hypothesis import given\nfrom pkg.a import f\n"
+            '@pytest.mark.obligation("f is total")\n@given(st.integers())\ndef test(x): ...\n'
+        )
+        owed = {"pkg.a": ["f is total", "f is monotone"], "pkg.stub": ["never due"]}
+        gaps = missing(root / "pkg", root / "tests", owed)
+        check("a paid obligation is not owed", "pkg.a: f is total" not in gaps)
+        check("an unpaid obligation is", "pkg.a: f is monotone" in gaps)
+        check("a stub owes nothing yet", not any(g.startswith("pkg.stub") for g in gaps))
     failed = [n for n, ok in checks if not ok]
     for n in failed:
         print(f"FAIL {n}", file=sys.stderr)

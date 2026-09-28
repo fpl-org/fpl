@@ -106,9 +106,19 @@ tested through the callers that satisfy it.
 
 ## Metatheory
 
-A language has properties its implementation must keep, and they are stated as properties,
-under Hypothesis in `make check` and CrossHair in `make harden`, from the moment the module
-they concern has code (`scripts/props` requires a property test then anyway):
+A language has properties its implementation must keep. They are stated as properties, under
+Hypothesis in `make check` and CrossHair in `make harden`, and each is due from the moment
+the module it concerns has code. `quality/obligations.toml` lists them per module;
+`scripts/props` fails a module with code whose obligation no property test pays, and a test
+pays one by naming it:
+
+```python
+@pytest.mark.obligation("desugaring preserves meaning")
+@given(programs())
+def test_evaluating_the_core_gives_what_the_surface_gives(program: str) -> None:
+```
+
+The obligations:
 
 - `parse.py`: every program the grammar derives (`hypothesis.extra.lark.from_lark`) parses
   without an Earley ambiguity, not only the example corpus.
@@ -121,7 +131,9 @@ they concern has code (`scripts/props` requires a property test then anyway):
 - The backend, when it exists: the interpreter and the compiled program print the same
   output for every conformance example and for derived programs.
 
-These are the tests that make the layered frontend of docs/STACK.md more than a layout.
+These are the tests that make the layered frontend of docs/STACK.md more than a layout. The
+two that wait on a module that does not exist yet (a printer, a backend) are noted in the
+file and not owed by anyone until it does.
 
 ## Mutants
 
