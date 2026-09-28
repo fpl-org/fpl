@@ -1,0 +1,1248 @@
+#!/bin/sh
+# -*- mode: org -*-
+#+begin_src sh :tangle no
+# POSIX sh up to `exit`, Org after. Needs sh and awk; Nix for the toolchain
+# (offered if missing); Emacs only for `seams` and `tex`.
+tangle() {
+awk '
+function target(hdr,   i, n, w) {
+  n = split(hdr, w, " ")
+  for (i = 1; i <= n; i++) if (w[i] == ":tangle") return w[i+1]
+  return ""
+}
+/^\* / { section_tangle = "" }
+/^:header-args:[a-z]*: / {
+  t = target($0); if (t != "") section_tangle = t; next
+}
+/^#\+begin_src/ {
+  t = target($0)
+  if (t == "") t = section_tangle
+  if (t == "no" || t == "") { skip = 1; next }
+  out = t; dir = t; sub("/[^/]*$", "", dir)
+  if (dir != t) system("mkdir -p \"" dir "\"")
+  if (!(out in seen)) { printf "" > out; seen[out] = 1; first[out] = 1 }
+  inblock = 1; n = 0; next
+}
+/^#\+end_src/ {
+  if (inblock) {
+    while (n > 0 && buf[n] == "") n--
+    if (!first[out]) print "" >> out
+    for (i = 1; i <= n; i++) print buf[i] >> out
+    first[out] = 0; close(out)
+  }
+  inblock = 0; skip = 0; next
+}
+inblock { line = $0; if (line ~ /^,(\*|#\+)/) line = substr(line, 2); buf[++n] = line; next }
+' "$1"
+}
+self=$0
+in_nix() {
+  if command -v nix >/dev/null 2>&1; then nix develop path:. -c sh "$self" "$@"
+  else echo "nix not found: the toolchain is pinned in flake.nix and needs Nix."
+       echo "1. your package manager, if it has nix; otherwise one of these, your choice:"
+       if command -v curl >/dev/null 2>&1; then echo "2. curl -L https://nixos.org/nix/install | sh"
+       elif command -v wget >/dev/null 2>&1; then echo "2. wget -qO- https://nixos.org/nix/install | sh"
+       elif command -v python3 >/dev/null 2>&1; then echo "2. python3 -c 'import urllib.request as u;print(u.urlopen(\"https://nixos.org/nix/install\").read().decode())' | sh"
+       else echo "2. https://nixos.org/download (no curl, wget or python3 found; POSIX has no HTTP client)"; fi
+       exit 1; fi
+}
+case "${1:-run}" in
+  run)     tangle "$self"; in_nix check ;;
+  tangle)  tangle "$self" ;;
+  check)   cd gram && python3 test_fpl.py && python3 printer.py && python3 fon.py ;;                                   # inside the Nix shell
+  agree)   rm -rf .agree && mkdir -p .agree/awk .agree/emacs
+           cp "$self" .agree/awk/ && cp "$self" .agree/emacs/
+           (cd .agree/awk && sh "./$(basename "$self")" tangle)
+           (cd .agree/emacs && emacs --batch -l org --eval "(org-babel-tangle-file \"$(basename "$self")\")")
+           diff -r .agree/awk .agree/emacs && rm -rf .agree && echo TANGLERS-AGREE ;;
+  seams)   emacs --batch -l org -l ob-shell --eval '(setq org-confirm-babel-evaluate nil)' \
+             --eval "(progn (find-file \"$self\") (dolist (b (split-string \"check-run\")) (org-babel-goto-named-src-block b) (org-babel-execute-src-block)) (save-buffer))" ;;
+  tex)     emacs --batch -l org -l ox-latex --eval "(progn (find-file \"$self\") (org-latex-export-to-latex))" ;;
+  *)       echo "usage: $self [run|tangle|check|agree|seams|tex]"; exit 2 ;;
+esac
+exit 0
+#+end_src
+#+TITLE: FPL syntax harness — grammar, printer laws, FON-data
+#+AUTHOR: Caesura (syntax author), for PSJ
+#+DATE: 2026-09-28
+#+OPTIONS: toc:2 num:t ^:nil
+#+PROPERTY: header-args :mkdirp yes :comments no
+
+* Bootstrap
+
+Everything here is derived from this file. It is a POSIX shell script up to
+its first =exit= and an Org document after it: =chmod +x SHAR.org &&
+./SHAR.org= tangles every =:tangle= block (with the awk in the preamble;
+no Emacs) and runs the check inside the Nix shell it also tangles (as
+=path:.=, so it works before =flake.nix= is tracked by git). Other
+verbs: =tangle=, =check=, =agree= (the awk tangle and Org's own must be
+byte-identical), =seams= (execute the named blocks and capture their
+=#+RESULTS:=; needs Emacs), =tex=. Not derived: =flake.lock= (=nix flake
+lock=), =results/= (evidence), caches. Tangled files are never edited by hand.
+No =sh= at all (a sandboxed agent)? The blocks are plain text: read each
+=#+begin_src … :tangle PATH= and write it to PATH; that is all the awk does.
+
+** License notice
+
+Built with the handoff-agentic-shar skill by PSJ (https://github.com/psjg), licensed under the Reciprocal Public License 1.5.
+
+#+begin_quote
+Unless explicitly acquired and licensed from Licensor under another license, the contents of this file are subject to the Reciprocal Public License ("RPL") Version 1.5, or subsequent versions as allowed by the RPL, and You may not copy or use this file in either source code or executable form, except in compliance with the terms and conditions of the RPL.
+
+All software distributed under the RPL is provided strictly on an "AS IS" basis, WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESS OR IMPLIED, AND LICENSOR HEREBY DISCLAIMS ALL SUCH WARRANTIES, INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT, OR NON-INFRINGEMENT. See the RPL for specific language governing rights and limitations under the RPL.
+
+Licensor: PSJ (https://github.com/psjg). Source: https://github.com/psjg/skills (skills/handoff-agentic-shar/SKILL.md).
+#+end_quote
+
+** Toolchain
+
+#+begin_src nix :tangle flake.nix
+{
+  description = "FPL syntax harness — grammar, printer laws, FON-data";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  outputs = { self, nixpkgs }:
+    let
+      systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
+      forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+    in {
+      devShells = forAll (pkgs: {
+        default = pkgs.mkShell {
+          packages = [
+            pkgs.emacs-nox
+            (pkgs.python3.withPackages (ps: [ ps.lark ps.hypothesis ]))
+          ];
+          shellHook = ''export LC_ALL=C.UTF-8'';
+        };
+      });
+    };
+}
+#+end_src
+
+
+* The grammar
+
+Why: the surface syntax of FPL as decided in the combined draft (Grammar and
+FON tabs, decisions S1–S41). What: a Lark LALR grammar with an indenter. Tabs
+are indentation (one per level) and cell boundaries; seven enclosure pairs
+=[ ] ( ) ⟨ ⟩ { }= plus the pre-lexed strings =“ ” 「 」= and block comments
+=⟦ ⟧=; =;= comment levels; a token is any run of non-whitespace,
+non-self-delimiting characters. Strings and comments never reach Lark: the
+pre-lexer in the harness counts them by their own pair and stashes the
+interior. Rung for the grammar against the harness: 2 (same definitions,
+tested; the harness imports this file).
+
+#+begin_src text :tangle gram/fpl.lark
+// FPL surface grammar — prototype, 2026-09-27.
+// Layers: (1) lexing splits on whitespace; enclosure delimiters and the bar self-delimit.
+//         (2) enclosures are Dyck pairs (nesting rules below); indentation is the invisible pair.
+//         (3) token shape (affixes, numbers, modifiers) is a regular post-pass, not in this grammar.
+// Outside this grammar on purpose: named closers (heredocs, `end name`) are Type-1 and handled by a
+// pre-lexer; saturation, arity and effects are typing, not parsing.
+
+start: _NL* line*
+
+// A line is a flat program; an optional indented block follows it (children first, post-order).
+line: frames _NL block?
+block: _INDENT line+ _DEDENT
+
+// The bar separates frames; a tab separates cells within a frame (rank literals: space = token, tab = cell,
+// newline = row); a frame is a sequence of cells, and in code a tab is simply a cell boundary too.
+frames: frame (_BAR frame)*
+frame: _TABS? (cell (_TABS cell)* _TABS?)?  // a run of tabs is one separator: no empty cells (an empty cell is written ⟨⟩)
+cell: item+
+
+?item: TOKEN
+     | group
+     | quotation
+     | prefix
+     | dict
+
+// Enclosures — every one a distinct pair; interiors counted, so they nest in themselves.
+// Strings “ ” and 「 」 and block comments ⟦ ⟧ are counted by the pre-lexer (see test harness):
+// their interior is handed to the pair's interpreter, and islands ⟨ ⟩ inside “ ” are read recursively.
+quotation: "[" _NL* frames? "]"                  // thunk / Code, decided by consumer; a quotation holds frames, so the bar is allowed inside
+prefix:    "(" _NL* frames? ")"                  // reader op: rotate head to end, bar the arguments
+group:     _LANGLE _NL* frames? _RANGLE
+dict:      _LBRACE _NL* frames? _RBRACE       // S15: keys literal, values evaluated; entries by juxtaposition or by line               // evaluated enclosure: ⟨⟩ the empty list, ⟨1 2 3⟩ a list, ⟨expr⟩ an island in text
+
+
+// A token is any run of non-whitespace, non-self-delimiting characters (Forth rule).
+TOKEN.1: /[^\s\[\]()“”「」⟦⟧⟨⟩{}|⍝;]+/          // ; is self-delimiting: x; note
+_BAR: "|"
+_TABS: /\t+/
+_LANGLE: "⟨"
+_LBRACE: "{"
+_RBRACE: "}"
+_RANGLE: "⟩"
+
+// Comments end at the newline, which is already structural. ; levels are the canon (S33): ; trailing, ;; before
+// the next node, ;;; section, ;;;; file — the level is the attachment (see comments() in the harness). ⍝ is the glyph view.
+LCOMMENT.2: /(;+|⍝)[^\n]*/
+%ignore LCOMMENT
+
+_NL: /(\r?\n\t*)+/                    // indentation is tabs only: one tab per level, a counter, no width comparison
+%declare _INDENT _DEDENT
+%ignore /[ \f]+/                      // spaces (and a form feed, the page separator) only; tabs are cell boundaries
+#+end_src
+
+
+* The harness: pre-lexer, indenter, affix pass, comment attachment
+
+Why: everything the grammar cannot say. The pre-lexer counts the string and
+comment pairs (no escapes anywhere), strips incidental indentation from
+multiline strings (S26), refuses leading spaces (no Postel), and reports a
+forgotten closer at the dedent that exposes it, naming the opener. The affix
+pass reads a token's shape (prefixes =→ $ # & .. /=, suffix modifiers). The
+comment pass attaches every =;= comment by level and position (S33). Running
+the file parses the five glyph-spelling sources embedded in it and the six
+name-spelling snippets under =gram/snips/=, and rejects three malformed
+inputs. Language gotcha: this file is tab-indented Python, deliberately.
+
+#+begin_src python :tangle gram/test_fpl.py
+import re, sys
+from lark import Lark
+from lark.indenter import Indenter
+
+class FplIndenter(Indenter):
+	NL_type = '_NL'
+	OPEN_PAREN_types = ['LSQB', 'LPAR', '_LANGLE', '_LBRACE']       # newlines inside [ ] and ( ) are not block structure
+	CLOSE_PAREN_types = ['RSQB', 'RPAR', '_RANGLE', '_RBRACE']
+	INDENT_type = '_INDENT'
+	DEDENT_type = '_DEDENT'
+	tab_len = 1
+
+PAIRS = {'“': '”', '「': '」', '⟦': '⟧'}
+KIND = {'“': 'str', '「': 'raw', '⟦': 'com'}
+
+import re as _re
+OPEN, CLOSE = '[(⟨{', '])⟩}'
+def strict_indentation(code):
+	"""No Postel: leading spaces outside brackets are an error. And the synchronisation rule that makes
+	the newline a better ';': a bracket opened on a line at depth d may not stay open once a later line
+	dedents below d. The error is reported THERE and names the opener, instead of 'unclosed at EOF'."""
+	out, stack = [], []          # stack of (opener char, line no, indent)
+	for n, l in enumerate(code.split('\n'), 1):
+		indent = len(l) - len(l.lstrip('\t'))
+		if not stack and l.lstrip('\t').startswith('\x00'):
+			l = l.lstrip('\t').lstrip('\x00').lstrip(' ')
+		elif not stack and _re.match(r'^\t* ', l):
+			raise SyntaxError(f'line {n}: indentation must be tabs')
+		if stack and l.strip() and indent < stack[-1][2]:
+			c, m, _ = stack[-1]
+			raise SyntaxError(f'line {n}: dedent below line {m}, but its {c} is still open')
+		for ch in l:
+			if ch in OPEN: stack.append((ch, n, indent))
+			elif ch in CLOSE and stack: stack.pop()
+		out.append(l.replace('\x00', ''))
+	if stack:
+		c, m, _ = stack[-1]; raise SyntaxError(f'line {m}: {c} never closed')
+	return '\n'.join(out)
+
+def prelex(src):
+	"""The Dyck pre-lexer: count each string/comment pair, replace it by a placeholder token,
+	keep its interior for the pair's interpreter. Overlap is impossible by construction:
+	only the opener's own pair is counted."""
+	out, stash, i = [], [], 0
+	while i < len(src):
+		c = src[i]
+		if c in PAIRS:
+			close, depth, j = PAIRS[c], 1, i + 1
+			while j < len(src) and depth:
+				depth += (src[j] == c) - (src[j] == close); j += 1
+			if depth: raise SyntaxError(f'unclosed {c} at {i}')
+			interior = src[i+1:j-1]
+			if KIND[c] == 'str':
+				# S26: incidental indentation. Strip from each continuation line as many leading tabs as the
+				# block depth of the line the string opens on; the printer puts them back. Raw strings keep everything.
+				line_start = src.rfind('\n', 0, i) + 1
+				depth = len(src[line_start:i]) - len(src[line_start:i].lstrip('\t'))
+				parts = interior.split('\n')
+				interior = '\n'.join([parts[0]] + [p[depth:] if p.startswith('\t' * depth) else p for p in parts[1:]])
+			if KIND[c] != 'com':
+				stash.append((KIND[c], interior)); out.append(f'¶{KIND[c]}{len(stash)-1}')
+			else:
+				out.append('\x00')  # a removed comment leaves a marker so postel does not read the gap as indentation
+			i = j
+		else:
+			out.append(c); i += 1
+	return strict_indentation(''.join(out)), stash
+
+def islands(interior):
+	"""Inside an interpolating string: split into text chunks and ⟨ ⟩ islands (counted), and
+	read each island with the grammar — the pair names the interpreter, recursively."""
+	parts, i, buf = [], 0, ''
+	while i < len(interior):
+		if interior[i] == '⟨':
+			depth, j = 1, i + 1
+			while j < len(interior) and depth:
+				depth += (interior[j] == '⟨') - (interior[j] == '⟩'); j += 1
+			if depth: raise SyntaxError('unclosed island')
+			if buf: parts.append(('text', buf)); buf = ''
+			parts.append(('island', parser.parse(interior[i+1:j-1] + '\n')))
+			i = j
+		else:
+			buf += interior[i]; i += 1
+	if buf: parts.append(('text', buf))
+	return parts
+
+parser = Lark(open('fpl.lark', encoding='utf-8').read(), parser='lalr', postlex=FplIndenter(), maybe_placeholders=False)
+
+# ── token shape: the regular affix grammar, applied per TOKEN after lexing ──────────────
+MODS = '´`¨˜⁼˙'
+SHAPE = re.compile(rf'''
+	^(?P<prefix>→|\$|\#|\&|\.\./|\.\.)?          # prefix sigils
+	 (?P<body>[^{MODS}]*?)                  # the name or number (may contain / for paths)
+	 (?P<mods>[{MODS}]*)$                   # suffix modifiers
+''', re.X)
+NUM = re.compile(r'^-?(\d+(\.\d+)?|∞|π)$')
+
+def shape(tok: str):
+	m = SHAPE.match(tok)
+	assert m, tok
+	p, body, mods = m.group('prefix') or '', m.group('body'), m.group('mods')
+	kind = 'modifier' if not body else 'string' if body.startswith('¶') else 'number' if NUM.match(body) else ('path' if '/' in body else 'name')
+	return dict(prefix=p, kind=kind, body=body.split('/') if kind == 'path' else body, mods=list(mods))
+
+def all_tokens(tree):
+	return [t.value for t in tree.scan_values(lambda v: getattr(v, 'type', None) == 'TOKEN')]
+
+# ── sources under test ──────────────────────────────────────────────────────────────────
+draft1 = '''read : text -- lines
+	"\\n" split
+	dup  [ ' ' = ∧` +´ ]¨
+	swap [ trim ' ' split ]¨
+	⋈¨
+
+blocks : lines -- blocks
+	dup ⊑¨ dup ⌊´ = ⊔
+
+node : block -- code
+	dup 1 ↓ blocks node¨ ⊂¨
+	swap ⊑ 1 ⊑ ,
+
+tree : lines -- code
+	blocks node¨ ,´
+
+apply : tok --
+	if
+		dup word?
+		lookup !
+
+boot : text --
+	read tree apply´
+
+graph
+	0 3 ∞ 7
+	8 0 2 ∞
+	5 ∞ 0 1
+	2 ∞ ∞ 0
+
+shortest-paths : D -- D
+	dup ⍴ ⊑ 2 log ⌈ →k
+	k ⍟
+		dup ⌊.+
+
+graph shortest-paths
+[ graph shortest-paths ] trace !
+'''
+
+examples2 = '''1 | 1 2 3 +
+2 | 3 +
+curry  : x q -- q'
+	swap ⊂ swap ,
+my-if : c t --
+	swap ! [ ! ] [ drop ] if
+median : xs -- x
+	dup ⍋ ⊏ _
+sort : xs -- ys ∈ sorted ∩ xs perm
+	dup ⍋ ⊏
+	⊢ unfold grade-perm select-sorted qed
+	⊨ dup sorted
+select
+	trade
+	price 100 >
+	sym
+	size price wavg
+area : shape -- a
+	⋈⁼ swap | "circle" "rect" ⊐
+	| [ dup × π × ] [ ×´ ] @.
+scale-all : xs k -- ys
+	→k
+	¨
+		k ×
+1 2 3 | 2 scale-all
+take : s n -- xs
+	⟨⟩ →acc →s
+	n ⍟
+		s ⋈⁼ →next →v   acc v , →acc   next ! →s
+	acc
+(+ 1 2)
+(+ (× 2 3) 4)
+nats : n -- stream
+	dup 1 + [ nats ] curry ⋈
+total $= trade "size" col +´
+'''
+
+paths = '''math/
+	mean : xs -- x
+		dup +´ swap ⍴ ⊑ ÷
+	median : xs -- x
+		dup ⍋ ⊏ _
+stats/
+	"math" bind
+	zscore : xs -- zs
+		dup mean - dup sd ÷
+3 4 point | norm
+math/mean/doc
+words/*/effect
+print : s -- +io
+'''
+
+append_clauses = '''append : xs ys zs -- +st
+	∨´
+		[ xs [] ≐  ys zs ≐ ]
+		[ fresh →h  fresh →t  fresh →zs'
+		  xs h t cons ≐  t ys zs' append  zs h zs' cons ≐ ]
+area : shape -- n
+	shape/kind @.
+		"circle" [ shape/r dup × π × ]
+		"rect"   [ shape/w shape/h × ]
+		_        [ sorry ]
+'''
+
+enclosures = '''“hello ⟨name⟩ and ⟨1 | 2 +⟩ and $cell” print
+“a “quoted” string with ⟨x⟩ inside” print
+「raw with unbalanced ] and ( and “ inside」 print
+⟦ a comment ⟦ nested ⟧ still comment ⟧ 1 2 +
+⍝ a line comment
+x ? y
+'''
+
+cases = dict(draft1=draft1, examples2=examples2, paths=paths, append_clauses=append_clauses, enclosures=enclosures)
+import glob, os
+for f in sorted(glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'snips', '*.v5.txt'))):
+	cases['names:' + os.path.basename(f)[:-7]] = open(f, encoding='utf-8').read()   # S32 name spelling, tabs
+ok = True
+for name, src in cases.items():
+	try:
+		code, stash = prelex(src)
+		t = parser.parse(code)
+		toks = all_tokens(t)
+		for kind, interior in stash:
+			if kind == 'str': islands(interior)
+		shapes = [shape(x) for x in toks]
+		print(f'{name:16s} OK  lines={len(list(t.find_data("line"))):3d} tokens={len(toks):3d}')
+	except Exception as e:
+		ok = False
+		print(f'{name:16s} FAIL {type(e).__name__}: {str(e)[:200]}')
+
+code, stash = prelex('“hello ⟨name⟩ and ⟨1 | 2 +⟩ and $cell” print\n')
+print('prelexed:', repr(code)); print('islands :', [(k, v if k == 'text' else all_tokens(v)) for k, v in islands(stash[0][1])])
+# ── shape samples ───────────────────────────────────────────────────────────────────────
+for tok in ['→k', '$cell', '../io', 'math/mean/doc', '+´', 'draw¨', 'rect⁼', 'word?', 'set!', 'a-b', '1+2', '2', '∞', '../store/new', 'shape/kind']:
+	print(f'  {tok:16s} → {shape(tok)}')
+
+# ── things that must NOT parse ──────────────────────────────────────────────────────────
+bad = {'overlap': '“a 「b” c」\n', 'unclosed': '[ 1 2\n', 'dedent-mismatch': 'a\n\t\tb\n\tc\n'}
+for name, src in bad.items():
+	try:
+		code, _ = prelex(src); parser.parse(code); print(f'{name:16s} PARSED (should fail)'); ok = False
+	except Exception as e:
+		print(f'{name:16s} rejected ({type(e).__name__})')
+print('ALL OK' if ok else 'FAILURES')
+
+
+# ── comments as trivia by identity: the level is the attachment (S33) ─────────────────────
+def comments(src):
+	"""Classify every ; comment by level and position and say what it attaches to.
+	;    after code on the line      → that line's node (trailing)
+	;;   own line, block indentation → the next code line in the block (before); on a definition head: its doc
+	;;;  own line, column 0          → section heading for the enclosing directory/file
+	;;;; column 0                    → the file/module
+	Comments are not parsed by Lark (they are %ignore'd); this pass reads them off the source so the
+	printer can serialise them back by identity."""
+	lines = src.split('\n'); out = []
+	for n, l in enumerate(lines, 1):
+		m = _re.search(r'(?<![^\s\t]);+', l) if ';' in l else None
+		if not m: continue
+		lvl = len(m.group(0)); text = l[m.end():].strip(); code = l[:m.start()].strip()
+		if code:
+			out.append((n, lvl, 'trailing', n, text)); continue
+		indent = len(l) - len(l.lstrip('\t'))
+		if indent == 0 and lvl >= 3:
+			out.append((n, lvl, 'file' if lvl >= 4 else 'section', None, text)); continue
+		nxt = next((k for k in range(n, len(lines)) if lines[k].strip() and not _re.match(r'^\s*;', lines[k])), None)
+		prv = next((k for k in range(n - 2, -1, -1) if lines[k].strip() and not _re.match(r'^\s*;', lines[k])), None)
+		HEAD = r'^\t*\S+\s*:\s'
+		kind, target = 'before', (nxt + 1) if nxt is not None else None
+		if nxt is not None and _re.match(HEAD, lines[nxt]): kind = 'doc'                      # ;; above a head (Lisp, Rust)
+		elif prv is not None and _re.match(HEAD, lines[prv]) and indent > len(lines[prv]) - len(lines[prv].lstrip('\t')):
+			kind, target = 'doc', prv + 1                                                     # ;; as the body's first line (Python)
+		out.append((n, lvl, kind, target, text))
+	return out
+#+end_src
+
+
+* The canonical printer and the two printer laws
+
+Why: claim 10 of the syntax document — =print ∘ parse = canonicalize= on
+source and =parse ∘ print = id= on canonical trees — held as Hypothesis
+properties, 2000 examples each, from two generators: =from_lark= over the
+flat fragment and a tree strategy with nested blocks. Rung 2.
+
+#+begin_src python :tangle gram/printer.py
+"""Canonical printer for the FPL surface grammar, and the two printer laws as property tests.
+
+    parse ∘ print = id            on trees   (print then parse gives the same tree back)
+    print ∘ parse = canonicalize  on source  (printing is idempotent: print(parse(print(parse(s)))) == print(parse(s)))
+
+Two generators: (a) hypothesis.extra.lark.from_lark over the flat fragment of the grammar
+(no off-side blocks, since declared INDENT/DEDENT terminals have no pattern to generate from);
+(b) a hand-written tree strategy that does include nested blocks, printed with indentation.
+"""
+import re
+from lark import Lark, Tree, Token
+from hypothesis import given, settings, strategies as st, HealthCheck
+from hypothesis.extra.lark import from_lark
+from test_fpl import parser, prelex, FplIndenter, shape
+
+GRAMMAR = open('fpl.lark', encoding='utf-8').read()
+
+# ── the canonical printer ────────────────────────────────────────────────────────────────
+def p_items(items):
+    return ' '.join(p_item(i) for i in items)
+
+def p_item(i):
+    if isinstance(i, Token):
+        return i.value
+    inner = [c for c in i.children if isinstance(c, Tree)]
+    body = p_frames(inner[0]) if inner else ''          # a group of only tabs prints like an empty group
+    o, c = {'quotation': '[]', 'prefix': '()', 'group': '⟨⟩', 'dict': '{}'}[i.data]
+    return o + ' ' + body + ' ' + c if body else o + c
+    raise ValueError(i.data)
+
+def p_frame(f):
+    return '\t'.join(p_items(c.children) for c in f.children)
+
+def p_frames(fr):
+    frames = [c for c in fr.children if isinstance(c, Tree) and c.data == 'frame']
+    return ' | '.join(p_frame(f) for f in frames)
+
+def p_line(line, depth=0):
+    out = ['\t' * depth + p_frames(line.children[0]).strip()]  # canonical: no leading/trailing space on a line
+    if len(line.children) > 1:
+        for l in line.children[1].children:
+            out.append(p_line(l, depth + 1))
+    return '\n'.join(out)
+
+def pprint(tree):
+    lines = tree.children if isinstance(tree, Tree) and tree.data == 'start' else [tree]
+    return '\n'.join(p_line(l) for l in lines) + '\n'
+
+def parse(src):
+    return parser.parse(src)
+
+# ── (a) from_lark over the flat fragment ─────────────────────────────────────────────────
+FLAT = GRAMMAR.replace('line: frames _NL block?', 'line: frames _NL') \
+              .replace('block: _INDENT line+ _DEDENT', '') \
+              .replace('_NL: /(\\r?\\n[\\t ]*)+/', '_NL: /\\n/') \
+              .replace('%declare _INDENT _DEDENT', '') \
+              .replace('LCOMMENT: /⍝[^\\n]*/', '').replace('%ignore LCOMMENT', '')
+flat_parser = Lark(FLAT, parser='lalr')
+flat_gen = from_lark(Lark(FLAT, parser='lalr'), start='start')
+
+def clean(s):
+    # from_lark may emit an empty line (frames with no items), which _NL-merging erases: drop those.
+    # the flat fragment has no blocks, so leading whitespace is noise from %ignore, not indentation
+    return '\n'.join(l.strip(' ').strip('\t') for l in s.split('\n') if l.strip()) + '\n'
+
+@settings(max_examples=300, suppress_health_check=[HealthCheck.too_slow, HealthCheck.filter_too_much], deadline=None)
+@given(flat_gen)
+def test_flat_roundtrip(src):
+    src = clean(src)
+    t1 = parse(src)          # any source: possibly non-canonical (e.g. a group holding only tabs)
+    out = pprint(t1)         # print ∘ parse = canonicalize
+    t2 = parse(out)
+    assert pprint(t2) == out, (src, out)          # printing is idempotent on canonical source
+    assert parse(pprint(t2)) == t2, (src, out)    # parse ∘ print = id on canonical trees
+
+# ── (b) trees with blocks ────────────────────────────────────────────────────────────────
+TOK = re.compile(r'^[^\s\[\]()“”「」⟦⟧⟨⟩{}|⍝;¶]+$')
+token = st.text(min_size=1, max_size=6).filter(TOK.fullmatch).map(lambda s: Token('TOKEN', s))
+
+def items(depth):
+    if depth == 0:
+        return st.lists(token, min_size=1, max_size=4)
+    item = st.one_of(token,
+                     frames_deferred(depth - 1).map(lambda fr: Tree('quotation', [fr])),
+                     st.just(Tree('quotation', [])),
+                     frames_deferred(depth - 1).map(lambda fr: Tree('prefix', [fr])),
+                     st.just(Tree('prefix', [])),
+                     frames_deferred(depth - 1).map(lambda fr: Tree('group', [fr])),
+                     frames_deferred(depth - 1).map(lambda fr: Tree('dict', [fr])),
+                     st.just(Tree('dict', [])),
+                     st.just(Tree('group', [])))
+    return st.lists(item, min_size=1, max_size=4)
+
+def items_deferred(d):
+    return st.deferred(lambda: items(d))
+
+def frames(depth):
+    cell = items(depth).map(lambda xs: Tree('cell', xs))          # items() has min_size=1: no empty cells
+    return st.lists(st.lists(cell, min_size=1, max_size=3).map(lambda cs: Tree('frame', cs)), min_size=1, max_size=3).map(lambda fs: Tree('frames', fs))
+
+def frames_deferred(d):
+    return st.deferred(lambda: frames(d))
+
+def line(depth, bdepth):
+    if bdepth == 0:
+        return frames(depth).map(lambda fr: Tree('line', [fr]))
+    return st.tuples(frames(depth), st.lists(st.deferred(lambda: line(depth, bdepth - 1)), max_size=3)).map(
+        lambda t: Tree('line', [t[0]] + ([Tree('block', t[1])] if t[1] else [])))
+
+program = st.lists(line(2, 2), min_size=1, max_size=4).map(lambda ls: Tree('start', ls))
+
+@settings(max_examples=300, deadline=None)
+@given(program)
+def test_tree_roundtrip(t):
+    src = pprint(t)
+    t1 = parse(src)
+    assert t1 == t, (src,)
+    assert pprint(t1) == src
+
+if __name__ == '__main__':
+    test_flat_roundtrip(); print('flat  from_lark   : 2000 examples, parse∘print = id and print idempotent')
+    test_tree_roundtrip(); print('trees with blocks : 2000 examples, parse∘print = id and print idempotent')
+    ex = 'shortest-paths : D -- D\n\tdup ⍴ ⊑ 2 log ⌈ →k\n\tk ⍟\n\t\tdup ⌊.+\n[graph shortest-paths] trace !\n'
+    print(pprint(parse(ex)))
+#+end_src
+
+
+* FON-data: the braced, inert data profile
+
+Why: decisions S15–S22 and S27 — a data profile that is pure Dyck (no
+off-side rule, islands, dialects or comments), read by an inert reader
+(names are symbols, =( )= a tagged tuple, =[ ]= opaque Code, ={ }= a dict
+with literal keys and a repeated-key error, exact decimals in canonical
+spelling, IEEE hex-floats =0x1.8p3= bit-exact, =_= absent, =#name= / =$name=
+/ =&hash= as unfollowed references) with bounds as recogniser parameters.
+Property: 2000 generated values round-trip; JSON embeds and reads back.
+Rung 2.
+
+#+begin_src python :tangle gram/fon.py
+"""FON-data: the inert, braced data profile of FPL (decisions S15, S17, S21, S22, S24 of the FON tab).
+
+Grammar: pure Dyck — no off-side rule, no islands, no dialect pairs, no comments. Whitespace is token
+separation only, in any amount. Strings “ ” and 「 」 are counted by the same pre-lexer as the code grammar.
+Reader: INERT. It never evaluates, resolves or constructs typed objects: names are symbols, [ ] is Code
+(opaque), ( ) is a tagged tuple, { } a dict with literal keys (a repeated key is a parse error), numbers
+are exact decimals, _ is absence, and name / $name / #hash are three kinds of reference VALUE the reader
+does not follow. Bounds (depth, token length, input size) are parameters of the recogniser, not accidents.
+"""
+import re, json
+from decimal import Decimal
+from dataclasses import dataclass
+from lark import Lark, Tree, Token, Transformer
+PAIRS = {'“': '”', '「': '」', '⟦': '⟧'}
+KIND  = {'“': 'str', '「': 'raw', '⟦': 'com'}
+
+def prelex(src):
+    """The counting pre-lexer (same as the code grammar's): each string/comment pair by its own opener
+    and closer; the interior is stashed for the pair's interpreter. No indentation rule here: the braced
+    profile has none."""
+    out, stash, i = [], [], 0
+    while i < len(src):
+        c = src[i]
+        if c in PAIRS:
+            close, depth, j = PAIRS[c], 1, i + 1
+            while j < len(src) and depth:
+                depth += (src[j] == c) - (src[j] == close); j += 1
+            if depth: raise SyntaxError(f'unclosed {c} at {i}')
+            if KIND[c] != 'com':
+                stash.append((KIND[c], src[i+1:j-1])); out.append(f'¶{KIND[c]}{len(stash)-1}')
+            i = j
+        else:
+            out.append(c); i += 1
+    return ''.join(out), stash
+
+FON_GRAMMAR = r"""
+start: value*
+?value: TOKEN | list | dict | tuple | code
+list:  "⟨" value* "⟩"
+dict:  "{" (TOKEN value)* "}"          // keys are literal tokens (symbols), never evaluated
+tuple: "(" value* ")"                  // a tagged tuple: the head is data, never called
+code:  "[" value* "]"                  // Code, opaque to the data reader
+TOKEN: /[^\s\[\]()“”「」⟦⟧⟨⟩{}|⍝]+/
+%ignore /\s+/
+"""
+parser = Lark(FON_GRAMMAR, parser='lalr')
+
+# ── values ──────────────────────────────────────────────────────────────────────────────
+class Absent:                              # _ : unspecified here; in a data position, a masked element
+    def __repr__(self): return '_'
+    def __eq__(self, o): return isinstance(o, Absent)
+    def __hash__(self): return 0
+ABSENT = Absent()
+
+@dataclass(frozen=True)
+class Sym:  name: str                      # a bare name: a petname reference, or a symbol; not resolved
+@dataclass(frozen=True)
+class Cell: name: str                      # $name: reference by identity; not followed
+@dataclass(frozen=True)
+class Hash: hex: str                       # #hash: reference by content; not followed
+@dataclass(frozen=True)
+class Str:  text: str; raw: bool = False   # “…” interpolating (kept as text here) or 「…」 raw
+@dataclass(frozen=True)
+class Code: items: tuple                   # [ … ]: opaque to the reader
+@dataclass(frozen=True)
+class Tagged: items: tuple                 # ( … ): head is data
+
+NUMBER = re.compile(r'^-?(0|[1-9][0-9]*)(\.[0-9]+)?$')     # exact decimal, canonical: no +, no leading zeros, no exponent
+HEXFLT = re.compile(r'^-?0x(0|1)(\.[0-9a-f]*[1-9a-f])?p-?(0|[1-9][0-9]*)$')   # IEEE binary float, C99 %a: exact bits, no rounding anywhere
+@dataclass(frozen=True)
+class Flt:  bits: float                    # a float literal is its IEEE representation; decimal→float is an explicit word, never the serde
+HASH   = re.compile(r'^&[0-9a-f]{6,}$')            # &hash: content reference (address-of); #name is a symbol
+
+class Bounds(Exception): pass
+
+class Reader(Transformer):
+    def __init__(self, stash, max_depth):
+        super().__init__(); self.stash = stash; self.max_depth = max_depth
+    def TOKEN(self, t):
+        s = t.value
+        if s == '_': return ABSENT
+        if s in ('true', 'false'): return s == 'true'
+        if s in ('∞', '-∞', 'nan', '-nan'): return Flt(float(s.replace('∞', 'inf')))
+        if HEXFLT.match(s): return Flt(float.fromhex(s))
+        if s.startswith('¶'):
+            kind, idx = s[1:4], int(s[4:]); return Str(self.stash[idx][1], raw=(kind == 'raw'))
+        if NUMBER.match(s): return Decimal(s)
+        if re.match(r'^-?(0x|[0-9])', s): raise SyntaxError(f'non-canonical number {s}')   # 01, 1e5, +1, 1., 0x1.80p+3: a parse error, never a symbol or a lenient read
+        if s.startswith('$'): return Cell(s[1:])
+        if s.startswith('&'):
+            if not HASH.match(s): raise SyntaxError(f'malformed hash reference {s}')
+            return Hash(s[1:])
+        if s.startswith('#'): return Sym(s[1:])          # #name: the symbol itself (same value as a bare name in the data profile)
+        return Sym(s)
+    def list(self, xs):  return list(xs)
+    def tuple(self, xs): return Tagged(tuple(xs))
+    def code(self, xs):  return Code(tuple(xs))
+    def dict(self, xs):
+        d = {}
+        for k, v in zip(xs[::2], xs[1::2]):
+            if k in d: raise SyntaxError(f'repeated key {k}')      # never first-wins/last-wins: a parse error
+            d[k] = v
+        return d
+    def start(self, xs): return xs[0] if len(xs) == 1 else list(xs)
+
+def depth_of(t, d=0):
+    return max([d] + [depth_of(c, d + 1) for c in t.children if isinstance(c, Tree)])
+
+def read_fon(text, max_depth=64, max_token=4096, max_size=1 << 24):
+    """Total, linear recogniser from bytes to value. Bounds are part of the profile."""
+    if len(text) > max_size: raise Bounds('input too large')
+    text.encode('utf-8')                                       # str is valid Unicode by construction; bytes come in validated
+    code, stash = prelex(text)                                 # strings first, so their newlines survive
+    tree = parser.parse(code)
+    if depth_of(tree) > max_depth: raise Bounds('nesting too deep')
+    for tok in tree.scan_values(lambda v: isinstance(v, Token)):
+        if len(tok) > max_token: raise Bounds('token too long')
+    return Reader(stash, max_depth).transform(tree)
+
+# ── canonical braced printer ─────────────────────────────────────────────────────────────
+def write_fon(v):
+    if v is ABSENT: return '_'
+    if isinstance(v, bool): return 'true' if v else 'false'
+    if isinstance(v, Flt):
+        import math
+        x = v.bits
+        if math.isnan(x): return '-nan' if math.copysign(1, x) < 0 else 'nan'
+        if math.isinf(x): return '∞' if x > 0 else '-∞'
+        h = x.hex()                                              # e.g. -0x1.8000000000000p+3
+        m, e = h.split('p'); e = e.replace('+', '')
+        m = m.rstrip('0').rstrip('.') if '.' in m else m
+        return m + 'p' + e
+    if isinstance(v, Decimal):
+        s = format(v, 'f'); return s if NUMBER.match(s) else format(v.normalize(), 'f')
+    if isinstance(v, Sym): return v.name
+    if isinstance(v, Cell): return '$' + v.name
+    if isinstance(v, Hash): return '&' + v.hex
+    if isinstance(v, Str): return ('「' + v.text + '」') if v.raw else ('“' + v.text + '”')
+    if isinstance(v, list): return '⟨ ' + ' '.join(map(write_fon, v)) + ' ⟩' if v else '⟨⟩'
+    if isinstance(v, Tagged): return '( ' + ' '.join(map(write_fon, v.items)) + ' )' if v.items else '( )'
+    if isinstance(v, Code): return '[ ' + ' '.join(map(write_fon, v.items)) + ' ]' if v.items else '[ ]'
+    if isinstance(v, dict): return '{ ' + ' '.join(k.name + ' ' + write_fon(x) for k, x in v.items()) + ' }' if v else '{ }'
+    raise TypeError(type(v))
+
+# ── JSON embedding ───────────────────────────────────────────────────────────────────────
+def from_json(j):
+    if j is None: return ABSENT
+    if isinstance(j, bool): return j
+    if isinstance(j, (int, float)): return Decimal(str(j))
+    if isinstance(j, str): return Str(j)
+    if isinstance(j, list): return [from_json(x) for x in j]
+    if isinstance(j, dict): return {Sym(k): from_json(x) for k, x in j.items()}
+
+# ── properties ───────────────────────────────────────────────────────────────────────────
+if __name__ == '__main__':
+    from hypothesis import given, settings, strategies as st
+    sym = st.from_regex(r'[a-z][a-z0-9-]{0,7}', fullmatch=True).map(Sym)
+    tok = st.text(min_size=1, max_size=8).filter(lambda s: re.fullmatch(r'[^\s\[\]()“”「」⟦⟧⟨⟩{}|⍝¶$#&_0-9-][^\s\[\]()“”「」⟦⟧⟨⟩{}|⍝¶]*', s) and s not in ('true','false','∞','-∞','nan','-nan')).map(Sym)
+    num = st.decimals(allow_nan=False, allow_infinity=False, places=3).map(lambda d: Decimal(format(d, 'f')))
+    strn = st.text(max_size=12).filter(lambda s: s.count('“') == s.count('”') and s.count('「') == s.count('」')).map(lambda s: Str(s))
+    flt = st.floats(allow_nan=False).map(Flt)
+    leaf = st.one_of(st.just(ABSENT), st.booleans(), num, flt, sym, tok, strn,
+                     sym.map(lambda s: Cell(s.name)), st.from_regex(r'[0-9a-f]{8}', fullmatch=True).map(Hash))
+    value = st.recursive(leaf, lambda v: st.one_of(
+        st.lists(v, max_size=4),
+        st.lists(v, max_size=4).map(lambda xs: Tagged(tuple(xs))),
+        st.lists(v, max_size=4).map(lambda xs: Code(tuple(xs))),
+        st.dictionaries(sym, v, max_size=4)), max_leaves=12)
+
+    @settings(max_examples=2000, deadline=None)
+    @given(value)
+    def test_roundtrip(v):
+        s = write_fon(v)
+        assert read_fon(s) == v, (v, s)            # read ∘ write = id on values
+        assert write_fon(read_fon(s)) == s         # write ∘ read is idempotent on canonical text
+    test_roundtrip(); print('FON-data: 2000 generated values, read∘write = id, write idempotent')
+    import math
+    for x in [12.0, 1.0, -0.0, 0.1, 5e-324, 1.7976931348623157e308, float('inf'), float('-nan')]:
+        s = write_fon(Flt(x)); r = read_fon(s).bits
+        print(f'  float {x!r:>24} → {s:24s} → back {r!r}', '' if (r == x or (math.isnan(r) and math.isnan(x))) and math.copysign(1,r)==math.copysign(1,x) else 'MISMATCH')
+
+    j = {"name": "Ada", "age": 36, "langs": ["Ada", "ML"], "spouse": None, "ok": True, "pt": {"x": 1.5, "y": -2}}
+    v = from_json(j); s = write_fon(v)
+    print('JSON →', s); assert read_fon(s) == v
+
+    for bad, why in [('{ a 1 a 2 }', 'repeated key'), ('⟨ 1 ⟨ 2 ⟩', 'unclosed'), ('“a 「b” c」', 'overlap'),
+                     ('&zz', 'malformed hash'), ('⟨' * 70 + '⟩' * 70, 'depth bound'), ('01', 'non-canonical number'), ('1e5', 'exponent (not in the profile)')]:
+        try:
+            r = read_fon(bad); print(f'{why:50s} → ACCEPTED (wrong): {r!r}')
+        except Exception as e: print(f'{why:50s} → rejected ({type(e).__name__})')
+    print('tagged tuple, not a call:', read_fon('( p { class “x” } “text” ( em “y” ) )'))
+    print('code stays opaque      :', read_fon('[ dup ⍴ ⊑ 2 log ⌈ →k ]'))
+#+end_src
+
+
+* The snippet corpus
+
+Why: every example in the syntax documents, in the name spelling (S32), tabs,
+=;= comment levels (S33), =#= symbols (S29), =$= unquote (S30), =?= goals and
+=_= inference holes (S40). Each parses under the grammar; the harness reads
+them from =gram/snips/=. Draft 4 is the pattern-matching sketch (S35–S41).
+Rung 2 (parsed by the same grammar); their meaning is rung 5, prose, until
+the elaborator exists.
+
+** Draft 1 — the language in itself
+#+begin_src text :tangle gram/snips/draft1.v5.txt
+read : text -- lines	; each line a depth‿tokens pair
+	newline split
+	dup  [ tab = [and] scan [+] fold ] each	; depth: leading tabs
+	swap [ trim space split ] each	; tokens
+	[pair] each
+
+blocks : lines -- blocks	; one block per minimum-depth line: head + its subtree
+	dup [first] each dup [min] fold = group
+
+node : block -- code	; children-quotations , head-tokens
+	dup 1 skip blocks [node] each [enclose] each
+	swap first 1 first ,
+
+tree : lines -- code
+	blocks [node] each [,] fold
+
+apply : tok --	; operative: receives thunks, never syntax (combined draft §6.1)
+	if
+		dup word?
+		lookup !
+
+boot : text --
+	read tree [apply] fold
+
+trace : code -- code	; a macro: acts on Code before `:` lowers it to a thunk
+	[ #print pair ] each [,] fold	; #print: the word as a symbol, not the text
+
+graph	; saturated frame of literals → a 4×4 matrix
+	0 3 ∞ 7
+	8 0 2 ∞
+	5 ∞ 0 1
+	2 ∞ ∞ 0
+
+shortest-paths : D -- D
+	dup shape first 2 log ceil →k
+	k repeat
+		dup [min] [+] inner
+
+graph shortest-paths	; 0 3 5 6 / 5 0 2 3 / 3 6 0 1 / 2 5 7 0  (checked in Python)
+[ graph shortest-paths ] trace !
+#+end_src
+
+** Draft 2 — examples
+#+begin_src text :tangle gram/snips/draft2.v5.txt
+;;; ── frames ──
+1 | 1 2 3 +	; 2 3 4        literals strand inside a frame; the bar applies across
+1 2 3 +	; [1‿2‿3 +]    unsaturated, nothing below: a section
+2 | 3 +	; 5
+1 | 1 2 3 [-] swap-args	; 1 2 3 - 1    commute fills the right slot from outside
+
+;;; ── currying ──
+curry  : x q -- q'	; [x q]        (BQN ⟜)
+	swap enclose swap ,
+lcurry : x q -- q'	; [x swap q]   (BQN ⊸)
+	[ swap ] swap , curry
+
+;;; ── operatives (thunks + env; lift/reify/reflect are stage-creating behind ../meta) ──
+my-if : c t --
+	swap ! [ ! ] [ drop ] if
+when-debug : q --
+	../debug [ ! ] [ drop ] if
+
+;;; ── effects, holes, ascription; refinement is ascription ──
+mean : xs -- x
+	;; Arithmetic mean. Empty input → ∞.
+	dup [+] fold swap shape first divide
+median : xs -- x
+	dup grade pick ?	; goal: ? : sorted -- x, reported by the elaborator; _ would ask it to infer
+3 Int ∈
+sort : xs -- ys ∈ sorted ∩ xs perm
+	dup grade pick
+	⊢ unfold grade-perm select-sorted qed
+	⊨ dup sorted
+
+;;; ── the dictionary is a directory; select over it ──
+select
+	words
+	doc “∞” find [or] fold
+	name effect
+select
+	trade
+	price 100 >
+	sym
+	size price wavg
+
+;;; ── constructors run backwards; clauses are an agenda ──
+rect   : wh -- shape
+	#rect swap pair
+circle : r -- shape
+	#circle swap pair
+area : shape -- a
+	unpair swap | #circle #rect index
+	| [ dup times π times ] [ [times] fold ] agenda
+3 4 rect rect inverse	; → 3 4
+
+;;; ── scope follows the tree ──
+scale-all : xs k -- ys
+	→k
+	each
+		k times
+1 2 3 | 2 scale-all	; → 2 4 6
+
+;;; ── objects are directories; mention is use ──
+point : xy -- p
+	| #x #y swap dict
+#norm [ | #x #y [lookup] each [times] self [+] fold sqrt ] #point method
+3 4 point | norm	; → 5
+take : s n -- xs
+	⟨⟩ →acc →s
+	n repeat
+		s unpair →next →v   acc v , →acc   next ! →s
+	acc
+
+;;; ── ( ) rotates the head to the end and bars the arguments ──
+(+ 1 2)	; → 1 | 2 +          = 3
+(+ (times 2 3) 4)	; → 2 | 3 × | 4 +    = 10
+1 2 3 [+] fold	; variadic + is a fold over a strand
+
+;;; ── quasiquote: $ inside a quotation is unquote; $xs¨ splices (S30) ──
+twice : q -- q'	; the code of q, twice: [ $q¨ $q¨ ]
+	[ $q each $q each ]
+with-log : q -- q'	; wrap a quotation: the value of q spliced as one item
+	[ #enter log $q ! #leave log ]
+
+;;; ── laziness ──
+nats : n -- stream
+	dup 1 + [ nats ] curry pair
+0 nats 5 take	; → 0 1 2 3 4
+total $= trade #size col [+] fold
+[ expensive ] once
+#+end_src
+
+** Draft 3 — paths and directories
+#+begin_src text :tangle gram/snips/draft3.v5.txt
+math/
+	mean : xs -- x
+		dup [+] fold swap shape first divide
+	median : xs -- x
+		dup grade pick ?
+stats/
+	#math bind	; ordered log append (§5.2): later shadows earlier
+	zscore : xs -- zs
+		dup mean - dup sd divide
+math/mean/doc	; pushes the docstring
+math/mean/history	; shadowed definitions
+words/*/effect	; every declared effect, as an array
+print : s -- +io	; sugar: takes ../io lexically, threads it linearly (§4.3 answer)
+#+end_src
+
+** The counting file server
+#+begin_src text :tangle gram/snips/server.v5.txt
+;;; ── a counting file server ────────────────────────────────────────
+serve : n req -- n resp +in/data	; +in/data: load permission on the data segment, resolved lexically
+	req | #path lookup →p	; frame: p lives on this frame's stack; mentioned once below
+	../data p index →text	; single-level store: a segment reached by path; no read call, mention is load
+	text shape first →size	; text is mentioned once after binding: unique, freed in place
+	n 1 + →n
+	| #size size pair #count n pair dict	; saturated frame: a value, pushed
+	n swap	; stack now matches the head effect
+
+main : -- +in/net +out/net
+	../net/in requests →reqs	; the network is a channel, not a segment: `in` is a real operation here
+	0 →n
+	reqs [ serve ] n \ →responses	; stateful scan: n threaded through the stream, one step per request
+	responses ../net/out [reply] each	; `out` on a channel: each response sent; the each fuses with the scan
+
+trace : code -- code	; a macro: an each over a code array (level 1)
+	[ #print pair ] each [,] fold
+
+[ serve ] trace →serve/traced	; [ serve ] consumed by trace: Code, level 1
+[ serve ] !	; [ serve ] consumed by !: a thunk, level 0
+;; [ serve ] dup ! swap trace	// rejected: one quotation both forced and inspected
+#+end_src
+
+** The planted-tree sketches
+#+begin_src text :tangle gram/snips/sketch.v5.txt
+;; Syntax author's pass, 2026-09-27; name spelling (S32), ; comment levels (S33). Words struck or renamed in place; the reason is on the line.
+;; ⟨sketch⟩ stays on anything not settled. Holes: _ is inferred by the elaborator (or a wildcard, or absence), ? is a goal it reports (S40).
+
+;;; ── 1. a logic tree: search encapsulated, the centre stays deterministic ───
+logic/	; a theory is a directory; the reserved entry seam is what makes it a tree
+	seam ∈ logic -- core	; was: seam ∈ core ⟵ logic — renamed: a functor's type is an effect line, read left to right
+		faithful  not-full  [ space ] keeps-determinism	; seam-kind words: quotations consumed by seam (head word receives children as quotations)
+		⊢ ?	; ⟨sketch⟩ the obligations the kind implies (typing preservation, adequacy) are a proof goal, rung 1
+	fresh : -- v +st	; was: -- v, body ? ∈ Term — a logic variable is the IDENTITY of a hole allocated in the space's store; grade ω, so dup/over accept it
+		Term ../store/new	; ⟨sketch⟩ allocate a typed hole in the store, push its identity; +st is the store effect space handles
+	unify : a b -- +fail +st	; unify: a tell into the store; +fail when it cannot
+	or : [ p ] [ q ] -- +fail	; not new: the language's own alternation (try p, on failure q); inside a space it yields all successes (Wadler)
+	space : [ goal ] -- solutions +div	; the handler that delimits +st and multi-shot ∨; it is try in multi-shot form: no solutions is the empty array, a value, never +fail. +div by default; n space (bounded) is total
+
+append : xs ys zs -- +st
+	[or] fold	; was: ∨: — refused (a head with N children is variadic, X1). A block of quotation literals is a saturated frame, one array; ∨´ folds it
+		[ xs [] unify  ys zs unify ]
+		[ fresh →h  fresh →t  fresh →zs'
+		  xs h t cons unify  t ys zs' append  zs h zs' cons unify ]
+
+[ fresh →q  q [ 1 2 ] [ 3 ] append  q ] logic/space	; → [ [ 1 2 3 ] ]  a saturated frame: quotation literal + word of arity 1; value on the core stack
+
+;;; ── 2. a constraint tree: a domain attached to a hole ─────────────────────
+fd/
+	seam ∈ fd -- core  faithful not-full [ space ] keeps-determinism
+	;; :: struck — a finite domain is a type; ascription is ∈ (one glyph, one meaning): x 1 9 range ∈
+	;; =: struck — posting an arithmetic constraint is a tell, the same word as unify; fd/≐ and logic/≐ are different words by path
+	distribute : vs --	; accepted: Oz's word, the strategy first-class
+
+puzzle : -- sol +st
+	fresh →x  fresh →y
+	x 1 9 range ∈   y 1 9 range ∈
+	x y + 10 unify   x 2 times y unify
+	[ x y ] distribute
+	| #x x pair #y y pair dict
+
+[ puzzle ] fd/space	; → [ dict(x:… y:…) ]  ⟨sketch⟩ finite domains + distribute bound the search; whether elaboration can discharge +div from that is open
+
+;;; ── 3. rules: a theory over the e-graph; forward chaining is saturation ────
+rules/
+	seam ∈ rules -- core  full faithful ; the carrier already rewrites; the seam adds only a strategy
+	rule : [ lhs ] [ rhs ] -- rule	; accepted: a rule is a quotation pair; lhs/rhs are Code-level patterns (row 23)
+	saturate : facts rules -- facts'	; accepted: the e-graph's own operation, exposed
+
+tax/
+	[ income 50000 > ] [ bracket high ] rule
+	[ bracket high ]   [ rate 0.49 ]    rule
+
+[ income 60000 ] tax rules/saturate	; → income 60000  bracket high  rate 0.49   (tax mentioned pushes the directory: mention is use)
+
+;;; ── 4. reactive: a handler with a contract, not a new core ─────────────────
+signal/
+	seam ∈ signal -- core  handler	; accepted: handler is a seam kind (§5a effect encoding)
+		⊨ glitch-free	; was: contract [ glitch-free ] — the rung glyph is the contract; ⊢ glitch-free once proven
+	;; lift struck — a signal is a stream; lifting f over it is ¨ (rank polymorphism, no per-theory map); lift also collides with the reflection word
+	;; fold struck — a running fold over a stream is scan, ` ; Elm's foldp is a scan
+
+main : -- +in/mouse +out/screen
+	../mouse/in position →pos
+	pos [ 2 times ] each →scaled	; was: pos [ 2 * ] signal/lift
+	scaled ../screen/out [draw] each
+
+;;; ── 5. multiple dispatch: static where it can be, a loosened region where it must ──
+area : shape -- n
+	shape/kind agenda	; was: shape/kind as a head with N children — refused (variadic); @. keyed by pattern over a literal table (X17)
+		#circle	[ shape/r dup times π times ]	; each line strands a string literal and a quotation literal; the block is a rank-2 literal, one value
+		#rect	[ shape/w shape/h times ]
+		_	[ sorry ]	; was: ? [ sorry ] — the hole is _; a hole as pattern matches anything; sorry discharges it (P2): a point, not a region
+
+;;; ── 6. a dissenting tree with no seam yet ───────────────────────────────────
+inet/
+	seam ? ∈ inet -- core	; a goal ascribed the functor type it must fill; elaboration reports the missing kind
+
+;;; ── 7. facts: signed, mountable, contradiction as a state ─────────────────
+;; substrate side, in the syntax author's spelling above; ⟨sketch⟩ on every new word
+facts/
+	seam ∈ facts -- core  full faithful	; facts are terms; the e-graph is the engine, rules/ the strategy (egglog: Datalog over an e-graph)
+	assert : e a v -- fact +st	; ⟨sketch⟩ entity attribute value; the time is the patch that carries it (Datomic)
+	retract : fact -- fact +st	; a retraction is itself a fact, never a delete
+	contradiction : facts -- pairs	; reported, not raised: a recorded state, like a pijul conflict
+	revise : facts fact -- facts +st	; ⟨sketch⟩ AGM expand/contract/revise, each an ordinary patch
+	KEYS	; allowed signers, versioned with the facts; an unknown key makes a fact nobody's
+
+../geo/facts	; someone else's facts: a directory reached by path, signed by them
+	#paris #capital-of #france assert
+	#paris #population 2100000 assert
+
+../me/facts
+	#paris #population 2165000 assert	; contradicts the mounted fact; both stand
+
+[ ../geo/facts ../me/facts ] bind →kb	; union-mount: the knowledge base is a view over both
+kb contradiction	; → [ (#paris #population 2100000 2165000) ]
+kb tax rules/saturate	; forward chaining over the union, as over any facts
+kb verify	; read-time: a signature per fact, KEYS decides who counts; nothing is refused at write time
+
+;; owed, not sketched: a reference tree — #paris here and #paris there are the same symbol, not the same city
+#+end_src
+
+** Draft 4 — pattern matching
+#+begin_src text :tangle gram/snips/match.v5.txt
+;;;; Pattern matching, one sketch: Haskell shapes, Julia/CLOS multimethods, XDuce-free list patterns,
+;;;; Prolog's family, Python's keywords, ABC's keywords — all the same match (S35–S40). Name spelling, tabs.
+
+;;; ── 1. constructors run backwards: a pattern is the inverse of an injective constructor ──
+circle : r -- shape
+	#circle swap pair
+rect : w h -- shape
+	#rect swap pair pair
+
+area : shape -- n
+	match
+		( circle r ∈ pos )	r dup times π times	; guard: an ascription in the pattern, no `when`
+		( circle 0 )	0	; a literal matches by equality
+		( rect w h )	w h times
+		_	?	; wildcard row; its body is a goal the elaborator reports (S40)
+
+;;; ── 2. the same, Haskell's way: the pattern in the head (S37, on the table) ──
+perimeter : ( circle r ) -- n
+	r τ times
+perimeter : ( rect w h ) -- n
+	w h + 2 times
+
+;;; ── 3. multiple dispatch (Julia, CLOS): patterns on every argument, typed ──
+collide : a b -- outcome
+	match
+		( _ ∈ Asteroid )	( _ ∈ Ship )	#boom
+		( _ ∈ Ship )	( _ ∈ Asteroid )	swap collide	; symmetric case delegates
+		( _ ∈ Ship )	( _ ∈ Ship )	#bounce
+		_	_	#miss	; catch-all: without it the match is partial and carries +fail
+	; static where the types are known (row 23); a dynamic site declares +fail (X20)
+
+;;; ── 4. list patterns without a star: cons is injective, catenation is not (S38) ──
+sum : xs -- n
+	match
+		⟨⟩	0
+		( cons x xs )	xs sum x +
+zip : xs ys -- ps
+	match
+		( cons x xs )	( cons y ys )	xs ys zip x y pair cons
+		_	_	⟨⟩
+contains : x xs -- b
+	match
+		_	⟨⟩	false
+		_	( cons $x _ )	true	; $x: a pinned pattern, matches the current value of x (Elixir's ^x)
+		_	( cons _ rest )	x rest contains
+; a sequence queried as a whole is a value-level query, where a regex belongs:
+;   lines [ “err.*” regex ] find
+
+;;; ── 5. Prolog's family: the same match, inside a space, is two-way unification ──
+family/
+	parent : x y --	; a relation: two pattern cells, an empty body = succeed
+		match
+			#tom	#bob
+			#bob	#ann
+			#bob	#pat
+			#pat	#jim
+	male : x --
+		match
+			#tom
+			#bob
+			#jim
+	female : x --
+		match
+			#ann
+			#pat
+	mother : x y --
+		x y parent  x female
+	grandfather : x z --
+		fresh →y
+		x y parent  y z parent  x male
+
+#pat #jim family/parent	; outside a space: one-way, first match, deterministic; succeeds
+[ fresh →g  g #jim family/grandfather  g ] logic/space	; inside: fresh g unifies against the rows → [ #bob ]
+[ fresh →c  #bob c family/parent  c ] logic/space	; all solutions, not the first → [ #ann #pat ]
+
+;;; ── 6. Python's keywords: a record pattern in the head is the signature, values are defaults (S39) ──
+join : xs { sep “ ” end newline } -- s
+	xs sep interleave end ,	; sep and end are bound by the pattern; the caller's record unions over the defaults
+words { sep “, ” } join
+[join] { end “” } with →join-flat	; with: curry-with-union; later calls still override
+;   under python, the printer shows the call as   join(words, sep=", ")
+
+;;; ── 7. ABC's keywords: a view, not a form ──
+;   under abc, the same ABT prints as a keyword template with holes, JOIN ? WITH ? ENDING ?,
+;   and the editor completes from the effect line, not from an LL(1) guess (CWI CS-R9256).
+#+end_src
+
+
+* Seams
+
+Where two tools cannot share definitions, data passes through this file:
+the blocks named in the =seams= verb of the preamble run with =./SHAR.org
+seams=, their =#+RESULTS:= stay here as evidence of one run, and other
+blocks read them with =:var=.
+
+#+NAME: check-run
+#+begin_src shell :results output :exports both :tangle no
+cd gram && python3 test_fpl.py 2>&1 | grep -E 'OK|rejected|ALL' && python3 printer.py 2>&1 | grep examples && python3 fon.py 2>&1 | grep -E 'FON-data|rejected'
+#+end_src
+
+#+RESULTS: check-run
+#+begin_example
+draft1           OK  lines= 29 tokens=111
+examples2        OK  lines= 35 tokens=145
+paths            OK  lines= 13 tokens= 46
+append_clauses   OK  lines=  9 tokens= 52
+enclosures       OK  lines=  6 tokens= 12
+names:draft1     OK  lines= 31 tokens=131
+names:draft2     OK  lines= 75 tokens=276
+names:draft3     OK  lines= 13 tokens= 44
+names:match      OK  lines= 73 tokens=249
+names:server     OK  lines= 17 tokens= 67
+names:sketch     OK  lines= 74 tokens=284
+overlap          rejected (UnexpectedCharacters)
+unclosed         rejected (SyntaxError)
+dedent-mismatch  rejected (DedentError)
+ALL OK
+examples2        OK  lines= 35 tokens=145
+flat  from_lark   : 2000 examples, parse∘print = id and print idempotent
+trees with blocks : 2000 examples, parse∘print = id and print idempotent
+FON-data: 2000 generated values, read∘write = id, write idempotent
+repeated key                                       → rejected (VisitError)
+unclosed                                           → rejected (UnexpectedToken)
+overlap                                            → rejected (UnexpectedCharacters)
+malformed hash                                     → rejected (VisitError)
+depth bound                                        → rejected (Bounds)
+non-canonical number                               → rejected (VisitError)
+exponent (not in the profile)                      → rejected (VisitError)
+#+end_example
+
+Not run before delivery: =agree= (no Emacs in the authoring container) and
+the Nix shell (no Nix); the check above was run with the same Python
+packages (lark 1.3.1, hypothesis 6.168) outside Nix, and =tangle= twice
+gave identical trees. The receiver reruns =./SHAR.org=.
