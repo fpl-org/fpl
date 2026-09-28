@@ -11,7 +11,7 @@ from fpl.errors import FplError, Span
 
 
 @settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
-@given(st.text(alphabet="ab \n", max_size=30))
+@given(st.text(alphabet="ab \n", max_size=30).map("a".__add__))
 def test_a_file_that_cannot_run_prints_one_error_line(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], source: str
 ) -> None:
