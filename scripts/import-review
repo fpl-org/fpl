@@ -223,13 +223,35 @@ def have(commit):
     return git("cat-file", "-e", f"{commit}^{{commit}}", ok=False).returncode == 0
 
 
+def cred_args():
+    cred = credentials_file()
+    return ["-c", "credential.helper=", "-c", f"credential.helper=store --file={cred}"] if cred else []
+
+
+def live(remote, number, pr):
+    """The heads of the pull request's branch and of its base as git has them now. Right after
+    a force-push the API can still report the old ones for a while; the refs do not lag."""
+    slug = pr["base"]["repo"]["full_name"]
+    refs = [f"refs/heads/{pr['base']['ref']}"] if pr["base"].get("ref") else []
+    if pr["head"].get("ref") and ((pr["head"].get("repo") or {}).get("full_name") == slug):
+        refs.append(f"refs/heads/{pr['head']['ref']}")
+    if not remote or not refs:
+        return pr["head"]["sha"], pr["base"]["sha"]
+    out = git(*cred_args(), "ls-remote", remote, *refs, ok=False).stdout.split()
+    now = dict(zip(out[1::2], out[0::2]))
+    head = now.get(refs[-1], pr["head"]["sha"]) if len(refs) == 2 else pr["head"]["sha"]
+    tip = now.get(refs[0], pr["base"]["sha"])
+    wanted = [r for r, c in zip(refs, [tip, head]) if not have(c)]
+    if wanted:
+        git(*cred_args(), "fetch", "--no-auto-gc", "-q", remote, *wanted, ok=False)
+    return head, tip
+
+
 def ensure(remote, number, *commits):
     """The pull request's commits, fetched from the forge when they are not here."""
     if all(have(c) for c in commits):
         return
-    cred = credentials_file()
-    helper = ["-c", "credential.helper=", "-c", f"credential.helper=store --file={cred}"] if cred else []
-    git(*helper, "fetch", "--no-auto-gc", "-q", remote,
+    git(*cred_args(), "fetch", "--no-auto-gc", "-q", remote,
         f"refs/pull/{number}/head", f"refs/pull/{number}/merge", ok=False)
     missing = [c[:7] for c in commits if not have(c)]
     if missing:
@@ -286,6 +308,8 @@ def import_one(repo, remote, bundle, patches):
     pr = bundle["pr"]
     slug, number = pr["base"]["repo"]["full_name"], pr["number"]
     head, tip = pr["head"]["sha"], pr["base"]["sha"]
+    if remote and not os.environ.get("FPL_IMPORT_HEAD"):
+        head, tip = live(remote, number, pr)
     mark = marker(slug, number)
     ensure(remote, number, head, tip)
     base = git("merge-base", tip, head).stdout.strip()
@@ -392,7 +416,13 @@ def main(argv):
     repo = Repo()
     patches = repo.patches()
     for n in numbers:
-        import_one(repo, remote, fetch(slug, n, secret), patches)
+        bundle = fetch(slug, n, secret)
+        # Right after a force-push the forge can still answer with the old head and the old
+        # base; whoever did the push (review-serve, restacking the queue) knows both and says so.
+        if len(numbers) == 1 and os.environ.get("FPL_IMPORT_HEAD"):
+            bundle["pr"]["head"]["sha"] = os.environ["FPL_IMPORT_HEAD"]
+            bundle["pr"]["base"]["sha"] = os.environ.get("FPL_IMPORT_BASE") or bundle["pr"]["base"]["sha"]
+        import_one(repo, remote, bundle, patches)
         patches = repo.patches()
     return 0
 
