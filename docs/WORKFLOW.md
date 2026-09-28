@@ -203,18 +203,45 @@ the agent. `--self-test` runs it in a throwaway Radicle home without the network
 scripts/review --serve       the open patches, in the browser
 ```
 
-reads the patches and nothing else, and lays them out like a mailbox: the open patches down
-the left, a patch based on another one's head indented under it, and the chosen one on the
-right, on its latest revision, with every changed file whole and each comment under the
-lines it is about. `j` and `k` move through the list. Only what is in Radicle shows:
-`scripts/import-review --open` first, to bring the pull requests in. What you write there goes into the
+reads the patches and nothing else. The first page lists the open pull requests by what they
+need from you (your review, changes, merging), a stacked one indented under the one it sits
+on. A pull request opens laid out the way stacked-review tools lay it out: the stack on the
+left with main at the bottom, the changed files in the middle with every file whole behind
+folds and each comment under its lines, and a tray on the right with the timeline, the file
+tree and the commits.
+
+You read top to bottom and decide per hunk, in the place you read it: under each hunk are
+Approve (`a`), Not this (`x`) and Comment (`c`), and under each file a button for the rest
+of it; `n` and `p` move between hunks, and a selected range of lines can be approved on its
+own. A mark is a Radicle reaction on those lines, signed like a comment. The merge button is
+at the bottom (`m`), and it opens only when every hunk is approved; with hunks refused it
+offers to request changes instead. Merging records your approval of the revision too.
+Keys on the list: `j` `k` and enter. Only what is in Radicle shows: `scripts/import-review
+--open` first, to bring the pull requests in. What you write there goes into the
 patch under your key, the way the Radicle CLI writes it: a line comment into your review of
 the revision, a reply into the thread it answers, accept or reject as your review's verdict.
 Comments in a review can be resolved; imported ones cannot, because Radicle keeps them on
 the revision, where there is no resolve, so they are answered instead.
 
-It does not merge and does not reach the forge. The server listens on 127.0.0.1 only and
-wants the token in the address it prints, so no other page in the browser can write to it.
+```
+scripts/export-review <number>... | --open
+```
+
+is the way back. What was written in the review and not imported goes onto the pull
+request once, posted by the machine account: a line comment as a review comment on those
+lines (or, for a line outside the forge's diff, a plain comment that names and links the
+line), a reply to a forge comment as a reply in its thread, anything else and a verdict as a
+comment. The first line names the writer and the key that signed it; the last is an HTML
+comment with the Radicle id, which is how a second run skips it and how scripts/import-review
+leaves it out. So a conversation can run in both places and each comment keeps one home.
+
+The page also lands. A patch from a pull request at the bottom of its stack has an
+"approve and merge" button: your gh account approves and rebase-merges it, as
+scripts/land does, but only while the forge still has the commit you reviewed and its checks
+passed. The merge is then recorded in Radicle, the patches stacked on it are replayed onto
+the new main and pushed as the machine account, and the landed branch is deleted. Your
+checkout's main is left alone. The server listens on 127.0.0.1 only and wants the token in
+the address it prints, so no other page in the browser can write to it, or land.
 
 ## The agent's credential
 

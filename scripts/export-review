@@ -1,0 +1,439 @@
+#!/usr/bin/env python3
+"""scripts/export-review — put what was written in the Radicle review on the pull request.
+
+    scripts/export-review <number>...     those pull requests
+    scripts/export-review --open          every patch that came from an open pull request
+    scripts/export-review -n …            print what would be posted, post nothing
+    scripts/export-review --self-test     run against a throwaway Radicle home, offline
+
+The other half of scripts/import-review. The review lives in the patch; people who found the
+project on the forge read the pull request. So what was written here and not imported from
+there goes there, once, posted by the machine account (docs/WORKFLOW.md), whose token also
+does the import:
+
+    a comment on lines          a review comment on those lines, where the forge accepts
+                                the lines; a line outside the diff becomes a plain comment
+                                that names the file and lines and links them
+    a reply to a forge comment  a reply in that thread
+    anything else               a comment on the pull request
+    accept or reject            a comment saying so; the forge's approval stays the
+                                maintainer's own act (scripts/land, or the review page)
+
+The first line names who wrote it and the key that signed it, since the account that posts
+it is not theirs: the same claim with a pointer that scripts/import-review writes the other
+way. The last line is an HTML comment carrying the Radicle id, invisible on the forge. It is
+how a second run knows a comment is out already, and how scripts/import-review knows not to
+bring it back.
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import urllib.error
+import urllib.request
+
+PATCH = "xyz.radicle.patch"
+IMPORTED = re.compile(r"^(\S+) on GitHub, [^\n]*: (https://\S+)")
+MARK = re.compile(r"<!-- rad:([0-9a-f]{40}|verdict:[0-9a-f]{40}:\w+) -->")
+
+
+def die(message, code=1):
+    print(f"export-review: {message}", file=sys.stderr)
+    sys.exit(code)
+
+
+def run(*cmd, ok=True):
+    try:
+        done = subprocess.run(cmd, capture_output=True, text=True)
+    except FileNotFoundError:
+        die(f"{cmd[0]} not found" + ("; scripts/layer on radicle" if cmd[0] == "rad" else ""))
+    if ok and done.returncode != 0:
+        die(f"{' '.join(cmd[:3])} failed: {(done.stderr or done.stdout).strip()}")
+    return done
+
+
+def git(*args, ok=True):
+    return run("git", *args, ok=ok)
+
+
+# The forge. The same lookups as scripts/import-review.
+
+
+def forge_remote():
+    remotes = [r for r in git("remote").stdout.split()
+               if "github.com" in git("remote", "get-url", r).stdout]
+    tracked = git("config", "branch.main.remote", ok=False).stdout.strip()
+    if tracked in remotes:
+        return tracked
+    if len(remotes) == 1:
+        return remotes[0]
+    die("no single remote on github.com" if remotes else "no remote on github.com")
+
+
+def slug_of(remote):
+    url = git("remote", "get-url", remote).stdout.strip()
+    slug = re.sub(r"\.git$", "", url.split("github.com", 1)[1].lstrip(":/"))
+    if slug.count("/") != 1:
+        die(f"cannot read owner/repo from '{url}'")
+    return slug
+
+
+def token():
+    if os.environ.get("FPL_FORGE_TOKEN"):
+        return os.environ["FPL_FORGE_TOKEN"]
+    common = os.path.abspath(git("rev-parse", "--git-common-dir").stdout.strip())
+    cred = os.path.join(common, "agent-credentials")
+    if os.access(cred, os.R_OK):
+        with open(cred) as f:
+            for line in f:
+                m = re.match(r"https://[^:]+:([^@]+)@github\.com", line.strip())
+                if m:
+                    return m.group(1)
+    die("no token for the machine account: see .git/agent-credentials in docs/WORKFLOW.md")
+
+
+class Forge:
+    def __init__(self, slug, secret):
+        self.slug, self.secret = slug, secret
+
+    def call(self, path, payload=None):
+        out, url = [], f"https://api.github.com{path}"
+        while url:
+            request = urllib.request.Request(
+                url, data=None if payload is None else json.dumps(payload).encode(),
+                method="GET" if payload is None else "POST",
+                headers={"Authorization": f"Bearer {self.secret}",
+                         "Accept": "application/vnd.github+json",
+                         "X-GitHub-Api-Version": "2022-11-28",
+                         "Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(request) as response:
+                    page = json.load(response)
+                    link = response.headers.get("Link", "")
+            except urllib.error.HTTPError as error:
+                raise ForgeRefused(error.code, (json.loads(error.read() or b"{}")).get("message", error.reason))
+            if not isinstance(page, list):
+                return page
+            out += page
+            m = re.search(r'<([^>]+)>;\s*rel="next"', link)
+            url = m.group(1) if m else None
+        return out
+
+    def state(self, number):
+        pr = f"/repos/{self.slug}/pulls/{number}"
+        return {"review_comments": self.call(f"{pr}/comments?per_page=100"),
+                "comments": self.call(f"/repos/{self.slug}/issues/{number}/comments?per_page=100")}
+
+    def post(self, number, post):
+        pr = f"/repos/{self.slug}/pulls/{number}"
+        if post["kind"] == "line":
+            return self.call(f"{pr}/comments", post["payload"])
+        if post["kind"] == "reply":
+            return self.call(f"{pr}/comments/{post['to']}/replies", {"body": post["payload"]["body"]})
+        return self.call(f"/repos/{self.slug}/issues/{number}/comments", {"body": post["payload"]["body"]})
+
+
+class ForgeRefused(Exception):
+    def __init__(self, code, message):
+        super().__init__(f"{code} {message}")
+        self.code = code
+
+
+# Radicle.
+
+
+class Repo:
+    def __init__(self):
+        self.rid = run("rad", ".", ok=False).stdout.strip()
+        if not self.rid.startswith("rad:"):
+            die("this is not a Radicle repository; run rad init first")
+        self.me = run("rad", "self", "--did").stdout.strip().removeprefix("did:key:")
+        self.alias = run("rad", "self", "--alias").stdout.strip()
+
+    def patches(self):
+        out = run("rad", "cob", "list", "--repo", self.rid, "--type", PATCH).stdout.split()
+        return {oid: json.loads(run("rad", "cob", "show", "--repo", self.rid, "--type", PATCH,
+                                    "--object", oid).stdout) for oid in out}
+
+
+def forge_number(patch):
+    for r in patch["revisions"].values():
+        for d in r["description"]:
+            m = re.search(r"GitHub-PR: (\S+)#(\d+)", d["body"])
+            if m:
+                return m.group(1), int(m.group(2))
+    return None, None
+
+
+def short(key):
+    return f"{key[:8]}…{key[-4:]}"
+
+
+# What to post.
+
+
+def plan(repo, patch, slug, number, forge):
+    """The posts that bring the forge up to date with this patch, in the order written."""
+    out = set()
+    by_rad = {}  # Radicle id of an exported comment -> (kind, forge id)
+    forge_review = {}  # forge id of a review comment, for replies to imported ones
+    for c in forge["review_comments"]:
+        m = MARK.search(c.get("body") or "")
+        if m:
+            out.add(m.group(1))
+            by_rad[m.group(1)] = ("review", c["id"])
+        forge_review[c["id"]] = c
+    for c in forge["comments"]:
+        m = MARK.search(c.get("body") or "")
+        if m:
+            out.add(m.group(1))
+            by_rad[m.group(1)] = ("issue", c["id"])
+
+    comments = {}
+    for rev in patch["revisions"].values():
+        for cid, c in rev["discussion"]["comments"].items():
+            comments[cid] = dict(c, id=cid, rev=rev)
+        for review in rev["reviews"].values():
+            for cid, c in review["comments"]["comments"].items():
+                comments[cid] = dict(c, id=cid, rev=rev)
+
+    def who(author):
+        name = repo.alias if author == repo.me else short(author)
+        return f"**{name}**, in the project's Radicle review (signed `did:key:{short(author)}`):"
+
+    posts = []
+    for c in sorted(comments.values(), key=lambda c: (c["edits"][0]["timestamp"], c["id"])):
+        if IMPORTED.match(c["body"]) or c["id"] in out:
+            continue
+        body = f"{who(c['author'])}\n\n{c['body'].strip()}\n\n<!-- rad:{c['id']} -->"
+        parent = comments.get(c.get("replyTo") or c.get("reply_to") or "")
+        loc = c.get("location")
+        if parent is not None:
+            imp = IMPORTED.match(parent["body"])
+            forge_id = None
+            if imp and "#discussion_r" in imp.group(2):
+                forge_id = int(imp.group(2).rsplit("#discussion_r", 1)[1])
+            elif by_rad.get(parent["id"], ("", 0))[0] == "review":
+                forge_id = by_rad[parent["id"]][1]
+            if forge_id:
+                posts.append({"rad": c["id"], "kind": "reply", "to": forge_id, "payload": {"body": body}})
+                continue
+            quoted = "\n".join("> " + line for line in (IMPORTED.sub("", parent["body"]).strip()
+                                                         .splitlines()[:3]))
+            body = f"{who(c['author'])}\n\n{quoted}\n\n{c['body'].strip()}\n\n<!-- rad:{c['id']} -->"
+            posts.append({"rad": c["id"], "kind": "issue", "payload": {"body": body}})
+        elif loc and (loc.get("new") or loc.get("old")):
+            side = "new" if loc.get("new") else "old"
+            r = loc[side]["range"] if loc[side].get("type") == "lines" else {"start": loc[side]["line"], "end": loc[side]["line"] + 1}
+            first, last = r["start"], r["end"] - 1
+            payload = {"body": body, "commit_id": loc["commit"], "path": loc["path"],
+                       "line": last, "side": "RIGHT" if side == "new" else "LEFT"}
+            if first < last:
+                payload.update(start_line=first, start_side=payload["side"])
+            span = f"L{first}" + (f"-L{last}" if first < last else "")
+            where = (f"`{loc['path']}` lines {first}–{last}" if first < last else f"`{loc['path']}` line {first}")
+            link = f"https://github.com/{slug}/blob/{loc['commit']}/{loc['path']}#{span}"
+            fallback = (f"{who(c['author'])}\n\nOn {where} ([at {loc['commit'][:7]}]({link})), "
+                        f"outside the diff:\n\n{c['body'].strip()}\n\n<!-- rad:{c['id']} -->")
+            posts.append({"rad": c["id"], "kind": "line", "payload": payload, "fallback": fallback})
+        else:
+            posts.append({"rad": c["id"], "kind": "issue", "payload": {"body": body}})
+
+    for rev in patch["revisions"].values():
+        for author, review in rev["reviews"].items():
+            verdict = review.get("verdict")
+            key = f"verdict:{review['id']}:{verdict}"
+            if not verdict or key in out:
+                continue
+            said = "accepted" if verdict == "accept" else "rejected"
+            summary = review["summary"][-1]["body"].strip() if review.get("summary") else ""
+            body = (f"{who(author)}\n\n{said} revision `{rev['oid'][:7]}`."
+                    + (f"\n\n{summary}" if summary else "") + f"\n\n<!-- rad:{key} -->")
+            posts.append({"rad": key, "kind": "issue", "payload": {"body": body}})
+    return posts
+
+
+def export(repo, forge, patches, numbers, dry):
+    done = 0
+    for oid, patch in patches.items():
+        slug, number = forge_number(patch)
+        if number is None or (numbers is not None and number not in numbers):
+            continue
+        if slug != forge.slug:
+            continue
+        posts = plan(repo, patch, slug, number, forge.state(number))
+        for post in posts:
+            if dry:
+                print(json.dumps({"pr": number, **post}))
+                continue
+            try:
+                forge.post(number, post)
+            except ForgeRefused as error:
+                if post["kind"] != "line" or error.code != 422:
+                    die(f"#{number}: {error}")
+                # The forge takes a line comment only on lines in its diff.
+                forge.post(number, {"kind": "issue", "payload": {"body": post["fallback"]}})
+            done += 1
+        print(f"#{number}: {len(posts)} post{'s' * (len(posts) != 1)}{' planned' if dry else ''}",
+              file=sys.stderr)
+    return done
+
+
+def main(argv):
+    dry = "-n" in argv
+    args = [a for a in argv if a != "-n"]
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__.split("\n\n")[1])
+        return 0 if args else 2
+    if args == ["--open"]:
+        numbers = None
+    elif all(a.lstrip("#").isdigit() for a in args):
+        numbers = {int(a.lstrip("#")) for a in args}
+    else:
+        die("usage: scripts/export-review [-n] <number>... | --open", 2)
+    remote = forge_remote()
+    forge = Forge(slug_of(remote), token())
+    repo = Repo()
+    export(repo, forge, repo.patches(), numbers, dry)
+    return 0
+
+
+# The self-test: a patch with one comment of every kind, and a forge that answers from
+# memory, refuses a line outside the diff the way GitHub does, and records what it is sent.
+
+
+class FakeForge(Forge):
+    def __init__(self, slug, diff_lines):
+        super().__init__(slug, "")
+        self.review_comments, self.comments, self.diff_lines, self.next = [], [], diff_lines, 100
+
+    def state(self, number):
+        return {"review_comments": list(self.review_comments), "comments": list(self.comments)}
+
+    def post(self, number, post):
+        self.next += 1
+        body = post["payload"]["body"]
+        if post["kind"] == "line":
+            if post["payload"]["line"] not in self.diff_lines:
+                raise ForgeRefused(422, "line must be part of the diff")
+            self.review_comments.append({"id": self.next, "body": body, "line": post["payload"]["line"]})
+        elif post["kind"] == "reply":
+            self.review_comments.append({"id": self.next, "body": body, "in_reply_to_id": post["to"]})
+        else:
+            self.comments.append({"id": self.next, "body": body})
+
+
+def self_test():
+    checks = []
+
+    def check(name, ok):
+        checks.append((name, bool(ok)))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        env = dict(os.environ, RAD_HOME=f"{tmp}/home", RAD_PASSPHRASE="self-test",
+                   GIT_CONFIG_GLOBAL="/dev/null", GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
+                   GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+        env.pop("SSH_AUTH_SOCK", None)
+        repo_dir = f"{tmp}/repo"
+        os.makedirs(repo_dir)
+
+        def sh(*cmd):
+            done = subprocess.run(cmd, cwd=repo_dir, env=env, capture_output=True, text=True)
+            if done.returncode != 0:
+                sys.exit(f"self-test: {' '.join(cmd)}\n{done.stdout}{done.stderr}")
+            return done.stdout.strip()
+
+        sh("rad", "auth", "--alias", "selftest")
+        sh("git", "init", "-q", "-b", "main")
+        with open(f"{repo_dir}/f.txt", "w") as f:
+            f.write("".join(f"line {i}\n" for i in range(1, 31)))
+        sh("git", "add", "f.txt")
+        sh("git", "commit", "-q", "-m", "init")
+        base = sh("git", "rev-parse", "HEAD")
+        sh("rad", "init", "--name", "selftest", "--description", "x", "--default-branch", "main",
+           "--private", "--no-confirm", "--no-seed")
+        with open(f"{repo_dir}/f.txt", "w") as f:
+            f.write("".join(f"line {i}{'!' if i == 20 else ''}\n" for i in range(1, 31)))
+        sh("git", "commit", "-q", "-am", "change")
+        head = sh("git", "rev-parse", "HEAD")
+        out = subprocess.run(["git", "push", f"--push-option=patch.base={base}",
+                              "--push-option=patch.message=change", "--push-option=patch.message=GitHub-PR: o/r#7",
+                              "rad", "HEAD:refs/patches"], cwd=repo_dir, env=env,
+                             capture_output=True, text=True)
+        found = re.search(r"Patch ([0-9a-f]{40})", out.stderr + out.stdout)
+        if not found:
+            sys.exit(f"self-test: push to rad failed\n{out.stdout}{out.stderr}")
+        oid = found.group(1)
+        rid = sh("rad", ".")
+
+        def act(action):
+            path = f"{tmp}/a.jsonl"
+            with open(path, "w") as f:
+                f.write(json.dumps(action) + "\n")
+            return sh("rad", "cob", "update", "--repo", rid, "--type", PATCH, "--object", oid,
+                      "--message", "x", path).splitlines()[-1]
+
+        lines = lambda a, b: {"commit": head, "path": "f.txt", "new": {"type": "lines", "range": {"start": a, "end": b}}}
+        imported = act({"type": "revision.comment", "revision": oid, "location": lines(20, 21),
+                        "body": "carol on GitHub, 2026-09-20 10:00:00 UTC: "
+                                "https://github.com/o/r/pull/7#discussion_r55\n\nwhy the bang?"})
+        issue_imp = act({"type": "revision.comment", "revision": oid,
+                         "body": "dave on GitHub, 2026-09-20 11:00:00 UTC: "
+                                 "https://github.com/o/r/pull/7#issuecomment-66\n\nlooks fine"})
+        review = act({"type": "review", "revision": oid})
+        in_diff = act({"type": "review.comment", "review": review, "body": "keep it", "location": lines(19, 21)})
+        outside = act({"type": "review.comment", "review": review, "body": "and this", "location": lines(3, 4)})
+        general = act({"type": "review.comment", "review": review, "body": "overall fine"})
+        reply_line = act({"type": "revision.comment", "revision": oid, "body": "emphasis", "replyTo": imported})
+        reply_issue = act({"type": "revision.comment", "revision": oid, "body": "thanks", "replyTo": issue_imp})
+        act({"type": "review.edit.v2", "review": review, "verdict": "accept", "summary": "ship it"})
+
+        cwd = os.getcwd()
+        os.chdir(repo_dir)
+        saved = dict(os.environ)
+        os.environ.update(env)
+        try:
+            repo = Repo()
+            forge = FakeForge("o/r", diff_lines={17, 18, 19, 20, 21, 22, 23})
+            export(repo, forge, repo.patches(), {7}, dry=False)
+            first = (list(forge.review_comments), list(forge.comments))
+            export(repo, forge, repo.patches(), {7}, dry=False)
+        finally:
+            os.chdir(cwd)
+            os.environ.clear()
+            os.environ.update(saved)
+
+        rc, ic = first
+        body = lambda rad: next((c for c in rc + ic if f"<!-- rad:{rad} -->" in c["body"]), None)
+        check("nothing imported goes back", not body(imported) and not body(issue_imp))
+        check("a line comment in the diff is a review comment on those lines",
+              body(in_diff) in rc and body(in_diff)["line"] == 20)
+        check("a line outside the diff becomes a comment naming and linking the line",
+              body(outside) in ic and "`f.txt` line 3" in body(outside)["body"]
+              and f"/blob/{head}/f.txt#L3" in body(outside)["body"])
+        check("a comment on the whole revision is a comment on the pull request", body(general) in ic)
+        check("a reply to a forge line comment is a reply in that thread",
+              body(reply_line) in rc and body(reply_line).get("in_reply_to_id") == 55)
+        check("a reply to a forge comment quotes it", body(reply_issue) in ic
+              and "> looks fine" in body(reply_issue)["body"])
+        verdicts = [c for c in ic if "accepted revision" in c["body"]]
+        check("the verdict is said, with the summary", len(verdicts) == 1 and "ship it" in verdicts[0]["body"])
+        check("each names the writer and the signing key",
+              all("**selftest**, in the project's Radicle review (signed `did:key:" in c["body"] for c in rc + ic))
+        check("a second run posts nothing", (forge.review_comments, forge.comments) == (rc, ic))
+        check("six posts in all", len(rc) + len(ic) == 6)
+
+    failed = [n for n, ok in checks if not ok]
+    for n in failed:
+        print(f"FAIL {n}", file=sys.stderr)
+    print(f"export-review: self-test {'ok' if not failed else 'FAILED'} ({len(checks)} checks, {len(failed)} failed)")
+    sys.exit(1 if failed else 0)
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] == ["--self-test"]:
+        self_test()
+    sys.exit(main(sys.argv[1:]) or 0)

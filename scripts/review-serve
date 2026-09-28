@@ -18,11 +18,19 @@ reject is the verdict of your review. A comment in a review can be marked resolv
 Comments imported from the forge (scripts/import-review) sit on the revision itself, where
 Radicle has no resolve; they can be answered.
 
-It does not merge and it does not talk to the forge. The page is for one person on one
-machine: it binds to 127.0.0.1, and a write needs the token that is in the address this
-prints, so another site open in the same browser cannot post to it.
+A patch that came from a pull request and sits at the bottom of its stack can be landed
+from the page: your gh account approves it and rebase-merges it, as scripts/land would, but
+only while the forge still has the commit you reviewed and its checks passed. The merge is
+then recorded in Radicle, the patches stacked on it are replayed onto the new main and
+pushed as the machine account, and the landed branch is deleted. Your checkout's main is
+left alone.
 
-Needs rad (`scripts/layer on radicle`) and a repository that went through `rad init`. The
+The page is for one person on one machine: it binds to 127.0.0.1, and a write needs the
+token that is in the address this prints, so another site open in the same browser cannot
+post to it, let alone land something.
+
+Needs rad (`scripts/layer on radicle`) and a repository that went through `rad init`, and
+gh for landing (`scripts/layer on github`). The
 commits of a patch must be in this clone; a patch pushed from here has them, one that
 came in from elsewhere needs a `git fetch rad` first.
 """
@@ -67,6 +75,12 @@ class Repo:
         if not self.rid.startswith("rad:"):
             raise Refused("this is not a Radicle repository; run rad init first")
         self.me = run("rad", "self", "--did").stdout.strip().removeprefix("did:key:")
+        self.alias = run("rad", "self", "--alias", ok=False).stdout.strip() or "you"
+
+    def name(self, did):
+        """Your alias for your own key, a shortened key for anyone else's."""
+        key = did.removeprefix("did:key:")
+        return self.alias if key == self.me else short(key)
 
     def patches(self):
         out = run("rad", "cob", "list", "--repo", self.rid, "--type", PATCH).stdout.split()
@@ -231,273 +245,920 @@ def anchor(c, commit):
     return loc["path"], "file", 0
 
 
-# The page.
+# The page. Its layout follows the stacked-review tools people already use, Graphite in
+# particular: the code is the page, a tray on the right holds the timeline, the file tree
+# and the commits, the stack sits on the left and says where this change is in it, and the
+# review and merge buttons live in the header. Behind all of it is Radicle.
+#
+# Keys: s shows or hides the stack, t f c pick the tray's timeline, files or commits, and
+# pressing the chosen one again closes the tray; on the list, j and k move and enter opens.
 
 
 E = html.escape
 
 STYLE = """
-:root{--bg:#f6f6f3;--fg:#1c1d1f;--mut:#6b6f76;--ln:#dcdbd4;--card:#fff;--add:#e6f4ea;--del:#fbeaea;
---acc:#2f5568;--note:#fff8e1;--sel:#dbe8f1;color-scheme:light}
-@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--ln:#30363d;
---card:#161b22;--add:#12261e;--del:#2d1517;--acc:#58a6ff;--note:#272115;--sel:#1b2b3d;color-scheme:dark}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
-font:14px/1.45 ui-sans-serif,system-ui,sans-serif}
+:root{--ground:#f7f8fa;--surface:#fff;--sunk:#f1f3f6;--line:#e1e4ea;--ink:#16181d;--mut:#5f6673;
+--acc:#3451c7;--acc-soft:#e8ecfb;--ok:#2b8a3e;--ok-soft:#e6f4ea;--bad:#c92a2a;--bad-soft:#fdecec;
+--merged:#6741d9;--add:#e9f7ec;--add-n:#d3efda;--del:#fcecec;--del-n:#f8d7d7;--sel:#fff3bf;--fold:#eef1fb;
+color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--ground:#0e1014;--surface:#15181d;--sunk:#1b1f26;--line:#272c35;
+--ink:#e6e8ec;--mut:#8b929e;--acc:#8ea2f5;--acc-soft:#1f2640;--ok:#51cf66;--ok-soft:#15281b;--bad:#ff8787;
+--bad-soft:#2e1719;--merged:#b197fc;--add:#14261a;--add-n:#1d3a25;--del:#2b1618;--del-n:#46201f;--sel:#3d3413;
+--fold:#1b2033;color-scheme:dark}}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--ground);color:var(--ink);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
 a{color:var(--acc);text-decoration:none}a:hover{text-decoration:underline}
-header{padding:12px 16px;border-bottom:1px solid var(--ln);background:var(--card)}
-header h1{font-size:15px;margin:0}main{padding:16px;max-width:1200px;margin:0 auto}
-.mut{color:var(--mut)}code,pre,.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
-.card{background:var(--card);border:1px solid var(--ln);border-radius:6px;margin:14px 0}
-.card>h2{font-size:13px;margin:0;padding:8px 10px;border-bottom:1px solid var(--ln);font-family:ui-monospace,monospace}
-table.d{border-collapse:collapse;width:100%}table.d td{padding:0 8px;vertical-align:top;white-space:pre-wrap;word-break:break-all}
-td.n{width:1%;min-width:44px;text-align:right;color:var(--mut);user-select:none;cursor:pointer}
-td.n:hover{color:var(--acc)}tr.add td.c{background:var(--add)}tr.del td.c{background:var(--del)}
-tr.hunk td{color:var(--mut);background:var(--bg)}tr.sel td{background:var(--sel)!important}
-.thread{margin:6px 8px 8px 60px;border:1px solid var(--ln);border-radius:6px;background:var(--note);white-space:normal;word-break:normal}
-.c1{padding:6px 10px;border-top:1px solid var(--ln)}.c1:first-child{border-top:0}
-.c1 .who{font-size:12px;color:var(--mut)}.c1 .body{white-space:pre-wrap;margin-top:2px}
-.c1.reply{padding-left:26px}.resolved{opacity:.6}
-form{margin:0}textarea{width:100%;min-height:64px;font:inherit;background:var(--card);color:var(--fg);
-border:1px solid var(--ln);border-radius:4px;padding:6px}
-button{font:inherit;padding:3px 10px;border:1px solid var(--ln);border-radius:4px;background:var(--card);color:var(--fg);cursor:pointer}
-button.pri{background:var(--acc);color:var(--card);border-color:var(--acc)}
-.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px}
-.err{background:var(--del);padding:8px 12px;border-radius:4px}
-.tag{font-size:11px;border:1px solid var(--ln);border-radius:9px;padding:0 6px;color:var(--mut)}
-details summary{cursor:pointer}
-body.mail{height:100vh;display:flex;flex-direction:column}body.mail main{flex:1;min-height:0;padding:0;max-width:none;margin:0;width:100%}
-.split{height:100%;display:grid;grid-template-columns:minmax(260px,360px) 1fr}
-.split aside{overflow:auto;border-right:1px solid var(--ln);background:var(--card)}
-.split .pane{overflow:auto;padding:16px 20px}.split .pane>*{max-width:1200px}
-.pad{padding:10px 14px;margin:0;font-size:12px}
-a.item{display:block;padding:9px 14px 9px calc(14px + var(--depth) * 14px);border-bottom:1px solid var(--ln);
-border-left:3px solid transparent;color:var(--fg);text-decoration:none}
-a.item:hover{background:var(--bg)}a.item.on{background:var(--sel);border-left-color:var(--acc)}
-a.item .t{display:block;font-weight:500;font-size:13.5px}
-a.item .m{display:block;font-size:11.5px;color:var(--mut);font-family:ui-monospace,monospace;margin-top:2px}
-h2.ptitle{font-size:17px;margin:0 0 4px}
-@media (max-width:760px){.split{grid-template-columns:1fr;grid-template-rows:38vh 1fr}
-.split aside{border-right:0;border-bottom:1px solid var(--ln)}}
+:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+code,.mono,table.d{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;font-size:12px}
+.mut{color:var(--mut)}
+.btn{display:inline-flex;align-items:center;gap:6px;font:inherit;font-size:13px;font-weight:500;line-height:18px;padding:5px 12px;
+border-radius:6px;border:1px solid var(--line);background:var(--surface);color:var(--ink);cursor:pointer;white-space:nowrap}
+.btn:hover{background:var(--sunk);text-decoration:none}
+.btn.go{background:var(--ok);border-color:var(--ok);color:#fff}.btn.go:hover{filter:brightness(1.05)}
+.btn.blue{background:var(--acc);border-color:var(--acc);color:var(--surface)}
+.btn.small{padding:2px 8px;font-size:12px}
+kbd{font:11px ui-monospace,monospace;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:0 4px;color:var(--mut)}
+.pill{display:inline-flex;align-items:center;gap:4px;padding:1px 8px;border-radius:999px;font-size:12px;font-weight:600}
+.pill.open{background:var(--ok-soft);color:var(--ok)}.pill.merged{background:var(--acc-soft);color:var(--merged)}
+.pill.closed,.pill.bad{background:var(--bad-soft);color:var(--bad)}.pill.plain{border:1px solid var(--line);color:var(--mut);font-weight:500}
+textarea{width:100%;min-height:84px;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink);resize:vertical}
+/* header */
+.bar{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--surface);border-bottom:1px solid var(--line);
+padding:10px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.bar .crumbs{color:var(--mut);font-size:13px;white-space:nowrap}.bar .crumbs a{color:var(--mut)}
+.bar h1{font-size:16px;font-weight:600;margin:0;text-wrap:balance;min-width:0;flex:1 1 240px}
+.bar .tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+details.pop{position:relative}details.pop>summary{list-style:none}details.pop>summary::-webkit-details-marker{display:none}
+.popbox{position:absolute;right:0;top:calc(100% + 6px);width:min(420px,92vw);background:var(--surface);border:1px solid var(--line);
+border-radius:8px;box-shadow:0 12px 32px rgba(15,20,30,.18);padding:14px;z-index:6}
+.popbox h3{margin:0 0 8px;font-size:14px}.popbox label{display:flex;gap:8px;align-items:flex-start;margin:8px 0}
+.popbox label small{display:block;color:var(--mut)}.popbox .row-end{display:flex;justify-content:flex-end;gap:8px;margin-top:10px}
+/* three columns */
+.pr{display:grid;grid-template-columns:auto minmax(0,1fr) auto;height:calc(100% - 57px)}
+.stack{width:250px;border-right:1px solid var(--line);background:var(--surface);overflow:auto;padding:14px 12px}
+.stack h2,.tray h2{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);margin:0 0 10px;font-weight:600}
+.stack ol{list-style:none;margin:0;padding:0;display:flex;flex-direction:column-reverse;gap:2px}
+.stack li a{display:grid;grid-template-columns:14px 1fr;gap:8px;padding:6px 8px;border-radius:6px;color:var(--ink);font-size:13px;line-height:1.35}
+.stack li a:hover{background:var(--sunk);text-decoration:none}.stack li.on a{background:var(--acc-soft);font-weight:600}
+.stack .node{width:10px;height:10px;border-radius:50%;border:2px solid var(--ok);margin-top:4px;background:var(--surface)}
+.stack .node.merged{border-color:var(--merged);background:var(--merged)}.stack .node.trunk{border-color:var(--mut);background:var(--mut)}
+.stack .num{display:block;color:var(--mut);font-size:11px;font-weight:400}
+.code{overflow:auto;padding:16px 20px 40px}
+.tray{width:380px;border-left:1px solid var(--line);background:var(--surface);display:flex;flex-direction:column;min-height:0}
+.tray nav{display:flex;border-bottom:1px solid var(--line);padding:0 8px}
+.tray nav a{padding:10px 10px 9px;color:var(--mut);font-size:13px;border-bottom:2px solid transparent;margin-bottom:-1px}
+.tray nav a.on{color:var(--ink);border-color:var(--acc);font-weight:600}.tray nav a:hover{text-decoration:none;color:var(--ink)}
+.tray .pane{overflow:auto;padding:14px;flex:1;min-height:0}
+body.no-stack .stack,body.no-tray .tray{display:none}
+/* description and files */
+.summary{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;color:var(--mut);font-size:13px}
+.add-n{color:var(--ok);font-variant-numeric:tabular-nums}.del-n{color:var(--bad);font-variant-numeric:tabular-nums}
+.desc{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin-bottom:16px;max-width:900px}
+.desc summary{cursor:pointer;color:var(--mut);font-size:13px}
+.md p{margin:0 0 8px}.md p:last-child{margin:0}.md code{background:var(--sunk);padding:.1em .35em;border-radius:4px}
+.md blockquote{margin:0 0 8px;padding-left:10px;border-left:3px solid var(--line)}
+.file{border:1px solid var(--line);border-radius:8px;margin-bottom:16px;background:var(--surface);overflow-x:auto}
+.fhead{padding:8px 12px;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:center;background:var(--sunk);border-radius:8px 8px 0 0}
+.fhead .path{font-family:ui-monospace,monospace;font-size:12px;font-weight:600}
+table.d{border-collapse:collapse;width:100%;line-height:20px}
+table.d td{padding:0 10px;vertical-align:top;white-space:pre-wrap;word-break:break-all}
+td.n{width:1%;min-width:46px;text-align:right;color:var(--mut);cursor:pointer;user-select:none;position:relative;font-variant-numeric:tabular-nums}
+td.n:hover{color:var(--ink)}
+td.n.new[data-line]:not([data-line=""]):hover::before{content:"+";position:absolute;left:2px;top:1px;width:18px;height:18px;line-height:18px;
+text-align:center;border-radius:4px;background:var(--acc);color:var(--surface);font-weight:700}
+tr.add td.c{background:var(--add)}tr.add td.n{background:var(--add-n)}tr.del td.c{background:var(--del)}tr.del td.n{background:var(--del-n)}
+tr.fold td{background:var(--fold);color:var(--acc);cursor:pointer;padding:3px 10px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:12px}
+tr.hidden{display:none}tr.sel td{background:var(--sel)!important}
+tr.thread>td{padding:8px 12px 10px 108px;background:var(--sunk);white-space:normal;word-break:normal;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+/* comments */
+.thread-box{max-width:760px;background:var(--surface);border:1px solid var(--line);border-radius:8px}
+.cm{display:grid;grid-template-columns:24px 1fr;gap:4px 10px;padding:10px 12px;border-top:1px solid var(--line)}
+.cm:first-child{border-top:0}.cm.reply{padding-left:34px}
+.cm .who{font-size:13px}.cm .who b{font-weight:600}.cm .md{grid-column:2;overflow-wrap:anywhere}
+.av{width:24px;height:24px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;color:#fff;font-weight:600;font-size:11px;flex:none}
+.replyform{padding:8px 12px;border-top:1px solid var(--line)}
+.replyform summary{list-style:none;cursor:text;border:1px solid var(--line);border-radius:6px;padding:4px 10px;color:var(--mut);font-size:13px}
+.replyform summary::-webkit-details-marker{display:none}
+.actions{display:flex;gap:8px;justify-content:flex-end;align-items:center;margin-top:8px}
+/* timeline */
+.tl{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:12px}
+.tl li{display:grid;grid-template-columns:24px 1fr;gap:4px 10px}
+.tl .who{font-size:13px}.tl .who b{font-weight:600}.tl .body{grid-column:2;font-size:13px}
+.tl .clamp{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+.tl .where{grid-column:2;font-size:12px}
+.dot{width:24px;height:24px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;color:#fff}
+.merge{border:1px solid var(--line);border-radius:8px;padding:12px;margin-top:16px}
+.merge h3{margin:0 0 4px;font-size:14px}
+pre.log{white-space:pre-wrap;margin:8px 0 0;font-size:12px}
+tr.hunkbar>td{padding:6px 12px 6px 108px;background:var(--surface);border-top:1px solid var(--line);border-bottom:1px solid var(--line);
+font:13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;white-space:normal}
+tr.hunkbar>td{display:table-cell}tr.hunkbar .approve{display:inline;margin-left:12px}tr.hunkbar .ok-mark{margin-left:12px}
+tr.hunkbar.current>td{box-shadow:inset 3px 0 0 var(--acc);background:var(--acc-soft)}
+tr.done td.c{opacity:.55}tr.done.add td.n,tr.done.del td.n{background:var(--ok-soft)}
+.btn.go kbd{color:inherit;border-color:rgba(255,255,255,.55)}
+.ok-mark{color:var(--ok);font-weight:600}.no-mark{color:var(--bad);font-weight:600}
+tr.refused td.c{opacity:.7}tr.refused.add td.n,tr.refused.del td.n{background:var(--bad-soft)}
+tr.hunkbar.refused>td{background:var(--bad-soft)}tr.hunkbar.done>td{background:var(--ok-soft)}
+.ffoot{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:8px 12px;border-top:1px solid var(--line);font-size:13px;color:var(--mut)}
+.ffoot.done{background:var(--ok-soft)}.ffoot .approve{display:inline}
+.meter{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--mut)}
+.meter i{display:inline-block;width:90px;height:6px;border-radius:3px;background:var(--line);overflow:hidden}
+.meter i b{display:block;height:100%;background:var(--ok)}
+.mergebox{max-width:900px;border:1px solid var(--line);border-radius:8px;background:var(--surface);padding:16px;margin-top:8px}
+.mergebox h3{margin:0 0 6px;font-size:15px}.mergebox.ready{border-color:var(--ok)}
+.err{background:var(--bad-soft);border:1px solid var(--bad);padding:12px 16px;border-radius:8px;max-width:760px}
+.tree{list-style:none;margin:0;padding:0}.tree li a{display:flex;justify-content:space-between;gap:8px;padding:5px 6px;border-radius:6px;color:var(--ink);font-size:12px}
+.tree li a:hover{background:var(--sunk);text-decoration:none}.tree .p{font-family:ui-monospace,monospace;overflow-wrap:anywhere}
+.commits{list-style:none;margin:0;padding:0}.commits li{padding:8px 0;border-top:1px solid var(--line);font-size:13px}
+.commits li:first-child{border-top:0}
+/* the list */
+.inbox{max-width:980px;margin:0 auto;padding-block:24px;padding-inline:16px}
+.inbox h1{font-size:20px;margin:0 0 4px}.inbox .lede{color:var(--mut);margin:0 0 20px}
+.section{margin-bottom:24px}.section h2{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);margin:0 0 8px;font-weight:600}
+.list{background:var(--surface);border:1px solid var(--line);border-radius:8px}
+a.row{display:grid;grid-template-columns:16px 1fr auto;gap:10px;padding:10px 14px;border-top:1px solid var(--line);color:var(--ink);align-items:start}
+a.row:first-child{border-top:0}a.row:hover,a.row.on{background:var(--sunk);text-decoration:none}a.row.on{box-shadow:inset 3px 0 0 var(--acc)}
+a.row .t{font-weight:600}a.row .m{display:block;color:var(--mut);font-size:12px;margin-top:2px}
+a.row .r{display:flex;gap:6px;align-items:center;color:var(--mut);font-size:12px}
+a.row.stacked{padding-left:calc(14px + var(--depth) * 22px)}
+.empty{padding:14px;color:var(--mut)}
+@media (max-width:1000px){.pr{display:block;height:auto}.stack,.tray{width:auto;border:0;border-bottom:1px solid var(--line)}
+.stack ol{flex-direction:column-reverse}.code{padding:16px}.tray .pane{max-height:none}tr.thread>td{padding-left:12px}}
+@media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
 """
 
 SCRIPT = """
-let pick=null;
-function row(el){return el.closest('tr')}
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+function remember(k,v){try{localStorage.setItem('review.'+k,v)}catch(e){}}
+function recall(k){try{return localStorage.getItem('review.'+k)}catch(e){return null}}
+if(recall('stack')==='off')document.body.classList.add('no-stack');
 document.addEventListener('click',e=>{
+  const f=e.target.closest('tr.fold'); if(f){$$('tr[data-fold="'+f.dataset.id+'"]').forEach(r=>r.classList.remove('hidden'));f.remove();return}
+  const go=e.target.closest('[data-goto]'); if(go){const t=document.getElementById(go.dataset.goto);
+    if(t){e.preventDefault();const tr=t.closest('tr'); if(tr&&tr.dataset.fold){$$('tr[data-fold="'+tr.dataset.fold+'"]').forEach(r=>r.classList.remove('hidden'))}
+      t.scrollIntoView({block:'center'}); t.animate?.([{outline:'2px solid var(--acc)'},{outline:'2px solid transparent'}],{duration:1400})}return}
   const n=e.target.closest('td.n'); if(!n) return;
-  const tr=row(n), f=tr.closest('table'), side=n.dataset.side, line=+n.dataset.line;
+  const tr=n.closest('tr'), t=tr.closest('table'), side=n.dataset.side, line=+n.dataset.line;
   if(!line) return;
-  if(e.shiftKey && pick && pick.table===f && pick.side===side){pick.end=line}else{pick={table:f,side,start:line,end:line}}
-  const lo=Math.min(pick.start,pick.end), hi=Math.max(pick.start,pick.end);
-  f.querySelectorAll('tr').forEach(r=>r.classList.remove('sel'));
+  window.pick=(e.shiftKey&&window.pick&&window.pick.t===t&&window.pick.side===side)?{...window.pick,end:line}:{t,side,start:line,end:line};
+  const p=window.pick, lo=Math.min(p.start,p.end), hi=Math.max(p.start,p.end);
+  t.querySelectorAll('tr').forEach(r=>r.classList.remove('sel'));
   let last=null;
-  f.querySelectorAll('td.n[data-side="'+side+'"]').forEach(c=>{const l=+c.dataset.line;
-    if(l>=lo&&l<=hi){row(c).classList.add('sel');last=row(c)}});
-  document.querySelectorAll('tr.form').forEach(r=>r.remove());
-  const t=document.getElementById('lineform').content.cloneNode(true), tr2=document.createElement('tr');
-  tr2.className='form'; const td=document.createElement('td'); td.colSpan=3; td.appendChild(t); tr2.appendChild(td);
-  last.after(tr2);
-  const fm=tr2.querySelector('form');
-  fm.path.value=f.dataset.path; fm.side.value=side; fm.start.value=lo; fm.end.value=hi+1;
-  fm.querySelector('.what').textContent=f.dataset.path+' '+side+' '+(lo===hi?lo:lo+'–'+hi);
+  t.querySelectorAll('td.n[data-side="'+side+'"]').forEach(c=>{const l=+c.dataset.line;if(l>=lo&&l<=hi){c.closest('tr').classList.add('sel');last=c.closest('tr')}});
+  $$('tr.form').forEach(r=>r.remove());
+  const row=document.createElement('tr'); row.className='form thread'; row.innerHTML='<td colspan="3"></td>';
+  row.firstChild.appendChild($('#lineform').content.cloneNode(true)); last.after(row);
+  const fm=row.querySelector('form'), L=side==='old'?'L':'R';
+  fm.path.value=t.dataset.path; fm.side.value=side; fm.start.value=lo; fm.end.value=hi+1;
+  fm.querySelector('.what').textContent=t.dataset.path+' '+(lo===hi?L+lo:L+lo+'–'+L+hi);
   fm.body.focus();
 });
+function commentOn(bar){
+  $$('tr.form').forEach(r=>r.remove());
+  const row=document.createElement('tr'); row.className='form thread'; row.innerHTML='<td colspan="3"></td>';
+  row.firstChild.appendChild($('#lineform').content.cloneNode(true)); bar.after(row);
+  const fm=row.querySelector('form'), d=bar.dataset, L=d.side==='old'?'L':'R';
+  fm.path.value=d.path; fm.side.value=d.side; fm.start.value=d.start; fm.end.value=d.end; fm.at.value=bar.id;
+  fm.querySelector('.what').textContent=d.path+' '+L+d.start+(+d.end-1>+d.start?'–'+L+(d.end-1):'');
+  fm.body.focus();
+}
+document.addEventListener('click',e=>{const b=e.target.closest('.hunk-comment'); if(b)commentOn(b.closest('tr'))});
+document.addEventListener('keydown',e=>{
+  if(e.target.closest('textarea,input,select')||e.metaKey||e.ctrlKey||e.altKey)return;
+  const rows=$$('a.row');
+  if(rows.length){const i=rows.findIndex(r=>r.classList.contains('on'));
+    if(e.key==='j'||e.key==='k'){e.preventDefault();const to=Math.max(0,Math.min(rows.length-1,i<0?0:i+(e.key==='j'?1:-1)));
+      rows.forEach(r=>r.classList.remove('on'));rows[to].classList.add('on');rows[to].scrollIntoView({block:'nearest'});remember('row',to)}
+    if(e.key==='Enter'&&i>=0)location.href=rows[i].href;return}
+  const bars=$$('tr.hunkbar'); let cur=bars.findIndex(b=>b.classList.contains('current'));
+  function focusBar(i){if(i<0||i>=bars.length)return; bars.forEach(b=>b.classList.remove('current')); const b=bars[i]; b.classList.add('current');
+    if(b.dataset.fold)$$('tr[data-fold="'+b.dataset.fold+'"]').forEach(x=>x.classList.remove('hidden'));
+    b.scrollIntoView({block:'center'})}
+  if(e.key==='n'||e.key==='j'){e.preventDefault();let i=bars.findIndex((b,k)=>k>cur&&!b.classList.contains('done')&&!b.classList.contains('refused'));focusBar(i<0?Math.min(cur+1,bars.length-1):i);return}
+  if(e.key==='p'||e.key==='k'){e.preventDefault();focusBar(Math.max(0,cur-1));return}
+  if(e.key==='a'&&cur>=0){e.preventDefault();const b=bars[cur].querySelector('form.approve:not(.reject) button');if(b)b.click();return}
+  if(e.key==='x'&&cur>=0){e.preventDefault();const b=bars[cur].querySelector('form.reject button');if(b)b.click();return}
+  if(e.key==='c'&&cur>=0){e.preventDefault();commentOn(bars[cur]);return}
+  if(e.key==='m'){const m=$('#merge');if(m){e.preventDefault();m.scrollIntoView({block:'center'})}return}
+  if(e.key==='s'){document.body.classList.toggle('no-stack');remember('stack',document.body.classList.contains('no-stack')?'off':'on')}
+  const tab={t:'timeline',f:'files'}[e.key]; if(tab){const a=$('.tray nav a[data-tab="'+tab+'"]'); if(a)a.click()}
+});
+$$('.tray nav a').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();
+  if(a.classList.contains('on')&&!document.body.classList.contains('no-tray')){document.body.classList.add('no-tray');return}
+  document.body.classList.remove('no-tray');
+  $$('.tray nav a').forEach(b=>b.classList.toggle('on',b===a));
+  $$('.tray .pane').forEach(p=>p.hidden=p.dataset.tab!==a.dataset.tab); remember('tab',a.dataset.tab)}));
+const saved=recall('tab'); if(saved){const a=$('.tray nav a[data-tab="'+saved+'"]'); if(a&&!a.classList.contains('on'))a.click()}
+(function(){const bars=$$('tr.hunkbar'); if(!bars.length)return;
+  const h=location.hash.slice(1), at=bars.findIndex(b=>b.id===h);
+  let i=bars.findIndex((b,k)=>k>=Math.max(0,at)&&!b.classList.contains('done')&&!b.classList.contains('refused')); if(i<0&&at>=0)i=at;
+  if(i<0)return; bars[i].classList.add('current');
+  if(h){if(bars[i].dataset.fold)$$('tr[data-fold="'+bars[i].dataset.fold+'"]').forEach(x=>x.classList.remove('hidden'));
+    bars[i].scrollIntoView({block:'center'})}})();
+const r=+recall('row'); const rows=$$('a.row'); if(rows.length){rows.forEach(x=>x.classList.remove('on'));(rows[r]||rows[0]).classList.add('on')}
 """
 
 
-def page(title, body, token, chrome=True, script=SCRIPT, cls=""):
-    """A whole page, with the header unless chrome is off."""
-    head = (f'<header><h1><a href="/?t={token}" target="_top">review</a> <span class="mut">· {E(title)}</span></h1></header>'
-            if chrome else "")
-    return f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{E(title)}</title><style>{STYLE}</style></head><body class="{cls}">
-{head}<main>{body}</main><script>{script}</script></body></html>"""
+ICON_PR = ('<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">'
+           '<circle cx="4" cy="3.5" r="1.75"/><circle cx="4" cy="12.5" r="1.75"/><circle cx="12" cy="12.5" r="1.75"/>'
+           '<path d="M4 5.25v5.5M12 10.75V6.5a2 2 0 0 0-2-2H7.5m0 0 1.75-1.75M7.5 4.5l1.75 1.75"/></svg>')
+ICON_MERGED = ('<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">'
+               '<circle cx="4" cy="3.5" r="1.75"/><circle cx="4" cy="12.5" r="1.75"/><circle cx="12" cy="8" r="1.75"/>'
+               '<path d="M4 5.25v5.5M4 5.25c0 2.75 2.5 2.75 6.25 2.75"/></svg>')
+ICON_CHECK = ('<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">'
+              '<path d="M3 8.5l3 3 7-7"/></svg>')
+ICON_X = ('<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">'
+          '<path d="M4 4l8 8M12 4l-8 8"/></svg>')
+ICON_PUSH = ('<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">'
+             '<circle cx="8" cy="8" r="2.5"/><path d="M8 1v4.5M8 10.5V15"/></svg>')
+ICON_COMMENT = ('<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">'
+                '<path d="M2 3h12v8H7l-3 3v-3H2z"/></svg>')
 
 
-def who(c, me):
+
+def md(text):
+    """Enough of markdown for review comments: paragraphs, line breaks, `code`, **bold**,
+    fenced blocks and bare links. Everything is escaped first."""
+    out = []
+    for block in re.split(r"\n{2,}", text.strip()):
+        if block.startswith("```"):
+            inner = re.sub(r"^```[^\n]*\n?|\n?```$", "", block)
+            out.append(f"<pre><code>{E(inner)}</code></pre>")
+            continue
+        h = E(block)
+        h = re.sub(r"`([^`]+)`", r"<code>\1</code>", h)
+        h = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", h)
+        h = re.sub(r"(https?://[^\s<)]+)", r'<a href="\1">\1</a>', h)
+        if all(line.startswith("&gt;") for line in h.split("\n")):
+            h = "<blockquote class='mut'>" + "<br>".join(line[4:].lstrip() for line in h.split("\n")) + "</blockquote>"
+            out.append(h)
+            continue
+        out.append("<p>" + h.replace("\n", "<br>") + "</p>")
+    return "".join(out)
+
+
+def color(name):
+    return f"hsl({sum(map(ord, name)) * 47 % 360} 45% 45%)"
+
+
+def avatar(name, small=False):
+    return (f'<span class="av{" small" if small else ""}" style="background:{color(name)}" '
+            f'aria-hidden="true">{E(name[:1].upper())}</span>')
+
+
+def when(ms):
+    import datetime
+    if not ms:
+        return ""
+    return datetime.datetime.fromtimestamp(ms / 1000).strftime("%b %-d, %H:%M")
+
+
+def author_of(c, repo):
+    """(name, what to say after it, body): a comment from the forge speaks as the forge user,
+    with who brought it in; one written here speaks as its signer."""
     m = IMPORTED.match(c["body"])
     if m:
-        return (f'<b>{E(m.group(1))}</b> on <a href="{E(m.group(3))}">GitHub</a>, {E(m.group(2))}'
-                f' <span class="tag">imported by {E(short(c["author"]))}</span>'), c["body"][m.end():]
-    name = "you" if c["author"] == me else short(c["author"])
-    return f"<b>{E(name)}</b>", c["body"]
+        return (m.group(1), f'commented on <a href="{E(m.group(3))}">GitHub</a> · imported by '
+                f'{E(repo.name(c["author"]))}', c["body"][m.end():])
+    return repo.name(c["author"]), "commented", c["body"]
 
 
-def thread_html(root, all_, ctx):
+
+def excerpt_of(c, rev):
+    """The lines a comment is about, as the conversation tab shows them above it."""
+    loc = c.get("location") or {}
+    side = "new" if loc.get("new") else "old" if loc.get("old") else None
+    if not side:
+        return ""
+    r = loc[side]
+    start, end = (r["range"]["start"], r["range"]["end"]) if r.get("type") == "lines" else (r["line"], r["line"] + 1)
+    commit = loc.get("commit") if side == "new" else rev["base"]
+    shown = run("git", "show", f"{commit}:{loc['path']}", ok=False)
+    lines = shown.stdout.split("\n") if shown.returncode == 0 else []
+    first = max(start, end - 4)
+    rows = "".join(f'<tr class="{"add" if side == "new" else "del"}"><td class="n">{i}</td>'
+                   f'<td class="c">{E(lines[i - 1]) if i - 1 < len(lines) else ""}</td></tr>'
+                   for i in range(first, end))
+    outdated = ' <span class="label">outdated</span>' if loc.get("commit") != rev["oid"] else ""
+    return (f'<div class="excerpt"><div class="fname">{E(loc["path"])}{outdated}</div>'
+            f'<table class="d">{rows}</table></div>')
+
+
+def fold(rows, keep, fid):
+    """Rows of a whole file, with long runs away from any change folded behind one row that
+    opens them, as the forge does; the lines are all there, only hidden."""
+    out, run_, n = [], [], 0
+    for i, row in enumerate(rows):
+        if i in keep:
+            if len(run_) > 1:
+                n += 1
+                out.append(f'<tr class="fold" data-id="{fid}-{n}"><td colspan="3">⋯ show {len(run_)} unchanged lines</td></tr>')
+                out += [r.replace("<tr ", f'<tr data-fold="{fid}-{n}" ', 1).replace('class="', 'class="hidden ', 1) for r in run_]
+            else:
+                out += run_
+            run_ = []
+            out.append(row)
+        else:
+            run_.append(row)
+    if len(run_) > 1:
+        n += 1
+        out.append(f'<tr class="fold" data-id="{fid}-{n}"><td colspan="3">⋯ show {len(run_)} unchanged lines</td></tr>')
+        out += [r.replace("<tr ", f'<tr data-fold="{fid}-{n}" ', 1).replace('class="', 'class="hidden ', 1) for r in run_]
+    else:
+        out += run_
+    return out
+
+
+
+def forge_slug(patch):
+    for r in patch["revisions"].values():
+        m = re.search(r"GitHub-PR: (\S+)#\d+", text_of(r["description"]))
+        if m:
+            return m.group(1)
+    return ""
+
+
+NOTES = {}  # what the last landing of a patch said, shown once
+
+
+def stack_below(patches, oid):
+    """The open patch this one is stacked on, as the page names it, or None."""
+    open_, children = graph(patches)
+    for up, kids in children.items():
+        if oid in kids and up:
+            return f"#{forge_number(open_[up])}" if forge_number(open_[up]) else up[:7]
+    return None
+
+
+
+
+def page(title, body, token, script=SCRIPT, bar=""):
+    return f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{E(title)}</title><style>{STYLE}</style></head><body>
+{bar}{body}<script>{script}</script></body></html>"""
+
+
+def thread(repo, c, all_, hidden, anchor_id=True):
+    """A comment, its replies, and a reply field: the form it takes both in the code and,
+    for a comment on the whole change, in the timeline."""
     kids = {}
-    for c in all_.values():
-        if c["parent"]:
-            kids.setdefault(c["parent"], []).append(c)
+    for k in all_.values():
+        if k["parent"]:
+            kids.setdefault(k["parent"], []).append(k)
     out = []
 
-    def one(c, depth):
-        head, body = who(c, ctx["me"])
-        mark = ""
-        if c.get("review") and not c["parent"]:
-            verb = "unresolve" if c.get("resolved") else "resolve"
-            mark = (f'<form method="post" action="/act" style="display:inline">{ctx["hidden"]}'
-                    f'<input type="hidden" name="kind" value="{verb}">'
-                    f'<input type="hidden" name="review" value="{c["review"]}">'
-                    f'<input type="hidden" name="comment" value="{c["id"]}">'
-                    f'<button>{verb}</button></form>')
-        state = ' <span class="tag">resolved</span>' if c.get("resolved") else ""
-        out.append(f'<div class="c1{" reply" if depth else ""}{" resolved" if c.get("resolved") else ""}">'
-                   f'<div class="who">{head}{state} {mark}</div><div class="body">{E(body.strip())}</div></div>')
-        for k in sorted(kids.get(c["id"], []), key=lambda k: k["at"]):
-            one(k, depth + 1)
+    def one(k, reply):
+        name, said, body = author_of(k, repo)
+        resolved = ' <span class="pill plain">resolved</span>' if k.get("resolved") else ""
+        ident = f' id="c-{k["id"]}"' if anchor_id and not reply else ""
+        out.append(f'<div class="cm{" reply" if reply else ""}"{ident}>'
+                   f'{avatar(name, True)}<div class="who"><b>{E(name)}</b> <span class="mut">{said} · {when(k["at"])}</span>'
+                   f'{resolved}</div><div class="md">{md(body)}</div></div>')
+        for kid in sorted(kids.get(k["id"], []), key=lambda x: x["at"]):
+            one(kid, True)
 
-    one(root, 0)
-    reply = (f'<details class="c1"><summary class="mut">reply</summary>'
-             f'<form method="post" action="/act">{ctx["hidden"]}'
-             f'<input type="hidden" name="kind" value="reply">'
-             f'<input type="hidden" name="to" value="{root["id"]}">'
-             f'<textarea name="body" required></textarea><div class="row"><button class="pri">reply</button></div></form></details>')
-    return f'<div class="thread">{"".join(out)}{reply}</div>'
+    one(c, False)
+    resolve = ""
+    if c.get("review"):
+        verb = "unresolve" if c.get("resolved") else "resolve"
+        resolve = (f'<form method="post" action="/act">{hidden}<input type="hidden" name="kind" value="{verb}">'
+                   f'<input type="hidden" name="review" value="{c["review"]}"><input type="hidden" name="comment" value="{c["id"]}">'
+                   f'<button class="btn small">{"Unresolve" if verb == "unresolve" else "Resolve"}</button></form>')
+    out.append(f'<details class="replyform"><summary>Reply…</summary><form method="post" action="/act">{hidden}'
+               f'<input type="hidden" name="kind" value="reply"><input type="hidden" name="to" value="{c["id"]}">'
+               f'<textarea name="body" required placeholder="Reply"></textarea>'
+               f'<div class="actions"><button class="btn blue">Reply</button></div></form></details>')
+    if resolve:
+        out.append(f'<div class="replyform" style="display:flex;justify-content:flex-end">{resolve}</div>')
+    return f'<div class="thread-box">{"".join(out)}</div>'
 
 
-def patch_body(repo, oid, rev_id, token):
-    """The right-hand side: one patch on one revision, as HTML."""
-    patch = repo.show(oid)
+def where_of(c):
+    loc = c.get("location") or {}
+    side = "new" if loc.get("new") else "old" if loc.get("old") else None
+    if not side:
+        return None
+    r = loc[side]
+    a, b = (r["range"]["start"], r["range"]["end"] - 1) if r.get("type") == "lines" else (r["line"], r["line"])
+    L = "R" if side == "new" else "L"
+    return f"{loc['path']} {L}{a}" + (f"–{L}{b}" if b > a else "")
+
+
+def comment_count(p):
+    n = len(comments_of(latest(p)))
+    return f" · {n} comment{'s' * (n != 1)}" if n else ""
+
+
+def stack_chain(patches, oid):
+    """The stack this patch is in, from the bottom up: every open patch it sits on, itself,
+    and every open patch that sits on it."""
+    open_, children = graph(patches)
+    up = {k: parent for parent, kids in children.items() for k in kids}
+    chain, cur = [], oid
+    while cur:
+        chain.insert(0, cur)
+        cur = up.get(cur)
+    cur = oid
+    while children.get(cur):
+        cur = children[cur][0]
+        chain.append(cur)
+    return [(o, patches[o]) for o in chain if o in patches]
+
+
+def pr_page(repo, oid, rev_id, token, tab="conversation", below=None, note=""):
+    patches = repo.patches()
+    patch = patches.get(oid) or repo.show(oid)
     revs = revisions(patch)
     rev = patch["revisions"].get(rev_id) if rev_id else revs[-1]
     if rev is None:
         raise Refused(f"no revision {rev_id} in patch {oid[:7]}")
+    num = forge_number(patch)
+    status = patch["state"]["status"]
     hidden = (f'<input type="hidden" name="t" value="{token}"><input type="hidden" name="patch" value="{oid}">'
               f'<input type="hidden" name="revision" value="{rev["id"]}">')
-    ctx = {"me": repo.me, "hidden": hidden}
+    commits = [line.split("\x1f") for line in run(
+        "git", "log", "--reverse", "--format=%H\x1f%an\x1f%s\x1f%cs", f"{rev['base']}..{rev['oid']}", ok=False
+    ).stdout.splitlines() if line]
     all_ = comments_of(rev)
+    files = diff(rev["base"], rev["oid"])
+    adds = sum(1 for f in files for r in f["rows"] if r[0] == "add")
+    dels = sum(1 for f in files for r in f["rows"] if r[0] == "del")
+    who = repo.name(patch["author"]["id"])
+
+    # The header: where you are, what this is, and the two things you do here.
+    state = {"open": ("open", "Open"), "merged": ("merged", "Merged")}.get(status, ("closed", status.capitalize()))
+    review_pop = (f'<details class="pop"><summary class="btn">Review <kbd>▾</kbd></summary><div class="popbox">'
+                  f'<form method="post" action="/act">{hidden}<input type="hidden" name="kind" value="review">'
+                  f'<h3>Review revision {revs.index(rev) + 1}</h3><textarea name="body" id="review-body" placeholder="Summary (optional for a verdict)"></textarea>'
+                  f'<label><input type="radio" name="event" value="comment" checked><span>Comment<small>Feedback without a verdict.</small></span></label>'
+                  f'<label><input type="radio" name="event" value="approve"><span>Approve<small>Your verdict on this revision: accept.</small></span></label>'
+                  f'<label><input type="radio" name="event" value="request_changes"><span>Request changes<small>Your verdict on this revision: reject.</small></span></label>'
+                  f'<div class="row-end"><button class="btn blue">Submit review</button></div></form></div></details>')
+    total, done, refused, first = progress(rev, files, repo.me)
+    pct = int(100 * done / total) if total else 100
+    merge_btn = (f'<a class="meter" href="#{first or "merge"}" data-goto="{first or "merge"}" title="n: next hunk, a: approve it">'
+                 f'<i><b style="width:{pct}%"></b></i>{done}/{total} hunks{f", {refused} not" if refused else ""}</a>')
+    if status == "merged":
+        mergebox = f'<div class="mergebox" id="merge"><h3>{ICON_MERGED} Merged</h3><div class="mut">This change is on main.</div></div>'
+    elif not num:
+        mergebox = ('<div class="mergebox" id="merge"><h3>Not from a pull request</h3><div class="mut">'
+                    'Only changes that came from the forge are merged from here.</div></div>')
+    elif below:
+        mergebox = (f'<div class="mergebox" id="merge"><h3>Stacked on {E(below)}</h3><div class="mut">Merge that one first; '
+                    f'this one then moves onto main by itself.</div></div>')
+    elif refused and first is None:
+        mergebox = (f'<div class="mergebox" id="merge"><h3><span class="no-mark">✗</span> {refused} hunk{"s" * (refused != 1)} not approved</h3>'
+                    f'<p class="mut" style="margin:0 0 12px">Everything is read. Send it back: this records your verdict on the revision as '
+                    f'request changes, with the note below, and it reaches GitHub with scripts/export-review.</p>'
+                    f'<form method="post" action="/act">{hidden}<input type="hidden" name="kind" value="review">'
+                    f'<input type="hidden" name="event" value="request_changes"><textarea name="body" id="send-back" placeholder="What should change"></textarea>'
+                    f'<div class="actions"><button class="btn" style="border-color:var(--bad);color:var(--bad)">Request changes</button></div></form></div>')
+    elif first is not None:
+        left = total - done - refused
+        mergebox = (f'<div class="mergebox" id="merge"><h3>{left} hunk{"s" * (left != 1)} still to read</h3>'
+                    f'<div class="mut">Merging opens once every hunk is approved. <a href="#{first}" data-goto="{first}">Go to the next one</a> '
+                    f'(<kbd>n</kbd>, then <kbd>a</kbd>).</div></div>')
+    else:
+        mergebox = (f'<div class="mergebox ready" id="merge"><h3><span class="ok-mark">✓</span> Every hunk approved</h3>'
+                    f'<p class="mut" style="margin:0 0 12px">Merging records your approval here and on GitHub, where your gh account '
+                    f'rebase-merges #{num}, but only if GitHub still has <span class="mono">{rev["oid"][:7]}</span>, the revision you read, '
+                    f'and its checks passed. Pull requests stacked on it then move onto the new main, and its branch is deleted.</p>'
+                    f'<form method="post" action="/act">{hidden}<input type="hidden" name="kind" value="land">'
+                    f'<button class="btn go">Rebase and merge #{num}</button></form></div>')
+    rev_links = (" · " + " ".join(
+        f'<a href="/pr/{oid}?t={token}&rev={r["id"]}">{"<b>" if r is rev else ""}r{i + 1}{"</b>" if r is rev else ""}</a>'
+        for i, r in enumerate(revs))) if len(revs) > 1 else ""
+    bar = (f'<header class="bar"><span class="crumbs"><a href="/?t={token}">Pull requests</a> / #{num or oid[:7]}</span>'
+           f'<h1>{E(patch["title"])}</h1><span class="pill {state[0]}">{state[1]}</span>'
+           f'<div class="tools"><button class="btn" type="button" onclick="document.body.classList.toggle(\'no-stack\')">Stack <kbd>s</kbd></button>'
+           f'{review_pop}{merge_btn}</div></header>')
+
+    # Left: the stack, trunk at the bottom.
+    chain = stack_chain(patches, oid) if oid in patches else [(oid, patch)]
+    items = [f'<li><a href="#" onclick="return false"><span class="node trunk"></span><span>main</span></a></li>']
+    for o, p in chain:
+        n = forge_number(p)
+        items.append(f'<li class="{"on" if o == oid else ""}"><a href="/pr/{o}?t={token}">'
+                     f'<span class="node {"merged" if p["state"]["status"] == "merged" else ""}"></span>'
+                     f'<span>{E(p["title"])}<span class="num">#{n or o[:7]}{comment_count(p)}</span></span></a></li>')
+    stack = f'<aside class="stack"><h2>Stack</h2><ol>{"".join(items)}</ol></aside>'
+
+    # Middle: the change itself.
+    desc = text_of(rev["description"]).strip() or text_of(revs[0]["description"]).strip()
+    middle = [f'<div class="summary"><span><b>{E(who)}</b> wants to merge {len(commits)} commit{"s" * (len(commits) != 1)} '
+              f'into {E(below or "main")}</span><span>{len(files)} file{"s" * (len(files) != 1)}</span>'
+              f'<span class="add-n">+{adds}</span><span class="del-n">−{dels}</span>'
+              f'<span class="mono">{rev["oid"][:7]}</span>{rev_links}'
+              + (f' · <a href="https://github.com/{E(forge_slug(patch))}/pull/{num}">on GitHub</a>' if num else "")
+              + '</div>']
+    if desc:
+        middle.append(f'<details class="desc" open><summary>Description</summary><div class="md" style="margin-top:8px">{md(desc)}</div></details>')
+    if note:
+        middle.append(f'<div class="desc"><b>What the merge did</b><pre class="log mono">{E(note)}</pre></div>')
+    middle.append(files_html(repo, rev, files, all_, hidden))
+    middle.append(mergebox)
+
+    # Right: the timeline, the files, the commits.
+    events = [(revs[0]["description"][0]["timestamp"], 0,
+               f'<li>{avatar(who, True)}<div class="who"><b>{E(who)}</b> <span class="mut">opened this · '
+               f'{when(revs[0]["description"][0]["timestamp"])}</span></div></li>')]
+    for i, r in enumerate(revs[1:], 2):
+        events.append((r["description"][0]["timestamp"], 1,
+                       f'<li><span class="dot" style="background:var(--mut)">{ICON_PUSH}</span><div class="who">'
+                       f'<b>{E(repo.name(r["author"]["id"]))}</b> <span class="mut">pushed revision {i} · '
+                       f'{when(r["description"][0]["timestamp"])}</span></div></li>'))
+    general = []
+    for c in all_.values():
+        if root_of(c, all_) is not c:
+            continue
+        name, said, body = author_of(c, repo)
+        place = where_of(c)
+        replies = sum(1 for k in all_.values() if k is not c and root_of(k, all_) is c)
+        more = f' · {replies} repl{"ies" if replies != 1 else "y"}' if replies else ""
+        resolved_tag = ' <span class="pill plain">resolved</span>' if c.get("resolved") else ""
+        if place:
+            events.append((c["at"], 2,
+                           f'<li>{avatar(name, True)}<div class="who"><b>{E(name)}</b> <span class="mut">{said} · {when(c["at"])}</span></div>'
+                           f'<div class="where"><a href="#c-{c["id"]}" data-goto="c-{c["id"]}" class="mono">{E(place)}</a>'
+                           f'<span class="mut">{more}</span>{resolved_tag}</div>'
+                           f'<div class="body clamp md">{md(body)}</div></li>'))
+        else:
+            general.append(c)
+            events.append((c["at"], 2, f'<li style="display:block">{thread(repo, c, all_, hidden)}</li>'))
+    for author, review in rev["reviews"].items():
+        verdict = review.get("verdict")
+        if not verdict:
+            continue
+        name = repo.name(author)
+        summary = text_of(review.get("summary", [])).strip()
+        at = review.get("timestamp") or (review["summary"][-1]["timestamp"] if review.get("summary") else 0)
+        colour, icon, said = (("var(--ok)", ICON_CHECK, "approved these changes") if verdict == "accept"
+                              else ("var(--bad)", ICON_X, "requested changes"))
+        events.append((at, 3, f'<li><span class="dot" style="background:{colour}">{icon}</span><div class="who"><b>{E(name)}</b> '
+                              f'<span class="mut">{said} · {when(at)}</span></div>'
+                              + (f'<div class="body md">{md(summary)}</div>' if summary else "") + "</li>"))
+    timeline = "".join(e[2] for e in sorted(events, key=lambda e: (e[0], e[1])))
+    add = (f'<form method="post" action="/act" style="margin-top:16px">{hidden}<input type="hidden" name="kind" value="comment">'
+           f'<textarea name="body" id="add-comment" required placeholder="Comment on the whole change"></textarea>'
+           f'<div class="actions"><button class="btn blue">Comment</button></div></form>')
+    tree = "".join(
+        f'<li><a href="#f-{i}" data-goto="f-{i}"><span class="p">{E(f["path"] or "?")}</span><span>'
+        f'<span class="add-n">+{sum(1 for r in f["rows"] if r[0] == "add")}</span> '
+        f'<span class="del-n">−{sum(1 for r in f["rows"] if r[0] == "del")}</span></span></a></li>'
+        for i, f in enumerate(files))
+    commit_list = "".join(f'<li><div>{E(s)}</div><div class="mut mono">{h[:7]} · {E(a)} · {E(d)}</div></li>'
+                          for h, a, s, d in commits)
+    tray = (f'<aside class="tray"><nav>'
+            f'<a href="#" data-tab="timeline" class="on">Timeline <kbd>t</kbd></a>'
+            f'<a href="#" data-tab="files">Files {len(files)} <kbd>f</kbd></a>'
+            f'<a href="#" data-tab="commits">Commits {len(commits)}</a></nav>'
+            f'<div class="pane" data-tab="timeline"><ul class="tl">{timeline}</ul>{add}</div>'
+            f'<div class="pane" data-tab="files" hidden><ul class="tree">{tree}</ul></div>'
+            f'<div class="pane" data-tab="commits" hidden><ul class="commits">{commit_list or "<li class=mut>No commits.</li>"}</ul></div>'
+            f'</aside>')
+    body = f'<main class="pr">{stack}<section class="code">{"".join(middle)}</section>{tray}</main>'
+    return page(f"#{num or oid[:7]} {patch['title']}", body, token, bar=bar)
+
+
+APPROVED = "\u2705"  # a hunk you are fine with
+REJECTED = "\u274c"  # a hunk you are not
+
+
+def hunks_of(f):
+    """The changed runs of a file, each as the rows it spans and the lines it covers on one
+    side: the new side when it adds anything, the old side when it only removes."""
+    out, cur = [], None
+    for i, (kind, o, n, _) in enumerate(f["rows"]):
+        if kind in ("add", "del"):
+            if cur is None:
+                cur = {"first": i, "last": i, "new": [], "old": []}
+            cur["last"] = i
+            (cur["new"] if kind == "add" else cur["old"]).append(n if kind == "add" else o)
+        elif cur is not None:
+            out.append(cur)
+            cur = None
+    if cur is not None:
+        out.append(cur)
+    for h in out:
+        side = "new" if h["new"] else "old"
+        lines = h[side]
+        h.update(side=side, start=min(lines), end=max(lines) + 1, lines=set(lines))
+    return out
+
+
+def approved_lines(rev, me, emoji=APPROVED):
+    """Lines you marked on this revision, by (path, side): approved, or with REJECTED, not.
+    Each mark is a Radicle reaction on a code location, signed like everything else."""
+    out = {}
+    for r in rev.get("reactions") or []:
+        loc = r.get("location") or {}
+        if r.get("emoji") != emoji or me not in (r.get("authors") or []) or loc.get("commit") != rev["oid"]:
+            continue
+        for side in ("new", "old"):
+            rng = loc.get(side)
+            if rng and rng.get("type") == "lines":
+                out.setdefault((loc["path"], side), set()).update(range(rng["range"]["start"], rng["range"]["end"]))
+    return out
+
+
+def verdicts(rev, files, me):
+    """For every hunk, keyed (file index, hunk index): "yes", "no" or None."""
+    yes, no = approved_lines(rev, me), approved_lines(rev, me, REJECTED)
+    out = {}
+    for fi, f in enumerate(files):
+        for hi, h in enumerate(hunks_of(f)):
+            key = (f["path"], h["side"])
+            out[(fi, hi)] = ("no" if h["lines"] & no.get(key, set())
+                             else "yes" if h["lines"] <= yes.get(key, set()) else None)
+    return out
+
+
+def progress(rev, files, me):
+    """(hunks in all, approved, rejected, anchor of the first one still open)."""
+    v = verdicts(rev, files, me)
+    first = next((f"h-{fi}-{hi}" for (fi, hi), x in sorted(v.items()) if x is None), None)
+    return len(v), sum(x == "yes" for x in v.values()), sum(x == "no" for x in v.values()), first
+
+
+def approve_form(hidden, ranges, active, label, cls, at, mark="approve"):
+    return (f'<form method="post" action="/act" class="approve {mark}">{hidden}<input type="hidden" name="kind" value="{mark}">'
+            f'<input type="hidden" name="ranges" value="{E(json.dumps(ranges))}"><input type="hidden" name="active" value="{1 if active else 0}">'
+            f'<input type="hidden" name="at" value="{at}"><button class="btn small {cls}">{label}</button></form>')
+
+
+def files_html(repo, rev, files, all_, hidden):
     roots = [c for c in all_.values() if root_of(c, all_) is c]
-    placed, general = {}, []
+    placed, elsewhere = {}, []
     for c in sorted(roots, key=lambda c: c["at"]):
         a = anchor(c, rev["oid"])
-        (placed.setdefault(a, []) if a and a[1] != "file" else general).append(c)
-
-    num = forge_number(patch)
-    parts = [f'<h2 class="ptitle">{E(patch["title"])}</h2>']
-    parts += [f'<p class="mut">patch <code>{oid[:7]}</code> by {E(short(patch["author"]["id"]))}'
-             f'{f" · GitHub #{num}" if num else ""} · {E(patch["state"]["status"])}</p>']
-    if len(revs) > 1:
-        links = " ".join(
-            f'<a href="/?t={token}&p={oid}&rev={r["id"]}">{"<b>" if r is rev else ""}{i + 1}: {r["oid"][:7]}{"</b>" if r is rev else ""}</a>'
-            for i, r in enumerate(revs))
-        parts.append(f'<p>revisions: {links}</p>')
-    described = text_of(rev["description"]).strip()
-    if described:
-        parts.append(f'<div class="card"><h2>description</h2><div class="c1"><div class="body">'
-                     f'{E(described)}</div></div></div>')
-
-    # Verdicts: everybody's, and a form for mine.
-    reviews = []
-    for author, review in rev["reviews"].items():
-        v = review.get("verdict") or "no verdict"
-        s = text_of(review.get("summary", [])).strip()
-        reviews.append(f'<div class="c1"><div class="who"><b>{"you" if author == repo.me else E(short(author))}</b>: '
-                       f'{E(v)}</div>{f"<div class=body>{E(s)}</div>" if s else ""}</div>')
-    verdict_form = (f'<form method="post" action="/act" class="c1">{hidden}<input type="hidden" name="kind" value="verdict">'
-                    f'<textarea name="body" placeholder="summary (optional)"></textarea><div class="row">'
-                    f'<button name="verdict" value="accept" class="pri">accept</button>'
-                    f'<button name="verdict" value="reject">reject</button>'
-                    f'<span class="mut">revision {rev["oid"][:7]} onto {rev["base"][:7]}</span></div></form>')
-    parts.append(f'<div class="card"><h2>reviews</h2>{"".join(reviews)}{verdict_form}</div>')
-
-    parts.append('<div class="card"><h2>conversation</h2>'
-                 + "".join(thread_html(c, all_, ctx) for c in general)
-                 + f'<form method="post" action="/act" class="c1">{hidden}<input type="hidden" name="kind" value="comment">'
-                   f'<textarea name="body" required placeholder="comment on the whole revision"></textarea>'
-                   f'<div class="row"><button class="pri">comment</button></div></form></div>')
-
-    files = diff(rev["base"], rev["oid"])
-    parts.append(f'<p class="mut">{len(files)} file{"s" * (len(files) != 1)} changed. '
-                 f'Click a line number to comment on it; shift-click to extend the range.</p>')
-    for f in files:
+        if a and a[1] != "file":
+            placed.setdefault(a, []).append(c)
+        elif c.get("location"):
+            elsewhere.append(c)
+    decided = verdicts(rev, files, repo.me)
+    parts = []
+    for fi, f in enumerate(files):
         path = f["path"]
-        rows = []
-        if f["binary"]:
-            rows.append('<tr class="hunk"><td></td><td></td><td class="c">binary file</td></tr>')
-        for kind, o, n, text in f["rows"]:
+        hunks = hunks_of(f)
+        ok = {hi for hi in range(len(hunks)) if decided[(fi, hi)] == "yes"}
+        bad = {hi for hi in range(len(hunks)) if decided[(fi, hi)] == "no"}
+        end_of = {h["last"]: hi for hi, h in enumerate(hunks)}
+        in_hunk = {i: hi for hi, h in enumerate(hunks) for i in range(h["first"], h["last"] + 1)}
+        rows, keep = [], set()
+        changed = [i for i, r in enumerate(f["rows"]) if r[0] in ("add", "del")]
+        for i, (kind, o, n, text) in enumerate(f["rows"]):
             if kind == "hunk":
-                rows.append(f'<tr class="hunk"><td class="n"></td><td class="n"></td><td class="c code">{E(text)}</td></tr>')
+                rows.append(f'<tr class="hunk"><td class="n"></td><td class="n"></td><td class="c mut">{E(text)}</td></tr>')
+                keep.add(len(rows) - 1)
                 continue
-            rows.append(f'<tr class="{kind}"><td class="n code" data-side="old" data-line="{o or ""}">{o or ""}</td>'
-                        f'<td class="n code" data-side="new" data-line="{n or ""}">{n or ""}</td>'
-                        f'<td class="c code">{E(text) or " "}</td></tr>')
+            if kind != "ctx" or any(abs(i - j) <= 3 for j in changed):
+                keep.add(len(rows))
+            done = " done" if in_hunk.get(i) in ok else " refused" if in_hunk.get(i) in bad else ""
+            rows.append(f'<tr class="{kind}{done}"><td class="n old" data-side="old" data-line="{o or ""}">{o or ""}</td>'
+                        f'<td class="n new" data-side="new" data-line="{n or ""}">{n or ""}</td>'
+                        f'<td class="c">{E(text) or " "}</td></tr>')
             for key in ((path, "new", n), (path, "old", o)):
                 if key[2] is not None and key in placed:
                     for c in placed.pop(key):
-                        rows.append(f'<tr><td colspan="3">{thread_html(c, all_, ctx)}</td></tr>')
+                        keep.add(len(rows) - 1)
+                        keep.add(len(rows))
+                        rows.append(f'<tr class="thread"><td colspan="3">{thread(repo, c, all_, hidden)}</td></tr>')
+            if i in end_of:
+                # Under the hunk, in reading order: you read it, then you say it is fine.
+                hi = end_of[i]
+                h = hunks[hi]
+                rng = [[path, h["side"], h["start"], h["end"]]]
+                span = f'{"R" if h["side"] == "new" else "L"}{h["start"]}' + (
+                    f'–{h["end"] - 1}' if h["end"] - 1 > h["start"] else "")
+                at = f"h-{fi}-{hi}"
+                if hi in ok:
+                    state = '<span class="ok-mark">✓ approved</span>'
+                    control = approve_form(hidden, rng, False, "Undo", "", at)
+                elif hi in bad:
+                    state = '<span class="no-mark">✗ not this</span>'
+                    control = approve_form(hidden, rng, False, "Undo", "", at, "reject")
+                else:
+                    state = ""
+                    control = (approve_form(hidden, rng, True, "Approve <kbd>a</kbd>", "go", at)
+                               + approve_form(hidden, rng, True, "Not this <kbd>x</kbd>", "", at, "reject")
+                               + '<button type="button" class="btn small hunk-comment">Comment <kbd>c</kbd></button>')
+                keep.add(len(rows))
+                rows.append(f'<tr class="hunkbar{" done" if hi in ok else " refused" if hi in bad else ""}" id="{at}" '
+                            f'data-path="{E(path)}" data-side="{h["side"]}" data-start="{h["start"]}" data-end="{h["end"]}"><td colspan="3">'
+                            f'<span class="mut mono">hunk {hi + 1} of {len(hunks)} · {span}</span>{state}{control}</td></tr>')
+        if not changed:
+            keep.update(range(len(rows)))
+        body = "".join(fold(rows, keep, f"f{fi}")) if not f["binary"] else '<tr><td class="c mut">Binary file not shown.</td></tr>'
         title = path if not f["old_path"] or f["old_path"] == path else f"{f['old_path']} → {path}"
-        parts.append(f'<div class="card"><h2>{E(title or "?")}</h2>'
-                     f'<table class="d" data-path="{E(path or "")}">{"".join(rows)}</table></div>')
-    left = [c for cs in placed.values() for c in cs]
+        plus = sum(1 for r in f["rows"] if r[0] == "add")
+        minus = sum(1 for r in f["rows"] if r[0] == "del")
+        left_ranges = [[path, h["side"], h["start"], h["end"]] for hi, h in enumerate(hunks) if hi not in ok and hi not in bad]
+        tally = (f'{len(ok)}/{len(hunks)} hunks approved' + (f', {len(bad)} not' if bad else "")) if hunks else "nothing to approve"
+        foot = (f'<div class="ffoot{" done" if hunks and len(ok) == len(hunks) else ""}"><span>{tally}</span>'
+                + (approve_form(hidden, left_ranges, True, f"Approve the rest of {E(path)}", "go", f"f-{fi}") if left_ranges
+                   else '<span class="ok-mark">✓ file approved</span>' if hunks and len(ok) == len(hunks) else "")
+                + "</div>")
+        parts.append(f'<div class="file" id="f-{fi}"><div class="fhead"><span class="path">{E(title or "?")}</span>'
+                     f'<span class="add-n">+{plus}</span><span class="del-n">−{minus}</span>'
+                     f'<span class="mut" style="margin-left:auto;font-size:12px">{tally}</span></div>'
+                     f'<table class="d" data-path="{E(path or "")}">{body}</table>{foot}</div>')
+    left = [c for cs in placed.values() for c in cs] + elsewhere
     if left:
-        parts.append('<div class="card"><h2>comments on lines not in this diff</h2>'
-                     + "".join(thread_html(c, all_, ctx) for c in left) + "</div>")
-    parts.append(f'<template id="lineform"><form method="post" action="/act" class="thread c1">{hidden}'
-                 f'<input type="hidden" name="kind" value="comment"><input type="hidden" name="path">'
-                 f'<input type="hidden" name="side"><input type="hidden" name="start"><input type="hidden" name="end">'
-                 f'<div class="mut what"></div><textarea name="body" required></textarea>'
-                 f'<div class="row"><button class="pri">comment</button></div></form></template>')
+        parts.append('<div class="file"><div class="fhead"><span class="path">Comments on lines outside this revision\'s diff</span></div>'
+                     + "".join(f'<div style="padding:10px 12px">{excerpt_of(c, rev)}{thread(repo, c, all_, hidden)}</div>'
+                               for c in left) + "</div>")
+    parts.append(f'<template id="lineform"><div class="thread-box"><form method="post" action="/act" style="padding:10px 12px">{hidden}'
+                 f'<input type="hidden" name="path"><input type="hidden" name="side"><input type="hidden" name="start">'
+                 f'<input type="hidden" name="end"><input type="hidden" name="at">'
+                 f'<div class="mut mono what" style="margin-bottom:6px"></div><textarea name="body" required placeholder="Leave a comment"></textarea>'
+                 f'<div class="actions"><button type="button" class="btn" onclick="this.closest(\'tr\').remove()">Cancel</button>'
+                 f'<button class="btn" name="kind" value="approve-lines" formnovalidate>Approve these lines</button>'
+                 f'<button class="btn blue" name="kind" value="comment">Comment</button></div></form></div></template>')
     return "".join(parts)
 
 
-MAIL = """
-// No frames: some browsers load nothing into one (the app's own browser pane is one of
-// them), so the page is the whole mailbox and moving is a plain page load.
-const items=[...document.querySelectorAll('a.item')];
-const on=items.findIndex(a=>a.classList.contains('on'));
-if(on>=0) items[on].scrollIntoView({block:'nearest'});
-document.addEventListener('keydown',e=>{if(e.target.closest('textarea,input'))return;
-  const to=(e.key==='j'||e.key==='ArrowDown')?on+1:(e.key==='k'||e.key==='ArrowUp')?on-1:null;
-  if(to===null||!items[to])return; e.preventDefault(); location.href=items[to].href});
-"""
-
-
-def index_page(repo, token, chosen=None, rev=None):
-    """The mailbox: open patches down the left in stack order, the chosen one on the right."""
+def index_page(repo, token):
+    """Pull requests by what they need from you, in stack order within each group."""
     patches = repo.patches()
     open_, children = graph(patches)
     order = []
 
     def walk(up, depth):
-        for oid in children.get(up, []):
-            order.append((oid, up, depth))
-            walk(oid, depth + 1)
+        for o in children.get(up, []):
+            order.append((o, up, depth))
+            walk(o, depth + 1)
 
     walk(None, 0)
-    if chosen not in patches:
-        chosen = order[0][0] if order else None
-    rows = []
-    for oid, up, depth in order:
-        p = open_[oid]
-        rev_ = latest(p)
+    groups = {"Needs your review": [], "Changes requested": [], "Approved": []}
+    for o, up, depth in order:
+        p = open_[o]
+        rev = latest(p)
+        mine = rev["reviews"].get(repo.me, {}).get("verdict")
+        others = [r.get("verdict") for a, r in rev["reviews"].items() if a != repo.me and r.get("verdict")]
+        group = ("Approved" if mine == "accept" else "Changes requested" if mine == "reject" or "reject" in others
+                 else "Needs your review")
         num = forge_number(p)
         n = sum(len(comments_of(r)) for r in p["revisions"].values())
-        verdicts = [r.get("verdict") for r in rev_["reviews"].values() if r.get("verdict")]
         below = open_.get(up)
-        onto = (f"onto #{forge_number(below)}" if below and forge_number(below)
-                else f"onto {up[:7]}" if below else "onto main")
-        meta = [f"#{num}" if num else oid[:7], onto]
-        if n:
-            meta.append(f"{n} comment{'s' * (n != 1)}")
-        meta += verdicts
-        rows.append(
-            f'<a class="item{" on" if oid == chosen else ""}" style="--depth:{depth}" '
-            f'href="/?t={token}&p={oid}">'
-            f'<span class="t">{"↳ " if depth else ""}{E(p["title"])}</span>'
-            f'<span class="m">{E(" · ".join(meta))}</span></a>')
+        stacked = (f" · stacked on #{forge_number(below)}" if below and forge_number(below)
+                   else f" · stacked on {up[:7]}" if below else "")
+        opened = when(p["revisions"][o]["description"][0]["timestamp"]) if o in p["revisions"] else ""
+        files = len(run("git", "diff", "--name-only", rev["base"], rev["oid"], ok=False).stdout.split())
+        groups[group].append(
+            f'<a class="row{" stacked" if depth else ""}" style="--depth:{depth}" href="/pr/{o}?t={token}">'
+            f'<span style="color:var(--ok);padding-top:2px">{ICON_PR}</span>'
+            f'<span><span class="t">{"↳ " if depth else ""}{E(p["title"])}</span>'
+            f'<span class="m">#{num or o[:7]} · {E(repo.name(p["author"]["id"]))} · opened {opened}{stacked}</span></span>'
+            f'<span class="r">{files} file{"s" * (files != 1)}{f" · {ICON_COMMENT} {n}" if n else ""}</span></a>')
     closed = len(patches) - len(open_)
-    listing = "".join(rows) or ('<p class="mut pad">No open patches. '
-                                '<code>scripts/import-review --open</code> brings the pull requests in.</p>')
-    if chosen:
-        try:
-            right = patch_body(repo, chosen, rev, token)
-        except Refused as error:
-            right = f'<p class="err">{E(str(error))}</p>'
+    sections = "".join(
+        f'<div class="section"><h2>{name} · {len(rows)}</h2><div class="list">{"".join(rows)}</div></div>'
+        for name, rows in groups.items() if rows) or (
+        '<div class="list"><div class="empty">No open pull requests here. '
+        '<code>scripts/import-review --open</code> brings them in from the forge.</div></div>')
+    body = (f'<main class="inbox"><h1>Pull requests</h1><p class="lede">{len(open_)} open, {closed} merged or closed, '
+            f'held in Radicle. <kbd>j</kbd> <kbd>k</kbd> to move, <kbd>enter</kbd> to open.</p>{sections}</main>')
+    return page("Pull requests", body, token)
+
+
+# Landing. The forge is still where main is merged, so this does what scripts/land does,
+# as the person at the page: their gh account approves and merges. The rails are the same
+# ones, and one more that only this page can check: the forge must still have the commit that
+# was reviewed here.
+
+
+def gh(*args, ok=True):
+    return run("gh", *args, ok=ok)
+
+
+def machine_login():
+    common = os.path.abspath(run("git", "rev-parse", "--git-common-dir").stdout.strip())
+    try:
+        with open(os.path.join(common, "agent-identity")) as f:
+            email = f.readline().strip()
+    except OSError:
+        return None
+    m = re.match(r"\d+\+([^@]+)@users\.noreply\.github\.com$", email)
+    return m.group(1) if m else None
+
+
+def forge_remote():
+    for remote in run("git", "remote").stdout.split():
+        if "github.com" in run("git", "config", "--get", f"remote.{remote}.url", ok=False).stdout:
+            return remote
+    raise Refused("no remote on github.com")
+
+
+def credential_args():
+    common = os.path.abspath(run("git", "rev-parse", "--git-common-dir").stdout.strip())
+    cred = os.path.join(common, "agent-credentials")
+    if not os.access(cred, os.R_OK):
+        raise Refused("no .git/agent-credentials: the patches above cannot be moved as the machine account")
+    return ["-c", "credential.helper=", "-c", f"credential.helper=store --file={cred}"]
+
+
+def land(repo, oid):
+    """Approve and rebase-merge the patch's pull request, record the merge in Radicle, and
+    move the patches stacked on it onto the new main. Returns what happened, for the page."""
+    log = []
+    patch = repo.show(oid)
+    rev = latest(patch)
+    m = next((re.search(r"GitHub-PR: (\S+)#(\d+)", text_of(r["description"]))
+              for r in patch["revisions"].values()
+              if re.search(r"GitHub-PR: ", text_of(r["description"]))), None)
+    if not m:
+        raise Refused("this patch did not come from a pull request")
+    slug, num = m.group(1), m.group(2)
+    who = gh("api", "user", "--jq", ".login").stdout.strip()
+    if who == machine_login():
+        raise Refused(f"gh is logged in as {who}, the account that filed the pull request; "
+                      "switch gh to your own account (gh auth switch)")
+    info = json.loads(gh("pr", "view", num, "--repo", slug, "--json",
+                         "state,baseRefName,headRefName,headRefOid,statusCheckRollup").stdout)
+    if info["state"] != "OPEN":
+        raise Refused(f"#{num} is {info['state'].lower()} on the forge")
+    if info["baseRefName"] != "main":
+        raise Refused(f"#{num} is based on {info['baseRefName']}; land that one first")
+    if info["headRefOid"] != rev["oid"]:
+        raise Refused(f"the forge has {info['headRefOid'][:7]} for #{num}, and {rev['oid'][:7]} is what is "
+                      "shown here; scripts/import-review it and look again")
+    bad = [c.get("name") or c.get("context") for c in info.get("statusCheckRollup") or []
+           if (c.get("conclusion") or c.get("state") or "").upper() not in ("SUCCESS", "NEUTRAL", "SKIPPED")]
+    if bad:
+        raise Refused(f"checks not passed on #{num}: {', '.join(bad)}")
+    total, done, refused, _ = progress(rev, diff(rev["base"], rev["oid"]), repo.me)
+    if done < total:
+        raise Refused(f"{total - done} of {total} hunks are not approved by you; merging waits for every one")
+
+    # Every hunk approved is an approval of the revision, so it is recorded as one.
+    mine = rev["reviews"].get(repo.me)
+    if not mine or mine.get("verdict") != "accept":
+        review = repo.my_review(oid, rev["id"])
+        repo.act(oid, "Accept", {"type": "review.edit.v2", "review": review, "verdict": "accept",
+                                 "summary": text_of((mine or {}).get("summary", [])) or "Every hunk approved."})
+        log.append("recorded your approval of the revision in Radicle")
+
+    gh("pr", "review", num, "--repo", slug, "--approve")
+    log.append(f"approved #{num} as {who}")
+    gh("pr", "merge", num, "--repo", slug, "--rebase", "--match-head-commit", rev["oid"])
+    log.append(f"rebase-merged #{num} onto main")
+    remote = forge_remote()
+    run("git", "fetch", "-q", remote, "main")
+    main = run("git", "rev-parse", f"refs/remotes/{remote}/main").stdout.strip()
+    log.append(f"{remote}/main is now {main[:7]}")
+
+    # Radicle counts a patch as merged when its delegate says so and the commit is on the
+    # delegate's main, so main goes to Radicle first.
+    pushed = run("git", "push", "-q", "rad", f"refs/remotes/{remote}/main:refs/heads/main", ok=False)
+    if pushed.returncode == 0:
+        repo.act(oid, "Merge", {"type": "merge", "revision": rev["id"], "commit": main})
+        log.append(f"recorded the merge in Radicle at {main[:7]}")
     else:
-        right = ""
-    body = (f'<div class="split"><aside><p class="mut pad">{len(open_)} open, {closed} closed or merged'
-            f' · j/k to move</p>{listing}</aside><section class="pane">{right}</section></div>')
-    return page("open patches", body, token, script=SCRIPT + MAIL, cls="mail")
+        log.append("could not push main to rad, so the patch stays open in Radicle: "
+                   + (pushed.stderr or pushed.stdout).strip().splitlines()[-1])
+
+    # The patches stacked on this one still carry its old commits. Each is replayed onto
+    # the new main without them, in a worktree of its own, and pushed as the machine
+    # account, whose branches these are.
+    for child_oid, child in repo.patches().items():
+        crev = latest(child)
+        if child["state"]["status"] != "open" or crev["base"] != rev["oid"]:
+            continue
+        cm = re.search(r"GitHub-PR: \S+#(\d+)", text_of(crev["description"])) or next(
+            (re.search(r"GitHub-PR: \S+#(\d+)", text_of(r["description"])) for r in child["revisions"].values()
+             if "GitHub-PR:" in text_of(r["description"])), None)
+        if not cm:
+            continue
+        cnum = cm.group(1)
+        cinfo = json.loads(gh("pr", "view", cnum, "--repo", slug, "--json", "headRefName,headRefOid").stdout)
+        work = tempfile.mkdtemp(prefix="fpl-restack-")
+        run("git", "worktree", "add", "-q", "--detach", work, cinfo["headRefOid"])
+        try:
+            moved = run("git", "-C", work, "rebase", "-q", "--onto", main, rev["oid"], ok=False)
+            if moved.returncode != 0:
+                run("git", "-C", work, "rebase", "--abort", ok=False)
+                log.append(f"#{cnum} does not replay cleanly onto the new main; left as it is")
+                continue
+            new = run("git", "-C", work, "rev-parse", "HEAD").stdout.strip()
+            run("git", *credential_args(), "push", "-q",
+                f"--force-with-lease=refs/heads/{cinfo['headRefName']}:{cinfo['headRefOid']}",
+                remote, f"{new}:refs/heads/{cinfo['headRefName']}")
+            gh("pr", "edit", cnum, "--repo", slug, "--base", "main")
+            log.append(f"moved #{cnum} onto main: {cinfo['headRefOid'][:7]} → {new[:7]}")
+            importer = os.path.join(os.path.dirname(os.path.abspath(__file__)), "import-review")
+            if os.path.exists(importer) and run(sys.executable, importer, cnum, ok=False).returncode == 0:
+                log.append(f"imported the new head of #{cnum} as a revision")
+            else:
+                log.append(f"run scripts/import-review {cnum} to see its new head here")
+        finally:
+            run("git", "worktree", "remove", "--force", work, ok=False)
+
+    gone = gh("api", "-X", "DELETE", f"repos/{slug}/git/refs/heads/{info['headRefName']}", ok=False)
+    log.append(f"deleted the branch {info['headRefName']}" if gone.returncode == 0
+               else f"could not delete the branch {info['headRefName']}")
+    log.append("your local main is untouched; git pull when you are ready")
+    return "\n".join(log)
 
 
 def act(repo, form):
@@ -539,6 +1200,42 @@ def act(repo, form):
         summary = body or text_of(mine.get("summary", []))
         repo.act(oid, verdict.capitalize(), {"type": "review.edit.v2", "review": review,
                                              "verdict": verdict, "summary": summary})
+    elif kind == "review":
+        event = get("event")
+        if event == "comment":
+            if not body:
+                raise Refused("a review comment needs some text")
+            review = repo.my_review(oid, revision)
+            repo.act(oid, "Comment", {"type": "review.comment", "review": review, "body": body})
+        elif event in ("approve", "request_changes"):
+            verdict = "accept" if event == "approve" else "reject"
+            review = repo.my_review(oid, revision)
+            mine = repo.show(oid)["revisions"][revision]["reviews"][repo.me]
+            repo.act(oid, verdict.capitalize(), {"type": "review.edit.v2", "review": review, "verdict": verdict,
+                                                 "summary": body or text_of(mine.get("summary", []))})
+        else:
+            raise Refused("choose comment, approve or request changes")
+    elif kind in ("approve", "approve-lines", "reject"):
+        commit = repo.show(oid)["revisions"][revision]["oid"]
+        if kind in ("approve", "reject"):
+            try:
+                ranges = json.loads(get("ranges"))
+            except ValueError:
+                raise Refused("bad ranges")
+            active = get("active") != "0"
+        else:
+            ranges = [[get("path"), get("side"), get("start"), get("end")]]
+            active = True
+        for path, side, start, end in ranges:
+            start, end = int(start), int(end)
+            if side not in ("new", "old") or not path or start < 1 or end <= start:
+                raise Refused("bad range")
+            mark = REJECTED if kind == "reject" else APPROVED
+            repo.act(oid, ("Refuse lines" if mark == REJECTED else "Approve lines") if active else "Withdraw mark",
+                     {"type": "revision.react", "revision": revision, "reaction": mark, "active": active,
+                      "location": {"commit": commit, "path": path, side: {"type": "lines", "range": {"start": start, "end": end}}}})
+    elif kind == "land":
+        NOTES[oid] = land(repo, oid)
     elif kind in ("resolve", "unresolve"):
         repo.act(oid, kind.capitalize(), {"type": f"review.comment.{kind}",
                                           "review": get("review"), "comment": get("comment")})
@@ -572,7 +1269,8 @@ def serve(port, open_browser, announce=print):
             self.wfile.write(data)
 
         def fail(self, error):
-            self.send(400, page("refused", f'<p class="err">{E(str(error))}</p>', token))
+            self.send(400, page("refused", f'<p class="err">{E(str(error))}</p>'
+                                f'<p><a href="javascript:history.back()">Back</a></p>', token))
 
         def do_GET(self):
             url = urllib.parse.urlsplit(self.path)
@@ -580,11 +1278,20 @@ def serve(port, open_browser, announce=print):
             if not self.allowed() or q.get("t", [""])[0] != token:
                 return self.send(403, "forbidden: use the address scripts/review-serve printed\n", "text/plain")
             try:
-                m = re.fullmatch(r"/patch/([0-9a-f]{40})", url.path)
-                if url.path == "/":
-                    self.send(200, index_page(repo, token, q.get("p", [None])[0], q.get("rev", [None])[0]))
+                m = re.fullmatch(r"/(?:pr|patch)/([0-9a-f]{40})", url.path)
+                old = q.get("p", [None])[0]
+                if url.path == "/" and old and re.fullmatch(r"[0-9a-f]{40}", old):
+                    self.send(303, "", where=f"/pr/{old}?t={token}")
+                elif url.path == "/":
+                    self.send(200, index_page(repo, token))
+                elif m and url.path.startswith("/patch/"):
+                    self.send(303, "", where=f"/pr/{m.group(1)}?t={token}")
                 elif m:
-                    self.send(303, "", where=f"/?t={token}&p={m.group(1)}")
+                    oid = m.group(1)
+                    tab = q.get("tab", ["conversation"])[0]
+                    tab = tab if tab in ("conversation", "commits", "files") else "conversation"
+                    self.send(200, pr_page(repo, oid, q.get("rev", [None])[0], token, tab,
+                                           below=stack_below(repo.patches(), oid), note=NOTES.pop(oid, "")))
                 else:
                     self.send(404, "not found\n", "text/plain")
             except Refused as error:
@@ -599,7 +1306,9 @@ def serve(port, open_browser, announce=print):
                 oid, revision = act(repo, form)
             except Refused as error:
                 return self.fail(error)
-            self.send(303, "", where=f"/?t={token}&p={oid}&rev={revision}")
+            at = (form.get("at") or [""])[0]
+            at = f"#{at}" if re.fullmatch(r"[a-z]-[0-9-]+", at) else ""
+            self.send(303, "", where=f"/pr/{oid}?t={token}&rev={revision}{at}")
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{server.server_address[1]}/?t={token}"
@@ -635,6 +1344,44 @@ def main(argv):
     return 0
 
 
+FAKE_GH = r"""#!/usr/bin/env python3
+import json, os, subprocess, sys, tempfile
+state = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "gh.json")
+with open(state) as f:
+    st = json.load(f)
+args = sys.argv[1:]
+st["log"].append(args)
+git = lambda *a: subprocess.run(["git", "-C", st["forge"], *a], capture_output=True, text=True).stdout.strip()
+out = ""
+if args[:2] == ["api", "user"]:
+    out = st["login"]
+elif args[:2] == ["pr", "view"]:
+    pr = st["prs"][args[2]]
+    out = json.dumps({"state": pr["state"], "baseRefName": pr["base"], "headRefName": pr["head"],
+                      "headRefOid": pr.get("head_override") or git("rev-parse", pr["head"]),
+                      "statusCheckRollup": []})
+elif args[:2] == ["pr", "merge"]:
+    pr = st["prs"][args[2]]
+    want = args[args.index("--match-head-commit") + 1]
+    if git("rev-parse", pr["head"]) != want:
+        sys.exit("head moved")
+    work = tempfile.mkdtemp()
+    run = lambda *a: subprocess.run(["git", "-C", work, *a], check=True, capture_output=True)
+    subprocess.run(["git", "clone", "-q", st["forge"], work], check=True)
+    run("checkout", "-q", pr["head"])
+    run("-c", "user.name=f", "-c", "user.email=f@f", "rebase", "-q", "origin/main")
+    run("push", "-q", "origin", "HEAD:main")
+    pr["state"] = "MERGED"
+elif args[:2] == ["pr", "edit"]:
+    st["prs"][args[2]]["base"] = args[args.index("--base") + 1]
+elif args[:3] == ["api", "-X", "DELETE"]:
+    git("update-ref", "-d", "refs/heads/" + args[3].rsplit("/", 1)[1])
+with open(state, "w") as f:
+    json.dump(st, f)
+print(out)
+"""
+
+
 # The self-test: a throwaway Radicle home with two stacked patches and one imported
 # comment, the server started on it, and the page driven over HTTP as a browser would.
 
@@ -649,7 +1396,7 @@ def self_test():
         checks.append((name, bool(ok)))
 
     with tempfile.TemporaryDirectory() as tmp:
-        env = dict(os.environ, RAD_HOME=f"{tmp}/home", RAD_PASSPHRASE="self-test",
+        env = dict(os.environ, PATH=f"{tmp}/bin:{os.environ['PATH']}", RAD_HOME=f"{tmp}/home", RAD_PASSPHRASE="self-test",
                    GIT_CONFIG_GLOBAL="/dev/null", GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
                    GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
         env.pop("SSH_AUTH_SOCK", None)
@@ -677,12 +1424,13 @@ def self_test():
         one = commit("f.txt", "".join(f"line {i}{' <b>' if i == 20 else ''}\n" for i in range(1, 41)), "one")
         two = commit("g.txt", "new\n", "two")
 
-        def push(head, below, title):
+        def push(head, below, title, num):
             out = sh("git", "push", f"--push-option=patch.base={below}",
-                     f"--push-option=patch.message={title}", "rad", f"{head}:refs/patches")
+                     f"--push-option=patch.message={title}",
+                     f"--push-option=patch.message=GitHub-PR: o/r#{num}", "rad", f"{head}:refs/patches")
             return re.search(r"Patch ([0-9a-f]{40})", out.stderr + out.stdout).group(1)
 
-        p1, p2 = push(one, base, "first"), push(two, one, "second")
+        p1, p2 = push(one, base, "first", 1), push(two, one, "second", 2)
         rid = sh("rad", ".").stdout.strip()
 
         def show(p):
@@ -729,24 +1477,30 @@ def self_test():
                     with opener.open(urllib.request.Request(f"{root}/act", data=data)) as r:
                         return r.status
                 except urllib.error.HTTPError as e:
+                    if os.environ.get("FPL_SELFTEST_DEBUG"):
+                        print(re.findall(r"class=\"err\">([^<]*)", e.read().decode()), file=sys.stderr)
                     return e.code
 
             code, index = get("/")
             check("the index lists both patches", code == 200 and "first" in index and "second" in index)
             check("and draws the second under the first",
                   index.index("first") < index.index("second") and "--depth:1" in index
-                  and "onto " + p1[:7] in index)
-            check("the first patch is open beside the list, without a frame",
-                  "<iframe" not in index and 'class="pane"' in index and "line 40" in index)
+                  and "stacked on #1" in index)
+            check("each links to its own pull request page", f"/pr/{p1}?" in index and "<iframe" not in index)
             check("an old /patch/ address still leads there", get(f"/patch/{p1}")[0] == 303)
             check("without the token there is nothing", get("/", t="wrong")[0] == 403)
 
-            code, page1 = get(f"/?p={p1}")
-            check("a patch page renders the whole file", code == 200 and "line 1" in page1 and "line 40" in page1)
+            code, page1 = get(f"/pr/{p1}?tab=files")
+            check("the files tab has the whole file, the unchanged part folded", code == 200 and "line 1" in page1 and "line 40" in page1)
             check("the imported comment sits under line 20, escaped, named",
                   page1.index("line 20") < page1.index("&lt;why&gt; this?") < page1.index("line 21")
-                  and "<b>carol</b> on <a" in page1 and "imported by" in page1)
-            code, page2 = get(f"/?p={p2}")
+                  and "<b>carol</b>" in page1 and "imported by" in page1 and "show " in page1)
+            code, conv = get(f"/pr/{p1}")
+            check("the conversation shows the comment with the lines it is about",
+                  "&lt;why&gt; this?" in conv and 'data-goto="c-' in conv and 'id="merge"' in conv and "still to read" in conv)
+            code, commits = get(f"/pr/{p1}?tab=commits")
+            check("the commits tab lists the commit", code == 200 and ">one<" in commits)
+            code, page2 = get(f"/pr/{p2}?tab=files")
             check("a stacked patch shows only its own layer", "g.txt" in page2 and "f.txt" not in page2)
 
             check("a post without the token is refused", post(t="x", kind="comment", patch=p1,
@@ -791,10 +1545,105 @@ def self_test():
             review = next(iter(show(p1)["revisions"][p1]["reviews"].values()))
             check("and can be changed, keeping the summary",
                   review["verdict"] == "reject" and text_of(review["summary"]) == "good")
-            code, page1 = get(f"/?p={p1}")
-            check("the page shows it all back",
-                  "rename this" in page1 and "because" in page1 and ">resolved<" in page1 and "reject" in page1)
+            check("the review form comments without a verdict",
+                  post(kind="review", event="comment", patch=p1, revision=p1, body="general words") == 303
+                  and any(c["body"] == "general words" for c in next(iter(show(p1)["revisions"][p1]["reviews"].values()))["comments"]["comments"].values()))
+            code, page1 = get(f"/pr/{p1}")
+            check("the conversation shows it all back",
+                  "rename this" in page1 and "because" in page1 and ">resolved<" in page1
+                  and "requested changes" in page1 and "general words" in page1)
             check("a bad id is refused, not crashed", post(kind="comment", patch="zz", revision=p1, body="x") == 400)
+
+            # Landing, against a forge that is a bare repository and a gh that answers
+            # from a file. Someone else lands a commit on main first, so the rebase-merge
+            # really rewrites, and the patch stacked on the landed one has to move.
+            forge = f"{tmp}/forge.git"
+            sh("git", "init", "-q", "--bare", "-b", "main", forge)
+            sh("git", "config", f"url.{forge}.insteadOf", "https://github.com/o/r.git")
+            sh("git", "remote", "add", "github", "https://github.com/o/r.git")
+            sh("git", "push", "-q", "github", f"{base}:refs/heads/main", f"{one}:refs/heads/b1",
+               f"{two}:refs/heads/b2")
+            other = f"{tmp}/other"
+            sh("git", "clone", "-q", forge, other)
+            with open(f"{other}/h.txt", "w") as f:
+                f.write("elsewhere\n")
+            sh("git", "-C", other, "add", "h.txt")
+            sh("git", "-C", other, "commit", "-q", "-m", "elsewhere")
+            sh("git", "-C", other, "push", "-q", "origin", "HEAD:main")
+            gitdir = sh("git", "rev-parse", "--absolute-git-dir").stdout.strip()
+            with open(f"{gitdir}/agent-identity", "w") as f:
+                f.write("1+machine@users.noreply.github.com\n")
+            with open(f"{gitdir}/agent-credentials", "w") as f:
+                f.write("https://machine:x@github.com\n")
+            state = f"{tmp}/gh.json"
+            with open(state, "w") as f:
+                json.dump({"login": "machine", "prs": {"1": {"head": "b1", "base": "main", "state": "OPEN"},
+                                                        "2": {"head": "b2", "base": "b1", "state": "OPEN"}},
+                           "forge": forge, "log": []}, f)
+            os.makedirs(f"{tmp}/bin")
+            with open(f"{tmp}/bin/gh", "w") as f:
+                f.write(FAKE_GH)
+            os.chmod(f"{tmp}/bin/gh", 0o755)
+
+            def gh_state():
+                with open(state) as f:
+                    return json.load(f)
+
+            def forge_ref(ref):
+                return sh("git", "-C", forge, "rev-parse", "-q", "--verify", ref, ok=False).stdout.strip()
+
+            check("landing as the account that filed the pull request is refused",
+                  post(kind="land", patch=p1, revision=p1) == 400
+                  and not any(c[:2] == ["pr", "merge"] for c in gh_state()["log"]))
+            st = gh_state()
+            st["login"] = "psj"
+            st["prs"]["1"]["head_override"] = "0" * 40
+            with open(state, "w") as f:
+                json.dump(st, f)
+            check("landing when the forge has another head is refused",
+                  post(kind="land", patch=p1, revision=p1) == 400)
+            st = gh_state()
+            del st["prs"]["1"]["head_override"]
+            with open(state, "w") as f:
+                json.dump(st, f)
+            check("merging waits until every hunk is approved", post(kind="land", patch=p1, revision=p1) == 400
+                  and not any(c[:2] == ["pr", "merge"] for c in gh_state()["log"]))
+            hunk = json.dumps([["f.txt", "new", 20, 21]])
+            post(kind="reject", patch=p1, revision=p1, ranges=hunk, active="1", at="h-0-0")
+            code, page1 = get(f"/pr/{p1}")
+            check("a hunk can be refused, and the merge box then offers to send it back",
+                  "✗ not this" in page1 and "Request changes" in page1 and "1 not" in page1)
+            post(kind="reject", patch=p1, revision=p1, ranges=hunk, active="0", at="h-0-0")
+            check("approving a hunk goes back to where you were",
+                  post(kind="approve", patch=p1, revision=p1, ranges=hunk, active="1", at="h-0-0") == 303)
+            reacts = show(p1)["revisions"][p1]["reactions"]
+            check("an approval is a signed reaction on those lines",
+                  any(r["emoji"] == "\u2705" and r["location"]["new"]["range"] == {"start": 20, "end": 21} for r in reacts)
+                  and not any(r["emoji"] == "\u274c" for r in reacts))
+            code, page1 = get(f"/pr/{p1}")
+            check("with every hunk approved, the merge button is at the bottom",
+                  "✓ approved" in page1 and "Every hunk approved" in page1
+                  and page1.index("Every hunk approved") > page1.index("✓ approved"))
+            check("landing the bottom of the stack", post(kind="land", patch=p1, revision=p1) == 303)
+            check("and the revision's verdict is now accept",
+                  next(iter(show(p1)["revisions"][p1]["reviews"].values()))["verdict"] == "accept")
+            calls = gh_state()["log"]
+            check("approved, then merged with the reviewed head pinned",
+                  ["pr", "review", "1", "--repo", "o/r", "--approve"] in calls
+                  and any(c[:3] == ["pr", "merge", "1"] and "--match-head-commit" in c
+                          and c[c.index("--match-head-commit") + 1] == one for c in calls))
+            main = forge_ref("main")
+            check("the forge's main has the patch, rewritten onto what landed before",
+                  main and main != one
+                  and "one" in sh("git", "-C", forge, "log", "-1", "--format=%s", main).stdout)
+            check("the patch is merged in Radicle too", show(p1)["state"]["status"] == "merged")
+            b2 = forge_ref("b2")
+            check("the patch above was moved onto the new main, without the landed commits",
+                  b2 and b2 != two and sh("git", "-C", forge, "rev-parse", f"{b2}^").stdout.strip() == main)
+            check("and retargeted to main", gh_state()["prs"]["2"]["base"] == "main")
+            check("the landed branch is gone", not forge_ref("refs/heads/b1"))
+            code, page1 = get(f"/pr/{p1}")
+            check("the page says what happened", "rebase-merged #1" in page1 and "moved #2 onto main" in page1)
         finally:
             server.terminate()
             server.wait()
