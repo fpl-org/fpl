@@ -173,23 +173,24 @@ def test_a_match_is_exhaustive_exactly_when_its_effect_has_no_fail(table: list[l
 
 
 @pytest.mark.parametrize(
-    ("row", "message"),
+    ("row", "span", "message"),
     [
-        ("_ _\t1", "no evaluator yet"),
-        ("( _ ∈ )\t1", "no evaluator yet"),
-        ("{ a 1 }\t1", "no evaluator yet"),
-        ("( [ 1 ] x )\t1", "no evaluator yet"),
-        ("( bound ∈ )\t1", "no evaluator yet"),
-        ("_\t_", "no evaluator yet"),
-        ("( bound x )\t1", "a constructor is words and literals: not invertible"),
+        ("_ _\t1", Span(1, 1), "no evaluator yet"),
+        ("( _ ∈ )\t1", Span(1, 1), "no evaluator yet"),
+        ("{ a 1 }\t1", Span(1, 1), "no evaluator yet"),
+        ("( [ 1 ] x )\t1", Span(1, 1), "no evaluator yet"),
+        ("( bound ∈ )\t1", Span(1, 1), "no evaluator yet"),
+        ("_\t_", Span(1, 1), "no evaluator yet"),
+        ("( bound x )\t1", Span(5, 5), "a constructor is words and literals: not invertible"),
     ],
 )
-def test_what_is_no_pattern_is_refused(row: str, message: str) -> None:
+def test_what_is_no_pattern_is_refused(row: str, span: Span, message: str) -> None:
     """A cell holds one pattern; a dict is no literal; ∈ needs its test; _ names nothing in the
-    body; a constructor is a word whose body is words and literals, never a binder."""
+    body; a constructor is a word whose body is words and literals, never a binder, refused
+    where the pattern names it."""
     with pytest.raises(FplError) as refused:
         run(f"bound : x -- y\n\t→v v\nf : x -- y\n\tmatch\n\t\t{row}\n1 f\n")
-    assert refused.value.message == message
+    assert (refused.value.span, refused.value.message) == (span, message)
 
 
 def test_a_constructor_that_cannot_have_built_the_value_falls_through() -> None:
@@ -229,7 +230,7 @@ def test_a_row_name_shadows_the_binder_from_its_pattern_on() -> None:
 
 
 def test_guards_nest_and_a_guarded_pin_reads_its_name() -> None:
-    """[D4.2] a guarded pattern may be guarded again; $y inside a guard is the value y bound
+    """[D4.1] a guarded pattern may be guarded again; $y inside a guard is the value y bound
     earlier in the row."""
     nonzero = "nonzero : x -- b\n\tmatch\n\t\t0\t0\n\t\t_\t1\n"
     twice = "f : x -- y\n\tmatch\n\t\t( x ∈ nonzero ∈ nonzero )\tx\n\t\t_\t#zero\n"
