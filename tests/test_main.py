@@ -1,5 +1,6 @@
 """The command line: output or one error line, and an exit status that says which."""
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -35,7 +36,7 @@ def test_the_caret_goes_to_stderr_and_the_error_line_to_stdout(
 ) -> None:
     error = FplError(Span(1, 2), message)
 
-    def run(_source: str) -> str:
+    def run(_source: str, _report: Callable[[str], None]) -> str:
         raise error
 
     monkeypatch.setattr("fpl.__main__.run", run)
@@ -56,7 +57,7 @@ def test_a_file_that_runs_prints_its_output(
 ) -> None:
     seen: list[str] = []
 
-    def run(source: str) -> str:
+    def run(source: str, _report: Callable[[str], None]) -> str:
         seen.append(source)
         return output
 
@@ -70,3 +71,15 @@ def test_a_file_that_runs_prints_its_output(
 def test_it_wants_exactly_one_file(capsys: pytest.CaptureFixture[str]) -> None:
     assert main([]) == 2
     assert capsys.readouterr().err == "usage: python -m fpl <file.fpl>\n"
+
+
+def test_a_goal_goes_to_stderr_before_the_program_runs(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """[D2.7] The elaborator's goals are for the operator at the terminal, not the output."""
+    program = tmp_path / "p.fpl"
+    program.write_text("f : x -- y\n\t?\n1 f\n")
+    assert main([str(program)]) == 1
+    printed = capsys.readouterr()
+    assert printed.out == "ERROR: 2:2 unfilled goal\n"
+    assert printed.err == "GOAL 2:2 ? : t0 -- value\n\t?\n ^\n"
