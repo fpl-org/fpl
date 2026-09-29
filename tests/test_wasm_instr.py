@@ -7,8 +7,21 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from fpl.asm.wasm.instr import Const, Cvtop, Instr, Unop
-from fpl.asm.wasm.types import WIDTH, NumType
+from fpl.asm.wasm.instr import (
+    Br,
+    BrIf,
+    BrTable,
+    Call,
+    CallIndirect,
+    Const,
+    Cvtop,
+    If,
+    Instr,
+    ReturnCall,
+    ReturnCallIndirect,
+    Unop,
+)
+from fpl.asm.wasm.types import WIDTH, NumType, TypeUse
 
 numtypes = st.sampled_from(get_args(NumType))
 
@@ -57,3 +70,15 @@ def test_an_operator_exists_only_in_the_shapes_the_spec_gives_it(
     else:
         with pytest.raises(ValueError, match="does not exist"):
             make()
+
+
+@given(st.integers(min_value=0, max_value=2**32 - 1))
+def test_a_control_instruction_keeps_its_arms_and_immediates(x: int) -> None:
+    use = TypeUse(x)
+    br, br_if, table = Br(x), BrIf(x), BrTable((x,), x)
+    branch = If("i32", (br,), (br_if, table))
+    assert (branch.then, branch.else_) == ((br,), (br_if, table))
+    assert (br.label, br_if.label, table.labels, table.default) == (x, x, (x,), x)
+    assert [c.func for c in (Call(x), ReturnCall(x))] == [x, x]
+    indirect = (CallIndirect(x, use), ReturnCallIndirect(x, use))
+    assert [(c.table, c.type) for c in indirect] == [(x, use), (x, use)]

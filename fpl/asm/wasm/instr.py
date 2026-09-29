@@ -1,8 +1,9 @@
 """The instructions of WebAssembly, spec 2.4, for the subset of `fpl.asm.wasm`.
 
 One frozen dataclass per production of the grammar, carrying its number type and operator
-(2.4.8 writes `numtype.binop`); operator names are Literal strings, printed as they are. So far:
-the parametric (2.4.1), variable (2.4.3) and integer numeric (2.4.8) instructions, and return.
+(2.4.8 writes `numtype.binop`); operator names are Literal strings, printed as they are. So
+far: the parametric (2.4.1), variable (2.4.3) and integer numeric (2.4.8) instructions, and
+control (2.4.2) with tail calls.
 
 A class whose fields are typed by a Literal guards its invariant in `__post_init__`, not with
 `icontract.invariant`: CrossHair 0.0.110 cannot build a symbolic Literal and crashes on any
@@ -13,7 +14,7 @@ refuses a value that breaks it with ValueError, so such a value never exists.
 from dataclasses import dataclass
 from typing import Literal
 
-from fpl.asm.wasm.types import WIDTH, NumType, ValType
+from fpl.asm.wasm.types import WIDTH, BlockType, NumType, TypeUse, ValType
 
 IUnop = Literal["clz", "ctz", "popcnt", "extend8_s", "extend16_s", "extend32_s"]
 """2.4.8, the integer unary operators; extend32_s exists on i64 only."""
@@ -182,10 +183,88 @@ class Return:
     """2.4.2, `return`: leaves the function with its results."""
 
 
+@dataclass(frozen=True, slots=True)
+class Block:
+    """2.4.2, `block bt instr* end`: a branch to it continues after its end."""
+
+    type: BlockType
+    body: "tuple[Instr, ...]"
+
+
+@dataclass(frozen=True, slots=True)
+class Loop:
+    """2.4.2, `loop bt instr* end`: a branch to it continues at its start."""
+
+    type: BlockType
+    body: "tuple[Instr, ...]"
+
+
+@dataclass(frozen=True, slots=True)
+class If:
+    """2.4.2, `if bt instr* else instr* end`: pops an i32 and runs `then` unless it is 0."""
+
+    type: BlockType
+    then: "tuple[Instr, ...]"
+    else_: "tuple[Instr, ...]"
+
+
+@dataclass(frozen=True, slots=True)
+class Br:
+    """2.4.2, `br l`: branches to the l-th enclosing label, 0 the innermost."""
+
+    label: int
+
+
+@dataclass(frozen=True, slots=True)
+class BrIf:
+    """2.4.2, `br_if l`: pops an i32 and branches to label l unless it is 0."""
+
+    label: int
+
+
+@dataclass(frozen=True, slots=True)
+class BrTable:
+    """2.4.2, `br_table l* l_N`: pops an i32 i and branches to `labels[i]`, else to `default`."""
+
+    labels: tuple[int, ...]
+    default: int
+
+
+@dataclass(frozen=True, slots=True)
+class Call:
+    """2.4.2, `call x`: calls function x."""
+
+    func: int
+
+
+@dataclass(frozen=True, slots=True)
+class CallIndirect:
+    """2.4.2, `call_indirect x y`: pops an i32 i and calls table x's element i at type y."""
+
+    table: int
+    type: TypeUse
+
+
+@dataclass(frozen=True, slots=True)
+class ReturnCall:
+    """2.4.2, `return_call x`: a tail call of function x; the caller's frame is gone."""
+
+    func: int
+
+
+@dataclass(frozen=True, slots=True)
+class ReturnCallIndirect:
+    """2.4.2, `return_call_indirect x y`: the tail-call form of `call_indirect x y`."""
+
+    table: int
+    type: TypeUse
+
+
 Instr = (
     Const | Unop | Binop | Testop | Relop | Cvtop
     | Nop | Unreachable | Drop | Select
     | LocalGet | LocalSet | LocalTee | GlobalGet | GlobalSet
-    | Return
+    | Block | Loop | If | Br | BrIf | BrTable | Return
+    | Call | CallIndirect | ReturnCall | ReturnCallIndirect
 )  # fmt: skip
 """A closed union of the instructions; a match on it is checked for exhaustiveness."""
