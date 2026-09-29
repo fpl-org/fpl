@@ -12,12 +12,12 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 ## claims-source
 - Depends on it: the claims lens, every step-3 implementer, the coverage matrix
 - Default in force: the Drafts have no tables; a claim is a Draft 1-4 code line carrying a trailing ; comment (43 claims, ids D<draft>.<n>), its part set by keyword family, else the ;;; section, else 02-stack (3 rows)
-- Closes by: design side or maintainer, a claims table or a confirmation of this reading
-- Evidence: the session's design/INDEX.md (0 table lines in draft-1..4.md); design/claims.jsonl sha256 62c3c94e
+- Closes by: PSJ and palimpsest, taking or refusing Caesura's proposal as the candidate close: a claim is a trailing comment that begins '; →', an expected result (10 in the corpus, 11 once Draft 1's '; 0 3 5 6 / …' is respelled); else a claims table
+- Evidence: the session's design/INDEX.md (0 table lines in design/draft-1.md to design/draft-4.md); design/claims.jsonl sha256 62c3c94e
 
 ## parser-algorithm
 - Depends on it: fpl/parse.py, tests/test_parse.py, tests/test_ambiguity.py, every features example
-- Default in force: LALR over fpl/grammar.lark with the tab indenter as postlex (linear, no backtracking); the pre-lexer counts strings and block comments; docs/STACK.md and AGENTS.md still name Earley with ambiguity='explicit'
+- Default in force: LALR over fpl/grammar.lark with the tab indenter as postlex (linear, no backtracking); the pre-lexer counts strings and block comments; docs/STACK.md:27 still names Earley
 - Closes by: maintainer, a root docs change settling LALR in docs/STACK.md, or a request for Earley
 - Evidence: docs/STACK.md:27; handoff/SHAR-syntax.org:122 "The grammar"; SHAR gram/test_fpl.py:5-16 and the parser line after islands()
 
@@ -25,7 +25,7 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Depends on it: tests/test_ambiguity.py ("programs derived from the grammar parse without ambiguity"), tests/test_print.py (the flat law)
 - Default in force: from_lark draws from the block-free FLAT grammar (declared _INDENT/_DEDENT have no pattern to generate from), parsed by Earley ambiguity='explicit' lexer='basic'; the corpus is read by Earley with the tab indenter over the whole grammar; blocks are covered by the corpus and the printer's tree strategy only
 - Closes by: implementer, a generator emitting indented blocks (a derivation that emits _INDENT and _DEDENT, rendered as tabs); or maintainer accepts
-- Evidence: handoff/SHAR-syntax.org:486 printer.py docstring, its FLAT replace() for _NL and LCOMMENT match nothing in fpl.lark; after 8a753ec no _ambig in 2000 flat draws nor in the 29 pre-lexed examples, before it 1814 of 2000 and 26 of 29 (session grammar-fix/proof.log)
+- Evidence: handoff/SHAR-syntax.org:486 printer.py docstring, its FLAT replace() for _NL and LCOMMENT match nothing in fpl.lark; after 8a753ec no _ambig in 2000 flat draws nor in the 29 pre-lexed examples, before it 1814 of 2000 and 26 of 29 (8a753ec's body)
 
 ## grammar-departs-from-handoff
 - Depends on it: fpl/grammar.lark, every example
@@ -103,7 +103,7 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Depends on it: features/{draft1,draft2,draft3,server,sketch,match}/examples/*.fpl; tests/test_conformance.py::test_example[*]; tests/test_ambiguity.py::test_no_ambiguity_in_the_corpus[*]
 - Default in force: one .fpl per snippet set, cut at ;;; lines where the section parses alone, else joined to the part before (draft1, draft3 and server stay whole; draft2 is split 11 ways, sketch 7, match 7); the parts are byte copies of the tangled hand-off and concatenate to the snippet byte for byte
 - Closes by: maintainer or design side, re-cutting the fixtures or confirming the rule
-- Evidence: decision (b); session shar/split.tsv (parses_alone column, all yes); handoff/SHAR-syntax.org:828 "The snippet corpus"
+- Evidence: decision (b); the fixture commits 42a7b7c, f30b1ef, e04a708, b75ee2f, 4b8213b, 3302d19, each section parsing alone; handoff/SHAR-syntax.org:828 "The snippet corpus"
 
 ## program-output
 - Depends on it: fpl/driver.py, fpl/desugar.py listing, tests/test_desugar.py, every .expected that is not an error line
@@ -118,10 +118,10 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Evidence: decisions (b) and (c); AGENTS.md "The oracle rule"; features/*/examples/*.expected at 3302d197
 
 ## unimplemented-words
-- Depends on it: fpl/desugar.py unimplemented; every example still at ERROR: 1:1 no evaluator yet (23 of 28 at this commit)
+- Depends on it: fpl/desugar.py unimplemented; the 23 of 28 examples still at ERROR: 1:1 no evaluator yet, each named with the first thing desugar refuses: features/draft1/examples/draft1.fpl (newline), features/draft2/examples/03-operatives-thunks.fpl (debug), features/draft2/examples/04-effects-holes-ascription.fpl (shape), features/draft2/examples/05-the-dictionary-is.fpl (words), features/draft2/examples/06-constructors-run-backwards.fpl (unpair), features/draft2/examples/08-objects-are-directories.fpl (dict), features/draft2/examples/10-quasiquote-inside.fpl ($q, an unquote), features/draft2/examples/11-laziness.fpl (curry), features/draft3/examples/draft3.fpl (shape), features/match/examples/01-1-constructors-run.fpl (pos), features/match/examples/02-2-the-same.fpl (a pattern on the effect line), features/match/examples/03-3-multiple-dispatch.fpl (Asteroid), features/match/examples/04-4-list-patterns.fpl (false), features/match/examples/05-5-prolog-s-family.fpl (x in mother's body), features/match/examples/06-6-python-s-keywords.fpl (a record pattern on the effect line), features/server/examples/server.fpl (+in/data on the effect line), features/sketch/examples/05-5-multiple-dispatch.fpl (shape/r), and features/sketch/examples/01, 02, 03, 04, 06 and 07 (seam ∈ … in a directory, no definition nor bind)
 - Default in force: desugar refuses, before anything runs, all but: decimal numbers, strings without islands, [ ], ( ) of one cell, ⟨ ⟩ of literals, bars, tabs, blocks, name : ins -- outs definitions (each slot a name or name: Type), →x and ->x of a plain name or a path, #name symbols, { } of plain keys each with one item pushing one value, name/ heads with a block of definitions, subdirectories and #name bind lines, paths a/b and ../x that name a defined word, w/history, w/doc, w/effect, a match line with its block of rows in a definition's body, and the words of fpl/ast_core.py EFFECTS (+ - times swap dup drop enclose , pair cons ! if swap-args repeat each scan fold, and ? and _ in a term), with ERROR: 1:1 no evaluator yet (the skeleton's message and position, reused)
 - Closes by: each step-3 part, shrinking the set
-- Evidence: fpl/driver.py (skeleton); fpl/ast_core.py EFFECTS
+- Evidence: fpl/driver.py (skeleton); fpl/ast_core.py EFFECTS; each example run through fpl.driver.run at 203e0ba, the refusal traced to its caller in fpl/desugar.py (resolve, origin, effect_line, mount)
 
 ## doc-absent
 - Depends on it: fpl/desugar.py (Catalog.enter, DOC), fpl/eval.py (evaluate), tests/test_comments.py, features/draft3/examples/draft3.fpl:10
@@ -146,11 +146,6 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Default in force: ? is a word of no fixed effect (a Call, no core node; desugar balances it as taking and leaving nothing); elaboration reports it as data, GOAL <line>:<col> ? : <ins> -- <outs>, the driver handing each line to a reporter the command line points at stderr, before any line runs; the goal takes the whole stack under it and leaves what the code after it takes, or, when nothing follows, what the effect line promises (none on a top-level line); an input of the body prints as t and its index, a sort as its name; elaboration goes on with values of no known sort; running it is ERROR: <line>:<col> unfilled goal; a goal under a control word, in a quotation or a { } value, or in a body a control word leaves untyped is not reported
 - Closes by: design side, the report's form and destination and a goal's extent (the whole stack, or what it is ascribed)
 - Evidence: handoff/SHAR-syntax.org:906 and :1016 (S40); claims D2.7 (features/draft2/examples/04-effects-holes-ascription.fpl:5, grade and pick not builtins, so it cannot evaluate yet) and D4.3, features/match/examples/01-1-constructors-run.fpl:15
-## printer-example-count
-- Depends on it: tests/test_print.py; handoff/SHAR-syntax.org as evidence
-- Default in force: SHAR printer.py prints "2000 examples" but sets max_examples=300; the port sets no count, so the profiles decide (quick 100, harden 2000)
-- Closes by: syntax author (Caesura), correcting SHAR; else maintainer accepts the port's count
-- Evidence: handoff/SHAR-syntax.org:559 and :605 (@settings) against :614-615 and :1233-1234 (the printed count)
 
 ## print-obligation-unlisted
 - Depends on it: tests/test_print.py, scripts/props
@@ -164,29 +159,9 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Closes by: a root [policy] commit adding the first to [fpl.eval] (matching) and the second to [fpl.desugar] (fallible, catches) in quality/obligations.toml
 - Evidence: quality/obligations.toml (no [fpl.eval] table; [fpl.desugar] lists one obligation); campaign scope 06-match ("Property: the row chosen is the first whose patterns match. Property: exhaustive ⇔ no +fail.")
 
-## fon-hash-sigil
-- Depends on it: fpl/fon.py
-- Default in force: &hex is a content hash, #name a symbol; SHAR's Hash class comment still says #hash
-- Closes by: syntax author, correcting the comment in SHAR
-- Evidence: handoff/SHAR-syntax.org:692 (Hash class comment) against :704 (HASH)
 
-## agree-not-run
-- Depends on it: handoff/SHAR-syntax.org (tangled files as evidence)
-- Default in force: only the awk tangle ran; Org's tangle not compared
-- Closes by: anyone with Emacs, ./SHAR.org agree printing TANGLERS-AGREE
-- Evidence: handoff/SHAR-syntax.org:1203 "Seams"; session logs/wf0a-shar-nix.log
 
-## shar-nix-unpinned
-- Depends on it: reproducing the hand-off check under its own flake
-- Default in force: SHAR's flake.nix has no locked nixpkgs; today it resolves hypothesis 6.156.1, not 6.168.0 of its recorded run; the output was identical
-- Closes by: Caesura, committing a flake.lock with the shar
-- Evidence: handoff/SHAR-syntax.org:80 (Bootstrap: flake.lock listed as not derived); session logs/wf0a-shar-nix.log
 
-## shar-results-dup
-- Depends on it: handoff/SHAR-syntax.org #+RESULTS: check-run as evidence
-- Default in force: printer.py imports test_fpl.py, whose unguarded top-level battery then runs twice; RESULTS shows only one extra line of it
-- Closes by: Caesura, guarding test_fpl.py's battery with if __name__ == '__main__'
-- Evidence: handoff/SHAR-syntax.org:1203 "Seams" (#+RESULTS: check-run, examples2 printed twice); session logs/wf0a-filtered.txt against logs/wf0a-expected.txt
 
 ## fon-unwritable
 - Depends on it: fpl/fon.py (write, embed), tests/test_fon.py::test_json_embeds_and_reads_back
@@ -247,6 +222,7 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Default in force: a body is inferred and its count checked against its effect line at the definition (fpl/types.py), a match's rows each typed, their pattern names of no known sort; a body with a control word (! if swap-args repeat each scan fold), or a match whose rows leave different counts, is not inferred and its effect line is trusted, a shortfall refused later at the word that finds too few
 - Closes by: fpl/types.py, once control words take their quotation's arrow (hole control-effects); design, whether rows leaving different counts are an error
 - Evidence: fpl/types.py; tests/test_types.py test_a_body_is_checked_against_its_effect_line
+
 ## definition-scope
 - Depends on it: fpl/desugar.py desugar, fpl/eval.py evaluate, tests/test_desugar.py test_lcurry_puts_a_swap_between
 - Default in force: definitions are global to the program; a word may be used above its definition; a later definition of a name shadows an earlier one for every line, builtins included
@@ -278,8 +254,8 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Evidence: claim D3.4 (features/draft3/examples/draft3.fpl)
 
 ## stack-claims-deferred
-- Depends on it: claims D1.6, D1.9, D1.10, D2.8, D2.9, D2.10, D2.14, D2.15, D2.16 (part 02-stack)
-- Default in force: open, their examples at no evaluator yet: D2.9 needs binders and each (03-binders); D2.8 and D2.10 symbols, pair, dict, method, inverse; D2.14 and D2.15 unquote; D2.16 laziness; D1.6 ! and if; D1.9 and D1.10 ∞, inner, log, repeat and a block of literals under a head that is not a definition
+- Depends on it: claims D1.6, D1.9, D1.10, D2.8, D2.10, D2.14, D2.15, D2.16 (part 02-stack)
+- Default in force: open, their examples at no evaluator yet (D2.9 is paid by features/draft2/examples/07-scope-follows-the.expected, 2 4 6): D2.8 and D2.10 symbols, pair, dict, method, inverse; D2.14 and D2.15 unquote; D2.16 laziness; D1.6 apply, whose two-child if is refused (hole if-valence); D1.9 and D1.10 ∞, inner, log, repeat and a block of literals under a head that is not a definition
 - Closes by: the parts that implement those words, each with a test named by its claim id
 - Evidence: design/claims.jsonl rows with part 02-stack
 
@@ -369,7 +345,7 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 
 ## control-effects
 - Depends on it: fpl/ast_core.py EFFECTS, fpl/desugar.py balance, tests/test_control.py
-- Default in force: each control word declares one fixed effect for saturation, whatever its quotation does: ! q -- x, if c t e --, swap-args x y q -- z, repeat q n --, each and scan xs q -- ys, fold xs q -- x; a quotation that does otherwise shows at run time as an underflow or as values left over; the mechanism is the builtin effect table
+- Default in force: each control word declares one fixed effect for saturation, whatever its quotation does: ! q -- x, if c t e --, swap-args x y q -- z, repeat q n --, each and scan xs q -- ys, fold xs q -- x; a quotation that does otherwise shows at run time as an underflow or as values left over (1 [+] ! is ERROR: 1:4 stack underflow); a frame in which the control word itself finds too few is a section, as saturation-balance says (1 [2] [3] if 1 + prints [ 1 [ 2 ] [ 3 ] if 1 + ]); the mechanism is the builtin effect table
 - Closes by: the types part, inferring a quotation's effect and checking the word against it
 - Evidence: combined-draft.md:134 (if : c t e --, fixed valence); claims D2.4, D2.13; no document gives the outputs of !
 
@@ -387,9 +363,9 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 
 ## step-stack
 - Depends on it: fpl/eval.py single, each, scan, fold; features/draft2/examples/07-scope-follows-the, 09-rotates
-- Default in force: each runs its quotation on a fresh stack holding one item, scan and fold on one holding the result so far and the next item; a step leaves one value or is refused with "each step leaves one value"; the first item starts scan and fold, and fold over nothing is refused; the mechanism is gathered's fresh stack for a dict value
-- Closes by: design side, if a step may reach below its item or fold takes a seed
-- Evidence: claim D2.13; draft-1.md:6
+- Default in force: each runs its quotation on a fresh stack holding one item, scan and fold on one holding the result so far and the next item; a step leaves one value or is refused with "each step leaves one value"; the first item starts scan and fold, and fold over nothing is refused (ERROR at fold, "fold over nothing"), so draft-2's mean, whose comment says empty input gives ∞, cannot reach ∞ through [+] fold; the mechanism is gathered's fresh stack for a dict value
+- Closes by: design side, if a step may reach below its item, and whether fold takes a seed or mean is rewritten
+- Evidence: claim D2.13; draft-1.md:6; draft-2.md:23-25 (mean)
 
 ## sequence-shape
 - Depends on it: fpl/eval.py items, rebuilt; tests/test_control.py
@@ -462,6 +438,7 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Default in force: an effect line is plain names only; a record pattern in the head (claim D4.11, S39: sep and end bound by the pattern, the caller's record unioned over the defaults) is refused as unimplemented, ERROR: 1:1 no evaluator yet
 - Closes by: the part that implements records as signatures and with (S39), outside 06-match's scope; design, saying where a head's defaults bind
 - Evidence: claim D4.11; features/match/examples/06-6-python-s-keywords.fpl:2-3; fpl/desugar.py effect_line
+
 ## typed-fragment
 - Depends on it: fpl/types.py Kind, ARROWS, met; tests/test_types.py test_a_well_typed_program_runs_to_a_value and test_a_step_keeps_the_sorts_a_state_leaves (the obligations of [fpl.types])
 - Default in force: sorts are number, text, symbol and value; a match's rows are typed, a name a pattern binds of no known sort; value is untracked and trusted (lists, quotations, dicts, strands of mixed items, what enclose , pair cons and a word with an untyped body leave), so arithmetic on one passes elaboration and may still fail at run time; a body calling a word defined later meets that word's effect line with values of no tracked sort; progress and preservation are stated over programs of number, text and symbol pushes, dup swap drop + - times, binders and words calling earlier words
@@ -473,3 +450,15 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Default in force: _ in a term is inferred only as nothing: accepted when the code after it takes the stack as it stands (and, at the end of a body, the effect line's count), run as a no-op; otherwise ERROR: <line>:<col> cannot infer _ : <ins> -- <outs>, the shape a goal there would report; no code is synthesised; a _ in code elaboration does not type runs as nothing
 - Closes by: design side, what the elaborator may infer for _ (D2.7 "_ would ask it to infer"), and whether a _ in untyped code is refused
 - Evidence: claim D2.7 (features/draft2/examples/04-effects-holes-ascription.fpl:5); handoff/SHAR-syntax.org:1016 (S40: "_ is inferred by the elaborator (or a wildcard, or absence)")
+
+## symbolic-lane-unbounded
+- Depends on it: make harden and make ready (quality/noslop.mk:81, HYPOTHESIS_PROFILE=symbolic pytest); every unit's gate.ready
+- Default in force: the symbolic lane is not run; the six bounded lanes of the orchestrator's amendment stand in for make ready: check, the harden profile, crosshair icontract at 20 s per condition, mutants, gates, pip-audit
+- Closes by: maintainer, a per-test budget for the symbolic lane in quality/, then a full make ready
+- Evidence: quality/noslop.mk:81; orchestrator amendment 2026-09-28 21:50 (a run passed 27 minutes and was killed)
+
+## mutant-verdicts-vary-between-runs
+- Depends on it: mutants.allow, scripts/mutants (quality lane d)
+- Default in force: every allowed entry is kept even when a run reports it as no longer living, since dropping one that lives on the next run fails the gate; the gate reports stale entries and does not fail on them; runs on one head differ (9 allowed entries reported no longer living on 7d1c179 in one run, none in the next); returned also as mutmut-run-dependent-kills
+- Closes by: maintainer, deciding whether a Hypothesis-random kill falsifies an "equivalent" reason, or pinning the seed or profile scripts/mutants runs the suite under, then pruning mutants.allow
+- Evidence: mutants.allow; scripts/mutants; session pr/05-comments.md (its PR note; the run logs are not kept)
