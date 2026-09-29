@@ -386,6 +386,17 @@ def _kept(store: Path, name: Multihash, data: bytes) -> None:
     _synced(store)
 
 
+def _recorded(event: Event, key: bytes) -> bytes:
+    """The event's record. Refused (RefusedError): one `parsed` would not read back, and a
+    number of 2^64 or more or a model or session not ASCII, which no record can spell."""
+    try:
+        line = record(event, key)
+    except (OverflowError, UnicodeEncodeError):
+        raise RefusedError("a number is not below 2^64 or a text is not ASCII") from None
+    parsed(line.removesuffix(b"\n"), key)
+    return line
+
+
 def write(path: Path, key: bytes, log: Log, event: Event, bodies: Mapping[Multihash, bytes]) -> Log:
     """The log after appending event, whose body and output are in `bodies` or already
     stored. The caller holds `locked(path)` and loaded `log` under it. An event `load` would
@@ -394,11 +405,11 @@ def write(path: Path, key: bytes, log: Log, event: Event, bodies: Mapping[Multih
     past `log.size` is cut and the record appended in one write, and file and directory are
     synced before this returns (HOLES.md: log-fsync-barrier)."""
     _follows({each.ident for each in log.events}, event)
+    line = _recorded(event, key)
     found = _bodies(path, event, bodies)
     for name, data in found.items():
         if name.code != INLINE and name in bodies:
             _kept(_store(path), name, data)
-    line = record(event, key)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
         os.ftruncate(fd, log.size)
