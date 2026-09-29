@@ -64,10 +64,10 @@ fpl.print.xǁ_Outǁ__init____mutmut_5 -- equivalent: the first line is at depth 
 fpl.print.xǁ_Outǁitem__mutmut_4 -- unreachable: the match covers the Item union, as pyright proves
 fpl.print.xǁ_Outǁ__init____mutmut_8 -- equivalent: None and False are both false for noted
 fpl.lex.x_counted__mutmut_17 -- flaky: killed in one run, timeout in another; the mutant returns 1 for an unclosed opener, so one at offset 0 is not refused (tests/test_fon.py, “a) while one past offset 1 restarts the scan behind it and never ends, and which test mutmut reaches first decides
-fpl.desugar.xǁ_Desugarǁitem__mutmut_5 -- unreachable: the match covers the Item union, as pyright proves
-fpl.desugar.xǁ_Desugarǁitem__mutmut_15 -- unreachable: the match covers the Item union, as pyright proves
+fpl.desugar.xǁ_Desugarǁitem__mutmut_4 -- unreachable: the match covers the Item union, as pyright proves
+fpl.desugar.xǁ_Desugarǁitem__mutmut_9 -- unreachable: the match covers the Item union, as pyright proves
 fpl.desugar.xǁ_Desugarǁenclosure__mutmut_5 -- unreachable: the match covers the Pair literals, as pyright proves
-fpl.desugar.xǁ_Desugarǁenclosure__mutmut_26 -- unreachable: the match covers the Pair literals, as pyright proves
+fpl.desugar.xǁ_Desugarǁenclosure__mutmut_29 -- unreachable: the match covers the Pair literals, as pyright proves
 fpl.desugar.x_written__mutmut_3 -- unreachable: the match covers the Statement union, as pyright proves
 fpl.desugar.x_sugared__mutmut_2 -- equivalent: stranding is false for "" as for None, neither being a push
 fpl.desugar.x_shown__mutmut_42 -- equivalent: F differs from f only for NaN and infinity; numerals are finite and the default Decimal context traps overflow and invalid operations
@@ -81,3 +81,21 @@ fpl.desugar.xǁ_Desugarǁchildren__mutmut_17 -- equivalent: kinds holds len(bloc
 fpl.desugar.x_declaration__mutmut_4 -- unreachable: the match covers the Slot literals, as pyright proves
 fpl.desugar.x_declaration__mutmut_31 -- unreachable: the match covers the Slot literals, as pyright proves
 fpl.desugar.x_declaration__mutmut_21 -- equivalent: framed reads None as it reads (), as no items, and makes the same empty frame
+fpl.desugar.x_shown__mutmut_38 -- equivalent: F differs from f only for NaN and infinity; numerals are finite and the default Decimal context traps overflow and invalid operations
+fpl.desugar.x_enclosed__mutmut_4 -- unreachable: the match covers the Listed, Quotation and Dict union, as pyright proves
+fpl.desugar.x_enclosed__mutmut_37 -- unreachable: the match covers the Listed, Quotation and Dict union, as pyright proves
+fpl.desugar.x_spelled__mutmut_5 -- unreachable: the match covers the Node union, as pyright proves
+fpl.desugar.x_spelled__mutmut_35 -- unreachable: the match covers the Node union, as pyright proves
+fpl.desugar.xǁ_Desugarǁarity__mutmut_4 -- unreachable: the match covers the Node union, as pyright proves
+fpl.desugar.xǁ_Desugarǁarity__mutmut_10 -- unreachable: the match covers the Node union, as pyright proves
+fpl.eval.x_replaced__mutmut_5 -- unreachable: the match covers the Node union, as pyright proves
+fpl.eval.x_replaced__mutmut_45 -- unreachable: the match covers the Node union, as pyright proves
+fpl.desugar.x_directory__mutmut_4 -- equivalent: a match no case takes falls to the end and returns None, as the case does
+fpl.desugar.x_mount__mutmut_3 -- equivalent: the mutant logs Mount(None), which names no directory, so desugar refuses it at 1:1 with no evaluator yet, as the case does, before any line runs
+fpl.desugar.xǁCatalogǁdirectory__mutmut_8 -- equivalent: depth -1 slices here to here[:-1], a directory the loop already searched
+fpl.desugar.xǁCatalogǁresolve__mutmut_8 -- equivalent: depth -1 slices here to here[:-1], a directory the loop already searched
+fpl.desugar.xǁ_Desugarǁ__init____mutmut_4 -- equivalent: body sets here before any word is read, so the initial value is never read
+fpl.desugar.xǁ_Desugarǁcall__mutmut_12 -- equivalent: a call of a bound name lies in its binder's scope and is replaced by a push before it runs, so its span is never reported
+fpl.desugar.xǁ_Desugarǁdict__mutmut_8 -- equivalent: an odd item count is refused above, so the keys and values are as many and strict never fires
+fpl.desugar.xǁ_Desugarǁdict__mutmut_11 -- equivalent: an odd item count is refused above, so the keys and values are as many and strict never fires
+fpl.desugar.xǁ_Desugarǁdict__mutmut_15 -- equivalent: an odd item count is refused above, so the keys and values are as many and strict never fires
