@@ -219,6 +219,16 @@ def test_the_effect_line_is_kept_as_declared() -> None:
     assert definition.effect == Effect(("x", "q"), ("q'",))
 
 
+def test_an_effect_takes_values_unless_its_slots_say_otherwise() -> None:
+    """S49 rule 5: an input is a value, a thunk or code; an effect line with no slot given takes
+    values, and a slot count other than one per input is refused."""
+    assert Effect(("x", "y"), ("z",)).slots == ("value", "value")
+    assert Effect(("q",), (), slots=("thunk",)).slots == ("thunk",)
+    assert Effect(("x",), ()) == Effect(("x",), (), slots=("value",))
+    with pytest.raises(ValueError, match="one slot per input"):
+        Effect(("x",), (), slots=("code", "code"))
+
+
 def test_parentheses_rotate_the_head_to_the_end() -> None:
     """draft2 examples/09-rotates.fpl:2-3: (+ 1 2) is 1 | 2 + = 3, (+ (times 2 3) 4) is 10."""
     assert run("(+ 1 2)\n(+ (times 2 3) 4)\n") == "3\n10\n"

@@ -6,13 +6,15 @@ each a push of a value or a call of a word. A value is a number, a string, a str
 same data an effect line gives a defined word.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import KW_ONLY, dataclass, field
 from decimal import Decimal
+from typing import Literal
 
 from fpl.errors import Span
 
 type Number = int | Decimal
 type Atom = Number | str
+type Slot = Literal["value", "thunk", "code"]
 
 
 @dataclass(frozen=True)
@@ -59,10 +61,21 @@ type Node = Push | Call
 
 @dataclass(frozen=True)
 class Effect:
-    """An effect line's names: what a word takes, then what it leaves."""
+    """An effect line's names: what a word takes, then what it leaves; and the slot of each
+    input (S49 rule 5): a value, run at once; a thunk, run when and if the word chooses; code,
+    inspected, never run. No slots given means every input is a value; a count other than one
+    per input is refused."""
 
     ins: tuple[str, ...]
     outs: tuple[str, ...]
+    _: KW_ONLY
+    slots: tuple[Slot, ...] = ()
+
+    def __post_init__(self) -> None:
+        slots = self.slots or ("value",) * len(self.ins)
+        if len(slots) != len(self.ins):
+            raise ValueError("one slot per input")
+        object.__setattr__(self, "slots", slots)  # frozen: the default is filled once, here
 
 
 @dataclass(frozen=True)
