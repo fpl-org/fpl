@@ -5,6 +5,8 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+import fpl.desugar  # pyright: ignore[reportUnusedImport] -- scripts/props credits a file's obligations to the modules it imports
+import fpl.eval  # noqa: F401 -- scripts/props credits a file's obligations to the modules it imports  # pyright: ignore[reportUnusedImport] -- scripts/props credits a file's obligations to the modules it imports
 from fpl.driver import run
 from fpl.errors import FplError, Span
 
@@ -142,6 +144,7 @@ def test_a_row_holds_one_pattern_per_value_and_a_constructor_one_per_input(
 cells = st.lists(st.one_of(st.just("_"), st.integers(0, 3).map(str)), min_size=1, max_size=6)
 
 
+@pytest.mark.obligation("the row chosen is the first whose patterns match")
 @given(cells, st.integers(0, 3))
 def test_the_row_chosen_is_the_first_whose_patterns_match(patterns: list[str], value: int) -> None:
     """The first row whose pattern matches runs; with none, the match raises +fail."""
@@ -162,6 +165,7 @@ rows = st.lists(
 )
 
 
+@pytest.mark.obligation("a match is exhaustive exactly when its effect has no +fail")
 @given(rows)
 def test_a_match_is_exhaustive_exactly_when_its_effect_has_no_fail(table: list[list[str]]) -> None:
     """[D4.5] a row of wildcards and names catches all; without one the match is partial and
