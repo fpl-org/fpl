@@ -196,8 +196,8 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Evidence: session grammar-fix/proof2.log (note alignment section)
 
 ## comment-heads-block
-- Depends on it: fpl/grammar.lark (line)
-- Default in force: a comment line may head an indented block (an outline heading); no example has one
+- Depends on it: fpl/grammar.lark (line), fpl/desugar.py (coded)
+- Default in force: a comment line may head an indented block (an outline heading); no example has one; desugar refuses such a line as unimplemented (no evaluator yet), since running its block as quotations or as lines is undecided; a comment line with no block is no statement
 - Closes by: Caesura, confirming or refusing it
 - Evidence: session grammar-fix/proof2.log (";;; s\n\ta" parses once, 0 heads in the corpus)
 
@@ -208,9 +208,9 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Evidence: session grammar-fix/proof2.log (0 comments inside an enclosure in the corpus); tests/test_parse.py::test_a_refusal_is_one_error_line
 
 ## empty-first-line
-- Depends on it: fpl/grammar.lark (start), fpl/print.py (render)
+- Depends on it: fpl/grammar.lark (start), fpl/print.py (render), fpl/desugar.py (coded)
 - Default in force: a file that opens with blank lines has one empty first line, and "\n\tx" gives that line a block; a blank source ("", "\n") is that one line and prints as the empty text; no example opens blank (PSJ: leading blank lines are not useful, a refusal is acceptable)
-- Closes by: PSJ or Caesura, keeping it or refusing a blank first line
+- Closes by: PSJ or Caesura, keeping it or refusing a blank first line; until then desugar runs nothing for it, and refuses it as unimplemented when it heads a block
 - Evidence: session grammar-fix/proof2.log; tests/test_parse.py::test_only_the_first_line_is_empty_and_it_may_hold_a_block
 
 ## form-feed-line
