@@ -143,6 +143,14 @@ def test_a_row_holds_one_pattern_per_value_and_a_constructor_one_per_input(
         run(f"f : x -- y\n\tmatch\n\t\t{row}\n")
 
 
+def test_a_match_without_rows_is_refused_at_the_word() -> None:
+    """A match whose block holds only comments has no rows, and is refused where it is
+    written, before any value reaches it."""
+    with pytest.raises(FplError) as refused:
+        run("f : x -- y\n\tmatch\n\t\t; only a comment\n1 f\n")
+    assert (refused.value.span, refused.value.message) == (Span(2, 2), "a match has no rows")
+
+
 cells = st.lists(st.one_of(st.just("_"), st.integers(0, 3).map(str)), min_size=1, max_size=6)
 
 
