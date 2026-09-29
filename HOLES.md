@@ -145,7 +145,7 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Depends on it: fpl/types.py (07-goals), programs containing ?; claim D4.3's wildcard row _ ?, refused until then (tests/test_match.py test_a_wildcard_row_whose_body_is_a_goal_waits_for_goals)
 - Default in force (proposed; 07-goals confirms): elaboration writes GOAL <line>:<col> <expected effect> to stderr and continues with a placeholder; evaluating it gives ERROR: <line>:<col> unfilled goal
 - Closes by: design side, the report's form and destination
-- Evidence: handoff/SHAR-syntax.org:832 and :1016 (S40); claim D4.3, features/match/examples/01-1-constructors-run.fpl:15
+- Evidence: handoff/SHAR-syntax.org:832 and :1016 (S40); claims D2.7 (features/draft2/examples/04-effects-holes-ascription.fpl:5, grade and pick not builtins, so it cannot evaluate yet) and D4.3, features/match/examples/01-1-constructors-run.fpl:15; 07-goals left ? and _ to 07b, and I/O only in the driver argues for goals returned as data from elaborate, printed by the driver
 
 ## printer-example-count
 - Depends on it: tests/test_print.py; handoff/SHAR-syntax.org as evidence
@@ -244,11 +244,10 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Evidence: decision (f); claims D2.1-D2.3 (draft2 §frames), D2.5 (curry's body underflows its frame but not its effect line)
 
 ## effect-line-trusted
-- Depends on it: fpl/desugar.py arity, fpl/eval.py builtin
-- Default in force: a defined word's arity is read from its effect line and trusted; a body that leaves fewer values than declared makes a later word find too few, refused at that word as stack underflow
-- Closes by: fpl/types.py (types part), checking a body against its effect line
-- Evidence: claim D3.4; tests/test_desugar.py test_a_word_refuses_at_its_position
-
+- Depends on it: fpl/types.py inferred, declared; fpl/desugar.py arity; fpl/eval.py builtin; tests/test_binders.py and tests/test_desugar.py reaching a runtime underflow through [ ] !
+- Default in force: a body is inferred and its count checked against its effect line at the definition (fpl/types.py); a body with a match or a control word (! if swap-args repeat each scan fold) is not inferred and its effect line is trusted, a shortfall refused later at the word that finds too few, as before
+- Closes by: fpl/types.py, once control words take their quotation's arrow and a match its rows' (hole control-effects)
+- Evidence: claim D3.4; tests/test_types.py test_a_body_is_checked_against_its_effect_line
 ## definition-scope
 - Depends on it: fpl/desugar.py desugar, fpl/eval.py evaluate, tests/test_desugar.py test_lcurry_puts_a_swap_between
 - Default in force: definitions are global to the program; a word may be used above its definition; a later definition of a name shadows an earlier one for every line, builtins included
@@ -464,3 +463,8 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Default in force: an effect line is plain names only; a record pattern in the head (claim D4.11, S39: sep and end bound by the pattern, the caller's record unioned over the defaults) is refused as unimplemented, ERROR: 1:1 no evaluator yet
 - Closes by: the part that implements records as signatures and with (S39), outside 06-match's scope; design, saying where a head's defaults bind
 - Evidence: claim D4.11; features/match/examples/06-6-python-s-keywords.fpl:2-3; fpl/desugar.py effect_line
+## typed-fragment
+- Depends on it: fpl/types.py Kind, ARROWS, met; tests/test_types.py test_a_well_typed_program_runs_to_a_value and test_a_step_keeps_the_sorts_a_state_leaves (the obligations of [fpl.types])
+- Default in force: sorts are number, text, symbol and value; value is untracked and trusted (lists, quotations, dicts, strands of mixed items, what enclose , pair cons and a word with an untyped body leave), so arithmetic on one passes elaboration and may still fail at run time; a body calling a word defined later meets that word's effect line with values of no tracked sort; progress and preservation are stated over programs of number, text and symbol pushes, dup swap drop + - times, binders and words calling earlier words
+- Closes by: fpl/types.py, sorts for lists, quotations and dicts and arrows for control words; design, whether a list or a quotation carries its items' or its code's type
+- Evidence: fpl/ast_core.py EFFECTS and hole control-effects; claim D2.7 ("_ would ask it to infer")
