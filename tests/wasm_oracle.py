@@ -8,12 +8,31 @@ exit status of `command -v`, since a tool missing from the layer prints no line 
 hook may print to stdout. wast2json, spectest-interp and wasm-validate sit beside wat2wasm in
 wabt's bin. Both versions are checked, and every binary is called by its absolute path. Without
 nix, resolving raises OracleError with the command it tried: an error, never a skip.
+
+Batches. One .wast script holds a batch of items, each a module with what is expected of it, in
+one of two dialects: wabt 1.0.41 has no `module definition`, so its verdicts are all
+`(assert_invalid (module ...) "")`, which a valid module fails; wasmtime compiles a module
+claimed valid as a `module definition` and asserts one claimed invalid invalid. Runs are
+`assert_return` or `assert_trap` on `(invoke "main")` in both. Every wabt tool that reads a tail
+call gets --enable-tail-call; wasmtime 45 needs no flag.
+
+Verdicts. A runner reports the indices of the items its engine disagreed with, found by mapping
+a line of the script back to the item that holds it. wabt: a malformed token makes wast2json
+reject the whole script at `batch.wast:L:C`; otherwise spectest-interp reports every directive
+as `batch.wast:L: <message>`, a pass as `<directive> passed`, and its exit code, the failure
+count modulo 256, is ignored. wasmtime stops at its first failing directive, naming
+`batch.wast:L` for a failed directive and a malformed token alike.
 """
 
+import re
 import subprocess
 import tempfile
+from bisect import bisect_right
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, assert_never
+
+from fpl.asm.wasm.types import NumType
 
 RESOLVE = (
     'nix develop "$(git rev-parse --show-toplevel)#wasm"'
@@ -80,14 +99,117 @@ def resolve(command: str = RESOLVE) -> Tools:
     return tools
 
 
+def _run(cwd: str, *argv: str | Path) -> subprocess.CompletedProcess[str]:
+    """`argv` run in `cwd`, its output captured as text; the exit status is the caller's to read."""
+    return subprocess.run(argv, cwd=cwd, capture_output=True, text=True, check=False)
+
+
 def wat2wasm(tools: Tools, text: str) -> subprocess.CompletedProcess[str]:
     """wat2wasm, tail calls enabled, run on `text` as a .wat file; the binary is dropped."""
     with tempfile.TemporaryDirectory() as tmp:
         Path(tmp, "m.wat").write_text(text)
-        return subprocess.run(
-            [tools.wat2wasm, "--enable-tail-call", "m.wat", "-o", "m.wasm"],
-            cwd=tmp,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        return _run(tmp, tools.wat2wasm, "--enable-tail-call", "m.wat", "-o", "m.wasm")
+
+
+@dataclass(frozen=True)
+class Run:
+    """A module, and what `(invoke "main")` gives: typed results, or the message of a trap."""
+
+    module: str
+    expect: tuple[tuple[NumType, int], ...] | str
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """A module, and whether it is claimed valid."""
+
+    module: str
+    valid: bool
+
+
+Item = Run | Verdict
+Dialect = Literal["wabt", "wasmtime"]
+BATCH = "batch.wast"
+LINE = re.compile(r"batch\.wast:(\d+)")
+DIRECTIVE = re.compile(r"^batch\.wast:(\d+): (.*)$", re.MULTILINE)
+PASSED = re.compile(r"\w+ passed")
+
+
+@dataclass(frozen=True)
+class Report:
+    """The indices of the items an engine disagreed with, and its output to show why."""
+
+    wrong: tuple[int, ...]
+    output: str
+
+
+def _invoke(run: Run) -> str:
+    """The directive that checks what invoking "main" gives."""
+    if isinstance(run.expect, str):
+        return f'(assert_trap (invoke "main") "{run.expect}")\n'
+    values = " ".join(f"({t}.const {value})" for t, value in run.expect)
+    return f'(assert_return (invoke "main") {values})\n'
+
+
+def directives(item: Item, dialect: Dialect) -> str:
+    """One item as .wast directives in `dialect`, ending in a newline."""
+    match item:
+        case Run():
+            return item.module + _invoke(item)
+        case Verdict(valid=True) if dialect == "wasmtime":
+            return "(module definition" + item.module.removeprefix("(module")
+        case Verdict():
+            return f'(assert_invalid {item.module} "")\n'
+        case _:
+            assert_never(item)
+
+
+def write_batch(items: list[Item], dialect: Dialect) -> tuple[str, list[int]]:
+    """The script of a batch, and the line on which each item starts."""
+    parts: list[str] = []
+    starts: list[int] = []
+    line = 1
+    for item in items:
+        starts.append(line)
+        parts.append(directives(item, dialect))
+        line += parts[-1].count("\n")
+    return "".join(parts), starts
+
+
+def _located(output: str, starts: list[int]) -> tuple[int, ...]:
+    """The index of the item holding the first `batch.wast:L` that `output` names."""
+    found = LINE.search(output)
+    if found is None:
+        raise OracleError(f"no batch.wast line in:\n{output}")
+    return (bisect_right(starts, int(found[1])) - 1,)
+
+
+def run_wabt(tools: Tools, items: list[Item]) -> Report:
+    """The items wast2json and spectest-interp disagree with."""
+    text, starts = write_batch(items, "wabt")
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, BATCH).write_text(text)
+        assembled = _run(tmp, tools.wast2json, "--enable-tail-call", BATCH, "-o", "batch.json")
+        if assembled.returncode != 0:
+            return Report(_located(assembled.stderr, starts), assembled.stderr)
+        interp = _run(tmp, tools.spectest_interp, "--enable-tail-call", "batch.json")
+    failed = {
+        bisect_right(starts, int(line)) - 1
+        for line, message in DIRECTIVE.findall(interp.stdout)
+        if not PASSED.match(message)
+    }
+    # A valid module fails its assert_invalid: that failure is wabt saying "valid".
+    claims = [isinstance(item, Verdict) and item.valid for item in items]
+    wrong = tuple(k for k, claim in enumerate(claims) if (k in failed) != claim)
+    return Report(wrong, interp.stdout + interp.stderr)
+
+
+def run_wasmtime(tools: Tools, items: list[Item]) -> Report:
+    """The first item `wasmtime wast` disagrees with, if any."""
+    text, starts = write_batch(items, "wasmtime")
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, BATCH).write_text(text)
+        done = _run(tmp, tools.wasmtime, "wast", BATCH)
+    if done.returncode == 0:
+        return Report((), done.stderr)
+    return Report(_located(done.stderr, starts), done.stderr)
