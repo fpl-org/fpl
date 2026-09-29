@@ -171,13 +171,13 @@ def test_record_spelling() -> None:
 def test_record_refused(old: str, new: str, reason: str) -> None:
     """A record the writer would not have written, byte for byte, is refused."""
     assert old in LINE.decode()
-    with pytest.raises(RefusedError, match=reason.replace("^", r"\^")):
+    with pytest.raises(RefusedError, match=r"^" + reason.replace("^", r"\^")):
         parsed(LINE.decode().replace(old, new, 1).encode(), KEY)
 
 
 def test_record_keyed() -> None:
     """Bytes that are not UTF-8, or a mac made under another key, are refused."""
-    with pytest.raises(RefusedError, match="not UTF-8"):
+    with pytest.raises(RefusedError, match=r"^not UTF-8$"):
         parsed(b"\xff", KEY)
     with pytest.raises(RefusedError, match="mac does not verify"):
         parsed(LINE, bytes(32))
@@ -283,6 +283,10 @@ LONG = b"1 2 +\n" * 8
             "2 deps and links overlap",
         ),
         (
+            [FIRST, dataclasses.replace(BASE, deps=(FIRST.ident, FIRST.ident))],
+            "2 input has deps 2 and links 0",
+        ),
+        (
             [dataclasses.replace(FIRST, body=hashed(LONG))],
             f"1 body {hashed(LONG).spelled()} is missing",
         ),
@@ -325,10 +329,16 @@ def test_bodies_hash_to_their_names(tmp_path: Path) -> None:
     hash to its name, or a hashed name for bytes held inline, is refused."""
     path = tmp_path / "s.log"
     event = dataclasses.replace(FIRST, body=hashed(LONG))
-    log = write(path, KEY, load(path, KEY), event, {hashed(LONG): LONG})
-    kept = tmp_path / "s.log.bodies" / hashed(LONG).spelled()
+    log = write(path, KEY, load(path, KEY), event, {hashed(LONG): LONG, BASE.out: b"3\n"})
+    store = tmp_path / "s.log.bodies"
+    kept = store / hashed(LONG).spelled()
     assert kept.read_bytes() == LONG
     assert load(path, KEY).bodies == log.bodies == {hashed(LONG): LONG, BASE.out: b"3\n"}
+    assert os.listdir(store) == [hashed(LONG).spelled()]
+    modes = [stat.S_IMODE(each.stat().st_mode) for each in (store, kept, path)]
+    assert modes == [0o700, 0o600, 0o600]
+    again = dataclasses.replace(BASE, deps=(event.ident,), body=hashed(LONG))
+    assert write(path, KEY, log, again, {}).bodies == log.bodies
     kept.write_bytes(LONG + b"\n")
     with pytest.raises(RefusedError, match=r":1 body 45600:[0-9]+ does not hash to its name"):
         load(path, KEY)
@@ -392,6 +402,7 @@ def test_key(tmp_path: Path) -> None:
     assert stat.S_IMODE(made.stat().st_mode) == 0o600
     assert stat.S_IMODE(made.parent.stat().st_mode) == 0o700
     assert keyed(home) == key
+    assert os.listdir(tmp_path / ".config") == ["fpl"]
     assert keyed({"XDG_CONFIG_HOME": str(tmp_path / ".config")}) == key
     assert keyed({"FPL_LOG_KEY": str(made), "HOME": "/nonexistent"}) == key
     made.chmod(0o640)
