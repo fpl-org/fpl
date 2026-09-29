@@ -11,6 +11,7 @@ from fpl import (  # noqa: F401 -- scripts/props credits a file's obligations to
 )
 from fpl.driver import run
 from fpl.errors import FplError, Span
+from fpl.eval import unswap
 
 SHAPES = (
     "circle : r -- shape\n\t#circle swap pair\n"
@@ -209,8 +210,9 @@ def test_what_is_no_pattern_is_refused(row: str, span: Span, message: str) -> No
 
 
 def test_a_constructor_that_cannot_have_built_the_value_falls_through() -> None:
-    """rect undoes one pair of a circle, not the second; #t swap cannot undo on one value."""
-    kind = "sw : x -- y\n\t#t swap\nkind : s -- k\n\tmatch\n\t\t( rect w h )\t#rect\n"
+    """rect undoes one pair of a circle, not the second; sw's pair holds #t where a circle's
+    holds #circle."""
+    kind = "sw : x -- y\n\t#t swap pair\nkind : s -- k\n\tmatch\n\t\t( rect w h )\t#rect\n"
     kind += "\t\t( sw x )\t#sw\n\t\t_\t#other\n"
     assert run(f"{SHAPES}{kind}3 circle kind\n") == "#other\n"
 
@@ -301,3 +303,9 @@ def test_a_record_pattern_in_a_head_waits_for_defaults() -> None:
     with pytest.raises(FplError) as refused:
         run("join : xs { sep “ ” end newline } -- s\n\txs sep interleave end ,\n")
     assert (refused.value.span, refused.value.message) == (Span(1, 1), "no evaluator yet")
+
+
+def test_swap_run_backwards_on_one_value_matches_nothing() -> None:
+    """Below the driver: with effect lines checked, no constructor's body undoes a swap on one
+    value, so the refusal is reached only here."""
+    assert unswap((1,)) is None
