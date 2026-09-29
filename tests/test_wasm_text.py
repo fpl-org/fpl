@@ -1,12 +1,28 @@
 """The printer of fpl.asm.wasm writes WAT that wabt assembles, and names that survive it."""
 
+import contextlib
 import re
-from typing import Any, get_args
+from dataclasses import fields, replace
+from typing import Any
 
 from hypothesis import given
 from hypothesis import strategies as st
 from wasm_oracle import Tools, wat2wasm
-from wasm_strategies import FIELDS, INSTRS, BinopMain, binop_mains, module_of, module_parts
+from wasm_strategies import (
+    BINOPS,
+    CVTOPS,
+    FIELDS,
+    INSTRS,
+    LOADS,
+    RELOPS,
+    STORES,
+    TESTOPS,
+    UNOPS,
+    BinopMain,
+    binop_mains,
+    module_of,
+    module_parts,
+)
 
 from fpl.asm.wasm.instr import (
     Binop,
@@ -164,19 +180,30 @@ def test_the_forms_wabt_cannot_meet_in_one_module_print_exactly() -> None:
     )
 
 
-@given(module_parts, st.sampled_from(sorted(FIELDS)), st.sampled_from(get_args(Instr)), st.data())
+def alone(instr: Instr) -> Module:
+    """A module whose one function's body is `instr`."""
+    return Module(funcs=(Func(0, (), (instr,)),))
+
+
+@given(module_parts, st.sampled_from(sorted(FIELDS)), st.data())
 def test_different_modules_print_differently(
-    parts: dict[str, Any], name: str, cls: type[Instr], data: st.DataObject
+    parts: dict[str, Any], name: str, data: st.DataObject
 ) -> None:
     """[law: print-injective] Two different modules print to different text: a module and
-    itself with one field redrawn, and two one-function modules whose bodies hold one drawn
-    instruction each, both of one class (so near misses such as `select` against
-    `select (result)` meet)."""
+    itself with one field redrawn and, for every instruction class with fields, a module
+    holding a drawn instruction and one holding it with one field taken from another draw,
+    so near misses such as `select` against `select (result)` meet in every example; and
+    every enumerated instance of a finite-operator class prints apart from every other."""
+    finite: list[Instr] = [*UNOPS, *BINOPS, *TESTOPS, *RELOPS, *CVTOPS, *LOADS, *STORES]
+    assert len({print_module(alone(instr)) for instr in finite}) == len(finite)
     redrawn = data.draw(FIELDS[name].filter(lambda value: value != parts[name]))
-    one, other = data.draw(INSTRS[cls]), data.draw(INSTRS[cls])
-    pairs = [
-        (module_of(parts), module_of(parts | {name: redrawn})),
-        (Module(funcs=(Func(0, (), (one,)),)), Module(funcs=(Func(0, (), (other,)),))),
-    ]
+    pairs = [(module_of(parts), module_of(parts | {name: redrawn}))]
+    for builder in INSTRS.values():
+        one, donor = data.draw(builder), data.draw(builder)
+        names = [f.name for f in fields(one)]
+        if names:
+            field = data.draw(st.sampled_from(names))
+            with contextlib.suppress(ValueError):  # a mixed pair the class refuses is no module
+                pairs.append((alone(one), alone(replace(one, **{field: getattr(donor, field)}))))
     for first, second in pairs:
         assert first == second or print_module(first) != print_module(second)
