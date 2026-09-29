@@ -270,3 +270,11 @@ def test_a_wildcard_row_whose_body_is_a_goal_waits_for_goals() -> None:
     with pytest.raises(FplError) as refused:
         run("f : x -- y\n\tmatch\n\t\t0\t1\n\t\t_\t?\n1 f\n")
     assert (refused.value.span, refused.value.message) == (Span(1, 1), "no evaluator yet")
+
+
+def test_a_record_pattern_in_a_head_waits_for_defaults() -> None:
+    """[D4.11] { sep “ ” end newline } in join's head binds sep and end, the caller's record
+    unioned over the defaults; not implemented (hole effect-head-defaults), so refused."""
+    with pytest.raises(FplError) as refused:
+        run("join : xs { sep “ ” end newline } -- s\n\txs sep interleave end ,\n")
+    assert (refused.value.span, refused.value.message) == (Span(1, 1), "no evaluator yet")
