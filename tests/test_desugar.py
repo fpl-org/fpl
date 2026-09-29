@@ -247,6 +247,7 @@ def test_a_frame_that_reaches_below_its_balance_is_a_section(source: str, printe
         "1 →a/b a/b a/b +\n",
         "{ k 1 }\n",
         SLOTS,
+        "f : -- y\n\t;; a b\n\t1\n",
     ],
 )
 def test_core_without_sugar_writes_back_as_its_source(source: str) -> None:
@@ -257,7 +258,9 @@ def test_core_without_sugar_writes_back_as_its_source(source: str) -> None:
 
 def test_a_written_tree_points_at_the_start() -> None:
     """A tree desugar writes has no source of its own: every span is 1:1, where it refuses."""
-    source = CURRY + SLOTS + "nop : --\n1 [ + ] curry\n“a” ⟨ 1 ⟩ 1.5\n#a { k 1 } 1 →a a\n"
+    source = (
+        ";; d\n" + CURRY + SLOTS + "nop : --\n1 [ + ] curry\n“a” ⟨ 1 ⟩ 1.5\n#a { k 1 } 1 →a a\n"
+    )
     statements = desugar(parse(source))
     written = [*spans(resugar(statements)), *spans(listing(evaluate(statements)))]
     assert set(written) == {START}
