@@ -37,8 +37,12 @@ def test_a_guard_is_an_ascription_and_a_literal_matches_by_equality() -> None:
 
 
 def test_a_constructor_value_is_its_pair() -> None:
-    """pair builds a two-item list (hole pair-shape); cons puts an item before a list."""
+    """pair builds a two-item list (hole pair-shape); cons puts an item before a list, and
+    refuses anything else."""
     assert run(f"{SHAPES}3 circle\n1 ⟨ 2 ⟩ cons\n") == "⟨ #circle 3 ⟩\n⟨ 1 2 ⟩\n"
+    with pytest.raises(FplError) as refused:
+        run("1 | 2 cons\n")
+    assert (refused.value.span, refused.value.message) == (Span(1, 7), "cons takes a list")
 
 
 def test_a_relation_succeeds_on_a_row_and_fails_off_every_row() -> None:
@@ -118,13 +122,19 @@ def test_a_match_is_not_written_back_as_code() -> None:
 
 @pytest.mark.parametrize(
     ("row", "message"),
-    [("_\t_\t1", "a row is 1 patterns and a body"), ("( cons _ )", "cons takes 2 patterns")],
+    [
+        ("_\t_\t1", "a row is 1 patterns and a body"),
+        ("_ | 1", "a row is 1 patterns and a body"),
+        ("_\t1\n\t\t\t2", "a row is 1 patterns and a body"),
+        ("( cons _ )", "cons takes 2 patterns"),
+        ("( cons )", "cons takes 2 patterns"),
+    ],
 )
 def test_a_row_holds_one_pattern_per_value_and_a_constructor_one_per_input(
     row: str, message: str
 ) -> None:
-    """A row with more cells than the values and a body, or a constructor pattern with other
-    than one pattern per input, is refused where it is written."""
+    """A row with more cells than the values and a body, more than one frame or a block, or a
+    constructor pattern with other than one pattern per input, is refused where it is written."""
     with pytest.raises(FplError, match=message):
         run(f"f : x -- y\n\tmatch\n\t\t{row}\n")
 
@@ -169,14 +179,17 @@ def test_a_match_is_exhaustive_exactly_when_its_effect_has_no_fail(table: list[l
         ("( _ ∈ )\t1", "no evaluator yet"),
         ("{ a 1 }\t1", "no evaluator yet"),
         ("( [ 1 ] x )\t1", "no evaluator yet"),
+        ("( bound ∈ )\t1", "no evaluator yet"),
+        ("_\t_", "no evaluator yet"),
         ("( bound x )\t1", "a constructor is words and literals: not invertible"),
     ],
 )
 def test_what_is_no_pattern_is_refused(row: str, message: str) -> None:
-    """A cell holds one pattern; a dict is no literal; a constructor is a word whose body is
-    words and literals, never a binder."""
-    with pytest.raises(FplError, match=message):
+    """A cell holds one pattern; a dict is no literal; ∈ needs its test; _ names nothing in the
+    body; a constructor is a word whose body is words and literals, never a binder."""
+    with pytest.raises(FplError) as refused:
         run(f"bound : x -- y\n\t→v v\nf : x -- y\n\tmatch\n\t\t{row}\n1 f\n")
+    assert refused.value.message == message
 
 
 def test_a_constructor_that_cannot_have_built_the_value_falls_through() -> None:
@@ -188,11 +201,63 @@ def test_a_constructor_that_cannot_have_built_the_value_falls_through() -> None:
 
 def test_a_match_reached_through_a_quotation_counts_its_values() -> None:
     """A quotation's body is not balanced ahead, so the match finds too few values when run."""
-    with pytest.raises(FplError, match="stack underflow"):
+    with pytest.raises(FplError) as short:
         run("f : x -- y\n\tmatch\n\t\t_\t1\n[ f ] !\n")
+    assert (short.value.span, short.value.message) == (Span(2, 2), "stack underflow")
 
 
 def test_a_partial_match_under_a_binder_still_fails() -> None:
-    """[D4.5] +fail reaches a match inside a binder's scope."""
-    source = "g : x y -- c\n\t→k\n\tmatch\n\t\t0\tk\ng/effect\n"
-    assert run(source) == run("⟨ “x” “y” “--” “c” “+fail” ⟩\n")
+    """[D4.5] +fail reaches a match inside a binder's scope, and is raised at the match."""
+    source = "g : x y -- c\n\t→k\n\tmatch\n\t\t0\tk\n"
+    assert run(f"{source}g/effect\n") == run("⟨ “x” “y” “--” “c” “+fail” ⟩\n")
+    with pytest.raises(FplError) as failed:
+        run(f"{source}1 | 2 g\n")
+    assert (failed.value.span, failed.value.message) == (Span(3, 2), "no row matches")
+
+
+def test_a_row_name_shadows_the_binder_from_its_pattern_on() -> None:
+    """[D4.6] →k reaches every row: $k after a name the row binds pins the binder's value, k
+    bound anew pins its own, and a body that binds no k reads the binder's."""
+    source = (
+        "g : a b c -- r\n\t→k\n\tmatch\n"
+        "\t\tk\t$k\t#same\n"
+        "\t\ty\t$k\t#pinned\n"
+        "\t\t_\t_\tk\n"
+        "1 | 1 | 9 g\n1 | 9 | 9 g\n1 | 2 | 9 g\n"
+    )
+    assert run(source) == "#same\n#pinned\n9\n"
+
+
+def test_guards_nest_and_a_guarded_pin_reads_its_name() -> None:
+    """[D4.2] a guarded pattern may be guarded again; $y inside a guard is the value y bound
+    earlier in the row."""
+    nonzero = "nonzero : x -- b\n\tmatch\n\t\t0\t0\n\t\t_\t1\n"
+    twice = "f : x -- y\n\tmatch\n\t\t( x ∈ nonzero ∈ nonzero )\tx\n\t\t_\t#zero\n"
+    same = "g : a b -- c\n\tmatch\n\t\ty\t( $y ∈ nonzero )\t#same\n\t\t_\t_\t#diff\n"
+    runs = "3 f\n0 f\n2 | 2 g\n2 | 3 g\n0 | 0 g\n"
+    assert run(f"{nonzero}{twice}{same}{runs}") == "3\n#zero\n#same\n#diff\n#diff\n"
+
+
+@pytest.mark.parametrize(
+    ("pattern", "span", "message"),
+    [
+        ("( x ∈ + )", Span(5, 9), "stack underflow"),
+        ("( twice x )", Span(5, 7), "+ is not invertible"),
+    ],
+)
+def test_a_pattern_after_a_bound_name_is_refused_where_written(
+    pattern: str, span: Span, message: str
+) -> None:
+    """A guard whose test fails, or a constructor that is not invertible, is reported at the
+    pattern, also once a name bound before it is pinned in."""
+    source = f"twice : x -- y\n\tdup +\nf : a b -- c\n\tmatch\n\t\ty\t{pattern}\tx\n1 | 2 f\n"
+    with pytest.raises(FplError) as refused:
+        run(source)
+    assert (refused.value.span, refused.value.message) == (span, message)
+
+
+def test_a_line_after_a_match_counts_from_nothing() -> None:
+    """A match takes the values before it; what its rows leave is not counted, so a match on a
+    later line takes only what the lines between push."""
+    source = "f : x -- y z\n\tmatch\n\t\t_\t1\n\t2\n\tmatch\n\t\t2\t#two\n1 f\n"
+    assert run(source) == "1 #two\n"
