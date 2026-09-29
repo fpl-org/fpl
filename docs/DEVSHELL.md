@@ -59,7 +59,13 @@ patches, and `forges`, which has no packages of its own and `extends` the three 
 The oracles: `wasm`, for wasm-ir, has `wabt` (`wat2wasm`, `wasm-validate`) and `wasmtime`,
 about 120 MiB. `riscv`, for riscv-ir, has `llvm` (`llvm-mc`, `llvm-objdump`), `lld`
 (`ld.lld`) and `qemu` (`qemu-system-riscv64`), about 2.3 GiB, most of it QEMU, which comes
-with every target it emulates.
+with every target it emulates. `aarch64`, for aarch64-ir, has the same `llvm` and `lld`
+(`ld64.lld` for Mach-O, `ld.lld` for ELF), about 560 MiB, and on Linux only `qemu-user`
+(`qemu-aarch64`), a closure of about 200 MiB: QEMU's user mode does not exist for macOS,
+and a Mac runs arm64 natively. `ld64.lld` needs no SDK from the layer: every shell of this
+flake on a Mac has `SDKROOT`, with `libSystem`, from nixpkgs' standard environment, and
+arm64 macOS runs no static executables, so a program links as
+`ld64.lld -arch arm64 -platform_version macos 14.0 14.4 -syslibroot "$SDKROOT" -lSystem`.
 
 Every combination of layers is a dev shell, named by the layer names in sorted order, joined
 with `-`:
@@ -68,6 +74,7 @@ with `-`:
 nix develop .#github -c gh pr create …
 nix develop .#github-gitlab
 nix develop .#riscv-wasm
+nix develop .#aarch64-riscv
 ```
 
 A backend's tests need not run inside its layer. From anywhere in a worktree, even inside
@@ -106,9 +113,11 @@ Checked with two flakes on x86_64-linux, direnv 2.37.1: the project's Python 3.1
 the personal shell's extra program was there.
 
 To add a layer, add an entry to `layers`: a name of letters and digits, a `description`,
-`packages`, and optionally `extends`. Nothing else needs editing. The flake flattens `extends`
-and refuses a cycle or an unknown name with the path that led to it. The combination shells
-are generated lazily, so an unused one costs nothing.
+`packages`, and optionally `extends`. `packages` may depend on the platform, with
+`lib.optionals`, when a tool exists on one only, as `qemu-user` in `aarch64` does; the
+`description` may not. Nothing else needs editing. The flake flattens `extends` and refuses
+a cycle or an unknown name with the path that led to it. The combination shells are
+generated lazily, so an unused one costs nothing.
 
 ## nixpkgs comes from nixos.org, not from a forge
 
@@ -161,6 +170,15 @@ Update deliberately, as its own commit: `nix flake update`, then `make check` in
   `scripts/layer on wasm riscv` wrote the file that names `.#riscv-wasm`. The nested command
   above, run inside `nix develop -c` in a second worktree of a clone, named its own tools.
   Linux not tried.
+- **`aarch64` on the maintainer's `aarch64-darwin` Mac** — with `nix develop -c`: `llvm-mc`
+  21.1.8 lists the `aarch64` and `arm64` targets; `ld64.lld` and `ld.lld` are LLD 21.1.8. A
+  `_main` of `mov w0, #42` and `ret`, assembled by `llvm-mc` for `arm64-apple-macos14.0` and
+  linked by the `ld64.lld` line above, is an ad-hoc signed arm64 Mach-O and exits 42.
+  On Linux only evaluated, not built: the `x86_64-linux` and `aarch64-linux` shells list
+  `qemu-user` 10.2.4, whose outputs in cache.nixos.org hold `bin/qemu-aarch64`; the Mac
+  shell does not list it. In `.#aarch64-riscv`, `llvm` and `lld` appear once; on Linux it
+  has both `qemu-user` and `qemu`, each with a `qemu-aarch64` of the same version, and
+  whichever comes first on `PATH` answers.
 - **"No `gh`" means none from this flake.** That Mac also has a `gh` in nix-darwin's system
   profile, so in the default shell `command -v gh` prints `/run/current-system/sw/bin/gh`. A
   dev shell prepends to `PATH`; it does not hide what the machine already has. The same goes

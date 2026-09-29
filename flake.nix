@@ -19,7 +19,9 @@
 
       # Opt-in layers on top of the default shell. DATA ONLY: a name (letters and digits),
       # a description, packages, and optionally `extends`, naming layers whose packages come
-      # along. A layer holds what the default shell must not or need not: the forge clients,
+      # along. `packages` may depend on the platform (`lib.optionals`) when a tool exists on
+      # one only; `description` may not, since `lib.layers` reads it with no packages at
+      # all. A layer holds what the default shell must not or need not: the forge clients,
       # since nothing that talks to a forge belongs there, and the tools one backend's tests
       # check its output with (docs/DEVSHELL.md). To add a layer, add an entry here; the
       # shells and the list .envrc checks against are generated below.
@@ -59,6 +61,15 @@
             pkgs.lld
             pkgs.qemu
           ];
+        };
+        aarch64 = {
+          description = "aarch64-ir's oracles: llvm-mc, llvm-objdump, ld64.lld, ld.lld; qemu-aarch64 on Linux";
+          packages = [
+            pkgs.llvm
+            pkgs.lld
+          ]
+          # qemu-user is Linux-only; a Mac runs arm64 natively.
+          ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.qemu-user ];
         };
         forges = {
           description = "every forge client (not the desktop app)";
