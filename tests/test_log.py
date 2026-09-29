@@ -312,8 +312,14 @@ def test_load_refused(tmp_path: Path, events: list[Event], reason: str) -> None:
         (dataclasses.replace(FIRST, schema=2), "schema 2 is unknown"),
         (dataclasses.replace(FIRST, model="m" * 257), "model is not printable ASCII"),
         (dataclasses.replace(FIRST, model="a\x01b"), "model is not printable ASCII"),
-        (dataclasses.replace(FIRST, fuel=2**64), "a number is not below 2\\^64"),
-        (dataclasses.replace(FIRST, session="é"), "a number is not below 2\\^64 or a text"),
+        (
+            dataclasses.replace(FIRST, fuel=2**64),
+            "a number is not below 2\\^64 or a text is not ASCII$",
+        ),
+        (
+            dataclasses.replace(FIRST, session="é"),
+            "a number is not below 2\\^64 or a text is not ASCII$",
+        ),
     ],
 )
 def test_write_refused(tmp_path: Path, event: Event, reason: str) -> None:
