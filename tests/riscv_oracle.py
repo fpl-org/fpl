@@ -10,12 +10,14 @@ its exit status, stdout and stderr. No `nix` is such an error too: an oracle tha
 fails the test, it never skips it. The tools are then called by absolute path.
 
 `assemble`, `link`, `listing` (or `disassemble`) and `boot` run them with the design's fixed
-flags on files in a work directory: `prog.s`, `prog.o`, `prog.elf`.
+flags on files in a work directory: `prog.s`, `prog.o`, `prog.elf`. `translate` runs the first
+three on a source in a fresh work directory, each step only if the one before succeeded.
 """
 
 import re
 import shlex
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -158,3 +160,24 @@ def boot(tools: Tools, work: Path) -> Boot:
         timeout=TIMEOUT,
     )
     return Boot(done.stdout, done.returncode)
+
+
+@dataclass(frozen=True, slots=True)
+class Translation:
+    """What the tools made of a source: llvm-mc's run, then ld.lld's if llvm-mc accepted it."""
+
+    mc: subprocess.CompletedProcess[str]
+    ld: subprocess.CompletedProcess[str] | None
+
+    @property
+    def accepted(self) -> bool:
+        """Whether llvm-mc and ld.lld both exited 0."""
+        return self.mc.returncode == 0 and self.ld is not None and self.ld.returncode == 0
+
+
+def translate(tools: Tools, source: str) -> Translation:
+    """Assemble `source` and, if llvm-mc accepts it, link it, in a fresh work directory."""
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp)
+        mc = assemble(tools, source, work)
+        return Translation(mc, link(tools, work) if mc.returncode == 0 else None)

@@ -1,5 +1,7 @@
-"""Oracle: the tools come from the pin, and the printed text is what llvm-objdump prints."""
+"""Oracle: the tools come from the pin, the printed text is what llvm-objdump prints, and the
+checker refuses what llvm-mc and ld.lld refuse."""
 
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -18,10 +20,12 @@ from riscv_oracle import (
     parse_paths,
     resolve,
     toolchain,
+    translate,
 )
-from riscv_strategies import forward_branching, instructions
+from riscv_strategies import Invalid, forward_branching, instructions, invalid_programs
 from riscv_virt import HEAD
 
+from fpl.asm.riscv.check import Kind, check
 from fpl.asm.riscv.model import (
     Bare,
     Branch,
@@ -157,3 +161,49 @@ def test_each_branch_and_jal_lands_on_its_label(program: Program) -> None:
         disassembly = listing(tools, work)
     base = disassembly[0][0]
     assert [text for _, text in disassembly] == resolved(program, base)
+
+
+# An error llvm-mc attributes to a line of `prog.s`; `<unknown>:0` errors name no line.
+ERROR = re.compile(r"prog\.s:(\d+):\d+: error:")
+# The problems llvm-mc reports at the line of the item they are about.
+LINE_KINDS = frozenset(
+    {Kind.IMM12, Kind.SHAMT6, Kind.SHAMT5, Kind.IMM20, Kind.DUPLICATE_LABEL, Kind.JAL_RANGE}
+)
+# Item i of a program printed after `HEAD` is line i + 1 + HEAD_LINES of the source.
+HEAD_LINES = HEAD.count("\n")
+
+
+@given(invalid_programs())
+def test_llvm_mc_refuses_the_lines_the_checker_names(case: Invalid) -> None:
+    """[law: checker-agrees-per-line] llvm-mc's error lines are the checker's problem lines.
+
+    For each invalid program, printed after `_start`, the set of lines llvm-mc reports errors
+    on equals the set of lines of the checker's line-attributable problems (`IMM12`, `SHAMT6`,
+    `SHAMT5`, `IMM20`, `DUPLICATE_LABEL`, `JAL_RANGE`). An undefined label is a whole-program
+    error in both (`<unknown>:0`), so it names no line on either side.
+    """
+    translation = translate(toolchain(), HEAD + print_program(case.program))
+    refused = {int(n) - HEAD_LINES - 1 for n in ERROR.findall(translation.mc.stderr)}
+    named = {problem.index for problem in check(case.program) if problem.kind in LINE_KINDS}
+    assert refused == named, translation.mc.stderr
+
+
+@given(
+    st.one_of(
+        forward_branching(20),
+        invalid_programs().map(lambda case: case.program),
+        st.lists(instructions(), max_size=20).map(tuple),
+    )
+)
+def test_the_checker_accepts_what_llvm_mc_and_ld_lld_accept(program: Program) -> None:
+    """[law: checker-agrees-per-program] `check(p) == ()` iff llvm-mc and ld.lld both exit 0.
+
+    Over valid programs, invalid ones, and arbitrary instructions whose jumps name labels the
+    program never defines; the program is printed after `_start`. A program with a
+    `BRANCH_RANGE` problem is left out: llvm-mc relaxes that branch and accepts it, which
+    no-silent-relaxation checks.
+    """
+    problems = check(program)
+    assume(all(problem.kind is not Kind.BRANCH_RANGE for problem in problems))
+    translation = translate(toolchain(), HEAD + print_program(program))
+    assert (problems == ()) == translation.accepted, (problems, translation)
