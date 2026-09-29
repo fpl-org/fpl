@@ -203,3 +203,23 @@ JUMPS: dict[type[Branch | Jal], st.SearchStrategy[Branch | Jal]] = {
     Branch: st.builds(Branch, st.sampled_from(OpBranch), regs, regs, st.just(FAR)),
     Jal: st.builds(Jal, regs, st.just(FAR)),
 }
+
+
+BRANCH_REACH = (4092, 4096, -4096, -4100)
+JAL_REACH = (1048572, 1048576, -1048576, -1048580)
+# Nine branch cases to one jal case: a far jal is 262,144 items long.
+REACH: tuple[tuple[type[Branch | Jal], int], ...] = (
+    *((Branch, offset) for offset in BRANCH_REACH * 9),
+    *((Jal, offset) for offset in JAL_REACH),
+)
+
+
+def far_jumps() -> st.SearchStrategy[Program]:
+    """A branch or jal just inside or just past its reach, forward or backward: `padded`.
+
+    Offsets are multiples of 4 (every instruction is 4 bytes), so the edges drawn are the last
+    reachable offset and the first unreachable one on each side.
+    """
+    return st.sampled_from(REACH).flatmap(
+        lambda reach: JUMPS[reach[0]].map(lambda jump: padded(jump, reach[1]))
+    )

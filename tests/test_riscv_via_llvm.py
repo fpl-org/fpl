@@ -4,6 +4,7 @@ checker refuses what llvm-mc and ld.lld refuse."""
 import re
 import subprocess
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -22,7 +23,15 @@ from riscv_oracle import (
     toolchain,
     translate,
 )
-from riscv_strategies import Invalid, forward_branching, instructions, invalid_programs
+from riscv_strategies import (
+    FAR,
+    Invalid,
+    far_jumps,
+    forward_branching,
+    instructions,
+    invalid_programs,
+    padded,
+)
 from riscv_virt import HEAD
 
 from fpl.asm.riscv.check import Kind, check
@@ -35,8 +44,10 @@ from fpl.asm.riscv.model import (
     Jalr,
     Label,
     Load,
+    OpBranch,
     Program,
     R,
+    Reg,
     Shift,
     Store,
     Upper,
@@ -193,13 +204,15 @@ def test_llvm_mc_refuses_the_lines_the_checker_names(case: Invalid) -> None:
         forward_branching(20),
         invalid_programs().map(lambda case: case.program),
         st.lists(instructions(), max_size=20).map(tuple),
+        far_jumps(),
     )
 )
 def test_the_checker_accepts_what_llvm_mc_and_ld_lld_accept(program: Program) -> None:
     """[law: checker-agrees-per-program] `check(p) == ()` iff llvm-mc and ld.lld both exit 0.
 
-    Over valid programs, invalid ones, and arbitrary instructions whose jumps name labels the
-    program never defines; the program is printed after `_start`. A program with a
+    Over valid programs, invalid ones, arbitrary instructions whose jumps name labels the
+    program never defines, and jumps at the edge of their reach (a jal past it included);
+    the program is printed after `_start`. A program with a
     `BRANCH_RANGE` problem is left out: llvm-mc relaxes that branch and accepts it, which
     no-silent-relaxation checks.
     """
@@ -207,3 +220,66 @@ def test_the_checker_accepts_what_llvm_mc_and_ld_lld_accept(program: Program) ->
     assume(all(problem.kind is not Kind.BRANCH_RANGE for problem in problems))
     translation = translate(toolchain(), HEAD + print_program(program))
     assert (problems == ()) == translation.accepted, (problems, translation)
+
+
+# The branch that is taken exactly when `op` is not.
+INVERSE = {
+    OpBranch.BEQ: OpBranch.BNE,
+    OpBranch.BNE: OpBranch.BEQ,
+    OpBranch.BLT: OpBranch.BGE,
+    OpBranch.BGE: OpBranch.BLT,
+    OpBranch.BLTU: OpBranch.BGEU,
+    OpBranch.BGEU: OpBranch.BLTU,
+}
+
+
+def assert_relaxed_exactly_out_of_reach(program: Program) -> None:
+    """The checker refuses the program's one branch exactly when llvm-mc silently relaxes it.
+
+    llvm-mc and ld.lld accept the program either way. In reach, the checker says nothing and
+    the disassembly is the printed program, targets resolved. Out of reach, the checker's one
+    problem is `BRANCH_RANGE` at the branch, and the round trip finds the extra instruction:
+    the branch inverted to skip the next instruction, then `jal x0` to the label.
+    """
+    at, branch = next((i, item) for i, item in enumerate(program) if isinstance(item, Branch))
+    translation = translate(toolchain(), HEAD + print_program(program))
+    assert translation.accepted, translation
+    base = translation.listing[0][0]
+    lines = [text for _, text in translation.listing]
+    expected = resolved(program, base)
+    problems = [(problem.index, problem.kind) for problem in check(program)]
+    if not problems:
+        assert lines == expected
+        return
+    assert problems == [(at, Kind.BRANCH_RANGE)]
+    j = sum(not isinstance(item, Label) for item in program[:at])
+    label = program.index(FAR)
+    before = sum(not isinstance(item, Label) for item in program[:label])
+    target = base + 4 * (before + (at < label))
+    inverted = print_program((replace(branch, op=INVERSE[branch.op]),))[1:-1]
+    skip = inverted.removesuffix(FAR.name) + hex(base + 4 * j + 8)
+    assert lines == [*expected[:j], skip, f"jal\tx0, {hex(target)}", *expected[j + 1 :]]
+
+
+@given(far_jumps())
+def test_a_branch_out_of_reach_is_refused_by_the_checker_not_by_llvm_mc(program: Program) -> None:
+    """[law: no-silent-relaxation] llvm-mc relaxes a far branch; the checker refuses it.
+
+    For the branches of `far_jumps()`: past the reach (4096 forward, -4100 backward, the
+    first offsets past [-4096, 4094] a program of 4-byte instructions can have) the checker
+    reports `BRANCH_RANGE`, llvm-mc accepts, and the object holds one instruction more than
+    the program, the extra one found by the round trip; at 4092 and -4096 (the last offsets
+    in reach) neither the checker nor the round trip objects. Far jals are refused by
+    llvm-mc itself, which checker-agrees-per-program checks.
+    """
+    assume(any(isinstance(item, Branch) for item in program))
+    assert_relaxed_exactly_out_of_reach(program)
+
+
+BEQ = Branch(OpBranch.BEQ, Reg.X1, Reg.X2, FAR)
+
+
+@pytest.mark.parametrize("offset", [4092, 4096])
+def test_a_beq_at_4092_is_kept_and_at_4096_is_relaxed(offset: int) -> None:
+    """The regression at the forward edge: 4092 is the last offset in reach, 4096 the first past."""
+    assert_relaxed_exactly_out_of_reach(padded(BEQ, offset))

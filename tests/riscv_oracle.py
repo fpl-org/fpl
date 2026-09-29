@@ -164,10 +164,14 @@ def boot(tools: Tools, work: Path) -> Boot:
 
 @dataclass(frozen=True, slots=True)
 class Translation:
-    """What the tools made of a source: llvm-mc's run, then ld.lld's if llvm-mc accepted it."""
+    """What the tools made of a source: llvm-mc's run, then ld.lld's if llvm-mc accepted it.
+
+    `listing` is the linked program's, empty unless both accepted it.
+    """
 
     mc: subprocess.CompletedProcess[str]
     ld: subprocess.CompletedProcess[str] | None
+    listing: tuple[tuple[int, str], ...] = ()
 
     @property
     def accepted(self) -> bool:
@@ -176,8 +180,11 @@ class Translation:
 
 
 def translate(tools: Tools, source: str) -> Translation:
-    """Assemble `source` and, if llvm-mc accepts it, link it, in a fresh work directory."""
+    """Assemble, link and list `source` in a fresh work directory, as far as each step succeeds."""
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
         mc = assemble(tools, source, work)
-        return Translation(mc, link(tools, work) if mc.returncode == 0 else None)
+        if mc.returncode != 0:
+            return Translation(mc, None)
+        ld = link(tools, work)
+        return Translation(mc, ld, tuple(listing(tools, work)) if ld.returncode == 0 else ())
