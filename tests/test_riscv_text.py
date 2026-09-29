@@ -3,7 +3,33 @@
 from hypothesis import given
 from hypothesis import strategies as st
 
-from fpl.asm.riscv.model import I, Instr, OpI, OpR, OpStore, OpUpper, Program, R, Reg, Store, Upper
+from fpl.asm.riscv.model import (
+    Access,
+    Bare,
+    Branch,
+    Fence,
+    I,
+    Instr,
+    Item,
+    Jal,
+    Jalr,
+    Label,
+    Load,
+    OpBare,
+    OpBranch,
+    OpI,
+    OpLoad,
+    OpR,
+    OpShift,
+    OpStore,
+    OpUpper,
+    Program,
+    R,
+    Reg,
+    Shift,
+    Store,
+    Upper,
+)
 from fpl.asm.riscv.text import print_program
 
 # Every op and every register at least once, with the immediates' edges. The right-hand
@@ -52,16 +78,63 @@ GOLDEN: tuple[tuple[Instr, str], ...] = (
     (Store(OpStore.SH, Reg.X7, Reg.X8, 2047), "sh\tx7, 2047(x8)"),
     (Store(OpStore.SW, Reg.X9, Reg.X10, 0), "sw\tx9, 0(x10)"),
     (Store(OpStore.SD, Reg.X1, Reg.X2, -8), "sd\tx1, -8(x2)"),
+    (Shift(OpShift.SLLI, Reg.X1, Reg.X2, 63), "slli\tx1, x2, 63"),
+    (Shift(OpShift.SRLI, Reg.X3, Reg.X4, 0), "srli\tx3, x4, 0"),
+    (Shift(OpShift.SRAI, Reg.X5, Reg.X6, 32), "srai\tx5, x6, 32"),
+    (Shift(OpShift.SLLIW, Reg.X7, Reg.X8, 31), "slliw\tx7, x8, 31"),
+    (Shift(OpShift.SRLIW, Reg.X9, Reg.X10, 1), "srliw\tx9, x10, 1"),
+    (Shift(OpShift.SRAIW, Reg.X11, Reg.X12, 0), "sraiw\tx11, x12, 0"),
+    (Load(OpLoad.LB, Reg.X1, Reg.X2, -2048), "lb\tx1, -2048(x2)"),
+    (Load(OpLoad.LH, Reg.X3, Reg.X4, 2047), "lh\tx3, 2047(x4)"),
+    (Load(OpLoad.LW, Reg.X5, Reg.X6, 0), "lw\tx5, 0(x6)"),
+    (Load(OpLoad.LBU, Reg.X7, Reg.X8, 1), "lbu\tx7, 1(x8)"),
+    (Load(OpLoad.LHU, Reg.X9, Reg.X10, -1), "lhu\tx9, -1(x10)"),
+    (Load(OpLoad.LWU, Reg.X11, Reg.X12, 8), "lwu\tx11, 8(x12)"),
+    (Load(OpLoad.LD, Reg.X1, Reg.X2, -8), "ld\tx1, -8(x2)"),
+    (Jalr(Reg.X1, Reg.X2, -4), "jalr\tx1, -4(x2)"),
+    (Jalr(Reg.X0, Reg.X1, 0), "jalr\tx0, 0(x1)"),
+    (Fence(Access.I | Access.O | Access.R | Access.W, ~Access(0)), "fence\tiorw, iorw"),
+    (Fence(Access(0), Access(0)), "fence\t0, 0"),
+    (Fence(Access.R, Access.I | Access.W), "fence\tr, iw"),
+    (Fence(Access.O, Access.R | Access.W), "fence\to, rw"),
+    (Bare(OpBare.FENCE_TSO), "fence.tso"),
+    (Bare(OpBare.ECALL), "ecall"),
+    (Bare(OpBare.EBREAK), "ebreak"),
+)
+# Control transfers and labels: objdump prints the resolved address where the printer prints the
+# label's name, so these lines are the printer's; control-targets-agree checks the addresses.
+CONTROL: tuple[tuple[Item, str], ...] = (
+    (Branch(OpBranch.BEQ, Reg.X1, Reg.X2, Label(".L1")), "\tbeq\tx1, x2, .L1"),
+    (Branch(OpBranch.BNE, Reg.X3, Reg.X4, Label(".L1")), "\tbne\tx3, x4, .L1"),
+    (Branch(OpBranch.BLT, Reg.X5, Reg.X6, Label(".L1")), "\tblt\tx5, x6, .L1"),
+    (Branch(OpBranch.BGE, Reg.X7, Reg.X8, Label(".L1")), "\tbge\tx7, x8, .L1"),
+    (Branch(OpBranch.BLTU, Reg.X9, Reg.X10, Label(".L_x9")), "\tbltu\tx9, x10, .L_x9"),
+    (Branch(OpBranch.BGEU, Reg.X11, Reg.X12, Label(".L_x9")), "\tbgeu\tx11, x12, .L_x9"),
+    (Jal(Reg.X1, Label(".L1")), "\tjal\tx1, .L1"),
+    (Label(".L1"), ".L1:"),
+    (Label(".L_x9"), ".L_x9:"),
 )
 
+# Any value the model holds, immediates unbounded; label names in the checker's form.
 regs = st.sampled_from(Reg)
-instructions: st.SearchStrategy[Instr] = st.one_of(
+ints = st.integers()
+labels = st.from_regex(r"\.L[A-Za-z0-9_]+", fullmatch=True).map(Label)
+accesses = st.integers(0, 15).map(Access)
+items: st.SearchStrategy[Item] = st.one_of(
     st.builds(R, st.sampled_from(OpR), regs, regs, regs),
-    st.builds(I, st.sampled_from(OpI), regs, regs, st.integers()),
-    st.builds(Upper, st.sampled_from(OpUpper), regs, st.integers()),
-    st.builds(Store, st.sampled_from(OpStore), regs, regs, st.integers()),
+    st.builds(I, st.sampled_from(OpI), regs, regs, ints),
+    st.builds(Shift, st.sampled_from(OpShift), regs, regs, ints),
+    st.builds(Upper, st.sampled_from(OpUpper), regs, ints),
+    st.builds(Load, st.sampled_from(OpLoad), regs, regs, ints),
+    st.builds(Store, st.sampled_from(OpStore), regs, regs, ints),
+    st.builds(Branch, st.sampled_from(OpBranch), regs, regs, labels),
+    st.builds(Jal, regs, labels),
+    st.builds(Jalr, regs, regs, ints),
+    st.builds(Fence, accesses, accesses),
+    st.builds(Bare, st.sampled_from(OpBare)),
+    labels,
 )
-programs = st.lists(instructions, max_size=20).map(tuple)
+programs = st.lists(items, max_size=20).map(tuple)
 
 
 def test_the_printer_prints_what_llvm_objdump_prints() -> None:
@@ -69,8 +142,13 @@ def test_the_printer_prints_what_llvm_objdump_prints() -> None:
     assert print_program(program) == "".join(f"\t{line}\n" for _, line in GOLDEN)
 
 
+def test_control_transfers_print_their_label_names() -> None:
+    program = tuple(item for item, _ in CONTROL)
+    assert print_program(program) == "".join(f"{line}\n" for _, line in CONTROL)
+
+
 @given(programs, programs)
 def test_the_text_of_a_program_is_the_text_of_its_parts(p: Program, q: Program) -> None:
-    """The printer is total, one line per instruction, and prints each on its own."""
+    """The printer is total, one line per item, and prints each on its own."""
     assert print_program(p + q) == print_program(p) + print_program(q)
     assert print_program(p).count("\n") == len(p)
