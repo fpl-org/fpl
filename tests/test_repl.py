@@ -5,8 +5,10 @@ loop enters what successive -e calls enter."""
 import builtins
 import contextlib
 import os
+import readline
 import shutil
 import tempfile
+import threading
 from collections.abc import Generator, Mapping, Sequence
 from io import StringIO
 from pathlib import Path
@@ -19,8 +21,8 @@ from test_desugar import programs
 from test_session import POOL
 
 from fpl.__main__ import main as run_file
-from fpl.log import keyed, load
-from fpl.repl import USAGE, inputs, main, pending
+from fpl.log import RefusedError, keyed, load, locked
+from fpl.repl import USAGE, inputs, main, pending, provenance
 
 SESSION = ["--session", "s.fon"]
 SOURCES = programs | st.text(alphabet="ab1 \t\n[]:?-|", max_size=30)
@@ -105,6 +107,12 @@ def test_a_stale_head_is_refused(inputs: list[str], data: st.DataObject) -> None
         refused = (2, f"ERROR: head moved: the head is {len(inputs)}\n", "")
         assert called([*SESSION, "--head", stale, *action], env) == refused
         assert files(work) == before
+        code, _, err = called([*SESSION, "--head", str(len(inputs)), "-e", "1"], env)
+        assert (code < 2, err.splitlines()[-1].startswith(f"HEAD {len(inputs) + 1} $")) == (
+            True,
+            True,
+        )
+        assert len(load(work / "s.fon", keyed(env)).events) == len(inputs) + 1
 
 
 class Recorded(StringIO):
@@ -152,6 +160,10 @@ def test_an_append_is_durable_before_it_is_printed(inputs: list[str]) -> None:
         ["--at", "0", "--head", "0", "-e", "1"],
         ["--at", "0", "--rewind", "0"],
         ["--at", "0", "--log"],
+        ["-h"],
+        ["--help"],
+        ["--canon", "-e", "1"],
+        ["--sess", "s.fon", "--log"],
     ],
 )
 def test_argv_not_taken(argv: list[str]) -> None:
@@ -274,6 +286,7 @@ def test_the_loop_enters_what_calls_enter(texts: list[str]) -> None:
         (")\n", False),
         ("f : -- x\n", True),
         ("f : -- x\n\t2\n", True),
+        ("1\n\t2\n", True),
         ("a/\n", True),
         (":show\n", False),
     ],
@@ -345,10 +358,91 @@ def test_the_loop_at_a_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
                 raise EOFError
             return line
 
+        bindings: list[str] = []
         monkeypatch.setattr(builtins, "input", typed)
+        monkeypatch.setattr(readline, "parse_and_bind", bindings.append)
         out, err = StringIO(), StringIO()
         assert main([*SESSION, "--head", "0"], Terminal(), out, err, env) == 0
         assert out.getvalue() == "1\nERROR: head moved: the head is 2\n4\n"
         heads = [row.split(" ", 2)[:2] for row in err.getvalue().splitlines()]
         assert heads == [["HEAD", "1"], ["HEAD", "3"]]
         assert prompts == ["fpl> "] * 3 + ["...  "] * 2 + ["fpl> "] * 2
+        assert bindings == ["tab: self-insert"]
+
+
+def test_in_memory() -> None:
+    """Without --session the log is empty: --log lists nothing and --at 0 evaluates the input
+    alone, each exiting 0."""
+    assert called(["--log"], {}) == (0, "", "")
+    assert called(["--at", "0", "-e", "1 2"], {}) == (0, "1 2\n", "")
+
+
+def test_provenance() -> None:
+    """Either variable makes the input an agent's and is recorded as given, the other empty;
+    either is refused unless printable ASCII."""
+    assert provenance({}) == ("operator", "", "")
+    assert provenance({"FPL_MODEL": "m"}) == ("agent", "m", "")
+    assert provenance({"FPL_SESSION_ID": "s"}) == ("agent", "", "s")
+    with pytest.raises(RefusedError, match=r"^\$FPL_SESSION_ID is not printable ASCII"):
+        provenance({"FPL_SESSION_ID": "é"})
+
+
+def test_a_goal_is_noted_at_its_place_in_its_input() -> None:
+    """A goal in the second input is noted at its line in that input."""
+    with session() as (_, env):
+        called([*SESSION, "-e", "1"], env)
+        assert called([*SESSION, "-e", "2 ?"], env)[2].startswith("GOAL 1:3 ")
+
+
+def test_an_append_waits_for_the_lock() -> None:
+    """An append takes the session's lock: while another holds it, nothing is written."""
+    with session() as (work, env):
+        path = work / "s.fon"
+        writer = threading.Thread(target=called, args=([*SESSION, "-e", "1"], env))
+        with locked(path):
+            writer.start()
+            writer.join(0.2)
+            assert (writer.is_alive(), path.exists()) == (True, False)
+        writer.join()
+        assert len(load(path, keyed(env)).events) == 1
+
+
+def test_the_loop_checks_a_given_head() -> None:
+    """--head given to the loop is the head its first input is checked against."""
+    with session() as (_, env):
+        called([*SESSION, "-e", "1"], env)
+        refused = (0, "ERROR: head moved: the head is 1\n", "")
+        assert called([*SESSION, "--head", "0"], env, "5\n") == refused
+
+
+def test_log_and_rewind_ignore_at() -> None:
+    """In a loop as of an event, :log lists and :rewind appends as they do without --at."""
+    with session() as (work, env):
+        for text in ("1", "2"):
+            called([*SESSION, "-e", text], env)
+        code, out, _ = called([*SESSION, "--at", "9"], env, ":log\n:rewind 1\n")
+        rows = [row.rsplit(" ", 1)[0] for row in out.splitlines()]
+        assert (code, rows) == (0, ["1 input ok 0 -", "2 input ok 1 -"])
+        kinds = [event.kind for event in load(work / "s.fon", keyed(env)).events]
+        assert kinds == ["input", "input", "rewind"]
+
+
+def test_the_loop_as_of_an_event_checks_no_head(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A loop as of an event checks no head, so an append from elsewhere does not refuse it."""
+    with session() as (_, env):
+        called([*SESSION, "-e", "f : -- x\n\t2\n"], env)
+        replies = iter(["f", "append", "f"])
+
+        def typed(_prompt: str) -> str:
+            reply = next(replies, None)
+            if reply == "append":
+                called([*SESSION, "-e", "7"], env)
+                reply = next(replies)
+            if reply is None:
+                raise EOFError
+            return reply
+
+        monkeypatch.setattr(builtins, "input", typed)
+        out, err = StringIO(), StringIO()
+        assert main([*SESSION, "--at", "1"], Terminal(), out, err, env) == 0
+        assert (out.getvalue(), err.getvalue()) == ("2\n2\n", "")
