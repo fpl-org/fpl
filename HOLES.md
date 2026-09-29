@@ -119,9 +119,21 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 
 ## unimplemented-words
 - Depends on it: fpl/desugar.py unimplemented; every example still at ERROR: 1:1 no evaluator yet (23 of 28 at this commit)
-- Default in force: desugar refuses, before anything runs, all but: decimal numbers, strings without islands, [ ], ( ) of one cell, ⟨ ⟩ of literals, bars, tabs, blocks, name : ins -- outs definitions (each slot a name or name: Type), →x and ->x of a plain name or a path, #name symbols, { } of plain keys each with one item pushing one value, name/ heads with a block of definitions, subdirectories and #name bind lines, paths a/b and ../x that name a defined word, w/history, and the words of fpl/ast_core.py EFFECTS (+ - times swap dup drop enclose , ! if swap-args repeat each scan fold), with ERROR: 1:1 no evaluator yet (the skeleton's message and position, reused)
+- Default in force: desugar refuses, before anything runs, all but: decimal numbers, strings without islands, [ ], ( ) of one cell, ⟨ ⟩ of literals, bars, tabs, blocks, name : ins -- outs definitions (each slot a name or name: Type), →x and ->x of a plain name or a path, #name symbols, { } of plain keys each with one item pushing one value, name/ heads with a block of definitions, subdirectories and #name bind lines, paths a/b and ../x that name a defined word, w/history, w/doc, and the words of fpl/ast_core.py EFFECTS (+ - times swap dup drop enclose , ! if swap-args repeat each scan fold), with ERROR: 1:1 no evaluator yet (the skeleton's message and position, reused)
 - Closes by: each step-3 part, shrinking the set
 - Evidence: fpl/driver.py (skeleton); fpl/ast_core.py EFFECTS
+
+## doc-absent
+- Depends on it: fpl/desugar.py (Catalog.enter, DOC), fpl/eval.py (evaluate), tests/test_comments.py, features/draft3/examples/draft3.fpl:10
+- Default in force: every word w has w/doc, as it has w/history; the doc goes with the definition in force (Define.doc), so a word with no doc, or shadowed by a definition with none, pushes the empty string
+- Closes by: design, saying what an undocumented word's doc is (a refusal, the empty string, or no such word)
+- Evidence: claim D3.2 (draft-3.md:13); draft3.fpl:10 asks math/mean/doc of a mean with no ;; line
+
+## doc-text
+- Depends on it: fpl/trivia.py (docstrings, _aimed), tests/test_trivia.py, tests/test_comments.py
+- Default in force: a ;; is a doc when the next code line is a head (winning over a body it opens), or when it opens a head's body before any of its code, as SHAR comments() reads it; else it is before the next code line; a head is a line whose first cell's second item is the plain word :; a docstring is each doc's text, marks and the whitespace around it dropped, those above the head first, joined by newlines; ;;; and ;;;; stay bound to their level wherever they stand (hole comment-levels), where the SHAR reads them at column 0 only
+- Closes by: design, fixing a docstring's text and whether both places may hold one
+- Evidence: SHAR gram/test_fpl.py:255-281; features/draft2/examples/04-effects-holes-ascription.fpl:3
 
 ## fresh-unify-space
 - Depends on it: features/match (Prolog's family), features/sketch (logic tree)
