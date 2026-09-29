@@ -2,7 +2,6 @@
 
 from typing import get_args
 
-import icontract
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
@@ -18,7 +17,7 @@ def test_a_constant_is_an_unsigned_value_of_its_width(t: NumType, value: int) ->
     if 0 <= value < 2 ** WIDTH[t]:
         assert Const(t, value).value == value
     else:
-        with pytest.raises(icontract.ViolationError):
+        with pytest.raises(ValueError, match="outside"):
             Const(t, value)
 
 
@@ -27,5 +26,5 @@ def test_a_constant_ends_just_below_two_to_the_width(t: NumType) -> None:
     top = 2 ** WIDTH[t]
     assert (Const(t, 0).value, Const(t, top - 1).value) == (0, top - 1)
     for outside in (-1, top):
-        with pytest.raises(icontract.ViolationError):
+        with pytest.raises(ValueError, match="outside"):
             Const(t, outside)

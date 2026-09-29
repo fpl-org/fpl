@@ -2,14 +2,15 @@
 
 One frozen dataclass per production of the grammar, carrying its number type and operator
 (2.4.8 writes `numtype.binop`); operator names are Literal strings, printed as they are. So far:
-constants, integer binary operators and return. A class with an icontract invariant drops
-`slots`, which icontract's invariant checks do not compose with.
+constants, integer binary operators and return.
+
+A class whose fields are typed by a Literal guards its invariant in `__post_init__`, not with
+`icontract.invariant`: CrossHair 0.0.110 cannot build a symbolic Literal and crashes on any
+contract that reaches one (HOLES.md, crosshair-literal).
 """
 
 from dataclasses import dataclass
 from typing import Literal
-
-import icontract
 
 from fpl.asm.wasm.types import WIDTH, NumType
 
@@ -25,13 +26,20 @@ def const_in_range(self: "Const") -> bool:
     return 0 <= self.value < 1 << WIDTH[self.type]
 
 
-@icontract.invariant(const_in_range)
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Const:
-    """2.4.8, `t.const c`: the value unsigned, as the abstract syntax holds it."""
+    """2.4.8, `t.const c`: the value unsigned, as the abstract syntax holds it.
+
+    Refuses, with ValueError, a value outside 0 <= value < 2**N.
+    """
 
     type: NumType
     value: int
+
+    def __post_init__(self) -> None:
+        if not const_in_range(self):
+            msg = f"{self.type}.const {self.value} is outside 0 <= value < 2**{WIDTH[self.type]}"
+            raise ValueError(msg)
 
 
 @dataclass(frozen=True, slots=True)
