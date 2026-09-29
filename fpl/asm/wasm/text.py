@@ -6,7 +6,9 @@ outside printable ASCII, and every quote and backslash, as `\\hh`. The printer i
 model and deterministic; it is not a formatter for humans.
 """
 
-from typing import assert_never
+from collections.abc import Callable
+from dataclasses import fields
+from typing import Any
 
 from fpl.asm.wasm.instr import Binop, Const, Instr, Return
 from fpl.asm.wasm.module import Export, Func, Module
@@ -25,15 +27,30 @@ def print_module(module: Module) -> str:
 
 def print_instr(instr: Instr) -> str:
     """One plain instruction (6.5), as its mnemonic and immediates."""
-    match instr:
-        case Const(type=t, value=value):
-            return f"{t}.const {value}"
-        case Binop(type=t, op=op):
-            return f"{t}.{op}"
-        case Return():
-            return "return"
-        case _:
-            assert_never(instr)
+    return _PLAIN[type(instr)](instr)
+
+
+def _typed(instr: Binop) -> str:
+    """`t.op`: a numeric instruction, its number type and operator (6.5.9)."""
+    return f"{instr.type}.{instr.op}"
+
+
+def _const(instr: Const) -> str:
+    """`t.const c`, the value in unsigned decimal (6.5.9)."""
+    return f"{instr.type}.const {instr.value}"
+
+
+def _plain(instr: Instr) -> str:
+    """The mnemonic, then each immediate in field order: `return`, `br 1`, `local.get 0`."""
+    immediates = (str(getattr(instr, f.name)) for f in fields(instr))
+    return " ".join([_MNEMONIC[type(instr)], *immediates])
+
+
+_MNEMONIC: dict[type[Instr], str] = {Return: "return"}
+"""The keyword of each instruction that `_plain` prints."""
+
+_PLAIN: dict[type[Instr], Callable[[Any], str]] = {Const: _const, Binop: _typed, Return: _plain}
+"""The printer of each plain instruction class; a table, so no printer nears complexity 8."""
 
 
 def _valtypes(keyword: str, types: tuple[ValType, ...]) -> str:
