@@ -119,7 +119,7 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 
 ## unimplemented-words
 - Depends on it: fpl/desugar.py unimplemented; every example still at ERROR: 1:1 no evaluator yet (23 of 28 at this commit)
-- Default in force: desugar refuses, before anything runs, all but: decimal numbers, strings without islands, [ ], ( ) of one cell, ⟨ ⟩ of literals, bars, tabs, blocks, name : ins -- outs definitions (each slot a name or name: Type), →x and ->x of a plain name or a path, #name symbols, { } of plain keys each with one item pushing one value, name/ heads with a block of definitions, subdirectories and #name bind lines, paths a/b and ../x that name a defined word, w/history, w/doc, and the words of fpl/ast_core.py EFFECTS (+ - times swap dup drop enclose , ! if swap-args repeat each scan fold), with ERROR: 1:1 no evaluator yet (the skeleton's message and position, reused)
+- Default in force: desugar refuses, before anything runs, all but: decimal numbers, strings without islands, [ ], ( ) of one cell, ⟨ ⟩ of literals, bars, tabs, blocks, name : ins -- outs definitions (each slot a name or name: Type), →x and ->x of a plain name or a path, #name symbols, { } of plain keys each with one item pushing one value, name/ heads with a block of definitions, subdirectories and #name bind lines, paths a/b and ../x that name a defined word, w/history, w/doc, w/effect, a match line with its block of rows in a definition's body, and the words of fpl/ast_core.py EFFECTS (+ - times swap dup drop enclose , pair cons ! if swap-args repeat each scan fold), with ERROR: 1:1 no evaluator yet (the skeleton's message and position, reused)
 - Closes by: each step-3 part, shrinking the set
 - Evidence: fpl/driver.py (skeleton); fpl/ast_core.py EFFECTS
 
@@ -269,7 +269,7 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 
 ## effect-query
 - Depends on it: claim D3.4
-- Default in force: each effect line is kept as declared data (fpl/ast_core.py Effect, on Define; EFFECTS for builtins); the query words/*/effect is not implemented
+- Default in force: each effect line is kept as declared data (fpl/ast_core.py Effect, on Define; EFFECTS for builtins); w/effect pushes a defined word's effect as a list of strings, ins, "--", outs, then "+fail" when a match in its body is partial (tests/test_match.py); the query words/*/effect is not implemented
 - Closes by: the part that implements directories and paths
 - Evidence: claim D3.4 (features/draft3/examples/paths.fpl)
 
@@ -404,3 +404,57 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Default in force: tab = and trim space split pair are no words and each over a string is refused, so draft1's read stays at no evaluator yet; D1.2's scan then fold is tested on a strand of 0 and 1, times standing for and
 - Closes by: a later part, adding characters and the text words
 - Evidence: draft-1.md:4-8
+
+## pair-shape
+- Depends on it: fpl/eval.py pair, unpair; tests/test_match.py
+- Default in force: a b pair is the two-item list ⟨ a b ⟩, so a pair prints as a list and ( cons x xs ) matches it; cons : x xs -- ys puts x before a list's items, the order ( cons x xs ) gives
+- Closes by: design, saying what a pair is and cons's argument order
+- Evidence: features/match/examples/01-1-constructors-run.fpl:5-8; features/match/examples/04-4-list-patterns.fpl:5,8 (x y pair cons after xs ys zip reads cons as xs x -- ys)
+
+## match-arity
+- Depends on it: fpl/desugar.py _Desugar.match, row; tests/test_match.py
+- Default in force: a match line takes the values the body's balance counts where it stands (the effect line's inputs, less what binders took), and leaves the balance at 0; a row is that many pattern cells then at most a body cell, else refused at the row; match outside a definition's body is an unknown word
+- Closes by: design, saying what a match takes and whether code may follow it
+- Evidence: claim D4.7; features/match/examples/05-5-prolog-s-family.fpl:3-8
+
+## match-consumes
+- Depends on it: fpl/eval.py matching; tests/test_match.py test_a_symmetric_case_delegates
+- Default in force: a match takes its values; a row's body sees only the names its patterns bind, so _ leaves nothing behind
+- Closes by: design, for claim D4.4, whose row body swap collide reads the values the match took
+- Evidence: claim D4.4; features/match/examples/03-3-multiple-dispatch.fpl:5; :4 and :7 leave one value only if the match takes its arguments
+
+## pin-scope
+- Depends on it: fpl/desugar.py _Desugar.simple, local; tests/test_match.py
+- Default in force: $x pins a name bound by a binder or by an earlier pattern of the row; effect-line names are no locals (as in every body), so $x of one is refused as unimplemented
+- Closes by: design, saying whether an effect line's names are bound in its body
+- Evidence: claim D4.6; features/match/examples/04-4-list-patterns.fpl:13-14 (pins x, the effect line's name)
+
+## guard-test
+- Depends on it: fpl/eval.py matched; tests/test_match.py
+- Default in force: p ∈ test matches when p does and the word test, run on the value alone, leaves just 1; types are not implemented, so pos, Ship and Asteroid are unknown words, refused as unimplemented
+- Closes by: fpl/types.py (07-goals and types), ascription to a type
+- Evidence: claims D4.1, D4.4; features/match/examples/01-1-constructors-run.fpl:12
+
+## exhaustive-by-catch-all
+- Depends on it: fpl/desugar.py fallible, catches; tests/test_match.py test_a_match_is_exhaustive_exactly_when_its_effect_has_no_fail
+- Default in force: a match is exhaustive when some row's patterns are all _ or names; ⟨⟩ then ( cons x xs ) is partial and carries +fail; a written +fail on an effect line is not read
+- Closes by: fpl/types.py, exhaustiveness over a type's constructors
+- Evidence: claim D4.5; features/match/examples/04-4-list-patterns.fpl:3-5
+
+## fail-raises
+- Depends on it: fpl/eval.py matching
+- Default in force: no row matching is ERROR at the match word, "no row matches"; nothing catches it (rescue is unimplemented)
+- Closes by: design, with rescue or a space's backtracking
+- Evidence: claims D4.5, D4.8; decision (f) "+fail if non-exhaustive"
+
+## invertible-when-tried
+- Depends on it: fpl/eval.py undone, unrun; tests/test_match.py test_only_an_invertible_word_is_a_pattern
+- Default in force: a constructor pattern names a word taking its patterns and leaving one value, checked in desugar; that its body is swap, pair, cons, literal pushes and such words, no recursion, is checked when the row is tried, refused at the pattern's head
+- Closes by: implementer, a check over every definition once desugar holds all bodies
+- Evidence: campaign scope 06-match "using any other word as a pattern is an error"
+
+## resugar-match
+- Depends on it: fpl/desugar.py spelled; tests/test_match.py test_a_match_is_not_written_back_as_code
+- Default in force: code holding a match is not written back (w/history of a shadowed word with one); refused as unimplemented
+- Closes by: implementer, writing a match as a line with its block
+- Evidence: fpl/desugar.py listing, written
