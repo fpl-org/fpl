@@ -1,19 +1,27 @@
 """The session log's events: an input, or a rewind, named by the blake2b-256 of its header
 bytes and kept as one canonical FON record per line, with a keyed blake2b of its id beside it
-(HOLES.md: log-signing). A record reads back only as the writer would have written it."""
+(HOLES.md: log-signing). A record reads back only as the writer would have written it; the
+log loads only as a chain of records each following those before it, and grows only by a
+durable append under a lock."""
 
+import contextlib
+import fcntl
 import hashlib
 import hmac
+import os
 import re
+import secrets
+from collections.abc import Generator, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from functools import cached_property
+from pathlib import Path
 from typing import Literal
 
 from fpl import fon
 from fpl.errors import FplError
 from fpl.fon import Cell, Dict, Hash, List, Num, Str, Sym, Value
-from fpl.multihash import Multihash, content, hashed
+from fpl.multihash import INLINE, Multihash, content, hashed
 
 type Kind = Literal["input", "rewind"]
 type Status = Literal["ok", "error"]
@@ -236,3 +244,188 @@ def parsed(line: bytes, key: bytes) -> Event:
     if record(event, key) != line + b"\n":
         raise RefusedError("not canonical")
     return event
+
+
+@dataclass(frozen=True)
+class Log:
+    """The events of a session file in order, the bytes every body and output they name, and
+    the size of the file's complete records; a torn tail lies beyond `size`."""
+
+    events: tuple[Event, ...]
+    bodies: Mapping[Multihash, bytes]
+    size: int
+
+    @property
+    def head(self) -> Event | None:
+        """The last event, or None before the first."""
+        return self.events[-1] if self.events else None
+
+    def grown(self, event: Event, bodies: Mapping[Multihash, bytes], size: int) -> "Log":
+        """The log with one more event, its bodies, and the file's size after its record."""
+        return Log((*self.events, event), {**self.bodies, **bodies}, size)
+
+
+def _follows(idents: set[Multihash], event: Event) -> None:
+    """Refuse an event that is not the next of `idents`, names an event not among them, names
+    one event both as its state and as the head it abandons, or has more deps or links than
+    its kind: an input one dep at most and no link, a rewind one dep at most and one link."""
+    if event.seq != len(idents) + 1:
+        raise RefusedError(f"seq {event.seq} is not {len(idents) + 1}")
+    if not idents.issuperset(event.deps + event.links):
+        raise RefusedError("names no earlier event")
+    if set(event.deps) & set(event.links):
+        raise RefusedError("deps and links overlap")
+    links = 1 if event.kind == "rewind" else 0
+    if len(event.deps) > 1 or len(event.links) != links:
+        raise RefusedError(f"{event.kind} has deps {len(event.deps)} and links {len(event.links)}")
+
+
+def _store(path: Path) -> Path:
+    """The directory beside the log that holds bodies of more than 32 bytes by name."""
+    return Path(f"{path}.bodies")
+
+
+def _stored(path: Path, name: Multihash) -> bytes | None:
+    """The bytes a name holds inline, or the file the store keeps under it; None if none."""
+    if name.code == INLINE:
+        return name.digest
+    try:
+        return (_store(path) / name.spelled()).read_bytes()
+    except FileNotFoundError:
+        return None
+
+
+def _bodies(path: Path, event: Event, given: Mapping[Multihash, bytes]) -> dict[Multihash, bytes]:
+    """The event's body and output, from `given` or else the store, each refused unless it is
+    exactly the bytes its name promises: one & per byte string, so a hashed name for bytes
+    that fit inline is refused too."""
+    found: dict[Multihash, bytes] = {}
+    for name in (event.body, event.out):
+        data = given[name] if name in given else _stored(path, name)
+        if data is None:
+            raise RefusedError(f"body {name.spelled()} is missing")
+        if content(data) != name:
+            raise RefusedError(f"body {name.spelled()} does not hash to its name")
+        found[name] = data
+    return found
+
+
+def load(path: Path, key: bytes) -> Log:
+    """The log a session file holds; no file is the empty log. Records end in a newline, so
+    bytes after the last newline are a torn append, dropped. Record n is refused as
+    `<path>:<n> <reason>` for anything `parsed` refuses, a seq other than n, a dep or link
+    naming no earlier event, deps and links that overlap, arity its kind does not have, or a
+    body missing or other than its name; readers take no lock."""
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        return Log((), {}, 0)
+    complete, newline, _ = data.rpartition(b"\n")
+    events: list[Event] = []
+    idents: set[Multihash] = set()
+    bodies: dict[Multihash, bytes] = {}
+    for n, line in enumerate(complete.split(b"\n") if newline else [], 1):
+        try:
+            event = parsed(line, key)
+            _follows(idents, event)
+            bodies.update(_bodies(path, event, {}))
+        except RefusedError as error:
+            raise RefusedError(f"{path}:{n} {error}") from None
+        events.append(event)
+        idents.add(event.ident)
+    return Log(tuple(events), bodies, len(complete) + len(newline))
+
+
+def _written(fd: int, data: bytes) -> None:
+    """All of data written to fd at once, or OSError."""
+    if os.write(fd, data) != len(data):
+        raise OSError(f"short write of {len(data)} bytes")
+
+
+def _synced(directory: Path) -> None:
+    """A directory's entries made durable."""
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _kept(store: Path, name: Multihash, data: bytes) -> None:
+    """data durable in the store under its name, whole or not at all."""
+    store.mkdir(mode=0o700, exist_ok=True)
+    temporary = store / f".{name.spelled()}.tmp"
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        _written(fd, data)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(temporary, store / name.spelled())
+    _synced(store)
+
+
+def write(path: Path, key: bytes, log: Log, event: Event, bodies: Mapping[Multihash, bytes]) -> Log:
+    """The log after appending event, whose body and output are in `bodies` or already
+    stored. The caller holds `locked(path)` and loaded `log` under it. An event `load` would
+    refuse after `log` is refused (RefusedError) before anything is written. Bodies are made
+    durable first, so a reader never meets a record whose body is missing; then any torn tail
+    past `log.size` is cut and the record appended in one write, and file and directory are
+    synced before this returns (HOLES.md: log-fsync-barrier)."""
+    _follows({each.ident for each in log.events}, event)
+    found = _bodies(path, event, bodies)
+    for name, data in found.items():
+        if name.code != INLINE and name in bodies:
+            _kept(_store(path), name, data)
+    line = record(event, key)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        os.ftruncate(fd, log.size)
+        _written(fd, line)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    _synced(path.parent)
+    return log.grown(event, found, log.size + len(line))
+
+
+@contextlib.contextmanager
+def locked(path: Path) -> Generator[None]:
+    """An exclusive lock on the session at path, held for the block: a blocking flock on
+    `<path>.lock` through a descriptor of its own, so threads exclude one another too."""
+    fd = os.open(f"{path}.lock", os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def _key_file(env: Mapping[str, str]) -> Path:
+    """$FPL_LOG_KEY, else $XDG_CONFIG_HOME/fpl/log.key, else $HOME/.config/fpl/log.key."""
+    if env.get("FPL_LOG_KEY"):
+        return Path(env["FPL_LOG_KEY"])
+    config = env.get("XDG_CONFIG_HOME") or f"{env['HOME']}/.config"
+    return Path(config, "fpl", "log.key")
+
+
+def keyed(env: Mapping[str, str]) -> bytes:
+    """The key that macs this operator's records, made on first use as 32 random bytes in a
+    file only its owner may read, in a directory only its owner may enter. Refused: a key
+    file others may read or write, or one not 32 bytes long; a reader racing the first maker
+    may meet it empty and be refused."""
+    path = _key_file(env)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with contextlib.suppress(FileExistsError):
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            _written(fd, secrets.token_bytes(32))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    if path.stat().st_mode & 0o077:
+        raise RefusedError(f"{path} is open to others")
+    key = path.read_bytes()
+    if len(key) != 32:
+        raise RefusedError(f"{path} holds {len(key)} bytes, not 32")
+    return key

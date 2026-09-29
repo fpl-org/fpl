@@ -2,7 +2,13 @@
 they were written."""
 
 import dataclasses
+import os
 import re
+import stat
+import tempfile
+import threading
+from collections.abc import Sequence
+from pathlib import Path
 
 import pytest
 from hypothesis import given
@@ -10,7 +16,21 @@ from hypothesis import strategies as st
 from test_multihash import digest
 
 from fpl import fon
-from fpl.log import KINDS, SCHEMA, STATUSES, WHO, Event, RefusedError, parsed, record
+from fpl.log import (
+    KINDS,
+    SCHEMA,
+    STATUSES,
+    WHO,
+    Event,
+    Log,
+    RefusedError,
+    keyed,
+    load,
+    locked,
+    parsed,
+    record,
+    write,
+)
 from fpl.multihash import BLAKE2B_256, Multihash, content, hashed, spelling
 
 KEY = bytes(range(32))
@@ -161,3 +181,205 @@ def test_record_keyed() -> None:
         parsed(b"\xff", KEY)
     with pytest.raises(RefusedError, match="mac does not verify"):
         parsed(LINE, bytes(32))
+
+
+type Step = tuple[bool, int, bytes, bytes]
+type Link = tuple[Event, dict[Multihash, bytes]]
+step = st.tuples(st.booleans(), st.integers(0, 4), st.binary(max_size=64), st.binary(max_size=64))
+
+
+def chained(steps: Sequence[Step]) -> list[Link]:
+    """Events that follow one another: an input extends the origin or an earlier event; a
+    rewind, once there is a head, abandons it for the origin or an event before it."""
+    links: list[Link] = []
+    for seq, (back, pick, body, out) in enumerate(steps, 1):
+        idents = [event.ident for event, _ in links]
+        rewind = back and bool(idents)
+        earlier = idents[:-1] if rewind else idents
+        deps = (earlier[pick - 1],) if 0 < pick <= len(earlier) else ()
+        event = dataclasses.replace(
+            BASE,
+            kind="rewind" if rewind else "input",
+            seq=seq,
+            deps=deps,
+            links=(idents[-1],) if rewind else (),
+            body=content(body),
+            out=content(out),
+        )
+        links.append((event, {content(body): body, content(out): out}))
+    return links
+
+
+def appended(path: Path, links: Sequence[Link], log: Log) -> Log:
+    """log after each link is written to path in turn."""
+    for event, bodies in links:
+        log = write(path, KEY, log, event, bodies)
+    return log
+
+
+@given(st.lists(step, min_size=1, max_size=5), st.data())
+def test_log_load(steps: list[Step], data: st.DataObject) -> None:
+    """[law: log-load] ids recompute on load and are distinct; any byte flip in a complete
+    record is refused; a torn tail reads as the prefix and the next append replaces it; a wrong
+    key is refused; the old file is a byte prefix of the new one."""
+    links = chained(steps)
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory, "s.log")
+        log = load(path, KEY)
+        for link in links:
+            old = path.read_bytes() if path.exists() else b""
+            log = appended(path, [link], log)
+            assert path.read_bytes().startswith(old)
+            assert load(path, KEY) == log
+        events = [event for event, _ in links]
+        assert log.events == tuple(events)
+        assert log.head == events[-1]
+        assert [event.ident for event in log.events] == [hashed(e.header()) for e in events]
+        assert len({event.ident for event in log.events}) == len(events)
+        whole = path.read_bytes()
+        assert log.size == len(whole)
+        with pytest.raises(RefusedError, match=f"^{re.escape(str(path))}:1 mac does not verify"):
+            load(path, bytes(32))
+        at = data.draw(st.integers(0, len(whole) - 2))
+        flip = data.draw(st.integers(1, 255))
+        path.write_bytes(whole[:at] + bytes([whole[at] ^ flip]) + whole[at + 1 :])
+        with pytest.raises(RefusedError):
+            load(path, KEY)
+        cut = data.draw(st.integers(0, len(record(events[-1], KEY)) - 1))
+        path.write_bytes(whole[: len(whole) - len(record(events[-1], KEY)) + cut])
+        prefix = load(path, KEY)
+        assert prefix.events == log.events[:-1]
+        assert appended(path, links[-1:], prefix) == log
+        assert path.read_bytes() == whole
+
+
+def tampered(path: Path, events: Sequence[Event]) -> None:
+    """path holding events as records, however they follow one another."""
+    path.write_bytes(b"".join(record(event, KEY) for event in events))
+
+
+FIRST = dataclasses.replace(BASE, seq=1, deps=())
+LONG = b"1 2 +\n" * 8
+
+
+@pytest.mark.parametrize(
+    ("events", "reason"),
+    [
+        ([BASE], "1 seq 2 is not 1"),
+        ([dataclasses.replace(FIRST, deps=(hashed(b"1"),))], "1 names no earlier event"),
+        (
+            [FIRST, dataclasses.replace(BASE, links=(FIRST.ident,), deps=())],
+            "2 input has deps 0 and links 1",
+        ),
+        (
+            [FIRST, dataclasses.replace(BASE, kind="rewind", deps=())],
+            "2 rewind has deps 0 and links 0",
+        ),
+        (
+            [
+                FIRST,
+                dataclasses.replace(BASE, kind="rewind", deps=(FIRST.ident,), links=(FIRST.ident,)),
+            ],
+            "2 deps and links overlap",
+        ),
+        (
+            [dataclasses.replace(FIRST, body=hashed(LONG))],
+            f"1 body {hashed(LONG).spelled()} is missing",
+        ),
+    ],
+)
+def test_load_refused(tmp_path: Path, events: list[Event], reason: str) -> None:
+    """A record that does not follow the records before it is refused at load, and never
+    written."""
+    path = tmp_path / "s.log"
+    tampered(path, events)
+    with pytest.raises(RefusedError, match=f"^{re.escape(str(path))}:{reason}"):
+        load(path, KEY)
+    *before, last = events
+    tampered(path, before)
+    with pytest.raises(RefusedError, match=reason.split(" ", 1)[1]):
+        write(path, KEY, load(path, KEY), last, {})
+    assert path.read_bytes() == b"".join(record(event, KEY) for event in before)
+
+
+def test_bodies_hash_to_their_names(tmp_path: Path) -> None:
+    """A body longer than 32 bytes is kept beside the log under its name; a file that does not
+    hash to its name, or a hashed name for bytes held inline, is refused."""
+    path = tmp_path / "s.log"
+    event = dataclasses.replace(FIRST, body=hashed(LONG))
+    log = write(path, KEY, load(path, KEY), event, {hashed(LONG): LONG})
+    kept = tmp_path / "s.log.bodies" / hashed(LONG).spelled()
+    assert kept.read_bytes() == LONG
+    assert load(path, KEY).bodies == log.bodies == {hashed(LONG): LONG, BASE.out: b"3\n"}
+    kept.write_bytes(LONG + b"\n")
+    with pytest.raises(RefusedError, match=r":1 body 45600:[0-9]+ does not hash to its name"):
+        load(path, KEY)
+    short = dataclasses.replace(FIRST, body=hashed(b"3\n"))
+    with pytest.raises(RefusedError, match="does not hash to its name"):
+        write(tmp_path / "t.log", KEY, Log((), {}, 0), short, {hashed(b"3\n"): b"3\n"})
+
+
+def test_framing(tmp_path: Path) -> None:
+    """No file is the empty log; an empty line is a record, and refused."""
+    path = tmp_path / "s.log"
+    assert load(path, KEY) == Log((), {}, 0)
+    assert load(path, KEY).head is None
+    path.write_bytes(b"\n")
+    with pytest.raises(RefusedError, match=":1 fields differ"):
+        load(path, KEY)
+
+
+def test_short_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A write the system cuts short raises, leaving a torn tail the next load drops."""
+    path = tmp_path / "s.log"
+    real = os.write
+
+    def short(fd: int, data: bytes) -> int:
+        return real(fd, data[:-1])
+
+    monkeypatch.setattr(os, "write", short)
+    with pytest.raises(OSError, match="short write"):
+        write(path, KEY, load(path, KEY), FIRST, {})
+    monkeypatch.undo()
+    assert load(path, KEY) == Log((), {}, 0)
+
+
+def test_appends_under_a_lock(tmp_path: Path) -> None:
+    """Eight writers of three appends each leave twenty-four events, numbered in order."""
+    path = tmp_path / "s.log"
+
+    def appends() -> None:
+        for _ in range(3):
+            with locked(path):
+                log = load(path, KEY)
+                deps = (log.head.ident,) if log.head else ()
+                event = dataclasses.replace(FIRST, seq=len(log.events) + 1, deps=deps)
+                write(path, KEY, log, event, {})
+
+    writers = [threading.Thread(target=appends) for _ in range(8)]
+    for writer in writers:
+        writer.start()
+    for writer in writers:
+        writer.join()
+    assert [event.seq for event in load(path, KEY).events] == list(range(1, 25))
+
+
+def test_key(tmp_path: Path) -> None:
+    """The key is made once, 32 bytes only its owner reads, found through FPL_LOG_KEY, then
+    XDG_CONFIG_HOME, then HOME."""
+    home = {"HOME": str(tmp_path)}
+    key = keyed(home)
+    made = tmp_path / ".config" / "fpl" / "log.key"
+    assert len(key) == 32
+    assert stat.S_IMODE(made.stat().st_mode) == 0o600
+    assert stat.S_IMODE(made.parent.stat().st_mode) == 0o700
+    assert keyed(home) == key
+    assert keyed({"XDG_CONFIG_HOME": str(tmp_path / ".config")}) == key
+    assert keyed({"FPL_LOG_KEY": str(made), "HOME": "/nonexistent"}) == key
+    made.chmod(0o640)
+    with pytest.raises(RefusedError, match=r"log\.key is open to others"):
+        keyed(home)
+    made.chmod(0o600)
+    made.write_bytes(bytes(31))
+    with pytest.raises(RefusedError, match=r"log\.key holds 31 bytes, not 32"):
+        keyed(home)
