@@ -19,9 +19,10 @@
 
       # Opt-in layers on top of the default shell. DATA ONLY: a name (letters and digits),
       # a description, packages, and optionally `extends`, naming layers whose packages come
-      # along. Today every layer is a forge client, because nothing that talks to a forge
-      # belongs in the default shell (docs/DEVSHELL.md). To add a layer, add an entry here;
-      # the shells and the list .envrc checks against are generated below.
+      # along. A layer holds what the default shell must not or need not: the forge clients,
+      # since nothing that talks to a forge belongs there, and the tools one backend's tests
+      # check its output with (docs/DEVSHELL.md). To add a layer, add an entry here; the
+      # shells and the list .envrc checks against are generated below.
       layers = pkgs: {
         github = {
           description = "GitHub's CLI (gh)";
@@ -43,6 +44,21 @@
           description = "Radicle's desktop app, for reviewing patches; large";
           extends = [ "radicle" ];
           packages = [ pkgs.radicle-desktop ];
+        };
+        wasm = {
+          description = "wasm-ir's oracles: wabt (wat2wasm, wasm-validate), wasmtime";
+          packages = [
+            pkgs.wabt
+            pkgs.wasmtime
+          ];
+        };
+        riscv = {
+          description = "riscv-ir's oracles: llvm-mc, llvm-objdump, ld.lld, qemu-system-riscv64; large";
+          packages = [
+            pkgs.llvm
+            pkgs.lld
+            pkgs.qemu
+          ];
         };
         forges = {
           description = "every forge client (not the desktop app)";

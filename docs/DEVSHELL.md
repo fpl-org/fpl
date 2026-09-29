@@ -2,8 +2,8 @@
 
 `flake.nix` defines one [Nix](https://nixos.org) dev shell for the harness and for every
 implementation worktree. Entering it gives a human or an agent the same tools at the same
-versions, on macOS and Linux, without installing anything globally. Forge clients are opt-in
-layers on top of it ([below](#forge-tools-are-opt-in)).
+versions, on macOS and Linux, without installing anything globally. Forge clients and the
+backends' oracles are opt-in layers on top of it ([below](#layers-are-opt-in)).
 
 ```
 nix develop            # enter the shell once
@@ -44,14 +44,22 @@ config, identity report). It checks `core.hooksPath` first, so every later entry
 Not in the shell: credentials of any kind, and the `claude` CLI that the soft `atomic-check`
 gate calls when it is present (the gate fails open without it, `docs/COMMITS.md`).
 
-## Forge tools are opt-in
+## Layers are opt-in
 
 The default shell has no forge client; the harness runs on git alone (`docs/WORKFLOW.md`,
-rule 7). Forge clients are **layers**, declared as data in `layers` in `flake.nix`;
-`scripts/layer` lists them. Today: `github` (`gh`), `gitlab` (`glab`), `radicle` (`rad`,
-`radicle-node`, `git-remote-rad`), `radicleui`, which `extends` `radicle` with the desktop
-app for reviewing patches, and `forges`, which has no packages of its own and `extends` the
-three clients.
+rule 7). Nor does it have the programs a backend's tests check its output with, its oracles:
+each backend needs its own, and one set is large. Both are **layers**, declared as data in
+`layers` in `flake.nix`; `scripts/layer` lists them.
+
+The forge clients: `github` (`gh`), `gitlab` (`glab`), `radicle` (`rad`, `radicle-node`,
+`git-remote-rad`), `radicleui`, which `extends` `radicle` with the desktop app for reviewing
+patches, and `forges`, which has no packages of its own and `extends` the three clients.
+`pijul` is for `scripts/mirror` and `scripts/import-pr`.
+
+The oracles: `wasm`, for wasm-ir, has `wabt` (`wat2wasm`, `wasm-validate`) and `wasmtime`,
+about 120 MiB. `riscv`, for riscv-ir, has `llvm` (`llvm-mc`, `llvm-objdump`), `lld`
+(`ld.lld`) and `qemu` (`qemu-system-riscv64`), about 2.3 GiB, most of it QEMU, which comes
+with every target it emulates.
 
 Every combination of layers is a dev shell, named by the layer names in sorted order, joined
 with `-`:
@@ -59,7 +67,20 @@ with `-`:
 ```
 nix develop .#github -c gh pr create …
 nix develop .#github-gitlab
+nix develop .#riscv-wasm
 ```
+
+A backend's tests need not run inside its layer. From anywhere in a worktree, even inside
+`nix develop -c make check`, a nested shell of the worktree's own flake names the tools:
+
+```
+nix develop "$(git rev-parse --show-toplevel)#wasm" -c bash -c 'command -v wat2wasm wasmtime'
+```
+
+Warm, that took about 1.2 s on a committed tree. With uncommitted changes Nix copies the tree
+first: 2.5, 3.7 and 16 s in three runs. So resolve the paths once per test session and call them
+directly. Take them from the layer, not from `PATH`: a machine may have the same programs
+elsewhere, at other versions (see "No `gh`" below).
 
 With direnv, `scripts/layer` turns layers on and off for the checkout it is run in:
 
@@ -132,10 +153,18 @@ Update deliberately, as its own commit: `nix flake update`, then `make check` in
   `gitlab` then `github` in `.fpl-shell` loaded `.#github-gitlab`, with `gh`, `glab` and
   `ruff` from the Nix store; `gitlab` alone loaded `.#gitlab`, with `glab` from the store and
   `gh` falling back to the system one; `forges` loaded `.#forges`, with both from the store.
-  The file was written by hand there; `scripts/layer` has not been run on that Mac.
+  The file was written by hand there.
+- **Oracle layers on the maintainer's `aarch64-darwin` Mac** — with `nix develop -c`, not
+  direnv: `.#wasm` gives `wat2wasm` 1.0.41 and `wasmtime` 45.0.2; `.#riscv` gives `llvm-mc`
+  and `llvm-objdump` from LLVM 21.1.8, with the `riscv64` target, `ld.lld` 21.1.8 and
+  `qemu-system-riscv64` 10.2.4; `.#riscv-wasm` gives all six; each from the Nix store.
+  `scripts/layer on wasm riscv` wrote the file that names `.#riscv-wasm`. The nested command
+  above, run inside `nix develop -c` in a second worktree of a clone, named its own tools.
+  Linux not tried.
 - **"No `gh`" means none from this flake.** That Mac also has a `gh` in nix-darwin's system
   profile, so in the default shell `command -v gh` prints `/run/current-system/sw/bin/gh`. A
-  dev shell prepends to `PATH`; it does not hide what the machine already has.
+  dev shell prepends to `PATH`; it does not hide what the machine already has. The same goes
+  for `llvm-mc`, `ld.lld` and `qemu-system-riscv64`, which that profile also has.
 
 ## Known trap: interactive `nix develop` on a Mac
 

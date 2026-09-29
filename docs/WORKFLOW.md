@@ -143,7 +143,7 @@ and only after Enter approves, rebase-merges, deletes the branch and updates `ma
 author of a pull request cannot approve it, which is why the two sides are two accounts.
 
 `scripts/land` needs `gh`, which is not in the default dev shell: `scripts/layer on github`
-(`docs/DEVSHELL.md`, "Forge tools are opt-in"), or land in the browser. `scripts/pr` needs
+(`docs/DEVSHELL.md`, "Layers are opt-in"), or land in the browser. `scripts/pr` needs
 neither: it calls the API with python3 from the default shell.
 
 ## A public mirror of a pijul channel
