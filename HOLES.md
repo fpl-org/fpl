@@ -119,7 +119,7 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 
 ## unimplemented-words
 - Depends on it: fpl/desugar.py unimplemented; every example still at ERROR: 1:1 no evaluator yet (23 of 28 at this commit)
-- Default in force: desugar refuses, before anything runs, all but: decimal numbers, strings without islands, [ ], ( ) of one cell, ⟨ ⟩ of literals, bars, tabs, blocks, name : ins -- outs definitions (each slot a name or name: Type), →x and ->x of a plain name or a path, #name symbols, { } of plain keys each with one item pushing one value, name/ heads with a block of definitions, subdirectories and #name bind lines, paths a/b and ../x that name a defined word, w/history, w/doc, w/effect, a match line with its block of rows in a definition's body, and the words of fpl/ast_core.py EFFECTS (+ - times swap dup drop enclose , pair cons ! if swap-args repeat each scan fold), with ERROR: 1:1 no evaluator yet (the skeleton's message and position, reused)
+- Default in force: desugar refuses, before anything runs, all but: decimal numbers, strings without islands, [ ], ( ) of one cell, ⟨ ⟩ of literals, bars, tabs, blocks, name : ins -- outs definitions (each slot a name or name: Type), →x and ->x of a plain name or a path, #name symbols, { } of plain keys each with one item pushing one value, name/ heads with a block of definitions, subdirectories and #name bind lines, paths a/b and ../x that name a defined word, w/history, w/doc, w/effect, a match line with its block of rows in a definition's body, and the words of fpl/ast_core.py EFFECTS (+ - times swap dup drop enclose , pair cons ! if swap-args repeat each scan fold, and ? and _ in a term), with ERROR: 1:1 no evaluator yet (the skeleton's message and position, reused)
 - Closes by: each step-3 part, shrinking the set
 - Evidence: fpl/driver.py (skeleton); fpl/ast_core.py EFFECTS
 
@@ -142,11 +142,10 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Evidence: campaign scope, step 3
 
 ## goal-placeholder
-- Depends on it: fpl/types.py (07-goals), programs containing ?; claim D4.3's wildcard row _ ?, refused until then (tests/test_match.py test_a_wildcard_row_whose_body_is_a_goal_waits_for_goals)
-- Default in force (proposed; 07-goals confirms): elaboration writes GOAL <line>:<col> <expected effect> to stderr and continues with a placeholder; evaluating it gives ERROR: <line>:<col> unfilled goal
-- Closes by: design side, the report's form and destination
-- Evidence: handoff/SHAR-syntax.org:832 and :1016 (S40); claims D2.7 (features/draft2/examples/04-effects-holes-ascription.fpl:5, grade and pick not builtins, so it cannot evaluate yet) and D4.3, features/match/examples/01-1-constructors-run.fpl:15; 07-goals left ? and _ to 07b, and I/O only in the driver argues for goals returned as data from elaborate, printed by the driver
-
+- Depends on it: fpl/types.py filled, wanted, reported; fpl/driver.py run; fpl/__main__.py; fpl/eval.py unfilled; tests/test_types.py test_a_goal_is_reported_with_the_effect_that_fills_it, test_a_goal_run_is_refused_where_it_stands; tests/test_main.py test_a_goal_goes_to_stderr_before_the_program_runs; tests/test_match.py test_a_wildcard_row_whose_body_is_a_goal_is_reported
+- Default in force: ? is a word of no fixed effect (a Call, no core node; desugar balances it as taking and leaving nothing); elaboration reports it as data, GOAL <line>:<col> ? : <ins> -- <outs>, the driver handing each line to a reporter the command line points at stderr, before any line runs; the goal takes the whole stack under it and leaves what the code after it takes, or, when nothing follows, what the effect line promises (none on a top-level line); an input of the body prints as t and its index, a sort as its name; elaboration goes on with values of no known sort; running it is ERROR: <line>:<col> unfilled goal; a goal under a control word, in a quotation or a { } value, or in a body a control word leaves untyped is not reported
+- Closes by: design side, the report's form and destination and a goal's extent (the whole stack, or what it is ascribed)
+- Evidence: handoff/SHAR-syntax.org:906 and :1016 (S40); claims D2.7 (features/draft2/examples/04-effects-holes-ascription.fpl:5, grade and pick not builtins, so it cannot evaluate yet) and D4.3, features/match/examples/01-1-constructors-run.fpl:15
 ## printer-example-count
 - Depends on it: tests/test_print.py; handoff/SHAR-syntax.org as evidence
 - Default in force: SHAR printer.py prints "2000 examples" but sets max_examples=300; the port sets no count, so the profiles decide (quick 100, harden 2000)
@@ -244,10 +243,10 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Evidence: decision (f); claims D2.1-D2.3 (draft2 §frames), D2.5 (curry's body underflows its frame but not its effect line)
 
 ## effect-line-trusted
-- Depends on it: fpl/types.py inferred, declared; fpl/desugar.py arity; fpl/eval.py builtin; tests/test_binders.py and tests/test_desugar.py reaching a runtime underflow through [ ] !
-- Default in force: a body is inferred and its count checked against its effect line at the definition (fpl/types.py); a body with a match or a control word (! if swap-args repeat each scan fold) is not inferred and its effect line is trusted, a shortfall refused later at the word that finds too few, as before
-- Closes by: fpl/types.py, once control words take their quotation's arrow and a match its rows' (hole control-effects)
-- Evidence: claim D3.4; tests/test_types.py test_a_body_is_checked_against_its_effect_line
+- Depends on it: fpl/types.py inferred, declared, agreed; fpl/desugar.py arity; fpl/eval.py builtin; tests/test_binders.py and tests/test_desugar.py reaching a runtime underflow through [ ] !; tests/test_types.py test_match_rows_leaving_different_counts_keep_the_effect_line
+- Default in force: a body is inferred and its count checked against its effect line at the definition (fpl/types.py), a match's rows each typed, their pattern names of no known sort; a body with a control word (! if swap-args repeat each scan fold), or a match whose rows leave different counts, is not inferred and its effect line is trusted, a shortfall refused later at the word that finds too few
+- Closes by: fpl/types.py, once control words take their quotation's arrow (hole control-effects); design, whether rows leaving different counts are an error
+- Evidence: fpl/types.py; tests/test_types.py test_a_body_is_checked_against_its_effect_line
 ## definition-scope
 - Depends on it: fpl/desugar.py desugar, fpl/eval.py evaluate, tests/test_desugar.py test_lcurry_puts_a_swap_between
 - Default in force: definitions are global to the program; a word may be used above its definition; a later definition of a name shadows an earlier one for every line, builtins included
@@ -465,6 +464,12 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Evidence: claim D4.11; features/match/examples/06-6-python-s-keywords.fpl:2-3; fpl/desugar.py effect_line
 ## typed-fragment
 - Depends on it: fpl/types.py Kind, ARROWS, met; tests/test_types.py test_a_well_typed_program_runs_to_a_value and test_a_step_keeps_the_sorts_a_state_leaves (the obligations of [fpl.types])
-- Default in force: sorts are number, text, symbol and value; value is untracked and trusted (lists, quotations, dicts, strands of mixed items, what enclose , pair cons and a word with an untyped body leave), so arithmetic on one passes elaboration and may still fail at run time; a body calling a word defined later meets that word's effect line with values of no tracked sort; progress and preservation are stated over programs of number, text and symbol pushes, dup swap drop + - times, binders and words calling earlier words
+- Default in force: sorts are number, text, symbol and value; a match's rows are typed, a name a pattern binds of no known sort; value is untracked and trusted (lists, quotations, dicts, strands of mixed items, what enclose , pair cons and a word with an untyped body leave), so arithmetic on one passes elaboration and may still fail at run time; a body calling a word defined later meets that word's effect line with values of no tracked sort; progress and preservation are stated over programs of number, text and symbol pushes, dup swap drop + - times, binders and words calling earlier words
 - Closes by: fpl/types.py, sorts for lists, quotations and dicts and arrows for control words; design, whether a list or a quotation carries its items' or its code's type
 - Evidence: fpl/ast_core.py EFFECTS and hole control-effects; claim D2.7 ("_ would ask it to infer")
+
+## infer-hole
+- Depends on it: fpl/types.py filled; fpl/eval.py nothing; tests/test_types.py test_a_hole_in_a_term_is_inferred_as_nothing, test_a_hole_that_is_not_nothing_is_refused_at_its_span; tests/test_match.py test_what_is_no_pattern_is_refused (_ as a row's body)
+- Default in force: _ in a term is inferred only as nothing: accepted when the code after it takes the stack as it stands (and, at the end of a body, the effect line's count), run as a no-op; otherwise ERROR: <line>:<col> cannot infer _ : <ins> -- <outs>, the shape a goal there would report; no code is synthesised; a _ in code elaboration does not type runs as nothing
+- Closes by: design side, what the elaborator may infer for _ (D2.7 "_ would ask it to infer"), and whether a _ in untyped code is refused
+- Evidence: claim D2.7 (features/draft2/examples/04-effects-holes-ascription.fpl:5); handoff/SHAR-syntax.org:1016 (S40: "_ is inferred by the elaborator (or a wildcard, or absence)")
