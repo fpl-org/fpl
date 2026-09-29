@@ -452,3 +452,9 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Default in force: code holding a match is not written back (w/history of a shadowed word with one); refused as unimplemented
 - Closes by: implementer, writing a match as a line with its block
 - Evidence: fpl/desugar.py listing, written
+
+## effect-head-defaults
+- Depends on it: fpl/desugar.py effect_line; features/match/examples/06-6-python-s-keywords.fpl; tests/test_match.py test_a_record_pattern_in_a_head_waits_for_defaults
+- Default in force: an effect line is plain names only; a record pattern in the head (claim D4.11, S39: sep and end bound by the pattern, the caller's record unioned over the defaults) is refused as unimplemented, ERROR: 1:1 no evaluator yet
+- Closes by: the part that implements records as signatures and with (S39), outside 06-match's scope; design, saying where a head's defaults bind
+- Evidence: claim D4.11; features/match/examples/06-6-python-s-keywords.fpl:2-3; fpl/desugar.py effect_line
