@@ -280,8 +280,9 @@ def rebuilt(xs: Value, values: list[Value]) -> Push:
 def running_results(span: Span, words: Words, xs: Value, q: Value) -> list[Value]:
     """The first item, then q run on the result so far and the next item, for each item."""
     code = quoted(q, span).code
-    results = list(items(xs, span)[:1])
-    for x in items(xs, span)[1:]:
+    values = items(xs, span)
+    results = list(values[:1])
+    for x in values[1:]:
         results.append(single(State((results[-1], x), code, words), span))
     return results
 
