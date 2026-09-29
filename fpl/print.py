@@ -3,8 +3,10 @@
 Items are joined by a space, cells by a tab, frames by a bar between spaces (an empty frame
 prints nothing); an enclosure prints as "o body c", or "oc" when it holds one empty frame; a block
 line carries one tab per level; a note stands in a cell of its own after its line's code, its
-continuation lines carrying as many tabs as stand before it; a comment is printed as written; no
-code line ends in a space; a program ends in a newline, and one empty line is the empty text.
+continuation lines carrying as many tabs as stand before it; a comment is printed as written; a
+note on a line of its own after a line that ends in a note has a blank line before it, which ends
+the note it would otherwise continue; no code line ends in a space; a program ends in a newline,
+and one empty line is the empty text.
 """
 
 from typing import assert_never
@@ -31,13 +33,15 @@ def render(program: Program) -> str:
 
 class _Out:
     """Source as it is written, with the tabs that open its current physical line: a string's
-    continuation lines carry them, since the parser drops them (S26)."""
+    continuation lines carry them, since the parser drops them (S26); and whether the last line
+    written ends in a note."""
 
     def __init__(self) -> None:
         self.chunks: list[str] = []
         self.tabs = 0
         self.leading = True
         self.column = 0
+        self.noted = False
 
     def put(self, text: str) -> None:
         """Append text, keeping count of the tabs that open the physical line it ends on, and of
@@ -60,12 +64,18 @@ class _Out:
             self.line(line, depth)
 
     def line(self, line: Line, depth: int) -> None:
-        """One line and its block, one level deeper."""
+        """One line and its block, one level deeper. A note on a line of its own right after a
+        line that ends in a note would read back as that note's continuation, so a blank line,
+        which ends a note, stands between them."""
+        code = _code(line.frames)
+        note = line.comment is not None and line.comment.level == 1
+        if self.noted and note and not code:
+            self.put("\n")
         self.put("\t" * depth)
         self.frames(line.frames)
         if line.comment is not None:
-            code = len(line.frames) > 1 or any(frame.cells for frame in line.frames)
             self.comment(line.comment, code)
+        self.noted = note
         for inner in line.block:
             self.put("\n")
             self.line(inner, depth + 1)
@@ -115,7 +125,7 @@ class _Out:
     def enclosure(self, enclosure: Enclosure) -> None:
         """o body c, or oc when one empty frame is inside."""
         opener, closer = DELIMITERS[enclosure.pair]
-        if not any(frame.cells for frame in enclosure.frames) and len(enclosure.frames) < 2:
+        if not _code(enclosure.frames):
             self.put(opener + closer)
             return
         self.put(opener + " ")
@@ -138,3 +148,9 @@ class _Out:
                 self.lines(part.lines, 0)
                 self.put("⟩")
         self.put("”")
+
+
+def _code(frames: tuple[Frame, ...]) -> bool:
+    """Frames hold code: a bar, or a frame with cells. A line without is empty, or a comment of
+    its own; an enclosure without holds one empty frame."""
+    return len(frames) > 1 or any(frame.cells for frame in frames)
