@@ -119,7 +119,7 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 
 ## unimplemented-words
 - Depends on it: fpl/desugar.py unimplemented; every example still at ERROR: 1:1 no evaluator yet (26 of 28 at this commit: 01-frames for swap-args, 09-rotates for fold, the rest for more)
-- Default in force: desugar refuses, before anything runs, all but: decimal numbers, strings without islands, [ ], ( ) of one cell, ⟨ ⟩ of literals, bars, tabs, blocks, name : ins -- outs definitions (each slot a name or name: Type), and the words of fpl/ast_core.py EFFECTS (+ - times swap dup drop enclose ,), with ERROR: 1:1 no evaluator yet (the skeleton's message and position, reused)
+- Default in force: desugar refuses, before anything runs, all but: decimal numbers, strings without islands, [ ], ( ) of one cell, ⟨ ⟩ of literals, bars, tabs, blocks, name : ins -- outs definitions (each slot a name or name: Type), →x and ->x of a plain name, #name symbols, { } of plain keys each with one item pushing one value, and the words of fpl/ast_core.py EFFECTS (+ - times swap dup drop enclose ,), with ERROR: 1:1 no evaluator yet (the skeleton's message and position, reused)
 - Closes by: each step-3 part, shrinking the set
 - Evidence: fpl/driver.py (skeleton); fpl/ast_core.py EFFECTS
 
@@ -302,3 +302,27 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Default in force: not refused in this part: a quotation both forced and inspected needs a kind on each stack cell through dup, which desugar does not track
 - Closes by: fpl/types.py (#59, types), carrying thunk and code kinds through the stack and refusing the double use
 - Evidence: features/server/examples/server.fpl:19-21; design doc FON tab S49 rule 5
+
+## binder-scope
+- Depends on it: fpl/desugar.py (body, quote, scoped), fpl/eval.py (substitute), tests/test_binders.py
+- Default in force: →x names the top for the rest of the sequence it is written in: a definition's body across its lines and the blocks under them, one top-level line, one child line under a thunk or code slot, one quotation or section; a child under a value slot runs in place, so its binder lives on in the sequence the child runs in, like a frame's (hole child-slots); eval substitutes the value for the name there (lexical, a nested binder of the name shadows, nothing mutates); past it the name is no word; the printer writes → for both spellings
+- Closes by: design, by saying where a binder's scope ends at top level and in a child line
+- Evidence: decision (f); features/server/examples/server.fpl:3-4 (p bound on one body line, read on the next); features/draft2/examples/07-scope-follows-the.fpl:3-5; features/draft2/examples/08-objects-are-directories.fpl:6-10 rebinds acc and s in a repeat child and reads acc after it, which shadowing cannot give
+
+## dict-values
+- Depends on it: fpl/desugar.py (dict), fpl/eval.py (gathered), tests/test_binders.py
+- Default in force: { } pairs a plain name key with the next item, which must push exactly one value (a literal, symbol, list, quotation, dict, bound name or a word taking none); each value runs on a fresh stack when the dict is reached; ( ) as a value, a strand, an odd count and a path key are refused as unimplemented; a repeated key is refused where it repeats with fpl/fon.py's message; symbols do not strand
+- Closes by: design, by saying what a dict value may be and where one ends
+- Evidence: features/match/examples/06-6-python-s-keywords.fpl:2-5; fpl/fon.py dict; features/draft2/examples/08-objects-are-directories.fpl:3 (#x #y swap)
+
+## require-ensure-rescue
+- Depends on it: nothing yet
+- Default in force: no example uses require, ensure or rescue; they are unknown words, refused as unimplemented
+- Closes by: design, with an example of f/require
+- Evidence: grep -l over features/*/examples/*.fpl finds none; decision (f)
+
+## binders-second-half
+- Depends on it: D3.1 (#math bind), D3.3 (math/mean/history), D3.5 (print : s -- +io, ../io), D4.12 ([join] { end “” } with); features/draft3/examples/draft3.fpl, features/match/examples/06-6-python-s-keywords.fpl
+- Default in force: bind, w/history, paths a/b, directory heads name/, .. and ../x, with and →a/b are refused as unimplemented
+- Closes by: implementer, part 03b
+- Evidence: session claims.jsonl rows D3.1 D3.3 D3.5 D4.12
