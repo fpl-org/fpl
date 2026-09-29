@@ -6,7 +6,9 @@ on is a section, pushed whole as a quotation (decision f). Literals side by side
 strand. The lines of a block are quotations pushed before the tokens of their head; the block of
 a `:` head is its body, whose balance starts at the effect line's inputs and runs on from line
 to line. ( ) puts its head after its arguments. Quotation bodies are code, never sections.
-Anything outside the implemented set is refused before evaluation (hole unimplemented-words).
+A line with no code, a comment's or the empty first line, is no statement and no child; its
+comment is not carried into the core. Anything outside the implemented set is refused before
+evaluation (hole unimplemented-words).
 """
 
 from collections.abc import Mapping
@@ -44,12 +46,26 @@ def unimplemented() -> NoReturn:
 def desugar(program: Program) -> tuple[Statement, ...]:
     """The program's lines as statements, in order. Every effect is known before any line is
     read, so a word may be used above its definition; a later definition shadows."""
+    lines = coded(program.lines)
     effects = dict(EFFECTS)
-    for line in program.lines:
+    for line in lines:
         head = definition(line)
         if head is not None:
             effects[head[0]] = head[1]
-    return tuple(_Desugar(effects).statement(line) for line in program.lines)
+    return tuple(_Desugar(effects).statement(line) for line in lines)
+
+
+def coded(lines: tuple[Line, ...]) -> tuple[Line, ...]:
+    """The lines that hold code: a bar, or an item in a frame. A line with none is a comment's
+    or the empty first line, and heading a block it is refused (holes comment-heads-block,
+    empty-first-line)."""
+    kept: list[Line] = []
+    for line in lines:
+        if len(line.frames) > 1 or any(frame.cells for frame in line.frames):
+            kept.append(line)
+        elif line.block:
+            unimplemented()
+    return tuple(kept)
 
 
 def definition(line: Line) -> tuple[str, Effect] | None:
@@ -122,9 +138,10 @@ class _Desugar:
     def body(self, lines: tuple[Line, ...], balance: int) -> tuple[Node, ...]:
         """Lines on one stack in turn, each starting on the balance the one before left."""
         code: list[Node] = []
-        for line in lines:
-            code.extend(self.children(line))
-            balance += len(line.block)
+        for line in coded(lines):
+            children = self.children(line)
+            code.extend(children)
+            balance += len(children)
             for frame in line.frames:
                 nodes = self.frame(frame)
                 after = self.balance(nodes, balance)
@@ -150,7 +167,7 @@ class _Desugar:
 
     def children(self, line: Line) -> tuple[Node, ...]:
         """Each line of the block as a quotation, in order."""
-        return tuple(Push(Quotation(self.later(child))) for child in line.block)
+        return tuple(Push(Quotation(self.later(child))) for child in coded(line.block))
 
     def later(self, line: Line) -> tuple[Node, ...]:
         """A line as code to run later: its children, then its frames joined."""
