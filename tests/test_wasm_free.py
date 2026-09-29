@@ -5,15 +5,23 @@ fpl; this law also refuses a third-party package other than icontract, which no 
 """
 
 import ast
+import subprocess
 import sys
 from pathlib import Path
 
 from hypothesis import given
 from hypothesis import strategies as st
 
-import fpl.asm
-
-ASM = Path(fpl.asm.__file__).parent
+# The checkout's sources, not fpl.asm.__file__: under mutmut that points into mutants/, whose
+# rewritten copies import mutmut's trampoline, and the law is about the code as written.
+TOPLEVEL = subprocess.run(
+    ["git", "rev-parse", "--show-toplevel"],
+    cwd=Path(__file__).parent,
+    capture_output=True,
+    text=True,
+    check=True,
+).stdout.strip()
+ASM = Path(TOPLEVEL) / "fpl" / "asm"
 MODULES = sorted(ASM.rglob("*.py"))
 FOREIGN = [
     "import lark",
