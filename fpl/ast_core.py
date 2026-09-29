@@ -4,7 +4,8 @@ A program is statements: a definition, or a line run on a fresh stack. Code is a
 each a push of a value, a call of a word, a binder over the code in its scope, or a dict built
 from its values. A value is a number, a string, a strand of those, a ⟨ ⟩ list, a quotation, a
 symbol or a dict; a section is a quotation. EFFECTS declares each builtin's effect, the
-same data an effect line gives a defined word.
+same data an effect line gives a defined word; a word that runs a quotation declares a fixed
+effect whatever the quotation does (hole control-effects).
 """
 
 from dataclasses import KW_ONLY, dataclass, field
@@ -145,4 +146,11 @@ EFFECTS: dict[str, Effect] = {
     "drop": Effect(("x",), ()),
     "enclose": Effect(("x",), ("q",)),
     ",": Effect(("a", "b"), ("ab",), slots=("code", "code")),
+    "!": Effect(("q",), ("x",)),
+    "if": Effect(("c", "t", "e"), ()),
+    "swap-args": Effect(("x", "y", "q"), ("z",)),
+    "repeat": Effect(("q", "n"), ()),
+    "each": Effect(("xs", "q"), ("ys",)),
+    "scan": Effect(("xs", "q"), ("ys",)),
+    "fold": Effect(("xs", "q"), ("x",)),
 }
