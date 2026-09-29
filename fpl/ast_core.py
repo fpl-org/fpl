@@ -1,8 +1,9 @@
 """The core AST: what desugaring leaves and evaluation reads.
 
 A program is statements: a definition, or a line run on a fresh stack. Code is a tuple of nodes,
-each a push of a value or a call of a word. A value is a number, a string, a strand of those, a
-⟨ ⟩ list, or a quotation; a section is a quotation. EFFECTS declares each builtin's effect, the
+each a push of a value, a call of a word, a binder over the code in its scope, or a dict built
+from its values. A value is a number, a string, a strand of those, a ⟨ ⟩ list, a quotation, a
+symbol or a dict; a section is a quotation. EFFECTS declares each builtin's effect, the
 same data an effect line gives a defined word.
 """
 
@@ -43,7 +44,21 @@ class Quotation:
     code: tuple["Node", ...]
 
 
-type Value = Atom | Strand | Listed | Quotation
+@dataclass(frozen=True)
+class Symbol:
+    """#name: a name as a value."""
+
+    name: str
+
+
+@dataclass(frozen=True)
+class Dict:
+    """{ } once built: each key with its value, in the order written."""
+
+    entries: tuple[tuple[str, "Value"], ...]
+
+
+type Value = Atom | Strand | Listed | Quotation | Symbol | Dict
 
 
 @dataclass(frozen=True)
@@ -61,7 +76,25 @@ class Call:
     span: Span = field(compare=False)
 
 
-type Node = Push | Call
+@dataclass(frozen=True)
+class Bind:
+    """→name: take the top and run the code of its scope with name standing for it. The scope
+    is the rest of the line, the body or the quotation the binder is written in (decision f)."""
+
+    name: str
+    body: tuple["Node", ...]
+    span: Span = field(compare=False)
+
+
+@dataclass(frozen=True)
+class Keyed:
+    """{ key value ... }: each value's node run on a fresh stack, then one dict of them."""
+
+    entries: tuple[tuple[str, "Node"], ...]
+    span: Span = field(compare=False)
+
+
+type Node = Push | Call | Bind | Keyed
 
 
 @dataclass(frozen=True)
