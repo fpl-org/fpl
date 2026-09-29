@@ -52,6 +52,18 @@ def _fuel(text: str) -> int:
     return int(text)
 
 
+def _sourced(argv: list[str]) -> list[str]:
+    """argv with a source that opens with - joined to its -e, as -e<source>, which argparse
+    would otherwise take for an option."""
+    out: list[str] = []
+    for arg in argv:
+        if out and out[-1] == "-e" and arg.startswith("-"):
+            out[-1] += arg
+        else:
+            out.append(arg)
+    return out
+
+
 @dataclass(frozen=True)
 class _Call:
     """argv taken: the options, and the one action with its value ("" for a flag)."""
@@ -80,7 +92,7 @@ def _call(argv: list[str]) -> _Call:
     action.add_argument("--rewind")
     action.add_argument("--log", action="store_const", const="")
     action.add_argument("--show", action="store_const", const="")
-    args = vars(parser.parse_args(argv))
+    args = vars(parser.parse_args(_sourced(argv)))
     name = next((name for name in ACTIONS if args[name] is not None), "loop")
     if args["at"] is not None and (args["head"] is not None or name in ("rewind", "log")):
         raise UsageError("--at goes with -e or --show")
