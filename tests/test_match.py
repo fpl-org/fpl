@@ -157,7 +157,8 @@ cells = st.lists(st.one_of(st.just("_"), st.integers(0, 3).map(str)), min_size=1
 @pytest.mark.obligation("the row chosen is the first whose patterns match")
 @given(cells, st.integers(0, 3))
 def test_the_row_chosen_is_the_first_whose_patterns_match(patterns: list[str], value: int) -> None:
-    """The first row whose pattern matches runs; with none, the match raises +fail."""
+    """[D4.8] The first row whose pattern matches runs, the rows after it unread; with none,
+    the match raises +fail."""
     rows = "".join(f"\t\t{p}\t{i} #row\n" for i, p in enumerate(patterns))
     first = next((i for i, p in enumerate(patterns) if p in ("_", str(value))), None)
     source = f"f : x -- y\n\tmatch\n{rows}{value} f\n"
