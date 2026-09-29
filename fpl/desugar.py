@@ -3,9 +3,10 @@
 A line runs on a fresh stack. Its frames join into one postfix sequence: the bar carries the
 running arity balance across, and a frame whose words would reach below the balance it starts
 on is a section, pushed whole as a quotation (decision f). Literals side by side in a cell
-strand. The lines of a block are quotations pushed before the tokens of their head; the block of
-a `:` head is its body, whose balance starts at the effect line's inputs and runs on from line
-to line. ( ) puts its head after its arguments. Quotation bodies are code, never sections.
+strand. The lines of a block fill the inputs of their head, before its tokens: a child under a
+value slot is its code, run at once; under a thunk or code slot, a quotation (S49 rule 5). The
+block of a `:` head is its body, whose balance starts at the effect line's inputs and runs on
+from line to line. ( ) puts its head after its arguments. Quotation bodies are code, never sections.
 A line with no code, a comment's or the empty first line, is no statement and no child; its
 comment is not carried into the core. Anything outside the implemented set is refused before
 evaluation (hole unimplemented-words).
@@ -37,6 +38,7 @@ from fpl.ast_surface import Cell, Enclosure, Frame, Item, Line, Program, Text, W
 from fpl.errors import FplError, Span
 
 START = Span(1, 1)
+PUSHED = Effect((), ("v",))
 
 
 def unimplemented() -> NoReturn:
@@ -170,17 +172,18 @@ class _Desugar:
         """Lines on one stack in turn, each starting on the balance the one before left."""
         code: list[Node] = []
         for line in coded(lines):
-            children = self.children(line)
-            code.extend(children)
-            balance += len(children)
-            for frame in line.frames:
-                nodes = self.frame(frame)
-                after = self.balance(nodes, balance)
-                if after is None:
-                    nodes, after = (Push(Quotation(nodes)),), balance + 1
+            for part in (*self.children(line), *map(self.frame, line.frames)):
+                nodes, balance = self.saturated(part, balance)
                 code.extend(nodes)
-                balance = after
         return tuple(code)
+
+    def saturated(self, nodes: tuple[Node, ...], balance: int) -> tuple[tuple[Node, ...], int]:
+        """A child's or a frame's nodes and the balance after them; if one reaches below, the
+        part is a section, pushed whole."""
+        after = self.balance(nodes, balance)
+        if after is None:
+            return (Push(Quotation(nodes)),), balance + 1
+        return nodes, after
 
     def balance(self, nodes: tuple[Node, ...], balance: int) -> int | None:
         """The balance after the nodes run on `balance` values; None if one reaches below."""
@@ -196,13 +199,39 @@ class _Desugar:
         effect = self.effects[call.name]
         return len(effect.ins), len(effect.outs)
 
-    def children(self, line: Line) -> tuple[Node, ...]:
-        """Each line of the block as a quotation, in order."""
-        return tuple(Push(Quotation(self.later(child))) for child in coded(line.block))
+    def children(self, line: Line) -> tuple[tuple[Node, ...], ...]:
+        """Each line of the block in order, filling the head's inputs, the last child the top
+        one: under a value slot its code, run at once; under a thunk or code slot, or past the
+        head's inputs, a quotation (hole child-slots)."""
+        block = coded(line.block)
+        inputs = self.inputs(self.frames(line.frames))
+        kinds: list[Slot | None] = [None] * len(block)
+        kinds += inputs
+        filled = zip(block, kinds[len(inputs) :], strict=True)
+        return tuple(self.child(child, kind) for child, kind in filled)
+
+    def child(self, line: Line, kind: Slot | None) -> tuple[Node, ...]:
+        """A child's code, or its quotation when it fills no value slot."""
+        code = self.later(line)
+        return code if kind == "value" else (Push(Quotation(code)),)
+
+    def inputs(self, code: tuple[Node, ...]) -> tuple[Slot, ...]:
+        """The slots code takes from below it, deepest first: the head phrase as a whole, so the
+        inputs a word's code before it does not supply lie under those already taken (hole
+        multi-word-head)."""
+        taken: tuple[Slot, ...] = ()
+        held = 0
+        for node in code:
+            effect = PUSHED if isinstance(node, Push) else self.effects[node.name]
+            short = max(0, len(effect.ins) - held)
+            taken = effect.slots[:short] + taken
+            held += short + len(effect.outs) - len(effect.ins)
+        return taken
 
     def later(self, line: Line) -> tuple[Node, ...]:
         """A line as code to run later: its children, then its frames joined."""
-        return self.children(line) + self.frames(line.frames)
+        children = (node for part in self.children(line) for node in part)
+        return (*children, *self.frames(line.frames))
 
     def frames(self, frames: tuple[Frame, ...]) -> tuple[Node, ...]:
         """Frames joined, with no saturation."""
