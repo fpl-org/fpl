@@ -1,0 +1,3 @@
+why = "fpl.asm may not import the rest of fpl"
+run = "lint-imports --config quality/importlinter.ini --no-cache"
+expect = "BROKEN"
