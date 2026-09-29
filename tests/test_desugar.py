@@ -170,6 +170,43 @@ def test_children_are_quotations_before_the_head() -> None:
     assert run(",\n\t1 2\n\t+\n") == "[ 1 2 + ]\n"
 
 
+@pytest.mark.parametrize(
+    ("source", "printed"),
+    [
+        ("times\n\t1 | 2 +\n\t3 | 4 +\n", "21\n"),
+        ("-\n\t10\n\t1\n", "9\n"),
+        ("+ dup times\n\t1\n\t2\n", "9\n"),
+        ("times\n\t+\n\t\t1\n\t\t2\n\t4\n", "12\n"),
+        ("f : x -- y\n\t+\n\t\t1\n5 f\n", "6\n"),
+    ],
+)
+def test_a_child_under_a_value_slot_runs_at_once(source: str, printed: str) -> None:
+    """[S49] rule 5 and S42 (children push, head consumes): each child fills an input of the
+    head phrase, the first child the deepest; under a value slot it runs at once, top to bottom,
+    on the stack its head then consumes."""
+    assert run(source) == printed
+
+
+@pytest.mark.parametrize(
+    ("source", "printed"),
+    [
+        ("keep : t: [ -- x ] -- t\nkeep\n\t1 | 2 +\n", "[ 1 | 2 + ]\n"),
+        ("look : c: Code -- c\nlook\n\t1 | 2 +\n", "[ 1 | 2 + ]\n"),
+        ("pair : x t: [] -- x t\npair\n\t1 | 2 +\n\t3\n", "3 [ 3 ]\n"),
+        ("1 | 2\n\t+\n", "[ + ] 1 | 2\n"),
+        ("dup\n\t1\n\t2\n", "[ 1 ] 2 | 2\n"),
+        ("dup\n\t+\n", "[ + ] [ + ]\n"),
+    ],
+)
+def test_a_child_under_a_thunk_or_code_slot_is_pushed_as_a_quotation(
+    source: str, printed: str
+) -> None:
+    """[S49] rule 5: a child is only ever run by its head; under a thunk or Code slot it is
+    pushed as a quotation. A child past the head's inputs is one too (hole child-slots), and a
+    value child that reaches below its balance is a section, as a frame is (decision f)."""
+    assert run(source) == printed
+
+
 def test_a_lone_literal_is_itself_and_literals_side_by_side_are_one_strand() -> None:
     """[D2.1] 1‿2 is one value; the 3 beside no other literal is not a strand."""
     assert desugar(parse("1 2 | 3 +\n")) == (
