@@ -72,7 +72,7 @@ def test_desugaring_preserves_meaning(head: str, body: str) -> None:
 @given(programs)
 def test_comments_change_no_statement(body: str) -> None:
     """A ;; line before each line and a note after it leave the core as it was: a comment is no
-    code, and its doc is not carried into the core yet."""
+    code, and a ;; before no definition is no doc."""
     commented = "".join(f";; d\n{line} ; n\n" for line in body.split("\n"))
     assert core(commented) == core(body + "\n")
 
@@ -83,7 +83,7 @@ def test_comments_change_no_statement(body: str) -> None:
         (";;; s\n; a\n; b\n\n1 ; n\n;; d\n2\n", "1\n2\n"),
         ("\n\n1\n", "1\n"),
         (
-            CURRY.replace("\n\t", "\t; n\n\t;; body\n\t") + "1 [ + ] curry\n",
+            CURRY.replace("\n\t", "\t; n\n\t") + "\t;; end\n1 [ + ] curry\n",
             CURRY + "1 [ + ] curry\n",
         ),
         (",\n\t1\n\t; c\n\t2\n", ",\n\t1\n\t2\n"),
