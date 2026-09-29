@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import override
 
 import pytest
-from hypothesis import HealthCheck, given, settings
+from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 from test_desugar import programs
 from test_session import POOL
@@ -23,9 +23,7 @@ from fpl.log import keyed, load
 from fpl.repl import USAGE, inputs, main, pending
 
 SESSION = ["--session", "s.fon"]
-SOURCES = (programs | st.text(alphabet="ab1 \t\n[]:?-|", max_size=30)).filter(
-    lambda s: not s.startswith("-")
-)
+SOURCES = programs | st.text(alphabet="ab1 \t\n[]:?-|", max_size=30)
 texts = st.sampled_from(POOL)
 seqs = st.integers(0, 6).map(str)
 command = st.one_of(
@@ -62,6 +60,10 @@ def session() -> Generator[tuple[Path, dict[str, str]]]:
 
 @settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
 @given(SOURCES)
+@example("->x")
+@example("--")
+@example("-e")
+@example("")
 def test_one_input_runs_as_its_file(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], source: str
 ) -> None:
