@@ -268,7 +268,7 @@ def test_an_effect_takes_values_unless_its_slots_say_otherwise() -> None:
     assert Effect(("x", "y"), ("z",)).slots == ("value", "value")
     assert Effect(("q",), (), slots=("thunk",)).slots == ("thunk",)
     assert Effect(("x",), ()) == Effect(("x",), (), slots=("value",))
-    with pytest.raises(ValueError, match="^one slot per input$"):
+    with pytest.raises(ValueError, match=r"^one slot per input$"):
         Effect(("x",), (), slots=("code", "code"))
 
 
