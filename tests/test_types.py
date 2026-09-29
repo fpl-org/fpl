@@ -282,3 +282,10 @@ def test_a_step_keeps_the_sorts_a_state_leaves(program: tuple[tuple[Define, ...]
     while running(state):
         state = step(state)
         assert typed(state, arrows) == expected
+
+
+def test_a_symbol_is_no_number() -> None:
+    """A symbol is of the symbol sort, so arithmetic on it is refused in a word never called."""
+    with pytest.raises(FplError) as caught:
+        run("f : -- x\n\t#a 1 +\n")
+    assert str(caught.value) == "ERROR: 2:7 arithmetic on a non-number"
