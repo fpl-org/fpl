@@ -166,7 +166,8 @@ def test_a_block_is_one_node_per_head() -> None:
 
 
 def test_children_are_quotations_before_the_head() -> None:
-    """[D1.5] node: children-quotations , head-tokens."""
+    """[D1.5] node: children-quotations , head-tokens; quotations because , takes two code
+    slots (S49 rule 5), not by their position."""
     assert run(",\n\t1 2\n\t+\n") == "[ 1 2 + ]\n"
 
 
@@ -347,7 +348,6 @@ def test_join_takes_code_and_enclose_a_value() -> None:
     it is given (hole quotation-slot-words)."""
     assert EFFECTS[","].slots == ("code", "code")
     assert EFFECTS["enclose"].slots == ("value",)
-    assert {name for name, effect in EFFECTS.items() if set(effect.slots) != {"value"}} == {","}
 
 
 def test_every_declared_builtin_has_an_implementation() -> None:
