@@ -8,8 +8,12 @@ lines, one per tool in the order asked, each a `/nix/store/` path ending in the 
 not the exit status of `command -v`. Anything else is a `ToolchainError` showing the command,
 its exit status, stdout and stderr. No `nix` is such an error too: an oracle that cannot run
 fails the test, it never skips it. The tools are then called by absolute path.
+
+`assemble`, `link`, `disassemble` and `boot` run them with the design's fixed flags on files
+in a work directory: `prog.s`, `prog.o`, `prog.elf`.
 """
 
+import re
 import shlex
 import subprocess
 from dataclasses import dataclass
@@ -19,6 +23,13 @@ from pathlib import Path
 HERE = Path(__file__).parent
 NAMES = ("llvm-mc", "llvm-objdump", "ld.lld", "qemu-system-riscv64")
 RESOLVE = "{nix} develop \"$(git rev-parse --show-toplevel)#riscv\" -c bash -c 'command -v {names}'"
+TIMEOUT = 10  # seconds; a boot that outlasts it is a hang, reported as a failure
+MC = ("-triple=riscv64", "-mattr=+m,-relax", "-filetype=obj")
+LD = ("--no-relax", "-Ttext=0x80000000", "-e", "_start")
+OBJDUMP = ("-d", "-M", "no-aliases", "-M", "numeric", "--no-print-imm-hex", "--mattr=+m")
+QEMU = ("-M", "virt", "-bios", "none", "-nographic", "-monitor", "none", "-serial", "stdio")
+# An instruction line of the disassembly: its address, then the canonical text.
+INSTRUCTION = re.compile(r"^\s*[0-9a-f]+:\s+(\S.*)$")
 VERSIONS: dict[str, str] = dict(zip(NAMES, ("21.1.8", "21.1.8", "21.1.8", "10.2.4"), strict=True))
 
 
@@ -92,3 +103,46 @@ def checked(tools: Tools) -> Tools:
 def toolchain() -> Tools:
     """The pinned oracle tools, resolved and version-checked once per process."""
     return checked(resolve())
+
+
+@dataclass(frozen=True, slots=True)
+class Boot:
+    """What a boot on QEMU virt showed: the UART's bytes, unchanged, and the exit status."""
+
+    uart: bytes
+    status: int
+
+
+def run(*argv: str | Path) -> subprocess.CompletedProcess[str]:
+    """Run a tool to completion within `TIMEOUT`, its output captured, its status unchecked."""
+    return subprocess.run(argv, capture_output=True, text=True, check=False, timeout=TIMEOUT)
+
+
+def assemble(tools: Tools, source: str, work: Path) -> subprocess.CompletedProcess[str]:
+    """Assemble `source` into `work/prog.o`; the status and stderr say whether it could."""
+    (work / "prog.s").write_text(source)
+    return run(tools.mc, *MC, "-o", work / "prog.o", work / "prog.s")
+
+
+def link(tools: Tools, work: Path) -> subprocess.CompletedProcess[str]:
+    """Link `work/prog.o` at 0x80000000, entry `_start`, into `work/prog.elf`."""
+    return run(tools.lld, *LD, "-o", work / "prog.elf", work / "prog.o")
+
+
+def disassemble(tools: Tools, work: Path) -> list[str]:
+    """The canonical text of each instruction in `work/prog.elf`, address column removed."""
+    done = run(tools.objdump, *OBJDUMP, "--no-show-raw-insn", work / "prog.elf")
+    assert done.returncode == 0, shown("llvm-objdump", done)
+    return [m[1] for line in done.stdout.splitlines() if (m := INSTRUCTION.match(line))]
+
+
+def boot(tools: Tools, work: Path) -> Boot:
+    """Boot `work/prog.elf` bare on QEMU virt; a run past `TIMEOUT` raises, as a hang."""
+    done = subprocess.run(
+        [tools.qemu, *QEMU, "-kernel", work / "prog.elf"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        check=False,
+        timeout=TIMEOUT,
+    )
+    return Boot(done.stdout, done.returncode)
