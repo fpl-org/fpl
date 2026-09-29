@@ -46,8 +46,15 @@ class State:
 
 def evaluate(statements: tuple[Statement, ...]) -> tuple[tuple[Value, ...], ...]:
     """The stack each run line leaves, every line on a fresh stack. A later definition of a
-    name shadows an earlier one, for every line."""
-    words = {s.name: s.code for s in statements if isinstance(s, Define)}
+    name shadows an earlier one, for every line; name/history pushes the ones it shadows,
+    oldest first, each as a quotation."""
+    logged: dict[str, list[tuple[Node, ...]]] = {}
+    for s in statements:
+        if isinstance(s, Define):
+            logged.setdefault(s.name, []).append(s.code)
+    words = {name: log[-1] for name, log in logged.items()}
+    for name, log in logged.items():
+        words[f"{name}/history"] = (Push(Listed(tuple(map(Quotation, log[:-1])))),)
     return tuple(final(State((), s.code, words)) for s in statements if isinstance(s, Run))
 
 
