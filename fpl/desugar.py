@@ -405,9 +405,13 @@ class _Desugar:
                 assert_never(node)
 
     def match(self, line: Line, arity: int) -> Match:
-        """The rows of a match taking arity values."""
+        """The rows of a match taking arity values; a block of comments alone, no rows, is
+        refused at the word."""
         word = line.frames[0].cells[0].items[0]
-        return Match(tuple(self.row(row, arity) for row in coded(line.block)), word.span)
+        rows = tuple(self.row(row, arity) for row in coded(line.block))
+        if not rows:
+            raise FplError(word.span, "a match has no rows")
+        return Match(rows, word.span)
 
     def row(self, line: Line, arity: int) -> Row:
         """arity pattern cells, then at most a body cell, where the names they bind are read."""
