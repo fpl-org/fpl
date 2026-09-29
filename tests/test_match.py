@@ -5,8 +5,10 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-import fpl.desugar  # pyright: ignore[reportUnusedImport] -- scripts/props credits a file's obligations to the modules it imports
-import fpl.eval  # noqa: F401 -- scripts/props credits a file's obligations to the modules it imports  # pyright: ignore[reportUnusedImport] -- scripts/props credits a file's obligations to the modules it imports
+from fpl import (  # noqa: F401 -- scripts/props credits a file's obligations to the modules it imports
+    desugar,  # pyright: ignore[reportUnusedImport] -- scripts/props credits it this file's obligations
+    eval,  # pyright: ignore[reportUnusedImport] -- scripts/props credits it this file's obligations
+)
 from fpl.driver import run
 from fpl.errors import FplError, Span
 
