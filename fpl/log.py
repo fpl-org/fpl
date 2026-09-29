@@ -21,7 +21,7 @@ from typing import Literal
 from fpl import fon
 from fpl.errors import FplError
 from fpl.fon import Cell, Dict, Hash, List, Num, Str, Sym, Value
-from fpl.multihash import INLINE, Multihash, content, hashed
+from fpl.multihash import INLINE, Multihash, content, hashed, spelling
 
 type Kind = Literal["input", "rewind"]
 type Status = Literal["ok", "error"]
@@ -334,6 +334,27 @@ def load(path: Path, key: bytes) -> Log:
         events.append(event)
         idents.add(event.ident)
     return Log(tuple(events), bodies, len(complete) + len(newline))
+
+
+def _ident(name: str) -> Multihash | None:
+    """The id a name spells after an optional $, in decimal or as a hex multihash; None if
+    it spells none."""
+    try:
+        return spelling(name.removeprefix("$"), inline=False)
+    except ValueError:
+        return None
+
+
+def resolve(log: Log, name: str) -> Event | None:
+    """The event an operator names: 0 the origin, which None is; a seq as written; else an
+    id. Refused (RefusedError): a name no event of the log answers to."""
+    if name == "0":
+        return None
+    ident = _ident(name)
+    for event in log.events:
+        if name == str(event.seq) or event.ident == ident:
+            return event
+    raise RefusedError(f"no event {name}")
 
 
 def _written(fd: int, data: bytes) -> None:
