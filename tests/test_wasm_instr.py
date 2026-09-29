@@ -3,6 +3,7 @@
 from collections.abc import Callable
 from typing import get_args
 
+import icontract
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
@@ -17,8 +18,11 @@ from fpl.asm.wasm.instr import (
     Cvtop,
     If,
     Instr,
+    Load,
+    MemArg,
     ReturnCall,
     ReturnCallIndirect,
+    Store,
     Unop,
 )
 from fpl.asm.wasm.types import WIDTH, NumType, TypeUse
@@ -58,12 +62,21 @@ def test_a_constant_ends_just_below_two_to_the_width(t: NumType) -> None:
         (lambda: Cvtop("i32", "extend_u", "i32"), False),
         (lambda: Cvtop("i64", "extend_s", "i64"), False),
         (lambda: Cvtop("i32", "extend_s", "i64"), False),
+        (lambda: Load("i32", MemArg(0, 0), (16, "s")), True),
+        (lambda: Load("i32", MemArg(0, 0), (32, "u")), False),
+        (lambda: Load("i64", MemArg(0, 0), (32, "s")), True),
+        (lambda: Load("i32", MemArg(0, 0), None), True),
+        (lambda: Store("i32", MemArg(0, 0), 16), True),
+        (lambda: Store("i32", MemArg(0, 0), 32), False),
+        (lambda: Store("i64", MemArg(0, 0), 32), True),
+        (lambda: Store("i64", MemArg(0, 0), None), True),
     ],
 )
 def test_an_operator_exists_only_in_the_shapes_the_spec_gives_it(
     make: Callable[[], Instr], exists: bool
 ) -> None:
-    """The fixed violation tests of unop_fits and cvtop_shape: each shape the grammar has
+    """The fixed violation tests of unop_fits, cvtop_shape, load_pack_fits and
+    store_size_fits: each shape the grammar has
     builds, and each one next to it is refused."""
     if exists:
         assert make() == make()
@@ -82,3 +95,21 @@ def test_a_control_instruction_keeps_its_arms_and_immediates(x: int) -> None:
     assert [c.func for c in (Call(x), ReturnCall(x))] == [x, x]
     indirect = (CallIndirect(x, use), ReturnCallIndirect(x, use))
     assert [(c.table, c.type) for c in indirect] == [(x, use), (x, use)]
+
+
+@given(st.integers(min_value=-1, max_value=2**32), st.integers(min_value=-1, max_value=2**32))
+def test_a_memarg_holds_two_u32(align: int, offset: int) -> None:
+    """The violation test of memarg_in_range, at each bound and one past it."""
+    if 0 <= align < 2**32 and 0 <= offset < 2**32:
+        arg = MemArg(align, offset)
+        assert (arg.align, arg.offset) == (align, offset)
+    else:
+        with pytest.raises(icontract.ViolationError):
+            MemArg(align, offset)
+
+
+@pytest.mark.parametrize(("align", "offset"), [(-1, 0), (2**32, 0), (0, -1), (0, 2**32)])
+def test_a_memarg_refuses_one_past_each_bound(align: int, offset: int) -> None:
+    assert MemArg(2**32 - 1, 2**32 - 1).offset == 2**32 - 1
+    with pytest.raises(icontract.ViolationError):
+        MemArg(align, offset)

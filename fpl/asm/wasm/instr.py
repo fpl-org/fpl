@@ -2,8 +2,8 @@
 
 One frozen dataclass per production of the grammar, carrying its number type and operator
 (2.4.8 writes `numtype.binop`); operator names are Literal strings, printed as they are. So
-far: the parametric (2.4.1), variable (2.4.3) and integer numeric (2.4.8) instructions, and
-control (2.4.2) with tail calls.
+far: the parametric (2.4.1), variable (2.4.3) and integer numeric (2.4.8) instructions, control
+(2.4.2) with tail calls, and memory (2.4.5): integer loads and stores, and memory.size.
 
 A class whose fields are typed by a Literal guards its invariant in `__post_init__`, not with
 `icontract.invariant`: CrossHair 0.0.110 cannot build a symbolic Literal and crashes on any
@@ -13,6 +13,8 @@ refuses a value that breaks it with ValueError, so such a value never exists.
 
 from dataclasses import dataclass
 from typing import Literal
+
+import icontract
 
 from fpl.asm.wasm.types import WIDTH, BlockType, NumType, TypeUse, ValType
 
@@ -34,6 +36,12 @@ IRelop = Literal["eq", "ne", "lt_s", "lt_u", "gt_s", "gt_u", "le_s", "le_u", "ge
 ICvtop = Literal["wrap", "extend_s", "extend_u"]
 """2.4.8, the integer conversions: i32.wrap_i64, i64.extend_i32_s, i64.extend_i32_u."""
 
+PackSize = Literal[8, 16, 32]
+"""2.4.5, the width in bits of a narrow load or store."""
+
+Sign = Literal["s", "u"]
+"""2.4.5, how a narrow load extends: signed or unsigned."""
+
 
 def _refuse(ok: bool, what: str) -> None:
     """Raise ValueError naming `what` unless `ok`: the guard every `__post_init__` shares."""
@@ -54,6 +62,21 @@ def unop_fits(self: "Unop") -> bool:
 def cvtop_shape(self: "Cvtop") -> bool:
     """`wrap` goes from i64 to i32, `extend_s` and `extend_u` from i32 to i64 (2.4.8)."""
     return (self.to, self.source) == (("i32", "i64") if self.op == "wrap" else ("i64", "i32"))
+
+
+def load_pack_fits(self: "Load") -> bool:
+    """A narrow load reads fewer bits than its type holds (2.4.5): no i32.load32_s."""
+    return self.pack is None or self.pack[0] < WIDTH[self.type]
+
+
+def store_size_fits(self: "Store") -> bool:
+    """A narrow store writes fewer bits than its type holds (2.4.5): no i32.store32."""
+    return self.size is None or self.size < WIDTH[self.type]
+
+
+def memarg_in_range(self: "MemArg") -> bool:
+    """The alignment exponent and the offset are u32 (2.4.5): each in 0 <= x < 2**32."""
+    return 0 <= self.align < 1 << 32 and 0 <= self.offset < 1 << 32
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,11 +283,59 @@ class ReturnCallIndirect:
     type: TypeUse
 
 
+@icontract.invariant(memarg_in_range)
+@dataclass(frozen=True)
+class MemArg:
+    """2.4.5, a memory access's static offset and alignment exponent (the hint is 2**align bytes).
+
+    No `slots`: icontract's invariant does not compose with a slotted dataclass.
+    """
+
+    align: int
+    offset: int
+
+
+@dataclass(frozen=True, slots=True)
+class Load:
+    """2.4.5, `t.load` or, with a pack, `t.load8_s` and the like, on memory 0.
+
+    Refuses, with ValueError, a pack as wide as the type.
+    """
+
+    type: NumType
+    arg: MemArg
+    pack: tuple[PackSize, Sign] | None
+
+    def __post_init__(self) -> None:
+        _refuse(load_pack_fits(self), f"{self.type}.load{self.pack} does not exist")
+
+
+@dataclass(frozen=True, slots=True)
+class Store:
+    """2.4.5, `t.store` or, with a size, `t.store8` and the like, on memory 0.
+
+    Refuses, with ValueError, a size as wide as the type.
+    """
+
+    type: NumType
+    arg: MemArg
+    size: PackSize | None
+
+    def __post_init__(self) -> None:
+        _refuse(store_size_fits(self), f"{self.type}.store{self.size} does not exist")
+
+
+@dataclass(frozen=True, slots=True)
+class MemorySize:
+    """2.4.5, `memory.size`: pushes the size of memory 0 in pages."""
+
+
 Instr = (
     Const | Unop | Binop | Testop | Relop | Cvtop
     | Nop | Unreachable | Drop | Select
     | LocalGet | LocalSet | LocalTee | GlobalGet | GlobalSet
     | Block | Loop | If | Br | BrIf | BrTable | Return
     | Call | CallIndirect | ReturnCall | ReturnCallIndirect
+    | Load | Store | MemorySize
 )  # fmt: skip
 """A closed union of the instructions; a match on it is checked for exhaustiveness."""
