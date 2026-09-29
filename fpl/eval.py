@@ -250,11 +250,14 @@ def commute(span: Span, _words: Words, x: Value, y: Value, q: Value) -> tuple[No
 
 
 def repeat(span: Span, _words: Words, q: Value, n: Value) -> tuple[Node, ...]:
-    """q n -- : q run in place n times; n a count."""
+    """q n -- : q run in place n times; n a count. Each round puts back one q and the rest of
+    the count, so the code grows by one q, not n."""
     code = quoted(q, span).code
     if not isinstance(n, int) or n < 0:
         raise FplError(span, "repeat takes a count")
-    return code * n
+    if n == 0:
+        return ()
+    return (*code, Push(q), Push(n - 1), Call("repeat", span))
 
 
 def items(xs: Value, span: Span) -> tuple[Value, ...]:
