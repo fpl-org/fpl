@@ -1,0 +1,3 @@
+# Equivalent mutants of fpl/asm, one per line: <mutant> -- <why no test can kill it>.
+fpl.asm.wasm.text.x_print_instr__mutmut_4 -- drops print_instr's `case _: assert_never(instr)`, unreachable on the closed Instr union (pyright checks exhaustiveness); a non-Instr argument then returns None instead of raising
+fpl.asm.wasm.text.x_print_instr__mutmut_7 -- assert_never(None) for assert_never(instr) in the unreachable `case _` of print_instr; both raise
