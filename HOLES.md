@@ -142,10 +142,10 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Evidence: campaign scope, step 3
 
 ## goal-placeholder
-- Depends on it: fpl/types.py (07-goals), programs containing ?
+- Depends on it: fpl/types.py (07-goals), programs containing ?; claim D4.3's wildcard row _ ?, refused until then (tests/test_match.py test_a_wildcard_row_whose_body_is_a_goal_waits_for_goals)
 - Default in force (proposed; 07-goals confirms): elaboration writes GOAL <line>:<col> <expected effect> to stderr and continues with a placeholder; evaluating it gives ERROR: <line>:<col> unfilled goal
 - Closes by: design side, the report's form and destination
-- Evidence: handoff/SHAR-syntax.org:832 and :1016 (S40)
+- Evidence: handoff/SHAR-syntax.org:832 and :1016 (S40); claim D4.3, features/match/examples/01-1-constructors-run.fpl:15
 
 ## printer-example-count
 - Depends on it: tests/test_print.py; handoff/SHAR-syntax.org as evidence
