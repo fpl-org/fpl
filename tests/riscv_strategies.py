@@ -6,6 +6,9 @@ checker's form `.L[A-Za-z0-9_]+`. Each range's two ends are drawn on purpose, no
 chance. The deliberately invalid strategies belong to the checker's laws.
 """
 
+from collections import defaultdict
+from dataclasses import replace
+
 from hypothesis import strategies as st
 
 from fpl.asm.riscv.model import (
@@ -16,6 +19,7 @@ from fpl.asm.riscv.model import (
     Fence,
     I,
     Instr,
+    Item,
     Jal,
     Jalr,
     Label,
@@ -28,6 +32,7 @@ from fpl.asm.riscv.model import (
     OpShift,
     OpStore,
     OpUpper,
+    Program,
     R,
     Reg,
     Shift,
@@ -71,3 +76,29 @@ FORMS: dict[type[Instr], st.SearchStrategy[Instr]] = {
 def instructions(*forms: type[Instr]) -> st.SearchStrategy[Instr]:
     """One valid instruction of one of `forms`, every class when none is named."""
     return st.one_of(*(FORMS[form] for form in forms or CLASSES))
+
+
+# The forms that fall through to the next instruction and touch no memory.
+STRAIGHT: tuple[type[Instr], ...] = (R, I, Shift, Upper, Fence)
+
+
+@st.composite
+def forward_branching(draw: st.DrawFn, n: int) -> Program:
+    """One to `n` instructions, straight-line or `Branch`/`Jal`, each jump to a later label.
+
+    The jump at instruction index i targets its own label `.L<i>`, defined before a drawn
+    instruction index in `(i, count]` (`count` puts it after the last instruction), so labels
+    are unique in the block and every run moves forward and falls off the end.
+    """
+    body = draw(st.lists(instructions(*STRAIGHT, Branch, Jal), min_size=1, max_size=n))
+    defined: defaultdict[int, list[Item]] = defaultdict(list)
+    for index, instr in enumerate(body):
+        if isinstance(instr, Branch | Jal):
+            jump = replace(instr, target=Label(f".L{index}"))
+            body[index] = jump
+            defined[draw(st.integers(index + 1, len(body)))].append(jump.target)
+    return tuple(
+        item
+        for index in range(len(body) + 1)
+        for item in (*defined[index], *body[index : index + 1])
+    )

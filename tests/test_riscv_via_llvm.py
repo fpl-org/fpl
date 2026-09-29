@@ -14,14 +14,29 @@ from riscv_oracle import (
     assemble,
     disassemble,
     link,
+    listing,
     parse_paths,
     resolve,
     toolchain,
 )
-from riscv_strategies import instructions
+from riscv_strategies import forward_branching, instructions
 from riscv_virt import HEAD
 
-from fpl.asm.riscv.model import Bare, Fence, I, Jalr, Load, Program, R, Shift, Store, Upper
+from fpl.asm.riscv.model import (
+    Bare,
+    Branch,
+    Fence,
+    I,
+    Jal,
+    Jalr,
+    Label,
+    Load,
+    Program,
+    R,
+    Shift,
+    Store,
+    Upper,
+)
 from fpl.asm.riscv.text import print_program
 
 GOOD = [f"/nix/store/0000-tool/bin/{name}" for name in NAMES]
@@ -94,3 +109,51 @@ def test_the_printed_text_is_the_disassembly(program: Program) -> None:
         assert linked.returncode == 0, linked.stderr
         lines = disassemble(tools, work)
     assert lines == [line[1:] for line in text.splitlines()]
+
+
+def resolved(program: Program, base: int) -> list[str]:
+    """The printed lines of `program`'s instructions, each target label replaced by its address.
+
+    Every instruction is 4 bytes and a label takes none, so a label's address is `base` plus 4
+    times the number of instructions before it. The address is spelled as objdump spells it.
+    """
+    address: dict[str, int] = {}
+    count = 0
+    for item in program:
+        if isinstance(item, Label):
+            address[item.name] = base + 4 * count
+        else:
+            count += 1
+    lines: list[str] = []
+    for item, text in zip(program, print_program(program).splitlines(), strict=True):
+        match item:
+            case Label():
+                continue
+            case Branch() | Jal():
+                lines.append(
+                    text[1:].removesuffix(item.target.name) + hex(address[item.target.name])
+                )
+            case _:
+                lines.append(text[1:])
+    return lines
+
+
+@given(forward_branching(20))
+def test_each_branch_and_jal_lands_on_its_label(program: Program) -> None:
+    """[law: control-targets-agree] Branches and jals keep their operands and reach their labels.
+
+    Each `Branch` and `Jal` of a labelled program, printed after `_start` and linked, is
+    disassembled with the same mnemonic and registers, and with the absolute target
+    `base + 4 x (instruction index of the label)`, `base` being the address objdump gives the
+    first instruction. Every other line is the printed one, and there are as many lines.
+    """
+    tools = toolchain()
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp)
+        assembled = assemble(tools, HEAD + print_program(program), work)
+        assert assembled.returncode == 0, assembled.stderr
+        linked = link(tools, work)
+        assert linked.returncode == 0, linked.stderr
+        disassembly = listing(tools, work)
+    base = disassembly[0][0]
+    assert [text for _, text in disassembly] == resolved(program, base)

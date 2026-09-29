@@ -9,8 +9,8 @@ not the exit status of `command -v`. Anything else is a `ToolchainError` showing
 its exit status, stdout and stderr. No `nix` is such an error too: an oracle that cannot run
 fails the test, it never skips it. The tools are then called by absolute path.
 
-`assemble`, `link`, `disassemble` and `boot` run them with the design's fixed flags on files
-in a work directory: `prog.s`, `prog.o`, `prog.elf`.
+`assemble`, `link`, `listing` (or `disassemble`) and `boot` run them with the design's fixed
+flags on files in a work directory: `prog.s`, `prog.o`, `prog.elf`.
 """
 
 import re
@@ -28,10 +28,10 @@ MC = ("-triple=riscv64", "-mattr=+m,-relax", "-filetype=obj")
 LD = ("--no-relax", "-Ttext=0x80000000", "-e", "_start")
 OBJDUMP = ("-d", "-M", "no-aliases", "-M", "numeric", "--no-print-imm-hex", "--mattr=+m")
 QEMU = ("-M", "virt", "-bios", "none", "-nographic", "-monitor", "none", "-serial", "stdio")
-# An instruction line of the disassembly: its address, the canonical text, and objdump's own
+# An instruction line of the disassembly: its hex address, the canonical text, and objdump's own
 # symbolization of an absolute target (` <_start+0x18>`, printed after `jalr x0, -2048(x0)` and
 # after a branch's address), which is a comment on the text, not part of it.
-INSTRUCTION = re.compile(r"^\s*[0-9a-f]+:\s+(\S.*?)(?: <[^<>]*>)?$")
+INSTRUCTION = re.compile(r"^\s*([0-9a-f]+):\s+(\S.*?)(?: <[^<>]*>)?$")
 VERSIONS: dict[str, str] = dict(zip(NAMES, ("21.1.8", "21.1.8", "21.1.8", "10.2.4"), strict=True))
 
 
@@ -131,11 +131,21 @@ def link(tools: Tools, work: Path) -> subprocess.CompletedProcess[str]:
     return run(tools.lld, *LD, "-o", work / "prog.elf", work / "prog.o")
 
 
-def disassemble(tools: Tools, work: Path) -> list[str]:
-    """The canonical text of each instruction in `work/prog.elf`, address column removed."""
+def listing(tools: Tools, work: Path) -> list[tuple[int, str]]:
+    """Each instruction in `work/prog.elf`: its address and its canonical text, in order.
+
+    A branch's or jal's target is the absolute address objdump resolved, symbol comment removed.
+    """
     done = run(tools.objdump, *OBJDUMP, "--no-show-raw-insn", work / "prog.elf")
     assert done.returncode == 0, shown("llvm-objdump", done)
-    return [m[1] for line in done.stdout.splitlines() if (m := INSTRUCTION.match(line))]
+    return [
+        (int(m[1], 16), m[2]) for line in done.stdout.splitlines() if (m := INSTRUCTION.match(line))
+    ]
+
+
+def disassemble(tools: Tools, work: Path) -> list[str]:
+    """The canonical text of each instruction in `work/prog.elf`, address column removed."""
+    return [text for _, text in listing(tools, work)]
 
 
 def boot(tools: Tools, work: Path) -> Boot:
