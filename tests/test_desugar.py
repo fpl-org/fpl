@@ -94,6 +94,12 @@ def test_a_line_with_no_code_is_no_statement(commented: str, plain: str) -> None
     assert core(commented) == core(plain)
 
 
+def test_a_bar_alone_is_code() -> None:
+    """| holds two empty frames, so its line is code: no statement is dropped, and its block
+    is children pushed before it, not refused."""
+    assert desugar(parse("|\n\t1\n")) == (Run((Push(Quotation((Push(1),))),)),)
+
+
 @pytest.mark.parametrize("source", ["", "\n", "\n\n", ";; d\n", "; a\n; b\n", "⍝ a\n\n;;;; f\n"])
 def test_a_program_of_comments_or_blank_lines_prints_nothing(source: str) -> None:
     assert run(source) == ""
