@@ -11,6 +11,7 @@ nix, resolving raises OracleError with the command it tried: an error, never a s
 """
 
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -77,3 +78,16 @@ def resolve(command: str = RESOLVE) -> Tools:
     if missing or versions(tools) != VERSIONS:
         raise OracleError(f"{command}\nmissing: {missing}\nversions: {versions(tools)}")
     return tools
+
+
+def wat2wasm(tools: Tools, text: str) -> subprocess.CompletedProcess[str]:
+    """wat2wasm, tail calls enabled, run on `text` as a .wat file; the binary is dropped."""
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, "m.wat").write_text(text)
+        return subprocess.run(
+            [tools.wat2wasm, "--enable-tail-call", "m.wat", "-o", "m.wasm"],
+            cwd=tmp,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
