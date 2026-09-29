@@ -351,7 +351,7 @@ class _Desugar:
             elif name is not None:
                 yield from self.statements(coded(line.block), (*here, name))
             elif not here:
-                yield Run(self.body((line,), 0, here))
+                yield Run(self.body((line,), 0, here), line.span)
 
     def body(self, lines: tuple[Line, ...], balance: int, here: Here) -> tuple[Node, ...]:
         """Lines on one stack in turn, each starting on the balance the one before left, their
