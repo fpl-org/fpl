@@ -423,12 +423,24 @@ def cons(span: Span, x: Value, xs: Value) -> tuple[Value, ...]:
     return (Listed((x, *xs.items)),)
 
 
+def unfilled(span: Span) -> tuple[Value, ...]:
+    """-- : a goal left in the code, refused where it runs (hole goal-placeholder)."""
+    raise FplError(span, "unfilled goal")
+
+
+def nothing(_span: Span) -> tuple[Value, ...]:
+    """-- : a _ the elaborator inferred as nothing (hole infer-hole)."""
+    return ()
+
+
 BUILTINS: dict[str, Builtin] = {
     "+": partial(arithmetic, lambda x, y: x + y),
     "-": partial(arithmetic, lambda x, y: x - y),
     "times": partial(arithmetic, lambda x, y: x * y),
     "swap": swap,
     "dup": dup,
+    "?": unfilled,
+    "_": nothing,
     "drop": drop,
     "enclose": enclose,
     ",": join,

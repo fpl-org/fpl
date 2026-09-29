@@ -1,11 +1,13 @@
 """Elaboration: each word's effect inferred from its body and checked against its effect line;
 progress and preservation of the sorts it infers, against eval's step."""
 
+import contextlib
+
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from fpl.ast_core import Bind, Call, Define, Effect, Node, Push, Run, Symbol
+from fpl.ast_core import Bind, Call, Define, Effect, Match, Node, Push, Row, Run, Symbol, Wild
 from fpl.driver import run
 from fpl.errors import FplError, Span
 from fpl.eval import State, running, step
@@ -26,7 +28,7 @@ BUILTINS = ("+", "-", "times", "dup", "swap", "drop")
     ],
 )
 def test_a_body_is_checked_against_its_effect_line(source: str, error: str) -> None:
-    """[D3.4] A declared effect is checked against the body it heads, before any line runs."""
+    """A declared effect is checked against the body it heads, before any line runs."""
     with pytest.raises(FplError) as caught:
         run(source)
     assert str(caught.value) == error
@@ -36,7 +38,7 @@ def test_an_effect_is_inferred_from_the_body() -> None:
     """A word's inputs are as general as its body lets them be; arithmetic makes one a number."""
     swapped = Define("s", Effect(("x", "y"), ("y", "x")), (Call("swap", HERE),))
     summed = Define("t", Effect(("x", "y"), ("z",)), (Call("+", HERE),))
-    arrows = elaborate((swapped, summed))
+    arrows, _ = elaborate((swapped, summed))
     assert arrows["s"] == Arrow((Input(0), Input(1)), (Input(1), Input(0)))
     assert arrows["t"] == Arrow((Kind.NUMBER, Kind.NUMBER), (Kind.NUMBER,))
 
@@ -54,10 +56,78 @@ def test_calling_a_word_meets_its_inputs() -> None:
     assert str(caught.value) == "ERROR: 3:9 arithmetic on a non-number"
 
 
-def test_a_binder_on_nothing_is_refused() -> None:
-    """Below the driver, whose lines never bind on an empty stack: the binder refuses there."""
+@pytest.mark.parametrize(
+    "node", [Bind("x", (), HERE), Match((Row((Wild(),), ()),), HERE)], ids=["bind", "match"]
+)
+def test_taking_from_nothing_is_refused(node: Node) -> None:
+    """Below the driver, whose lines never bind or match on an empty stack: refused there."""
     with pytest.raises(FplError, match="stack underflow"):
-        after(Typing((), {}, {}), (Bind("x", (), HERE),), {})
+        after(Typing((), {}, {}), (node,), {})
+
+
+def goals(source: str) -> list[str]:
+    """The goals running the source reports, whether or not it then runs."""
+    reported: list[str] = []
+    with contextlib.suppress(FplError):
+        run(source, reported.append)
+    return reported
+
+
+@pytest.mark.parametrize(
+    ("source", "goal"),
+    [
+        ("m : xs -- x\n\tdup drop ?\n", "GOAL 2:11 ? : t0 -- value"),
+        ("f : x y -- z\n\t? +\n", "GOAL 2:2 ? : t0 t1 -- number number"),
+        ("f : x y -- z\n\t→a ? a +\n", "GOAL 2:5 ? : t0 -- number"),
+        ("f : x -- y\n\tmatch\n\t\t0\t1\n\t\t_\t?\n", "GOAL 4:5 ? : -- value"),
+        ("“a” ?\n", "GOAL 1:5 ? : text --"),
+    ],
+)
+def test_a_goal_is_reported_with_the_effect_that_fills_it(source: str, goal: str) -> None:
+    """[D2.7] ? is a goal the elaborator reports: it takes the stack under it and leaves what
+    the code after it takes, or what the effect line promises when nothing follows."""
+    assert goals(source) == [goal]
+
+
+def test_a_goal_run_is_refused_where_it_stands() -> None:
+    """Elaboration goes on past a goal; running one is refused at it (hole goal-placeholder)."""
+    with pytest.raises(FplError) as caught:
+        run("f : x -- y\n\t?\n1 f\n")
+    assert str(caught.value) == "ERROR: 2:2 unfilled goal"
+
+
+@pytest.mark.parametrize(
+    ("source", "output"),
+    [
+        ("f : x -- y\n\t_\n1 f\n", "1\n"),
+        ("1 _ 2 +\n", "3\n"),
+        ("f : x y -- z\n\t_ +\n1 | 2 f\n", "3\n"),
+    ],
+)
+def test_a_hole_in_a_term_is_inferred_as_nothing(source: str, output: str) -> None:
+    """[D2.7] _ asks the elaborator to infer the code in its place: nothing, when the code
+    around it already meets what follows (hole infer-hole)."""
+    assert run(source) == output
+
+
+def test_a_hole_that_is_not_nothing_is_refused_at_its_span() -> None:
+    """[D2.7] A _ that nothing fills is refused at it, with the effect it would need."""
+    with pytest.raises(FplError) as caught:
+        run("f : x -- y z\n\t_\n")
+    assert str(caught.value) == "ERROR: 2:2 cannot infer _ : t0 -- value value"
+
+
+def test_match_rows_leaving_different_counts_keep_the_effect_line() -> None:
+    """Rows are typed alike; rows that disagree on their count leave the match untyped, its
+    word's effect line trusted (hole effect-line-trusted)."""
+    assert run("f : x -- y\n\tmatch\n\t\t0\t1\n\t\t_\t1 dup\n0 f\n") == "1\n"
+
+
+def test_a_match_row_is_typed() -> None:
+    """A row's body is typed with its pattern names standing for values of no known sort."""
+    with pytest.raises(FplError) as caught:
+        run("f : x -- y\n\tmatch\n\t\t( pair a b )\ta “s” +\n")
+    assert str(caught.value) == "ERROR: 3:22 arithmetic on a non-number"
 
 
 @st.composite
@@ -95,17 +165,17 @@ def programs(draw: st.DrawFn) -> tuple[tuple[Define, ...], Run]:
     for index in range(draw(st.integers(0, 3))):
         ins = draw(st.integers(0, 2))
         start = Typing(tuple(map(Input, range(ins))), {}, {})
-        body = draw(code(start, elaborate(tuple(defines)), 2))
-        outs = len(after(start, body, elaborate(tuple(defines))).stack)
+        body = draw(code(start, elaborate(tuple(defines))[0], 2))
+        outs = len(after(start, body, elaborate(tuple(defines))[0]).stack)
         effect = Effect(tuple(f"i{n}" for n in range(ins)), tuple(f"o{n}" for n in range(outs)))
         defines.append(Define(f"w{index}", effect, body))
-    line = draw(code(Typing((), {}, {}), elaborate(tuple(defines)), 2))
+    line = draw(code(Typing((), {}, {}), elaborate(tuple(defines))[0], 2))
     return tuple(defines), Run(line)
 
 
 def states(defines: tuple[Define, ...], line: Run) -> tuple[dict[str, Arrow], State]:
     """The words' arrows and the state the line starts in."""
-    arrows = elaborate((*defines, line))
+    arrows, _ = elaborate((*defines, line))
     return arrows, State((), line.code, {d.name: d.code for d in defines})
 
 
