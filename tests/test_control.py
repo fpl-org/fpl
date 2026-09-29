@@ -81,6 +81,11 @@ def test_control_words_run_the_quotations_they_take(source: str, printed: str) -
         ("3 [1 +] each\n", "ERROR: 1:9 a strand or a list is expected"),
         ("⟨⟩ [+] fold\n", "ERROR: 1:8 fold over nothing"),
         ("1 | 2 | 3 swap-args\n", "ERROR: 1:11 a quotation is expected"),
+        ("1 | 2 [3] if\n", "ERROR: 1:11 a quotation is expected"),
+        ("1 2 | 3 each\n", "ERROR: 1:9 a quotation is expected"),
+        ("1 | 3 repeat\n", "ERROR: 1:7 a quotation is expected"),
+        ("1 2 | 3 scan\n", "ERROR: 1:9 a quotation is expected"),
+        ("3 [+] fold\n", "ERROR: 1:7 a strand or a list is expected"),
     ],
 )
 def test_control_words_refuse_what_they_cannot_run(source: str, message: str) -> None:
