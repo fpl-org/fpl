@@ -21,3 +21,9 @@
 - Default in force: only LLVM's integrated assembler checks the text; GNU as is not run
 - Closes by: PSJ, adding pkgsCross.riscv64.buildPackages.binutils (cached for x86_64-linux, built from source on aarch64-darwin) as a second assembler oracle
 - Evidence: map backend-bc §6.1 (riscv64 binutils 2.46 not cached on darwin); design section 8
+
+## oracle-settings
+- Depends on it: tests/test_riscv_via_llvm.py, tests/test_riscv_via_qemu.py, the law oracle-budget
+- Default in force: no per-test settings; oracle tests run at the harness profile's example counts (quick 100), because the house rule forbids max_examples or a per-test @settings count in a test; measured at quick, print-is-disassembly takes 5.4 s and control-targets-agree 5.2 s, already past the 6 s oracle-budget for all oracle laws
+- Closes by: PSJ, sanctioning the design's ORACLE override (backend="hypothesis", max_examples 10/50/10), or adding a harness-level oracle profile in quality/noslop_pytest.py
+- Evidence: design section 7 "Budgets" (ORACLE settings, "PSJ's to veto (question 1)") and section 8 oracle-settings; implementer rule "Never put max_examples or a per-test @settings count in a test"; pytest --durations on b62fb41
