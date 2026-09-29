@@ -305,5 +305,13 @@ def test_what_no_part_implements_is_refused_before_running(source: str) -> None:
     assert str(caught.value) == "ERROR: 1:1 no evaluator yet"
 
 
+def test_join_takes_code_and_enclose_a_value() -> None:
+    """[S49] , inspects its operands, never runs them: two code slots; enclose quotes the value
+    it is given (hole quotation-slot-words)."""
+    assert EFFECTS[","].slots == ("code", "code")
+    assert EFFECTS["enclose"].slots == ("value",)
+    assert {name for name, effect in EFFECTS.items() if set(effect.slots) != {"value"}} == {","}
+
+
 def test_every_declared_builtin_has_an_implementation() -> None:
     assert set(EFFECTS) == set(BUILTINS)
