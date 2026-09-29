@@ -22,7 +22,7 @@ from fpl.ast_surface import Cell, Enclosure, Frame, Line, Pair, Program, Text
 from fpl.desugar import START, desugar, listing, resugar, text
 from fpl.driver import run
 from fpl.errors import FplError
-from fpl.eval import BUILTINS, evaluate
+from fpl.eval import BUILTINS, CONTROLS, evaluate
 from fpl.parse import parse
 from fpl.print import render
 
@@ -32,7 +32,7 @@ SLOTS = "app : x t: [] c: Code -- y\n"
 
 items = st.recursive(
     st.integers(-9, 99).map(str)
-    | st.sampled_from(sorted(EFFECTS))
+    | st.sampled_from(sorted(BUILTINS))
     | st.sampled_from(["#a", "→a", "1 →a a", "{ k 1 }"]),
     lambda inner: (
         st.lists(inner, max_size=4).map(lambda xs: "[" + " ".join(xs) + "]")
@@ -361,7 +361,7 @@ def test_a_word_refuses_at_its_position(source: str, error: str) -> None:
     [
         *("∞\n", "#1\n", "$1\n", "1\u00b4\n", "a/b\n", "{ 1 }\n", "()\n", "“⟨1⟩”\n"),
         *(";;; s\n\t1\n", "\n\t1\n", "1\n\t; c\n\t\t2\n"),
-        *("⟨ (+ 1 2) ⟩\n", "f : x\n", "f : x -- y | 1\n", "f : #x -- y\n", "1 2 3 fold\n"),
+        *("⟨ (+ 1 2) ⟩\n", "f : x\n", "f : x -- y | 1\n", "f : #x -- y\n", "1 2 3 sqrt\n"),
         *("f : x: -- y\n", "f : -- y:\n", "#f : --\n", "f : t: -- x -- y\n"),
     ],
 )
@@ -379,4 +379,4 @@ def test_join_takes_code_and_enclose_a_value() -> None:
 
 
 def test_every_declared_builtin_has_an_implementation() -> None:
-    assert set(EFFECTS) == set(BUILTINS)
+    assert set(EFFECTS) == set(BUILTINS) | set(CONTROLS)
