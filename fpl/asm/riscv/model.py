@@ -15,9 +15,9 @@ relocation operators, pseudo-instructions and aliases are not in the model.
 The values hold no text: `fpl.asm.riscv.text` prints and parses them.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from enum import IntEnum, IntFlag, StrEnum
-from typing import ClassVar
+from typing import ClassVar, get_args
 
 
 class Reg(IntEnum):
@@ -294,3 +294,15 @@ type Instr = R | I | Shift | Upper | Load | Store | Branch | Jal | Jalr | Fence 
 type Item = Instr | Label
 type Program = tuple[Item, ...]
 """The text section of one translation unit, in order."""
+
+CLASSES: tuple[type[Instr], ...] = get_args(Instr.__value__)
+"""The instruction classes, in the order of `Instr`."""
+
+
+def mnemonics(form: type[Instr]) -> tuple[str, ...]:
+    """The mnemonics of `form`: its op enum's members, or its one fixed `op`, in order."""
+    op = {field.name: field.type for field in fields(form)}.get("op")
+    if isinstance(op, type) and issubclass(op, StrEnum):
+        return tuple(op)
+    # The class-level `op` of Jal, Jalr and Fence; on the other classes `op` is a slot.
+    return (vars(form)["op"],)
