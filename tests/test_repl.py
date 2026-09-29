@@ -1,6 +1,8 @@
 """The command line of a session: one input runs as its file does, an append is checked against
-the head and durable before anything is printed, and copies of a session answer alike."""
+the head and durable before anything is printed, copies of a session answer alike, and the
+loop enters what successive -e calls enter."""
 
+import builtins
 import contextlib
 import os
 import shutil
@@ -18,7 +20,7 @@ from test_session import POOL
 
 from fpl.__main__ import main as run_file
 from fpl.log import keyed, load
-from fpl.repl import USAGE, main
+from fpl.repl import USAGE, inputs, main, pending
 
 SESSION = ["--session", "s.fon"]
 SOURCES = (programs | st.text(alphabet="ab1 \t\n[]:?-|", max_size=30)).filter(
@@ -36,10 +38,10 @@ command = st.one_of(
 )
 
 
-def called(argv: Sequence[str], env: Mapping[str, str]) -> tuple[int, str, str]:
-    """The exit status, stdout and stderr of a call."""
+def called(argv: Sequence[str], env: Mapping[str, str], stdin: str = "") -> tuple[int, str, str]:
+    """The exit status, stdout and stderr of a call reading `stdin`."""
     out, err = StringIO(), StringIO()
-    code = main(list(argv), out, err, env)
+    code = main(list(argv), StringIO(stdin), out, err, env)
     return code, out.getvalue(), err.getvalue()
 
 
@@ -131,7 +133,7 @@ def test_an_append_is_durable_before_it_is_printed(inputs: list[str]) -> None:
         patch.setattr(os, "fsync", recorded)
         for text in inputs:
             events.clear()
-            main([*SESSION, "-e", text], Recorded(events), StringIO(), env)
+            main([*SESSION, "-e", text], StringIO(), Recorded(events), StringIO(), env)
             last = len(events) - events[::-1].index("fsync") - 1
             assert last < events.index("write")
 
@@ -139,8 +141,8 @@ def test_an_append_is_durable_before_it_is_printed(inputs: list[str]) -> None:
 @pytest.mark.parametrize(
     "argv",
     [
-        [],
         ["--log", "--show"],
+        ["--at", "0", "--head", "0"],
         ["--bogus", "--log"],
         ["--fuel", "x", "--log"],
         ["--fuel", "01", "--log"],
@@ -239,3 +241,112 @@ def test_a_refused_log() -> None:
         (work / "s.fon").write_text("1\n")
         code, out, _ = called([*SESSION, "--log"], env)
         assert (code, out.startswith("ERROR: s.fon:1 ")) == (2, True)
+
+
+COMPLETE = [text for text in POOL if text.strip()]
+
+
+@given(st.lists(st.sampled_from(COMPLETE), max_size=5))
+def test_the_loop_enters_what_calls_enter(texts: list[str]) -> None:
+    """[law: interactive] the interactive loop over blank-line-joined inputs writes the same
+    log bytes as the same inputs given as successive -e calls."""
+    joined = "\n".join(texts)
+    lines = iter(joined.splitlines())
+    assert list(inputs(lambda _: next(lines, None))) == texts
+    with session() as (work, env):
+        assert called(SESSION, env, joined)[0] == 0
+        copy = work.with_name("copy")
+        copy.mkdir()
+        with contextlib.chdir(copy):
+            for text in texts:
+                called([*SESSION, "-e", text], env)
+        assert files(work) == files(copy)
+
+
+@pytest.mark.parametrize(
+    ("text", "on"),
+    [
+        ("1\n", False),
+        ("1 [\n", True),
+        ("1 ⟨\n", True),
+        (")\n", False),
+        ("f : -- x\n", True),
+        ("f : -- x\n\t2\n", True),
+        ("a/\n", True),
+        (":show\n", False),
+    ],
+)
+def test_pending(text: str, on: bool) -> None:
+    """An input goes on while a pair is open, after a head or a block, or after a trailing /."""
+    assert pending(text) is on
+
+
+def test_the_loop_in_memory() -> None:
+    """Without --session the loop keeps its log in memory and names no head; commands list,
+    show, rewind and toggle the canonical form; an unknown command is told and passed over."""
+    typed = "f : -- x\n\t2\n\nf\n:log\n:show\n:canonical\n1  2\n:rewind 0\nf\n:bogus\n:quit\n3\n"
+    code, out, err = called([], {}, typed)
+    rows = out.splitlines()
+    assert (code, err, rows[0]) == (0, "f\n^\n", "2")
+    assert [row.rsplit(" ", 1)[0] for row in rows[1:3]] == ["1 input ok 0 -", "2 input ok 1 -"]
+    assert rows[3:] == [
+        "f : -- x",
+        "\t2",
+        "f",
+        "1 2",
+        "1 2",
+        "f",
+        "ERROR: 1:1 no evaluator yet",
+        "ERROR: unknown command",
+    ]
+
+
+def test_the_loop_as_of_an_event() -> None:
+    """With --at every input is evaluated at that event and nothing is appended."""
+    with session() as (work, env):
+        called([*SESSION, "-e", "f : -- x\n\t2\n"], env)
+        before = files(work)
+        shown = (0, "2\n2\nf : -- x\n\t2\n", "")
+        assert called([*SESSION, "--at", "1"], env, "f\nf\n:show\n") == shown
+        assert files(work) == before
+
+
+def test_a_log_refused_at_start() -> None:
+    """A session that does not load stops the loop before it reads."""
+    with session() as (work, env):
+        (work / "s.fon").write_text("1\n")
+        code, out, _ = called(SESSION, env, "1\n")
+        assert (code, out.startswith("ERROR: s.fon:1 ")) == (2, True)
+
+
+class Terminal(StringIO):
+    """A stream that says it is a terminal."""
+
+    @override
+    def isatty(self) -> bool:
+        return True
+
+
+def test_the_loop_at_a_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """At a terminal the loop prompts through input(); an append from elsewhere moves the head,
+    so the next input is refused, and the one after appends at the head it adopted."""
+    prompts: list[str] = []
+    with session() as (_, env):
+        lines = iter(["1", "", "g : -- x", "\t3", "", "4"])
+
+        def typed(prompt: str) -> str:
+            prompts.append(prompt)
+            if len(prompts) == 2:
+                called([*SESSION, "-e", "7"], env)
+            line = next(lines, None)
+            if line is None:
+                raise EOFError
+            return line
+
+        monkeypatch.setattr(builtins, "input", typed)
+        out, err = StringIO(), StringIO()
+        assert main([*SESSION, "--head", "0"], Terminal(), out, err, env) == 0
+        assert out.getvalue() == "1\nERROR: head moved: the head is 2\n4\n"
+        heads = [row.split(" ", 2)[:2] for row in err.getvalue().splitlines()]
+        assert heads == [["HEAD", "1"], ["HEAD", "3"]]
+        assert prompts == ["fpl> "] * 3 + ["...  "] * 2 + ["fpl> "] * 2
