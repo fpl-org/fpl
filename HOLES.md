@@ -9,3 +9,15 @@
 - Default in force: RISC-V Unprivileged ISA 20250508
 - Closes by: PSJ, moving to a later named release; the listing test names every row that moved
 - Evidence: gh api repos/riscv/riscv-isa-manual/releases: 20250508 is the newest release with a version name; design section 2
+
+## asm-syntax-authority
+- Depends on it: fpl/asm/riscv/text.py, tests/test_riscv_text.py, tests/test_riscv_via_llvm.py
+- Default in force: the printed form is what llvm-objdump 21.1.8 prints with -M no-aliases -M numeric --no-print-imm-hex, and it must assemble with llvm-mc 21.1.8
+- Closes by: PSJ or palimpsest, adopting the RISC-V Assembly Programmer's Manual once it is ratified, or GNU as as a second oracle (hole gnu-as-unchecked)
+- Evidence: github.com/riscv-non-isa/riscv-asm-manual release v0.0.1 (2025-02-05), a draft; design section 8
+
+## gnu-as-unchecked
+- Depends on it: fpl/asm/riscv/text.py, prompt C "a printer in GNU assembler syntax"
+- Default in force: only LLVM's integrated assembler checks the text; GNU as is not run
+- Closes by: PSJ, adding pkgsCross.riscv64.buildPackages.binutils (cached for x86_64-linux, built from source on aarch64-darwin) as a second assembler oracle
+- Evidence: map backend-bc §6.1 (riscv64 binutils 2.46 not cached on darwin); design section 8
