@@ -6,7 +6,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from fpl.parse import parse
-from fpl.trivia import Attached, Attachment, comments, docstrings
+from fpl.trivia import Attached, Attachment, comments, docstrings, head
 
 LINES = {
     "code": "a b",
@@ -80,3 +80,8 @@ def test_a_docstring_is_its_docs_a_line_each() -> None:
     """The ;; lines above a head, then those opening its body, one line each."""
     source = ";; a\n;; b\nf : -- y\n\t;; c\n\t1\ng : -- y\n\t2\n"
     assert docstrings(parse(source)) == {3: "a\nb\nc"}
+
+
+def test_a_line_with_no_frames_is_no_head() -> None:
+    """A ;; line holds no frames, so it has no first cell to read a `:` from."""
+    assert not head(parse(";; f : x -- y\n").lines[0])
