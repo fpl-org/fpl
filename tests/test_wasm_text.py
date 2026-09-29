@@ -1,10 +1,12 @@
 """The printer of fpl.asm.wasm writes WAT that wabt assembles, and names that survive it."""
 
 import re
+from typing import Any, get_args
 
 from hypothesis import given
+from hypothesis import strategies as st
 from wasm_oracle import Tools, wat2wasm
-from wasm_strategies import BinopMain, binop_mains
+from wasm_strategies import FIELDS, INSTRS, BinopMain, binop_mains, module_of, module_parts
 
 from fpl.asm.wasm.instr import (
     Binop,
@@ -20,6 +22,7 @@ from fpl.asm.wasm.instr import (
     GlobalGet,
     GlobalSet,
     If,
+    Instr,
     Load,
     LocalGet,
     LocalSet,
@@ -159,3 +162,21 @@ def test_the_forms_wabt_cannot_meet_in_one_module_print_exactly() -> None:
         "    end\n"
         "    select (result)))\n"
     )
+
+
+@given(module_parts, st.sampled_from(sorted(FIELDS)), st.sampled_from(get_args(Instr)), st.data())
+def test_different_modules_print_differently(
+    parts: dict[str, Any], name: str, cls: type[Instr], data: st.DataObject
+) -> None:
+    """[law: print-injective] Two different modules print to different text: a module and
+    itself with one field redrawn, and two one-function modules whose bodies hold one drawn
+    instruction each, both of one class (so near misses such as `select` against
+    `select (result)` meet)."""
+    redrawn = data.draw(FIELDS[name].filter(lambda value: value != parts[name]))
+    one, other = data.draw(INSTRS[cls]), data.draw(INSTRS[cls])
+    pairs = [
+        (module_of(parts), module_of(parts | {name: redrawn})),
+        (Module(funcs=(Func(0, (), (one,)),)), Module(funcs=(Func(0, (), (other,)),))),
+    ]
+    for first, second in pairs:
+        assert first == second or print_module(first) != print_module(second)
