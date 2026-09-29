@@ -31,7 +31,9 @@ LCURRY = "lcurry : x q -- q'\n\t[ swap ] swap , curry\n"
 SLOTS = "app : x t: [] c: Code -- y\n"
 
 items = st.recursive(
-    st.integers(-9, 99).map(str) | st.sampled_from(sorted(EFFECTS)),
+    st.integers(-9, 99).map(str)
+    | st.sampled_from(sorted(EFFECTS))
+    | st.sampled_from(["#a", "→a", "1 →a a", "{ k 1 }"]),
     lambda inner: (
         st.lists(inner, max_size=4).map(lambda xs: "[" + " ".join(xs) + "]")
         | st.lists(inner, min_size=1, max_size=4).map(lambda xs: "(" + " ".join(xs) + ")")
@@ -346,8 +348,8 @@ def test_a_word_refuses_at_its_position(source: str, error: str) -> None:
 @pytest.mark.parametrize(
     "source",
     [
-        *("∞\n", "#x\n", "#1\n", "$1\n", "1\u00b4\n", "a/b\n", "{ 1 }\n", "()\n", "“⟨1⟩”\n"),
-        *("{}\n", ";;; s\n\t1\n", "\n\t1\n", "1\n\t; c\n\t\t2\n"),
+        *("∞\n", "#1\n", "$1\n", "1\u00b4\n", "a/b\n", "{ 1 }\n", "()\n", "“⟨1⟩”\n"),
+        *(";;; s\n\t1\n", "\n\t1\n", "1\n\t; c\n\t\t2\n"),
         *("⟨ (+ 1 2) ⟩\n", "f : x\n", "f : x -- y | 1\n", "f : #x -- y\n", "1 2 3 fold\n"),
         *("f : x: -- y\n", "f : -- y:\n", "#f : --\n", "f : t: -- x -- y\n"),
     ],

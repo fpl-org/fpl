@@ -11,8 +11,11 @@ import icontract
 
 from fpl.ast_core import (
     EFFECTS,
+    Bind,
     Call,
     Define,
+    Dict,
+    Keyed,
     Listed,
     Node,
     Number,
@@ -58,18 +61,71 @@ def running(state: State) -> bool:
 
 @icontract.require(running)
 def step(state: State) -> State:
-    """Run the first node: push its value, put a defined word's code in its place, or apply a
-    builtin to the values it takes."""
+    """Run the first node: push its value, put a defined word's code in its place, apply a
+    builtin to the values it takes, put a binder's scope in its place with the top for its
+    name, or push the dict its values build."""
     node, rest = state.code[0], state.code[1:]
     match node:
         case Push():
             return State((*state.stack, node.value), rest, state.words)
+        case Bind():
+            if not state.stack:
+                raise FplError(node.span, "stack underflow")
+            scope = substitute(node.body, node.name, state.stack[-1])
+            return State(state.stack[:-1], scope + rest, state.words)
+        case Keyed():
+            return State((*state.stack, gathered(node, state.words)), rest, state.words)
         case Call() if node.name in state.words:
             return State(state.stack, state.words[node.name] + rest, state.words)
         case Call():
             return State(builtin(node, state.stack), rest, state.words)
         case _:
             assert_never(node)
+
+
+def substitute(code: tuple[Node, ...], name: str, value: Value) -> tuple[Node, ...]:
+    """The code with every call of name, in quotations too, a push of value; a binder of the
+    same name shadows it for its scope."""
+    return tuple(replaced(node, name, value) for node in code)
+
+
+def replaced(node: Node, name: str, value: Value) -> Node:
+    """One node with name standing for value."""
+    match node:
+        case Call():
+            return Push(value) if node.name == name else node
+        case Push():
+            return Push(held(node.value, name, value))
+        case Bind():
+            body = node.body if node.name == name else substitute(node.body, name, value)
+            return Bind(node.name, body, node.span)
+        case Keyed():
+            entries = tuple((key, replaced(n, name, value)) for key, n in node.entries)
+            return Keyed(entries, node.span)
+        case _:
+            assert_never(node)
+
+
+def held(inner: Value, name: str, value: Value) -> Value:
+    """A pushed value with name standing for value in the code it holds."""
+    match inner:
+        case Quotation():
+            return Quotation(substitute(inner.code, name, value))
+        case Listed():
+            return Listed(tuple(held(item, name, value) for item in inner.items))
+        case _:
+            return inner
+
+
+def gathered(node: Keyed, words: Mapping[str, tuple[Node, ...]]) -> Dict:
+    """Each value run on a fresh stack, where it must leave one value."""
+    entries: list[tuple[str, Value]] = []
+    for key, code in node.entries:
+        stack = final(State((), (code,), words))
+        if len(stack) != 1:
+            raise FplError(node.span, "a dict value is one value")
+        entries.append((key, stack[0]))
+    return Dict(tuple(entries))
 
 
 def builtin(call: Call, stack: tuple[Value, ...]) -> tuple[Value, ...]:
