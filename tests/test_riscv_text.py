@@ -1,7 +1,9 @@
-"""The canonical text: what llvm-objdump 21.1.8 prints for the program's bytes."""
+"""The canonical text: what llvm-objdump 21.1.8 prints for the program's bytes, and back."""
 
+import pytest
 from hypothesis import given
 from hypothesis import strategies as st
+from riscv_strategies import instructions
 
 from fpl.asm.riscv.model import (
     Access,
@@ -30,7 +32,7 @@ from fpl.asm.riscv.model import (
     Store,
     Upper,
 )
-from fpl.asm.riscv.text import print_program
+from fpl.asm.riscv.text import ParseError, parse_program, print_program
 
 # Every op and every register at least once, with the immediates' edges. The right-hand
 # lines are copied from `llvm-objdump -d -M no-aliases -M numeric --no-print-imm-hex
@@ -134,7 +136,30 @@ items: st.SearchStrategy[Item] = st.one_of(
     st.builds(Bare, st.sampled_from(OpBare)),
     labels,
 )
-programs = st.lists(items, max_size=20).map(tuple)
+programs = st.lists(st.one_of(items, instructions()), max_size=20).map(tuple)
+# Edits that leave no line in canonical form, whatever the line was.
+BREAKS = (" {}", "{} ", "\t{}", "{}\t", "{},", "#{}")
+# Lines the parser refuses although an assembler might read them.
+REFUSED = (
+    "\taddi\tx1, x2, -0",
+    "\taddi\tx1, x2, 007",
+    "\taddi\tx1, x2, +1",
+    "\taddi\tx1, x2, 0x10",
+    "\taddi\tx01, x2, 1",
+    "\taddi\ta0, x2, 1",
+    "\taddi\tx32, x2, 1",
+    "\taddi\tx1,x2,1",
+    "\tADDI\tx1, x2, 1",
+    "\tli\tx1, 1",
+    "\tpause",
+    "\tecall\t",
+    "\tfence\tri, w",
+    "\tfence\t, w",
+    "\tbeq\tx1, x2, foo",
+    "L1:",
+    ".L-1:",
+    "",
+)
 
 
 def test_the_printer_prints_what_llvm_objdump_prints() -> None:
@@ -152,3 +177,31 @@ def test_the_text_of_a_program_is_the_text_of_its_parts(p: Program, q: Program) 
     """The printer is total, one line per item, and prints each on its own."""
     assert print_program(p + q) == print_program(p) + print_program(q)
     assert print_program(p).count("\n") == len(p)
+
+
+@given(programs, st.integers(0), st.sampled_from(BREAKS))
+def test_parsing_a_printed_program_gives_it_back(program: Program, at: int, edit: str) -> None:
+    """[law: parse-print-identity] parse after print is the identity; any other line is refused.
+
+    For every program, valid or not, `parse_program(print_program(p)) == p`; one line of the
+    text edited out of canonical form is a `ParseError` naming that line.
+    """
+    text = print_program(program)
+    assert parse_program(text) == program
+    lines = text.splitlines() or ["\tecall"]
+    index = at % len(lines)
+    lines[index] = edit.format(lines[index])
+    with pytest.raises(ParseError) as error:
+        parse_program("".join(f"{line}\n" for line in lines))
+    assert error.value.line == index + 1
+
+
+@pytest.mark.parametrize("line", REFUSED)
+def test_a_line_an_assembler_might_read_is_still_refused(line: str) -> None:
+    with pytest.raises(ParseError, match="line 2: not in canonical form"):
+        parse_program(f"\tecall\n{line}\n")
+
+
+def test_text_without_its_last_newline_is_refused() -> None:
+    with pytest.raises(ParseError, match="line 2: the text does not end with a newline"):
+        parse_program("\tecall\n\tecall")
