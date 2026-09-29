@@ -9,7 +9,7 @@ from test_desugar import CURRY, lines
 import fpl.eval
 from fpl.ast_core import Statement, Strand
 from fpl.desugar import desugar
-from fpl.driver import run
+from fpl.driver import run, stacks
 from fpl.errors import FplError
 from fpl.eval import Stack, State, evaluate
 from fpl.parse import parse
@@ -56,6 +56,18 @@ def test_a_nested_run_spends_the_line_fuel() -> None:
     statements = desugar(parse("x : --\n\n" + NESTED + "\n"))
     assert outcome(statements, 10) == ((Strand((2, 3, 4)),),)
     assert outcome(statements, 9) == "ERROR: 3:1 out of fuel"
+
+
+def test_each_run_line_has_its_fuel() -> None:
+    """The budget is a run line's, not the program's: two lines of ten steps complete with ten,
+    and with nine the costly line fails at its own line."""
+    both = desugar(parse("x : --\n\n" + NESTED + "\n" + NESTED + "\n"))
+    assert outcome(both, 10) == ((Strand((2, 3, 4)),), (Strand((2, 3, 4)),))
+    assert outcome(both, 9) == "ERROR: 3:1 out of fuel"
+    second = desugar(parse("1\n" + NESTED + "\n"))
+    assert outcome(second, 9) == "ERROR: 2:1 out of fuel"
+    with pytest.raises(FplError, match=r"^ERROR: 2:1 out of fuel$"):
+        stacks(second, 9)
 
 
 def test_a_recursion_too_deep_is_an_error_at_its_line() -> None:
