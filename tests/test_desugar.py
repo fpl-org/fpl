@@ -21,7 +21,7 @@ from fpl.ast_core import (
 from fpl.ast_surface import Cell, Enclosure, Frame, Line, Pair, Program, Text
 from fpl.desugar import START, desugar, listing, resugar, text
 from fpl.driver import run
-from fpl.errors import FplError
+from fpl.errors import FplError, Span
 from fpl.eval import BUILTINS, CONTROLS, evaluate
 from fpl.parse import parse
 from fpl.print import render
@@ -383,3 +383,12 @@ def test_join_takes_code_and_enclose_a_value() -> None:
 
 def test_every_declared_builtin_has_an_implementation() -> None:
     assert set(EFFECTS) == set(BUILTINS) | set(CONTROLS)
+
+
+@given(st.sampled_from(["", CURRY, "nop : --\n"]), programs)
+def test_a_run_is_placed_at_its_line(head: str, body: str) -> None:
+    """A run line's statement points at the line it runs, column 1, below any definition."""
+    statements = desugar(parse(head + body + "\n"))
+    first = head.count("\n") + 1
+    lines = [Span(first + index, 1) for index in range(body.count("\n") + 1)]
+    assert [s.span for s in statements if isinstance(s, Run)] == lines
