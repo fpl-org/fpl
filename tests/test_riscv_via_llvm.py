@@ -1,12 +1,28 @@
-"""Oracle: the tools come from the pin, and every other answer is an error, never a skip."""
+"""Oracle: the tools come from the pin, and the printed text is what llvm-objdump prints."""
 
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
 from hypothesis import assume, given
 from hypothesis import strategies as st
-from riscv_oracle import NAMES, VERSIONS, ToolchainError, parse_paths, resolve, toolchain
+from riscv_oracle import (
+    NAMES,
+    VERSIONS,
+    ToolchainError,
+    assemble,
+    disassemble,
+    link,
+    parse_paths,
+    resolve,
+    toolchain,
+)
+from riscv_strategies import instructions
+from riscv_virt import HEAD
+
+from fpl.asm.riscv.model import Bare, Fence, I, Jalr, Load, Program, R, Shift, Store, Upper
+from fpl.asm.riscv.text import print_program
 
 GOOD = [f"/nix/store/0000-tool/bin/{name}" for name in NAMES]
 # Lines a resolution may print that are not the answer: the shell hook's banner, a tool found
@@ -53,3 +69,28 @@ def test_anything_else_is_an_error_that_shows_stdout_and_stderr(lines: list[str]
 def test_no_nix_is_an_error_naming_the_command_not_a_skip() -> None:
     with pytest.raises(ToolchainError, match="/nonexistent/nix develop"):
         resolve(nix="/nonexistent/nix")
+
+
+# Every form but the control transfers, whose operand objdump prints as a resolved address.
+LABEL_FREE = (R, I, Shift, Upper, Load, Store, Jalr, Fence, Bare)
+
+
+@given(st.lists(instructions(*LABEL_FREE), min_size=1, max_size=20).map(tuple))
+def test_the_printed_text_is_the_disassembly(program: Program) -> None:
+    """[law: print-is-disassembly] objdump prints the printer's lines back, as many of them.
+
+    The printed program, after `_start` and nothing else, assembles and links; the lines
+    llvm-objdump prints for it, address column removed, are the printer's lines, leading tab
+    removed. The programs are the valid strategies' (in range by construction), standing in
+    for "the checker accepts" until the checker exists.
+    """
+    tools = toolchain()
+    text = print_program(program)
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp)
+        assembled = assemble(tools, HEAD + text, work)
+        assert assembled.returncode == 0, assembled.stderr
+        linked = link(tools, work)
+        assert linked.returncode == 0, linked.stderr
+        lines = disassemble(tools, work)
+    assert lines == [line[1:] for line in text.splitlines()]

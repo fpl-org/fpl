@@ -28,8 +28,10 @@ MC = ("-triple=riscv64", "-mattr=+m,-relax", "-filetype=obj")
 LD = ("--no-relax", "-Ttext=0x80000000", "-e", "_start")
 OBJDUMP = ("-d", "-M", "no-aliases", "-M", "numeric", "--no-print-imm-hex", "--mattr=+m")
 QEMU = ("-M", "virt", "-bios", "none", "-nographic", "-monitor", "none", "-serial", "stdio")
-# An instruction line of the disassembly: its address, then the canonical text.
-INSTRUCTION = re.compile(r"^\s*[0-9a-f]+:\s+(\S.*)$")
+# An instruction line of the disassembly: its address, the canonical text, and objdump's own
+# symbolization of an absolute target (` <_start+0x18>`, printed after `jalr x0, -2048(x0)` and
+# after a branch's address), which is a comment on the text, not part of it.
+INSTRUCTION = re.compile(r"^\s*[0-9a-f]+:\s+(\S.*?)(?: <[^<>]*>)?$")
 VERSIONS: dict[str, str] = dict(zip(NAMES, ("21.1.8", "21.1.8", "21.1.8", "10.2.4"), strict=True))
 
 
