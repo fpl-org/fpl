@@ -90,18 +90,76 @@ class Keyed:
     span: Span = field(compare=False)
 
 
-type Node = Push | Call | Bind | Keyed
+@dataclass(frozen=True)
+class Wild:
+    """_ : matches anything and binds nothing."""
+
+
+@dataclass(frozen=True)
+class Var:
+    """A name in a pattern: matches anything and names it in the row's body."""
+
+    name: str
+
+
+@dataclass(frozen=True)
+class Equal:
+    """A literal, or $x: matches a value equal to the one the node pushes once x is bound."""
+
+    node: "Node"
+
+
+@dataclass(frozen=True)
+class Inverse:
+    """( name args ): the constructor run backwards, each argument matching what it gave."""
+
+    name: str
+    args: tuple["Pattern", ...]
+    span: Span = field(compare=False)
+
+
+@dataclass(frozen=True)
+class Guarded:
+    """p ∈ test: p, and the word test leaves 1 on the value."""
+
+    pattern: "Pattern"
+    test: str
+    span: Span = field(compare=False)
+
+
+type Pattern = Wild | Var | Equal | Inverse | Guarded
+
+
+@dataclass(frozen=True)
+class Row:
+    """One pattern per value a match takes, then the code run when they all match."""
+
+    patterns: tuple[Pattern, ...]
+    body: tuple["Node", ...]
+
+
+@dataclass(frozen=True)
+class Match:
+    """Take as many values as a row has patterns and run the body of the first row matching
+    them; none is +fail, raised at the match."""
+
+    rows: tuple[Row, ...]
+    span: Span = field(compare=False)
+
+
+type Node = Push | Call | Bind | Keyed | Match
 
 
 @dataclass(frozen=True)
 class Effect:
-    """An effect line's names: what a word takes, then what it leaves; and the slot of each
-    input (S49 rule 5): a value, run at once; a thunk, run when and if the word chooses; code,
-    inspected, never run. No slots given means every input is a value; a count other than one
-    per input is refused."""
+    """An effect line's names: what a word takes, then what it leaves, and whether it may fail
+    (+fail); and the slot of each input (S49 rule 5): a value, run at once; a thunk, run when and
+    if the word chooses; code, inspected, never run. No slots given means every input is a value;
+    a count other than one per input is refused."""
 
     ins: tuple[str, ...]
     outs: tuple[str, ...]
+    fails: bool = False
     _: KW_ONLY
     slots: tuple[Slot, ...] = ()
 
@@ -141,6 +199,8 @@ EFFECTS: dict[str, Effect] = {
     "drop": Effect(("x",), ()),
     "enclose": Effect(("x",), ("q",)),
     ",": Effect(("a", "b"), ("ab",), slots=("code", "code")),
+    "pair": Effect(("a", "b"), ("p",)),
+    "cons": Effect(("x", "xs"), ("ys",)),
     "!": Effect(("q",), ("x",), slots=("thunk",)),
     "if": Effect(("c", "t", "e"), (), slots=("value", "thunk", "thunk")),
     "swap-args": Effect(("x", "y", "q"), ("z",), slots=("value", "value", "thunk")),
