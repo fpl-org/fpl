@@ -53,7 +53,7 @@ digest = st.tuples(st.integers(0, 32), st.binary(min_size=32, max_size=32)).map(
     lambda zeros_bytes: bytes(zeros_bytes[0]) + zeros_bytes[1][zeros_bytes[0] :]
 )
 ident = digest.map(lambda d: Multihash(BLAKE2B_256, d))
-hashes = st.binary(max_size=64).map(content)
+hashes = st.one_of(st.binary(max_size=32), st.binary(min_size=33, max_size=64)).map(content)
 floats = st.one_of(st.floats(allow_nan=False), st.sampled_from([math.nan, -math.nan])).map(Flt.of)
 leaf: st.SearchStrategy[Leaf] = st.one_of(
     st.just(Absent()),
@@ -114,6 +114,12 @@ def test_json_embeds_and_reads_back(j: Json) -> None:
     fon-unwritable)."""
     embedded = embed(j)
     assert read(write(embedded)) == embedded
+
+
+@pytest.mark.parametrize("name", ["a", "X", "x1"])
+def test_a_cell_that_opens_with_a_letter_is_a_name(name: str) -> None:
+    """$ then a letter is a name, whatever the letter."""
+    assert read("$" + name) == Cell(name)
 
 
 @given(ident, hashes)
