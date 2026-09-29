@@ -28,6 +28,7 @@ from fpl.ast_core import (
     Push,
     Quotation,
     Run,
+    Slot,
     Statement,
     Strand,
     Value,
@@ -79,12 +80,42 @@ def definition(line: Line) -> tuple[str, Effect] | None:
 
 
 def effect_line(items: tuple[Item, ...]) -> tuple[str, Effect]:
-    """name : ins -- outs, every one a plain name."""
-    names = [name for name in map(plain, items) if name is not None]
-    if len(names) < len(items) or "--" not in names:
+    """name : ins -- outs, each a plain name or `name: Type` (S49); an output's type is read
+    past."""
+    name = plain(items[0])
+    declared = typed(items[2:])
+    names = [pair[0] for pair in declared]
+    if name is None or "--" not in names:
         unimplemented()
     cut = names.index("--")
-    return names[0], Effect(tuple(names[2:cut]), tuple(names[cut + 1 :]))
+    slots: tuple[Slot, ...] = tuple(pair[1] for pair in declared[:cut])
+    return name, Effect(tuple(names[:cut]), tuple(names[cut + 1 :]), slots=slots)
+
+
+def typed(items: tuple[Item, ...]) -> list[tuple[str, Slot]]:
+    """Each plain name with its slot: `name: Type` has the slot its type makes, a bare name is
+    an untyped value (hole bare-slot-names)."""
+    declared: list[tuple[str, Slot]] = []
+    rest = iter(items)
+    for item in rest:
+        name = plain(item)
+        if name is None:
+            unimplemented()
+        if len(name) > 1 and name.endswith(":"):
+            declared.append((name[:-1], slot(next(rest, None))))
+        else:
+            declared.append((name, "value"))
+    return declared
+
+
+def slot(kind: Item | None) -> Slot:
+    """The slot a type makes (S49 rule 5): [ ] a thunk, Code code, any other a value; a `name:`
+    with no type after it is refused."""
+    if kind is None or plain(kind) == "--":
+        unimplemented()
+    if isinstance(kind, Enclosure) and kind.pair == "quotation":
+        return "thunk"
+    return "code" if plain(kind) == "Code" else "value"
 
 
 def plain(item: Item) -> str | None:
@@ -259,9 +290,11 @@ def written(statement: Statement) -> Line:
             return Line(sugared(statement.code), (), START)
         case Define():
             effect = statement.effect
-            names = (statement.name, ":", *effect.ins, "--", *effect.outs)
+            ins = zip(effect.ins, effect.slots, strict=True)
+            taken = (item for name, kind in ins for item in declaration(name, kind))
+            head = (named(statement.name), named(":"), *taken, named("--"))
             body = (Line(sugared(statement.code), (), START),) if statement.code else ()
-            return Line((framed(tuple(map(named, names))),), body, START)
+            return Line((framed((*head, *map(named, effect.outs))),), body, START)
         case _:
             assert_never(statement)
 
@@ -286,6 +319,20 @@ def stranding(node: Node | None) -> bool:
 def framed(items: tuple[Item, ...]) -> Frame:
     """Items as a frame of one cell, or of none."""
     return Frame((Cell(items, START),) if items else (), START)
+
+
+def declaration(name: str, kind: Slot) -> tuple[Item, ...]:
+    """An input as written: a value bare, a thunk `name: []`, code `name: Code`. The type a
+    thunk was declared with is not kept (hole thunk-type-dropped)."""
+    match kind:
+        case "value":
+            return (named(name),)
+        case "thunk":
+            return (named(name + ":"), Enclosure("quotation", (framed(()),), START))
+        case "code":
+            return (named(name + ":"), named("Code"))
+        case _:
+            assert_never(kind)
 
 
 def named(name: str) -> Word:

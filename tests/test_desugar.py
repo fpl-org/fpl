@@ -28,6 +28,7 @@ from fpl.print import render
 
 CURRY = "curry : x q -- q'\n\tswap enclose swap ,\n"
 LCURRY = "lcurry : x q -- q'\n\t[ swap ] swap , curry\n"
+SLOTS = "app : x t: [] c: Code -- y\n"
 
 items = st.recursive(
     st.integers(-9, 99).map(str) | st.sampled_from(sorted(EFFECTS)),
@@ -58,7 +59,7 @@ def outcome(source: str) -> str:
 
 
 @pytest.mark.obligation("desugaring preserves meaning")
-@given(st.sampled_from(["", CURRY, "nop : --\n"]), programs)
+@given(st.sampled_from(["", CURRY, "nop : --\n", SLOTS]), programs)
 def test_desugaring_preserves_meaning(head: str, body: str) -> None:
     """The core written back as source, with no bar, ( ) or block left, means what the source
     meant: bars and ( ) only sequence, a section is its quotation, a block its children."""
@@ -192,11 +193,11 @@ def test_a_frame_that_reaches_below_its_balance_is_a_section(source: str, printe
 
 @pytest.mark.parametrize(
     "source",
-    ["1 dup\n", "“a” “b”\n", "1.5 | -9 +\n", CURRY + "nop : --\n1 [ + ] curry\n"],
+    ["1 dup\n", "“a” “b”\n", "1.5 | -9 +\n", CURRY + "nop : --\n1 [ + ] curry\n", SLOTS],
 )
 def test_core_without_sugar_writes_back_as_its_source(source: str) -> None:
     """A source with no bar but between two literals, no ( ) and no block but a definition's
-    body is what resugar writes for its core."""
+    body is what resugar writes for its core; a slot is written bare, `t: []` or `c: Code`."""
     assert resugar(desugar(parse(source))) == parse(source)
 
 
@@ -227,6 +228,22 @@ def test_an_effect_takes_values_unless_its_slots_say_otherwise() -> None:
     assert Effect(("x",), ()) == Effect(("x",), (), slots=("value",))
     with pytest.raises(ValueError, match="one slot per input"):
         Effect(("x",), (), slots=("code", "code"))
+
+
+def test_a_typed_effect_line_declares_its_slots() -> None:
+    """[S49] name: Type per slot: a type spelled [ ] makes a thunk, Code a code slot, any other
+    a value; a bare name is an untyped value; an output's type is read past."""
+    source = "f : t: [ -- x ]  c: Code  l: ⟨ a b ⟩  n: Int  m -- z: Int\n"
+    (definition,) = desugar(parse(source))
+    assert isinstance(definition, Define)
+    assert definition.effect == Effect(
+        ("t", "c", "l", "n", "m"), ("z",), slots=("thunk", "code", "value", "value", "value")
+    )
+
+
+def test_a_slot_type_is_not_a_slot() -> None:
+    """[S49] f : x: Int  y: Int -- z: Int takes two values, not four: 1 | 2 f runs f."""
+    assert run("f : x: Int  y: Int -- z: Int\n\t+\n1 | 2 f\n") == "3\n"
 
 
 def test_parentheses_rotate_the_head_to_the_end() -> None:
@@ -279,6 +296,7 @@ def test_a_word_refuses_at_its_position(source: str, error: str) -> None:
         *("∞\n", "#x\n", "#1\n", "$1\n", "1\u00b4\n", "a/b\n", "{ 1 }\n", "()\n", "“⟨1⟩”\n"),
         *("{}\n", ";;; s\n\t1\n", "\n\t1\n", "1\n\t; c\n\t\t2\n"),
         *("⟨ (+ 1 2) ⟩\n", "f : x\n", "f : x -- y | 1\n", "f : #x -- y\n", "1 2 3 fold\n"),
+        *("f : x: -- y\n", "f : -- y:\n", "#f : --\n"),
     ],
 )
 def test_what_no_part_implements_is_refused_before_running(source: str) -> None:
