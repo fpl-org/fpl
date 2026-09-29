@@ -172,12 +172,14 @@ class Effect:
 
 @dataclass(frozen=True)
 class Define:
-    """name : ins -- outs, the code of the block under it, and its docstring ("" for none)."""
+    """name : ins -- outs, the code of the block under it, its docstring ("" for none), and where
+    its effect line is."""
 
     name: str
     effect: Effect
     code: tuple[Node, ...]
     doc: str = ""
+    span: Span = field(compare=False, default=Span(1, 1))
 
 
 @dataclass(frozen=True)
