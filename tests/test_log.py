@@ -302,6 +302,24 @@ def test_load_refused(tmp_path: Path, events: list[Event], reason: str) -> None:
     assert path.read_bytes() == b"".join(record(event, KEY) for event in before)
 
 
+@pytest.mark.parametrize(
+    ("event", "reason"),
+    [
+        (dataclasses.replace(FIRST, schema=2), "schema 2 is unknown"),
+        (dataclasses.replace(FIRST, model="m" * 257), "model is not printable ASCII"),
+        (dataclasses.replace(FIRST, model="a\x01b"), "model is not printable ASCII"),
+        (dataclasses.replace(FIRST, fuel=2**64), "a number is not below 2\\^64"),
+        (dataclasses.replace(FIRST, session="é"), "a number is not below 2\\^64 or a text"),
+    ],
+)
+def test_write_refused(tmp_path: Path, event: Event, reason: str) -> None:
+    """An event load would refuse is refused before anything is written, its bodies included."""
+    path = tmp_path / "s.log"
+    with pytest.raises(RefusedError, match=f"^{reason}"):
+        write(path, KEY, Log((), {}, 0), event, {hashed(LONG): LONG})
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_bodies_hash_to_their_names(tmp_path: Path) -> None:
     """A body longer than 32 bytes is kept beside the log under its name; a file that does not
     hash to its name, or a hashed name for bytes held inline, is refused."""
