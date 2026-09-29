@@ -262,3 +262,11 @@ def test_a_line_after_a_match_counts_from_nothing() -> None:
     later line takes only what the lines between push."""
     source = "f : x -- y z\n\tmatch\n\t\t_\t1\n\t2\n\tmatch\n\t\t2\t#two\n1 f\n"
     assert run(source) == "1 #two\n"
+
+
+def test_a_wildcard_row_whose_body_is_a_goal_waits_for_goals() -> None:
+    """[D4.3] _ ? is a wildcard row whose body is a goal the elaborator reports; goals are not
+    implemented (hole goal-placeholder), so the program is refused before it runs."""
+    with pytest.raises(FplError) as refused:
+        run("f : x -- y\n\tmatch\n\t\t0\t1\n\t\t_\t?\n1 f\n")
+    assert (refused.value.span, refused.value.message) == (Span(1, 1), "no evaluator yet")
