@@ -11,9 +11,21 @@ from fpl.ast_core import Bind, Call, Define, Effect, Match, Node, Push, Row, Run
 from fpl.driver import run
 from fpl.errors import FplError, Span
 from fpl.eval import State, running, step
-from fpl.types import Arrow, Input, Kind, Sort, Typing, after, elaborate, sort
+from fpl.types import (
+    ARROWS,
+    Arrow,
+    Input,
+    Kind,
+    Sort,
+    Typing,
+    UntypedError,
+    after,
+    elaborate,
+    sort,
+)
 
 HERE = Span(1, 1)
+AT = Span(2, 3)
 BUILTINS = ("+", "-", "times", "dup", "swap", "drop")
 
 
@@ -57,12 +69,24 @@ def test_calling_a_word_meets_its_inputs() -> None:
 
 
 @pytest.mark.parametrize(
-    "node", [Bind("x", (), HERE), Match((Row((Wild(),), ()),), HERE)], ids=["bind", "match"]
+    "node",
+    [Bind("x", (), AT), Match((Row((Wild(),), ()),), AT), Call("+", AT)],
+    ids=["bind", "match", "call"],
 )
 def test_taking_from_nothing_is_refused(node: Node) -> None:
-    """Below the driver, whose lines never bind or match on an empty stack: refused there."""
-    with pytest.raises(FplError, match="stack underflow"):
-        after(Typing((), {}, {}), (node,), {})
+    """Below the driver, whose lines never bind or match on an empty stack and whose short
+    calls are sections: refused at the node."""
+    with pytest.raises(FplError) as caught:
+        after(Typing((), {}, {}), (node,), ARROWS)
+    assert str(caught.value) == "ERROR: 2:3 stack underflow"
+
+
+def test_a_name_dies_with_its_binder() -> None:
+    """Below the driver, whose binders run to the end of their code: a name read after its
+    binder's scope is not bound there."""
+    code = (Bind("x", (), HERE), Call("x", HERE))
+    with pytest.raises(UntypedError):
+        after(Typing((Kind.NUMBER,), {}, {}), code, {})
 
 
 def goals(source: str) -> list[str]:
@@ -81,11 +105,37 @@ def goals(source: str) -> list[str]:
         ("f : x y -- z\n\t→a ? a +\n", "GOAL 2:5 ? : t0 -- number"),
         ("f : x -- y\n\tmatch\n\t\t0\t1\n\t\t_\t?\n", "GOAL 4:5 ? : -- value"),
         ("“a” ?\n", "GOAL 1:5 ? : text --"),
+        ("f : x -- y\n\t→a ?\n", "GOAL 2:5 ? : -- value"),
     ],
 )
 def test_a_goal_is_reported_with_the_effect_that_fills_it(source: str, goal: str) -> None:
     """[D2.7] ? is a goal the elaborator reports: it takes the stack under it and leaves what
     the code after it takes, or what the effect line promises when nothing follows."""
+    assert goals(source) == [goal]
+
+
+def test_a_goal_before_a_binder_leaves_what_its_scope_takes() -> None:
+    """[D2.7] A goal before a binder leaves the values the scope takes, the scope ending at
+    the count the effect line promises."""
+    source = "f : x -- y\n\t? →a ?\n"
+    assert goals(source) == ["GOAL 2:2 ? : t0 -- value", "GOAL 2:7 ? : -- value"]
+
+
+@pytest.mark.parametrize(
+    ("source", "goal"),
+    [
+        ("1 ?\n", "GOAL 1:3 ? : number --"),
+        ("1 2 3 ?\n", "GOAL 1:7 ? : number --"),
+        ("1 “a” 2 ?\n", "GOAL 1:9 ? : value --"),
+        ("{ a 1 } ?\n", "GOAL 1:9 ? : value --"),
+        ("f : x -- y\n\tmatch\n\t\t0\t“a”\n\t\t_\t“b”\n0 f ?\n", "GOAL 5:5 ? : text --"),
+        ("f : x -- y\n\tmatch\n\t\t0\t“a”\n\t\t_\t1\n0 f ?\n", "GOAL 5:5 ? : value --"),
+    ],
+    ids=["number", "strand", "mixed-strand", "dict", "rows-agree", "rows-differ"],
+)
+def test_a_goal_shows_the_sorts_under_it(source: str, goal: str) -> None:
+    """A literal has its sort, a strand its items' when they share one, a match's output the
+    sort its rows agree on; any other value is of none."""
     assert goals(source) == [goal]
 
 
@@ -102,6 +152,7 @@ def test_a_goal_run_is_refused_where_it_stands() -> None:
         ("f : x -- y\n\t_\n1 f\n", "1\n"),
         ("1 _ 2 +\n", "3\n"),
         ("f : x y -- z\n\t_ +\n1 | 2 f\n", "3\n"),
+        ("f : x -- y\n\tmatch\n\t\t0\t_\n\t\t_\t_\n\t1\n0 f\n", "1\n"),
     ],
 )
 def test_a_hole_in_a_term_is_inferred_as_nothing(source: str, output: str) -> None:
