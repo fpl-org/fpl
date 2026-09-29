@@ -237,7 +237,17 @@ def test_a_frame_that_reaches_below_its_balance_is_a_section(source: str, printe
 
 @pytest.mark.parametrize(
     "source",
-    ["1 dup\n", "“a” “b”\n", "1.5 | -9 +\n", CURRY + "nop : --\n1 [ + ] curry\n", SLOTS],
+    [
+        "1 dup\n",
+        "“a” “b”\n",
+        "1.5 | -9 +\n",
+        CURRY + "nop : --\n1 [ + ] curry\n",
+        "#a #b\n",
+        "1 →a a\n",
+        "1 →a/b a/b a/b +\n",
+        "{ k 1 }\n",
+        SLOTS,
+    ],
 )
 def test_core_without_sugar_writes_back_as_its_source(source: str) -> None:
     """A source with no bar but between two literals, no ( ) and no block but a definition's
@@ -247,7 +257,8 @@ def test_core_without_sugar_writes_back_as_its_source(source: str) -> None:
 
 def test_a_written_tree_points_at_the_start() -> None:
     """A tree desugar writes has no source of its own: every span is 1:1, where it refuses."""
-    statements = desugar(parse(CURRY + SLOTS + "nop : --\n1 [ + ] curry\n“a” ⟨ 1 ⟩ 1.5\n"))
+    source = CURRY + SLOTS + "nop : --\n1 [ + ] curry\n“a” ⟨ 1 ⟩ 1.5\n#a { k 1 } 1 →a a\n"
+    statements = desugar(parse(source))
     written = [*spans(resugar(statements)), *spans(listing(evaluate(statements)))]
     assert set(written) == {START}
 

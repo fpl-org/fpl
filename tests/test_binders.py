@@ -19,11 +19,13 @@ from fpl.errors import FplError
         ("1 →x\n", ""),
         ("→x\n", "[ →x ]\n"),
         ("1 2 →x | x x +\n", "2 4\n"),
+        ("1 →x | dup\n", "[ dup ]\n"),
     ],
 )
 def test_a_binder_names_the_top_for_the_rest_of_its_line(source: str, printed: str) -> None:
     """Decision f: →x takes the top and names it; a later binder shadows, the name inside a
-    quotation is the value it named, a binder alone on an empty stack is a section."""
+    quotation is the value it named, a binder alone on an empty stack is a section; a binder
+    leaves nothing, so a frame after it that takes the value it took is a section."""
     assert run(source) == printed
 
 
@@ -66,17 +68,32 @@ def test_symbols_and_dicts_are_values(source: str, printed: str) -> None:
         ("{ a 1 a 2 }\n", "ERROR: 1:7 repeated key a"),
         ("g : -- y\ng →x\n", "ERROR: 2:3 stack underflow"),
         ("g : -- y\n{ a g }\n", "ERROR: 2:1 a dict value is one value"),
+        ("g : -- y\n1 →x | g →y\n", "ERROR: 2:10 stack underflow"),
+        ("g : -- y\n1 →x | { a g }\n", "ERROR: 2:8 a dict value is one value"),
     ],
 )
 def test_binders_and_dicts_refuse_at_their_position(source: str, error: str) -> None:
-    """fpl/fon.py dict: a key given twice is refused where it repeats."""
+    """fpl/fon.py dict: a key given twice is refused where it repeats; a binder or a dict in
+    the scope of another binder keeps its own position."""
     with pytest.raises(FplError) as caught:
         run(source)
     assert str(caught.value) == error
 
 
 @pytest.mark.parametrize(
-    "source", ["#x\u00b4\n", "#a/b\n", "{ a }\n", "{ 1 2 }\n", "{ a + }\n", "{ a (+ 1 2) }\n"]
+    "source",
+    [
+        "#x\u00b4\n",
+        "#a/b\n",
+        "{ a }\n",
+        "{ 1 2 }\n",
+        "{ a + }\n",
+        "{ a (+ 1 2) }\n",
+        "1 →x\u00b4\n",
+        "1 →a/\n",
+        "1 →a/b/\n",
+        "1 →x | ../x\n",
+    ],
 )
 def test_what_binders_do_not_yet_read_is_refused(source: str) -> None:
     with pytest.raises(FplError) as caught:
@@ -109,6 +126,10 @@ def test_a_head_ending_in_a_slash_mounts_its_children_as_a_directory(
     [
         ("k : -- y\n\t3\nm/\n\tk : -- y\n\t\t4\n\tf : -- y\n\t\t../k\nm/f\n", "4\n"),
         ("k : -- y\n\t3\ng : -- y\n\t../k\ng\n", "3\n"),
+        (
+            "m/\n\tk : -- y\n\t\t1\n\tn/\n\t\tk : -- y\n\t\t\t2\n\t\tf : -- y\n\t\t\t../k\nm/n/f\n",
+            "2\n",
+        ),
     ],
 )
 def test_dot_dot_is_the_directory_enclosing_the_word(source: str, printed: str) -> None:
@@ -164,6 +185,9 @@ def test_history_holds_the_shadowed_definitions(source: str, printed: str) -> No
         "../k\n",
         "m/ 1\n",
         "#m bind\n",
+        "m/\n\tk : -- y\n\t\t1\nm\n",
+        "k : -- y\n\t3\n../k\n",
+        "a/b/\n\t{ a 1 a 2 }\n",
     ],
 )
 def test_what_directories_do_not_yet_read_is_refused(source: str) -> None:
