@@ -159,7 +159,7 @@ fpl.repl.x__call__mutmut_2 -- equivalent: None and False are both false for add_
 fpl.repl.x__call__mutmut_3 -- equivalent: None and False are both false for allow_abbrev
 fpl.repl.x__call__mutmut_58 -- equivalent: the value of --log is never read, only whether it is None
 fpl.repl.x__call__mutmut_69 -- equivalent: the value of --show is never read, only whether it is None
-fpl.repl.x__call__mutmut_94 -- equivalent: main prints the usage line for a UsageError, never its message
+fpl.repl.x__call__mutmut_97 -- equivalent: main prints the usage line for a UsageError, never its message
 fpl.repl.x__call__mutmut_95 -- equivalent: main prints the usage line for a UsageError, never its message
 fpl.repl.x__call__mutmut_96 -- equivalent: main prints the usage line for a UsageError, never its message
 fpl.repl.x__fuel__mutmut_6 -- equivalent: argparse reports a type function's ValueError without its message, and main prints the usage line alone
