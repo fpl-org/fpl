@@ -102,3 +102,20 @@ def forward_branching(draw: st.DrawFn, n: int) -> Program:
         for index in range(len(body) + 1)
         for item in (*defined[index], *body[index : index + 1])
     )
+
+
+NOP = I(OpI.ADDI, Reg.X0, Reg.X0, 0)
+FAR = Label(".Lfar")
+
+
+def padded(jump: Branch | Jal, offset: int) -> Program:
+    """`jump` to `.Lfar`, defined `offset` bytes away (a multiple of 4), the gap filled by nops.
+
+    Forward, the label follows `offset / 4 - 1` nops after the jump; backward (or at 0), it
+    precedes `-offset / 4` nops before the jump. The offset is exactly the checker's
+    `4 x (instruction index of the label - instruction index of the jump)`.
+    """
+    jump = replace(jump, target=FAR)
+    if offset > 0:
+        return (jump, *(NOP,) * (offset // 4 - 1), FAR)
+    return (FAR, *(NOP,) * (-offset // 4), jump)
