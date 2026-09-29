@@ -105,5 +105,5 @@ EFFECTS: dict[str, Effect] = {
     "dup": Effect(("x",), ("x", "x")),
     "drop": Effect(("x",), ()),
     "enclose": Effect(("x",), ("q",)),
-    ",": Effect(("a", "b"), ("ab",)),
+    ",": Effect(("a", "b"), ("ab",), slots=("code", "code")),
 }
