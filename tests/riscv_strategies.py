@@ -1,16 +1,21 @@
-"""Not a test: Hypothesis strategies over `fpl.asm.riscv` values, valid half.
+"""Not a test: Hypothesis strategies over `fpl.asm.riscv` values, valid and deliberately invalid.
 
-Every value drawn here is in range by construction: 12-bit signed immediates and offsets, 6-bit
+The valid half is in range by construction: 12-bit signed immediates and offsets, 6-bit
 shift amounts (5-bit for the W forms), the unsigned 20-bit upper immediate, label names in the
 checker's form `.L[A-Za-z0-9_]+`. Each range's two ends are drawn on purpose, not left to
-chance. The deliberately invalid strategies belong to the checker's laws.
+chance.
+
+The invalid half serves the checker's laws: `invalid_programs()` puts one to three violations
+into a valid program and says which problems they are; `far_jumps()` puts a jump just inside
+or just past its reach.
 """
 
 from collections import defaultdict
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from hypothesis import strategies as st
 
+from fpl.asm.riscv.check import Kind
 from fpl.asm.riscv.model import (
     CLASSES,
     Access,
@@ -119,3 +124,82 @@ def padded(jump: Branch | Jal, offset: int) -> Program:
     if offset > 0:
         return (jump, *(NOP,) * (offset // 4 - 1), FAR)
     return (FAR, *(NOP,) * (-offset // 4), jump)
+
+
+def beyond(low: int, high: int) -> st.SearchStrategy[int]:
+    """An integer just past either end of `[low, high]`, or far past it."""
+    past = st.one_of(st.just(0), st.integers(1, 16), st.integers(17, 1 << 64))
+    return st.one_of(past.map(lambda d: high + 1 + d), past.map(lambda d: low - 1 - d))
+
+
+def bad_shift(op: OpShift) -> st.SearchStrategy[tuple[Instr, Kind]]:
+    """`op` with an amount past its 5 or 6 bits, and the kind the checker calls it."""
+    kind, high = (Kind.SHAMT5, 31) if op.endswith("w") else (Kind.SHAMT6, 63)
+    return st.tuples(st.builds(Shift, st.just(op), regs, regs, beyond(0, high)), st.just(kind))
+
+
+imm12_beyond = beyond(-2048, 2047)
+# An instruction with its one ranged operand out of range, and the kind of its problem.
+OUT_OF_RANGE: st.SearchStrategy[tuple[Instr, Kind]] = st.one_of(
+    st.tuples(st.builds(I, st.sampled_from(OpI), regs, regs, imm12_beyond), st.just(Kind.IMM12)),
+    st.tuples(
+        st.builds(Load, st.sampled_from(OpLoad), regs, regs, imm12_beyond), st.just(Kind.IMM12)
+    ),
+    st.tuples(
+        st.builds(Store, st.sampled_from(OpStore), regs, regs, imm12_beyond), st.just(Kind.IMM12)
+    ),
+    st.tuples(st.builds(Jalr, regs, regs, imm12_beyond), st.just(Kind.IMM12)),
+    st.sampled_from(OpShift).flatmap(bad_shift),
+    st.tuples(
+        st.builds(Upper, st.sampled_from(OpUpper), regs, beyond(0, (1 << 20) - 1)),
+        st.just(Kind.IMM20),
+    ),
+)
+
+
+@dataclass(frozen=True, slots=True)
+class Invalid:
+    """A program with violations put in, and the `(index, kind)` of each problem they are."""
+
+    program: Program
+    problems: frozenset[tuple[int | None, Kind]]
+
+
+@st.composite
+def invalid_programs(draw: st.DrawFn, n: int = 20) -> Invalid:
+    """A `forward_branching(n)` program with one to three violations inserted at drawn places.
+
+    A violation is an operand out of range (`OUT_OF_RANGE`), a second definition of a label
+    (both definitions inserted, the later one the problem), or a jump to a label never defined
+    (a whole-program problem). The k-th violation's labels are `.Ldup<k>` and `.Lnowhere<k>`,
+    which the base's `.L<digits>` never are, so the base's labels stay unique and defined and
+    the problems are exactly the ones inserted. Inserting a few items moves no jump out of reach.
+    """
+    entries: list[tuple[Item, Kind | None]] = [(item, None) for item in draw(forward_branching(n))]
+    problems: set[tuple[int | None, Kind]] = set()
+
+    def insert(item: Item, kind: Kind | None, at_least: int = 0) -> int:
+        at = draw(st.integers(at_least, len(entries)))
+        entries.insert(at, (item, kind))
+        return at
+
+    for k in range(draw(st.integers(1, 3))):
+        match draw(st.sampled_from(("range", "duplicate", "undefined"))):
+            case "range":
+                insert(*draw(OUT_OF_RANGE))
+            case "duplicate":
+                label = Label(f".Ldup{k}")
+                insert(label, Kind.DUPLICATE_LABEL, insert(label, None) + 1)
+            case _:
+                jump = draw(JUMPS[Branch] | JUMPS[Jal])
+                insert(replace(jump, target=Label(f".Lnowhere{k}")), None)
+                problems.add((None, Kind.UNDEFINED_LABEL))
+    problems |= {(index, kind) for index, (_, kind) in enumerate(entries) if kind is not None}
+    return Invalid(tuple(item for item, _ in entries), frozenset(problems))
+
+
+# Jumps to `.Lfar`, by class.
+JUMPS: dict[type[Branch | Jal], st.SearchStrategy[Branch | Jal]] = {
+    Branch: st.builds(Branch, st.sampled_from(OpBranch), regs, regs, st.just(FAR)),
+    Jal: st.builds(Jal, regs, st.just(FAR)),
+}

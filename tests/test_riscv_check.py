@@ -5,7 +5,7 @@ from collections.abc import Callable
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
-from riscv_strategies import forward_branching, padded
+from riscv_strategies import Invalid, forward_branching, invalid_programs, padded
 
 from fpl.asm.riscv.check import Kind, Problem, check
 from fpl.asm.riscv.model import (
@@ -114,3 +114,9 @@ def test_a_label_outside_the_dot_l_form_is_a_problem_where_defined_and_where_use
 ) -> None:
     program = (Label(name), Jal(Reg.X0, Label(name)))
     assert kinds(program) == [(0, Kind.LABEL_NAME), (1, Kind.LABEL_NAME)]
+
+
+@given(invalid_programs())
+def test_the_checker_names_exactly_the_violations_put_into_a_valid_program(case: Invalid) -> None:
+    """Each operand out of range, second definition and undefined target, and nothing else."""
+    assert set(kinds(case.program)) == case.problems
