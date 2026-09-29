@@ -188,6 +188,7 @@ def test_history_holds_the_shadowed_definitions(source: str, printed: str) -> No
         "m/\n\tk : -- y\n\t\t1\nm\n",
         "k : -- y\n\t3\n../k\n",
         "a/b/\n\t{ a 1 a 2 }\n",
+        "f : -- y\n\t1\nf/history/x\n",
     ],
 )
 def test_what_directories_do_not_yet_read_is_refused(source: str) -> None:
