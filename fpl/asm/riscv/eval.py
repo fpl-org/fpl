@@ -13,18 +13,23 @@ the 32-bit result (4.2.1, 4.2.2), as do `lui` and `auipc` for their 32-bit immed
 Division by zero and signed overflow follow Table 11 and never trap (12.2).
 
 The pc is an instruction index: labels take no space, every instruction is 4 bytes. `base`
-is the absolute address of instruction 0, which `auipc` adds. Trapped and Unmodelled carry
-the instruction index of the instruction they stopped at.
+is the absolute address of instruction 0, which `auipc` adds and the links of `jal` and
+`jalr` hold. A branch or `jal` goes to its label's first definition; a `jalr` goes to the
+instruction at its target address, and a target that is no instruction of the program, or a
+label never defined, ends the run as Unmodelled. Trapped and Unmodelled carry the instruction
+index of the instruction they stopped at.
 
 The system instructions follow the QEMU virt EEI in M-mode on one hart: ecall is cause 11
 (environment call from M-mode), ebreak cause 3 (breakpoint), and fence and fence.tso order
 nothing. Loads and stores are not modelled.
 """
 
+import operator
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import assert_never
 
+from fpl.asm.riscv.check import targets
 from fpl.asm.riscv.model import (
     Bare,
     Branch,
@@ -36,6 +41,7 @@ from fpl.asm.riscv.model import (
     Label,
     Load,
     OpBare,
+    OpBranch,
     OpI,
     OpR,
     OpShift,
@@ -144,6 +150,16 @@ UPPER: dict[OpUpper, Callable[[int, int], int]] = {
     OpUpper.AUIPC: lambda imm, address: u64(address + sext(imm << 12, 32)),
 }
 
+# The comparison each branch takes on (2.5.2).
+BRANCHES: dict[OpBranch, Callable[[int, int], bool]] = {
+    OpBranch.BEQ: operator.eq,
+    OpBranch.BNE: operator.ne,
+    OpBranch.BLT: lambda a, b: signed(a, 64) < signed(b, 64),
+    OpBranch.BGE: lambda a, b: signed(a, 64) >= signed(b, 64),
+    OpBranch.BLTU: operator.lt,
+    OpBranch.BGEU: operator.ge,
+}
+
 # The mcause of each trapping instruction in M-mode (privileged spec, Table 14).
 CAUSES: dict[OpBare, int] = {OpBare.ECALL: 11, OpBare.EBREAK: 3}
 
@@ -187,6 +203,25 @@ class OutOfFuel:
 type Outcome = Halted | Trapped | Unmodelled | OutOfFuel
 
 
+@dataclass(frozen=True, slots=True)
+class Code:
+    """A program's instructions at address `base`, each label's instruction index by name."""
+
+    instrs: tuple[Instr, ...]
+    labels: dict[str, int]
+    base: int
+
+    def address(self, index: int) -> int:
+        """The absolute address of the instruction at `index`."""
+        return u64(self.base + 4 * index)
+
+
+def write(regs: list[int], rd: Reg, value: int) -> None:
+    """Set `rd` to `value`; a write to x0 is discarded (2.1)."""
+    if rd != Reg.X0:
+        regs[rd] = value
+
+
 def arithmetic(instr: R | I | Shift | Upper, regs: list[int], address: int) -> int:
     """The value `instr` computes for rd from `regs`, at `address`."""
     match instr:
@@ -209,16 +244,49 @@ def system(instr: Fence | Bare, index: int, regs: list[int]) -> int | Trapped:
     return index + 1
 
 
-def step(instr: Instr, index: int, regs: list[int], base: int) -> int | Outcome:
-    """Execute `instr` at `index` on `regs` in place: the next index, or how the run ends."""
+def resolve(code: Code, index: int, label: Label) -> int | Unmodelled:
+    """The instruction index `label` names, for the jump at `index`."""
+    target = code.labels.get(label.name)
+    return Unmodelled(index, f"{label.name} is not defined") if target is None else target
+
+
+def indirect(code: Code, index: int, address: int) -> int | Unmodelled:
+    """The index of the instruction at `address`, for the `jalr` at `index`."""
+    target, between = divmod(address - code.base, 4)
+    if between or not 0 <= target < len(code.instrs):
+        return Unmodelled(index, f"jalr to {address:#x}: no instruction of the program")
+    return target
+
+
+def control(
+    instr: Branch | Jal | Jalr, index: int, regs: list[int], code: Code
+) -> int | Unmodelled:
+    """The index `instr` at `index` goes to, its link written once the target is known."""
+    match instr:
+        case Branch():
+            if BRANCHES[instr.op](regs[instr.rs1], regs[instr.rs2]):
+                return resolve(code, index, instr.target)
+            return index + 1
+        case Jal():
+            target = resolve(code, index, instr.target)
+        case Jalr():
+            target = indirect(code, index, u64(regs[instr.rs1] + instr.offset) & ~1)
+        case _:
+            assert_never(instr)
+    if isinstance(target, int):
+        write(regs, instr.rd, code.address(index + 1))
+    return target
+
+
+def step(code: Code, index: int, regs: list[int]) -> int | Outcome:
+    """Execute the instruction at `index` on `regs` in place: the next index, or the end."""
+    instr = code.instrs[index]
     match instr:
         case R() | I() | Shift() | Upper():
-            value = arithmetic(instr, regs, u64(base + 4 * index))
-            if instr.rd != Reg.X0:
-                regs[instr.rd] = value
+            write(regs, instr.rd, arithmetic(instr, regs, code.address(index)))
             return index + 1
         case Branch() | Jal() | Jalr():
-            return Unmodelled(index, f"{instr.op} is not followed")
+            return control(instr, index, regs, code)
         case Load() | Store():
             return Unmodelled(index, f"{instr.op} accesses memory, which is not modelled")
         case Fence() | Bare():
@@ -232,16 +300,17 @@ def run(program: Program, machine: Machine, base: int, fuel: int) -> Outcome:
 
     The registers change in a list local to the run; `machine` and the outcome are values.
     """
-    code = tuple(item for item in program if not isinstance(item, Label))
+    instrs = tuple(item for item in program if not isinstance(item, Label))
+    code = Code(instrs, targets(program), base)
     regs = list(machine.regs)
     index = 0
     for _ in range(fuel):
-        if index == len(code):
+        if index == len(instrs):
             break
-        after = step(code[index], index, regs, base)
+        after = step(code, index, regs)
         if not isinstance(after, int):
             return after
         index = after
-    if index < len(code):
+    if index < len(instrs):
         return OutOfFuel()
     return Halted(Machine(tuple(regs)))

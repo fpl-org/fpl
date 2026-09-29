@@ -3,18 +3,22 @@
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
-from riscv_strategies import STRAIGHT, between, instructions
+from riscv_strategies import STRAIGHT, between, forward_branching, instructions
 
 from fpl.asm.riscv.eval import Halted, Machine, OutOfFuel, Trapped, Unmodelled, run
 from fpl.asm.riscv.model import (
     Access,
     Bare,
+    Branch,
     Fence,
     I,
     Instr,
+    Jal,
     Jalr,
+    Label,
     Load,
     OpBare,
+    OpBranch,
     OpI,
     OpLoad,
     OpR,
@@ -136,7 +140,6 @@ def test_fences_do_nothing_on_one_hart() -> None:
 UNMODELLED = (
     Load(OpLoad.LD, Reg.X1, Reg.X2, 0),
     Store(OpStore.SD, Reg.X1, Reg.X2, 0),
-    Jalr(Reg.X1, Reg.X2, 0),
 )
 
 
@@ -164,3 +167,78 @@ def test_straight_line_code_halts_in_range_with_x0_zero(body: list[Instr], start
     assert isinstance(outcome, Halted)
     assert outcome.machine.regs[0] == 0
     assert all(0 <= value < 1 << 64 for value in outcome.machine.regs)
+
+
+@given(forward_branching(20), registers)
+def test_forward_branching_code_halts_within_one_step_per_instruction(
+    program: Program, start: Machine
+) -> None:
+    outcome = run(program, start, BASE, sum(not isinstance(item, Label) for item in program))
+    assert isinstance(outcome, Halted)
+
+
+def addi(rd: Reg, rs1: Reg, imm: int) -> I:
+    return I(OpI.ADDI, rd, rs1, imm)
+
+
+LOOP = Label(".Lloop")
+# x2 += 3, five times: 15 steps, the branch back taken four times.
+COUNTDOWN: Program = (
+    LOOP,
+    addi(Reg.X2, Reg.X2, 3),
+    addi(Reg.X1, Reg.X1, -1),
+    Branch(OpBranch.BNE, Reg.X1, Reg.X0, LOOP),
+)
+
+
+def test_a_loop_runs_until_its_branch_falls_through() -> None:
+    assert run(COUNTDOWN, machine({Reg.X1: 5}), BASE, 15) == Halted(machine({Reg.X2: 15}))
+    assert run(COUNTDOWN, machine({Reg.X1: 5}), BASE, 14) == OutOfFuel()
+
+
+SKIP = Label(".Lskip")
+
+
+@pytest.mark.parametrize(
+    ("op", "taken"),
+    [
+        (OpBranch.BEQ, False),
+        (OpBranch.BNE, True),
+        (OpBranch.BLT, True),
+        (OpBranch.BGE, False),
+        (OpBranch.BLTU, False),
+        (OpBranch.BGEU, True),
+    ],
+)
+def test_each_branch_compares_as_its_mnemonic_says(op: OpBranch, taken: bool) -> None:
+    """x1 = -1 and x2 = 1: less signed, greater unsigned, unequal."""
+    program = (Branch(op, Reg.X1, Reg.X2, SKIP), addi(Reg.X3, Reg.X0, 1), SKIP)
+    assert halted(program, machine({Reg.X1: ONES, Reg.X2: 1})).regs[Reg.X3] == (not taken)
+
+
+END = Label(".Lend")
+
+
+def test_jal_links_the_next_address_and_jumps_to_its_label() -> None:
+    program = (NOP, Jal(Reg.X1, END), addi(Reg.X3, Reg.X0, 1), END)
+    assert halted(program, machine({})) == machine({Reg.X1: BASE + 8})
+
+
+def test_jalr_clears_bit_0_and_links_after_reading_rs1() -> None:
+    """rd is rs1: the target comes from the old x5, the link replaces it."""
+    program = (Jalr(Reg.X5, Reg.X5, 1), addi(Reg.X3, Reg.X0, 1), addi(Reg.X4, Reg.X0, 3))
+    after = halted(program, machine({Reg.X5: BASE + 8}))
+    assert after == machine({Reg.X4: 3, Reg.X5: BASE + 4})
+
+
+@pytest.mark.parametrize("target", [BASE - 4, BASE + 2, BASE + 8, ONES])
+def test_jalr_to_no_instruction_of_the_program_is_unmodelled(target: int) -> None:
+    outcome = run((NOP, Jalr(Reg.X1, Reg.X5, 0)), machine({Reg.X5: target}), BASE, 10)
+    assert isinstance(outcome, Unmodelled)
+    assert (outcome.index, f"{target & ~1:#x}" in outcome.why) == (1, True)
+
+
+@pytest.mark.parametrize("jump", [Jal(Reg.X1, END), Branch(OpBranch.BEQ, Reg.X0, Reg.X0, END)])
+def test_a_jump_to_an_undefined_label_is_unmodelled(jump: Jal | Branch) -> None:
+    outcome = run((NOP, jump), machine({}), BASE, 10)
+    assert outcome == Unmodelled(1, ".Lend is not defined")
