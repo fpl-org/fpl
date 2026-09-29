@@ -205,7 +205,7 @@ class _Build:
     def island(self, at: int, end: int, parts: list[str | Program]) -> int:
         """Read the ⟨ ⟩ island opening at `at` into parts; return the offset after it."""
         after = counted(self.source, at, BRACKETS["⟨"], end)
-        if after < 0:
+        if after is None:
             raise FplError(self.lines.span(at), "⟨ never closed")
         parts.append(read(self.source, self.lines, at + 1, after - 1))
         return after
