@@ -179,6 +179,7 @@ def test_children_are_quotations_before_the_head() -> None:
         ("+ dup times\n\t1\n\t2\n", "9\n"),
         ("times\n\t+\n\t\t1\n\t\t2\n\t4\n", "12\n"),
         ("f : x -- y\n\t+\n\t\t1\n5 f\n", "6\n"),
+        ("1 + +\n\t10\n\t20\n", "31\n"),
     ],
 )
 def test_a_child_under_a_value_slot_runs_at_once(source: str, printed: str) -> None:
@@ -197,6 +198,9 @@ def test_a_child_under_a_value_slot_runs_at_once(source: str, printed: str) -> N
         ("1 | 2\n\t+\n", "[ + ] 1 | 2\n"),
         ("dup\n\t1\n\t2\n", "[ 1 ] 2 | 2\n"),
         ("dup\n\t+\n", "[ + ] [ + ]\n"),
+        ("+ dup times\n\t1\n\t2\n\t3\n", "[ 1 ] 25\n"),
+        ("mk : x --\nwrap : t: [] -- t\nmk wrap\n\t1 | 2 +\n\t3\n", "[ 1 | 2 + ] 3\n"),
+        ("pair : x t: [] -- x t\n1 pair\n\t1 | 2 +\n", "3 | 1\n"),
     ],
 )
 def test_a_child_under_a_thunk_or_code_slot_is_pushed_as_a_quotation(
@@ -241,7 +245,7 @@ def test_core_without_sugar_writes_back_as_its_source(source: str) -> None:
 
 def test_a_written_tree_points_at_the_start() -> None:
     """A tree desugar writes has no source of its own: every span is 1:1, where it refuses."""
-    statements = desugar(parse(CURRY + "nop : --\n1 [ + ] curry\n“a” ⟨ 1 ⟩ 1.5\n"))
+    statements = desugar(parse(CURRY + SLOTS + "nop : --\n1 [ + ] curry\n“a” ⟨ 1 ⟩ 1.5\n"))
     written = [*spans(resugar(statements)), *spans(listing(evaluate(statements)))]
     assert set(written) == {START}
 
@@ -264,7 +268,7 @@ def test_an_effect_takes_values_unless_its_slots_say_otherwise() -> None:
     assert Effect(("x", "y"), ("z",)).slots == ("value", "value")
     assert Effect(("q",), (), slots=("thunk",)).slots == ("thunk",)
     assert Effect(("x",), ()) == Effect(("x",), (), slots=("value",))
-    with pytest.raises(ValueError, match="one slot per input"):
+    with pytest.raises(ValueError, match="^one slot per input$"):
         Effect(("x",), (), slots=("code", "code"))
 
 
@@ -277,6 +281,17 @@ def test_a_typed_effect_line_declares_its_slots() -> None:
     assert definition.effect == Effect(
         ("t", "c", "l", "n", "m"), ("z",), slots=("thunk", "code", "value", "value", "value")
     )
+
+
+def test_a_slot_name_is_every_character_before_its_colon() -> None:
+    """[S49] `name: Type`: the slot is named all of `name`; a lone `:` is a bare name, an
+    untyped value (hole bare-slot-names), not the colon of a slot with no name."""
+    (typed,) = desugar(parse("f : xs: Int  q: [] -- y\n"))
+    assert isinstance(typed, Define)
+    assert typed.effect == Effect(("xs", "q"), ("y",), slots=("value", "thunk"))
+    (bare,) = desugar(parse("f : a : b -- c\n"))
+    assert isinstance(bare, Define)
+    assert bare.effect == Effect(("a", ":", "b"), ("c",))
 
 
 def test_a_slot_type_is_not_a_slot() -> None:
@@ -334,7 +349,7 @@ def test_a_word_refuses_at_its_position(source: str, error: str) -> None:
         *("∞\n", "#x\n", "#1\n", "$1\n", "1\u00b4\n", "a/b\n", "{ 1 }\n", "()\n", "“⟨1⟩”\n"),
         *("{}\n", ";;; s\n\t1\n", "\n\t1\n", "1\n\t; c\n\t\t2\n"),
         *("⟨ (+ 1 2) ⟩\n", "f : x\n", "f : x -- y | 1\n", "f : #x -- y\n", "1 2 3 fold\n"),
-        *("f : x: -- y\n", "f : -- y:\n", "#f : --\n"),
+        *("f : x: -- y\n", "f : -- y:\n", "#f : --\n", "f : t: -- x -- y\n"),
     ],
 )
 def test_what_no_part_implements_is_refused_before_running(source: str) -> None:
