@@ -66,10 +66,10 @@ def test_symbols_and_dicts_are_values(source: str, printed: str) -> None:
     ("source", "error"),
     [
         ("{ a 1 a 2 }\n", "ERROR: 1:7 repeated key a"),
-        ("g : -- y\ng →x\n", "ERROR: 2:3 stack underflow"),
-        ("g : -- y\n{ a g }\n", "ERROR: 2:1 a dict value is one value"),
-        ("g : -- y\n1 →x | g →y\n", "ERROR: 2:10 stack underflow"),
-        ("g : -- y\n1 →x | { a g }\n", "ERROR: 2:8 a dict value is one value"),
+        ("g : -- y\n\t[ ] !\ng →x\n", "ERROR: 3:3 stack underflow"),
+        ("g : -- y\n\t[ ] !\n{ a g }\n", "ERROR: 3:1 a dict value is one value"),
+        ("g : -- y\n\t[ ] !\n1 →x | g →y\n", "ERROR: 3:10 stack underflow"),
+        ("g : -- y\n\t[ ] !\n1 →x | { a g }\n", "ERROR: 3:8 a dict value is one value"),
     ],
 )
 def test_binders_and_dicts_refuse_at_their_position(source: str, error: str) -> None:

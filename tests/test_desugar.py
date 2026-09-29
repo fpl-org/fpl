@@ -219,7 +219,7 @@ def test_a_child_under_a_value_slot_runs_at_once(source: str, printed: str) -> N
         ("dup\n\t1\n\t2\n", "[ 1 ] 2 | 2\n"),
         ("dup\n\t+\n", "[ + ] [ + ]\n"),
         ("+ dup times\n\t1\n\t2\n\t3\n", "[ 1 ] 25\n"),
-        ("mk : x --\nwrap : t: [] -- t\nmk wrap\n\t1 | 2 +\n\t3\n", "[ 1 | 2 + ] 3\n"),
+        ("mk : x --\n\tdrop\nwrap : t: [] -- t\nmk wrap\n\t1 | 2 +\n\t3\n", "[ 1 | 2 + ]\n"),
         ("pair : x t: [] -- x t\n1 pair\n\t1 | 2 +\n", "3 | 1\n"),
     ],
 )
@@ -370,7 +370,7 @@ def test_stack_words_and_literals(source: str, printed: str) -> None:
         ("1 | [ ] +\n", "ERROR: 1:9 arithmetic on a non-number"),
         ("1 2 | 1 2 3 +\n", "ERROR: 1:13 strands of unequal length"),
         ("1 | 2 ,\n", "ERROR: 1:7 , joins two quotations or two lists"),
-        ("f : -- y z\n1 | f +\n", "ERROR: 2:7 stack underflow"),
+        ("f : -- y z\n\t[ ] ! [ ] !\n1 | f +\n", "ERROR: 3:7 stack underflow"),
     ],
 )
 def test_a_word_refuses_at_its_position(source: str, error: str) -> None:

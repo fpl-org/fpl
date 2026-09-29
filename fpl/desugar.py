@@ -346,7 +346,8 @@ class _Desugar:
                 path = (*here, head[0])
                 code = self.body(line.block, len(head[1].ins), path)
                 effect = replace(head[1], fails=fallible(code))
-                yield Define("/".join(path), effect, code, self.docs.get(line.span.line, ""))
+                doc = self.docs.get(line.span.line, "")
+                yield Define("/".join(path), effect, code, doc, line.span)
             elif name is not None:
                 yield from self.statements(coded(line.block), (*here, name))
             elif not here:
