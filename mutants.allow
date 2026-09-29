@@ -64,7 +64,7 @@ fpl.desugar.xǁ_Desugarǁitem__mutmut_9 -- unreachable: the match covers the Ite
 fpl.desugar.xǁ_Desugarǁenclosure__mutmut_5 -- unreachable: the match covers the Pair literals, as pyright proves
 fpl.desugar.xǁ_Desugarǁenclosure__mutmut_29 -- unreachable: the match covers the Pair literals, as pyright proves
 fpl.desugar.x_written__mutmut_3 -- unreachable: the match covers the Statement union, as pyright proves
-fpl.desugar.x_written__mutmut_39 -- unreachable: the match covers the Statement union, as pyright proves
+fpl.desugar.x_written__mutmut_44 -- unreachable: the match covers the Statement union, as pyright proves
 fpl.desugar.x_sugared__mutmut_2 -- equivalent: stranding is false for "" as for None, neither being a push
 fpl.desugar.x_shown__mutmut_42 -- equivalent: F differs from f only for NaN and infinity; numerals are finite and the default Decimal context traps overflow and invalid operations
 fpl.desugar.x_written__mutmut_52 -- unreachable: the match covers the Statement union, as pyright proves
@@ -80,12 +80,12 @@ fpl.desugar.x_declaration__mutmut_21 -- equivalent: framed reads None as it read
 fpl.desugar.x_shown__mutmut_38 -- equivalent: F differs from f only for NaN and infinity; numerals are finite and the default Decimal context traps overflow and invalid operations
 fpl.desugar.x_enclosed__mutmut_4 -- unreachable: the match covers the Listed, Quotation and Dict union, as pyright proves
 fpl.desugar.x_enclosed__mutmut_37 -- unreachable: the match covers the Listed, Quotation and Dict union, as pyright proves
-fpl.desugar.x_spelled__mutmut_5 -- unreachable: the match covers the Node union, as pyright proves
-fpl.desugar.x_spelled__mutmut_35 -- unreachable: the match covers the Node union, as pyright proves
-fpl.desugar.xǁ_Desugarǁarity__mutmut_4 -- unreachable: the match covers the Node union, as pyright proves
-fpl.desugar.xǁ_Desugarǁarity__mutmut_10 -- unreachable: the match covers the Node union, as pyright proves
-fpl.eval.x_replaced__mutmut_5 -- unreachable: the match covers the Node union, as pyright proves
-fpl.eval.x_replaced__mutmut_45 -- unreachable: the match covers the Node union, as pyright proves
+fpl.desugar.x_spelled__mutmut_6 -- unreachable: the match covers the Node union, as pyright proves
+fpl.desugar.x_spelled__mutmut_36 -- unreachable: the match covers the Node union, as pyright proves
+fpl.desugar.xǁ_Desugarǁarity__mutmut_5 -- unreachable: the match covers the Node union, as pyright proves
+fpl.desugar.xǁ_Desugarǁarity__mutmut_10 -- unreachable: a match is a line of its own, never in a frame, so arity never takes one
+fpl.eval.x_replaced__mutmut_6 -- unreachable: the match covers the Node union, as pyright proves
+fpl.eval.x_replaced__mutmut_46 -- unreachable: the match covers the Node union, as pyright proves
 fpl.desugar.x_directory__mutmut_4 -- equivalent: a match no case takes falls to the end and returns None, as the case does
 fpl.desugar.x_mount__mutmut_3 -- equivalent: the mutant logs Mount(None), which names no directory, so desugar refuses it at 1:1 with no evaluator yet, as the case does, before any line runs
 fpl.desugar.xǁCatalogǁdirectory__mutmut_8 -- equivalent: depth -1 slices here to here[:-1], a directory the loop already searched
@@ -98,3 +98,24 @@ fpl.desugar.xǁ_Desugarǁdict__mutmut_15 -- equivalent: an odd item count is ref
 fpl.eval.x_repeat__mutmut_20 -- timeout: the mutant puts back n + 1, so a repeat of one round or more counts up and never ends
 fpl.eval.x_repeat__mutmut_23 -- equivalent: the round puts back q, a quotation, and n - 1, a count, so the repeat it calls never refuses and its span is never reported
 fpl.trivia.x_head__mutmut_16 -- equivalent: Word.span is field(compare=False), so the span of the `:` compared against is never read
+fpl.desugar.xǁ_Desugarǁarity__mutmut_3 -- unreachable: a match is a line of its own, never in a frame, so arity never takes one
+fpl.desugar.xǁ_Desugarǁarity__mutmut_12 -- unreachable: the match covers the Node union, as pyright proves
+fpl.eval.x_matched__mutmut_6 -- unreachable: the match covers the Pattern union, as pyright proves
+fpl.eval.x_matched__mutmut_40 -- unreachable: the match covers the Pattern union, as pyright proves
+fpl.eval.x_names__mutmut_5 -- unreachable: the match covers the Pattern union, as pyright proves
+fpl.eval.x_names__mutmut_12 -- unreachable: the match covers the Pattern union, as pyright proves
+fpl.eval.x_pinned__mutmut_5 -- unreachable: the match covers the Pattern union, as pyright proves
+fpl.eval.x_pinned__mutmut_39 -- unreachable: the match covers the Pattern union, as pyright proves
+fpl.desugar.x_written__mutmut_13 -- equivalent until hole resugar-match closes: an effect fails only for a body holding a match, which written refuses to spell, so +fail is never written
+fpl.desugar.x_written__mutmut_15 -- equivalent until hole resugar-match closes: an effect fails only for a body holding a match, which written refuses to spell, so +fail is never written
+fpl.desugar.x_written__mutmut_16 -- equivalent until hole resugar-match closes: an effect fails only for a body holding a match, which written refuses to spell, so +fail is never written
+fpl.desugar.xǁ_Desugarǁrow__mutmut_21 -- equivalent: frame reads a frame's cells, never its span
+fpl.desugar.xǁ_Desugarǁsimple__mutmut_18 -- equivalent: $x's call is pinned to a Push before any row is tried, and a Call never equals a Push, so its span is never read
+fpl.eval.x_matches__mutmut_4 -- equivalent: a row has its match's arity in patterns and takes that many values, and unbuilt checks the count first, so strict never fires
+fpl.eval.x_matches__mutmut_7 -- equivalent: a row has its match's arity in patterns and takes that many values, and unbuilt checks the count first, so strict never fires
+fpl.eval.x_matches__mutmut_8 -- equivalent: a row has its match's arity in patterns and takes that many values, and unbuilt checks the count first, so strict never fires
+fpl.eval.x_rebound__mutmut_2 -- equivalent: None and False are both false to if and or, and shadowed is only tested
+fpl.eval.x_uncons__mutmut_2 -- equivalent: a match no case takes falls to the end and returns None, as the case does
+fpl.eval.x_unpair__mutmut_2 -- equivalent: a match no case takes falls to the end and returns None, as the case does
+fpl.eval.x_unpush__mutmut_2 -- equivalent: a match no case takes falls to the end and returns None, as the case does
+fpl.eval.x_unswap__mutmut_2 -- equivalent: a match no case takes falls to the end and returns None, as the case does
