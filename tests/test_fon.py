@@ -28,6 +28,7 @@ from fpl.fon import (
     read,
     write,
 )
+from fpl.multihash import BLAKE2B_256, Multihash, content
 
 SPECIALS = r"\s\[\]()“”「」⟦⟧⟨⟩{}|⍝¶"
 NAMES = ("true", "false", "∞", "-∞", "nan", "-nan")
@@ -48,6 +49,11 @@ string = st.one_of(
         lambda raw: Str(raw, raw=True)
     ),
 )
+digest = st.tuples(st.integers(0, 32), st.binary(min_size=32, max_size=32)).map(
+    lambda zeros_bytes: bytes(zeros_bytes[0]) + zeros_bytes[1][zeros_bytes[0] :]
+)
+ident = digest.map(lambda d: Multihash(BLAKE2B_256, d))
+hashes = st.binary(max_size=64).map(content)
 floats = st.one_of(st.floats(allow_nan=False), st.sampled_from([math.nan, -math.nan])).map(Flt.of)
 leaf: st.SearchStrategy[Leaf] = st.one_of(
     st.just(Absent()),
@@ -58,7 +64,8 @@ leaf: st.SearchStrategy[Leaf] = st.one_of(
     token,
     string,
     symbol.map(lambda s: Cell(s.name)),
-    st.from_regex(r"[0-9a-f]{6,12}", fullmatch=True).map(Hash),
+    ident.map(Cell),
+    hashes.map(Hash),
 )
 key: st.SearchStrategy[Leaf] = st.one_of(symbol, number, string)
 
@@ -109,6 +116,17 @@ def test_json_embeds_and_reads_back(j: Json) -> None:
     assert read(write(embedded)) == embedded
 
 
+@given(ident, hashes)
+def test_fon_ids(i: Multihash, h: Multihash) -> None:
+    """[law: fon-ids] FON reads and writes $ ids and & hashes in the decimal spelling as the
+    same values, and the hex alias reads as the decimal value."""
+    assert write(Cell(i)) == "$" + i.spelled()
+    assert write(Hash(h)) == "&" + h.spelled()
+    assert read(write(Cell(i))) == Cell(i)
+    assert read(write(Hash(h))) == Hash(h)
+    assert read("&" + h.raw().hex()) == Hash(h)
+
+
 @pytest.mark.parametrize(
     ("document", "error"),
     [
@@ -116,6 +134,15 @@ def test_json_embeds_and_reads_back(j: Json) -> None:
         ("⟨ 1 ⟨ 2 ⟩", "ERROR: 1:1 ⟨ never closed"),
         ("“a 「b” c」", "ERROR: 1:9 」 closes nothing"),
         ("&zz", "ERROR: 1:1 malformed hash reference &zz"),
+        ("&abcdef", "ERROR: 1:1 malformed hash reference &abcdef"),
+        ("&45600:01", "ERROR: 1:1 malformed hash reference &45600:01"),
+        ("&b22020" + "0" * 64, "ERROR: 1:1 malformed hash reference &b22020" + "0" * 64),
+        ("&7:1", "ERROR: 1:1 malformed hash reference &7:1"),
+        ("&0:33:0", "ERROR: 1:1 malformed hash reference &0:33:0"),
+        ("&0:1:256", "ERROR: 1:1 malformed hash reference &0:1:256"),
+        ("$0:0:0", "ERROR: 1:1 malformed identity $0:0:0"),
+        ("$1x", "ERROR: 1:1 malformed identity $1x"),
+        ("⟨ $45600:01 ⟩", "ERROR: 1:3 malformed identity $45600:01"),
         ("⟨" * 70 + "⟩" * 70, "ERROR: 1:65 nesting too deep"),
         ("01", "ERROR: 1:1 non-canonical number 01"),
         ("1e5", "ERROR: 1:1 non-canonical number 1e5"),
@@ -163,13 +190,14 @@ def test_a_float_is_its_bits(x: float, spelled: str) -> None:
 
 def test_the_reader_is_inert() -> None:
     """Names, references, tuples and code are data; nothing is resolved or called."""
-    assert read("( p { class “x” } 「r」 $c &abcdef #s )") == Tagged(
+    assert read("( p { class “x” } 「r」 $c &0:3:6382179 $45600:0 #s )") == Tagged(
         (
             Sym("p"),
             Dict(((Sym("class"), Str("x")),)),
             Str("r", raw=True),
             Cell("c"),
-            Hash("abcdef"),
+            Hash(Multihash(0, b"abc")),
+            Cell(Multihash(BLAKE2B_256, bytes(32))),
             Sym("s"),
         )
     )
