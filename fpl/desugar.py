@@ -9,13 +9,19 @@ block of a `:` head is its body, whose balance starts at the effect line's input
 from line to line. ( ) puts its head after its arguments. Quotation bodies are code, never sections.
 →x names the top for the rest of its line, body or quotation, where x pushes it (decision f);
 #x is a symbol; { } pairs literal keys with one item each.
+A head `name/` mounts its block as a directory: its definitions are named by path, and each
+directory keeps an ordered log of its definitions, subdirectories and `#name bind` mounts, where
+a later entry shadows an earlier one. A word's body is its own directory (decision f), so a name
+in it is looked up from there outward, `..` from the directory holding the word, and every word
+w has w/history.
 A line with no code, a comment's or the empty first line, is no statement and no child; its
 comment is not carried into the core. Anything outside the implemented set is refused before
 evaluation (hole unimplemented-words).
 """
 
 from collections import ChainMap
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from decimal import Decimal
 from functools import partial
 from itertools import groupby
@@ -49,6 +55,9 @@ from fpl.errors import FplError, Span
 START = Span(1, 1)
 ARROWS = ("→", "->")
 LOCAL = Effect((), ("x",))
+HISTORY = Effect((), ("h",))
+
+type Here = tuple[str, ...]
 
 
 def unimplemented() -> NoReturn:
@@ -57,15 +66,108 @@ def unimplemented() -> NoReturn:
 
 
 def desugar(program: Program) -> tuple[Statement, ...]:
-    """The program's lines as statements, in order. Every effect is known before any line is
-    read, so a word may be used above its definition; a later definition shadows."""
+    """The program's lines as statements, in order, a directory's definitions named by path.
+    Every effect is known before any line is read, so a word may be used above its definition;
+    a later definition shadows."""
     lines = coded(program.lines)
-    effects = dict(EFFECTS)
-    for line in lines:
-        head = definition(line)
-        if head is not None:
-            effects[head[0]] = head[1]
-    return tuple(_Desugar(effects).statement(line) for line in lines)
+    catalog = Catalog({(): list(EFFECTS)}, dict(EFFECTS))
+    catalog.enter(lines, ())
+    for here, log in catalog.logs.items():
+        for entry in log:
+            if isinstance(entry, Mount):
+                catalog.directory(here, entry.name)
+    return tuple(_Desugar(catalog).statements(lines, ()))
+
+
+@dataclass(frozen=True)
+class Mount:
+    """#name bind: the directory name, as seen from the one it is bound in."""
+
+    name: str
+
+
+@dataclass
+class Catalog:
+    """Every directory's log, by path, and the effect of every word, by its path joined. A word
+    is a directory too, holding its history."""
+
+    logs: dict[Here, list[str | Mount]]
+    effects: dict[str, Effect]
+
+    def enter(self, lines: tuple[Line, ...], here: Here) -> None:
+        """Log the definitions, subdirectories and mounts of one directory's lines."""
+        log = self.logs.setdefault(here, [])
+        for line in lines:
+            head, name = definition(line), directory(line)
+            if head is not None:
+                log.append(head[0])
+                path = "/".join((*here, head[0]))
+                self.effects[path] = head[1]
+                self.effects[f"{path}/history"] = HISTORY
+                self.logs.setdefault((*here, head[0]), []).append("history")
+            elif name is not None:
+                log.append(name)
+                self.enter(coded(line.block), (*here, name))
+            elif here:
+                log.append(Mount(mount(line)))
+
+    def directory(self, here: Here, name: str) -> Here:
+        """The directory a name reaches from here outward; none is refused."""
+        for depth in range(len(here), -1, -1):
+            if (*here[:depth], name) in self.logs:
+                return (*here[:depth], name)
+        unimplemented()
+
+    def lookup(self, here: Here, segments: Here) -> str | None:
+        """The word a path names in one directory: the latest entry that holds it wins."""
+        for entry in reversed(self.logs.get(here, [])):
+            found = self.through(here, entry, segments)
+            if found is not None:
+                return found
+        return None
+
+    def through(self, here: Here, entry: str | Mount, segments: Here) -> str | None:
+        """The word a path names through one entry: a subdirectory looks on in its own log, a
+        mount only at the words its directory defines, so mounts never chain."""
+        if isinstance(entry, Mount):
+            path = "/".join((*self.directory(here, entry.name), *segments))
+            return path if path in self.effects else None
+        if entry != segments[0]:
+            return None
+        if len(segments) > 1:
+            return self.lookup((*here, entry), segments[1:])
+        path = "/".join((*here, entry))
+        return path if path in self.effects else None
+
+    def resolve(self, here: Here, segments: Here) -> str:
+        """The word a path names from here, then each enclosing directory; none is refused."""
+        for depth in range(len(here), -1, -1):
+            found = self.lookup(here[:depth], segments)
+            if found is not None:
+                return found
+        unimplemented()
+
+
+def directory(line: Line) -> str | None:
+    """The name of a `name/` head; a head with no block, or a deeper path, is refused."""
+    items = [item for frame in line.frames for cell in frame.cells for item in cell.items]
+    match items:
+        case [Word(prefix="", kind="path", body=(name, ""), mods="")] if line.block:
+            return name
+        case [Word(kind="path", body=(*_, "")), *_]:
+            unimplemented()
+        case _:
+            return None
+
+
+def mount(line: Line) -> str:
+    """The name of a `#name bind` line; any other line in a directory is refused."""
+    items = [item for frame in line.frames for cell in frame.cells for item in cell.items]
+    match items:
+        case [Word(prefix="#", kind="name", body=(name,), mods=""), word] if plain(word) == "bind":
+            return name
+        case _:
+            unimplemented()
 
 
 def coded(lines: tuple[Line, ...]) -> tuple[Line, ...]:
@@ -192,22 +294,32 @@ def literal(item: Item) -> bool:
 class _Desugar:
     """Lines to code, with the effect of every word known."""
 
-    def __init__(self, effects: Mapping[str, Effect]) -> None:
-        """Keep the effect of every word a line may call: the builtins' and the definitions'."""
-        self.effects = ChainMap(dict(effects))
+    def __init__(self, catalog: Catalog) -> None:
+        """Keep the catalog and the effect of every word a line may call: the builtins' and the
+        definitions', by path."""
+        self.catalog = catalog
+        self.effects = ChainMap(catalog.effects)
+        self.here: Here = ()
 
-    def statement(self, line: Line) -> Statement:
-        """A definition, or a line to run."""
-        head = definition(line)
-        if head is None:
-            return Run(self.body((line,), 0))
-        name, effect = head
-        return Define(name, effect, self.body(line.block, len(effect.ins)))
+    def statements(self, lines: tuple[Line, ...], here: Here) -> Iterator[Statement]:
+        """A directory's definitions and, at the top, the lines to run."""
+        for line in lines:
+            head, name = definition(line), directory(line)
+            if head is not None:
+                path = (*here, head[0])
+                code = self.body(line.block, len(head[1].ins), path)
+                yield Define("/".join(path), head[1], code)
+            elif name is not None:
+                yield from self.statements(coded(line.block), (*here, name))
+            elif not here:
+                yield Run(self.body((line,), 0, here))
 
-    def body(self, lines: tuple[Line, ...], balance: int) -> tuple[Node, ...]:
-        """Lines on one stack in turn, each starting on the balance the one before left. A name
-        bound in them dies with them, and one bound in a section with the section."""
+    def body(self, lines: tuple[Line, ...], balance: int, here: Here) -> tuple[Node, ...]:
+        """Lines on one stack in turn, each starting on the balance the one before left, their
+        names looked up from here. A name bound in them dies with them, and one bound in a
+        section with the section."""
         outer = self.effects
+        self.here = here
         code: list[Node] = []
         for line in coded(lines):
             parts = (
@@ -334,17 +446,29 @@ class _Desugar:
         if word.prefix == "#":
             return Push(Symbol(bare(word)))
         if word.prefix in ARROWS:
-            name = bare(word)
+            name = "/".join(word.body) if word.kind == "path" and word.body[-1] else bare(word)
             self.effects = self.effects.new_child({name: LOCAL})
             return Bind(name, (), word.span)
         return self.call(word)
 
     def call(self, word: Word) -> Call:
-        """A word with a known effect."""
-        name = plain(word)
-        if name is None or name not in self.effects:
-            unimplemented()
-        return Call(name, word.span)
+        """A word bound on its line, else the one its path names from here, or from the
+        directory holding here after `..`."""
+        path = "/".join(word.body)
+        if not (word.prefix or word.mods) and any(path in s for s in self.effects.maps[:-1]):
+            return Call(path, word.span)
+        return Call(self.catalog.resolve(self.origin(word), word.body), word.span)
+
+    def origin(self, word: Word) -> Here:
+        """Where a word's lookup starts: here, or after `..` the directory holding here; a
+        modifier or another sigil is refused."""
+        match word.prefix:
+            case "" if not word.mods:
+                return self.here
+            case "../" if self.here and not word.mods:
+                return self.here[:-1]
+            case _:
+                unimplemented()
 
     def enclosure(self, enclosure: Enclosure) -> tuple[Node, ...]:
         """[ ] a quotation, ( ) its head last, ⟨ ⟩ a list of literals."""
@@ -447,7 +571,7 @@ def spelled(node: Node) -> tuple[Item, ...]:
         case Call():
             return (named(node.name),)
         case Bind():
-            return (Word("→", "name", (node.name,), "", START),)
+            return (Word("→", named(node.name).kind, named(node.name).body, "", START),)
         case Keyed():
             pairs = tuple(item for key, n in node.entries for item in (named(key), *spelled(n)))
             return (Enclosure("dict", (framed(pairs),), START),)
@@ -480,8 +604,9 @@ def declaration(name: str, kind: Slot) -> tuple[Item, ...]:
 
 
 def named(name: str) -> Word:
-    """A name as written."""
-    return Word("", "name", (name,), "", START)
+    """A name as written, a path when it holds a slash."""
+    segments = tuple(name.split("/"))
+    return Word("", "path" if len(segments) > 1 else "name", segments, "", START)
 
 
 def shown(value: Value) -> tuple[Item, ...]:
