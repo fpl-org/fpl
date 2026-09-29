@@ -218,9 +218,3 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Default in force: a form feed is the page separator, ignored like a space; a line holding only tabs, spaces and form feeds inside a blank run is part of the run, so it leaves no line and prints as nothing; only the last line's tabs are indentation, so a form feed before a line's tabs leaves it at depth 0 as before
 - Closes by: Caesura or PSJ, confirming the form feed as a page separator, or refusing it outside strings and comments
 - Evidence: bd41245 fix(grammar): read a line of form feeds as part of its blank run; session grammar-fix/proof3.log, ffcheck.log
-
-## note-blank-note
-- Depends on it: fpl/print.py (render), fpl/grammar.lark (NOTE), tests/test_print.py::test_print_then_parse_is_the_identity
-- Default in force: a note, a blank line, then a ; line with no code (kept as a note line, comment-levels-vs-corpus) parse as two notes, but the printer drops the blank line, so they read back as one note continued; render∘parse is still idempotent on text
-- Closes by: an implementer, printing the blank line before such a note, or the builder refusing the standalone ; (comment-levels-vs-corpus)
-- Evidence: session grammar-fix/ffcheck.log (";⍝.\n\n;x" prints ";⍝.\n;x\n", one note of two lines)

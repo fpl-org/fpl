@@ -82,8 +82,9 @@ def noted(code: Line, comment: Comment) -> Line:
 
 
 def own(block: list[Line], comment: Comment) -> Line:
-    """A comment on a line of its own, heading a block."""
-    return Line((), tuple(block), AT, comment)
+    """A comment on a line of its own, heading a block: a ;; line holds no frames, a note one
+    empty frame (comment-levels-vs-corpus)."""
+    return Line(() if comment.level > 1 else (Frame((), AT),), tuple(block), AT, comment)
 
 
 def opened(block: list[Line]) -> Line:
@@ -122,7 +123,7 @@ def items(depth: int) -> st.SearchStrategy[Item]:
 
 def lines(depth: int, blocks: int, comments: bool = False) -> st.SearchStrategy[Line]:
     """A line and, while `blocks` allows, the lines of its block; with `comments`, a line may
-    carry a note, or be a ;; comment of its own."""
+    carry a note, or be a note or a ;; comment of its own."""
     block = (
         st.lists(st.deferred(lambda: lines(depth, blocks - 1, comments)), max_size=2)
         if blocks
@@ -131,7 +132,7 @@ def lines(depth: int, blocks: int, comments: bool = False) -> st.SearchStrategy[
     code = st.builds(line, frames(items(depth)), block)
     if not comments:
         return code
-    return st.one_of(code, st.builds(noted, code, NOTES), st.builds(own, block, DOCS))
+    return st.one_of(code, st.builds(noted, code, NOTES), st.builds(own, block, NOTES | DOCS))
 
 
 def programs(depth: int, blocks: int, top: bool = False) -> st.SearchStrategy[Program]:
@@ -210,6 +211,12 @@ def test_print_keeps_the_tree_of_the_corpus(program: Path) -> None:
         ("a;x\n;y\n\tb | c ⍝ g\n", "a\t;x\n\t;y\n\tb | c\t⍝ g\n"),
         ("\ta\tb ; n\n\t\t\t; m\n", "a\tb\t; n\n\t\t; m\n"),
         (";;;; f\n;;; s\n\n;; d\nf ; t\n", ";;;; f\n;;; s\n;; d\nf\t; t\n"),
+        (";⍝.\n\n;x\n", ";⍝.\n\n;x\n"),
+        ("a ; n\n\n\t; m\n", "a\t; n\n\n\t; m\n"),
+        ("a\n\tb ; n\n\n; m\n", "a\n\tb\t; n\n\n; m\n"),
+        ("a\n\n; m\n", "a\n; m\n"),
+        ("a ; n\n\n;; d\n", "a\t; n\n;; d\n"),
+        (";; d\n\n; m\n", ";; d\n; m\n"),
         ("\tk “a\n\tb⟨c⟩” 「r\n」\n", "k “a\nb⟨c⟩” 「r\n」\n"),
         ("a\n\tx “p\n\tq”\n", "a\n\tx “p\n\tq”\n"),
         ("X “a\nb”\n", "X “a\nb”\n"),
