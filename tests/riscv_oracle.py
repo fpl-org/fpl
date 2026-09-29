@@ -1,0 +1,94 @@
+"""Not a test: the oracle tools, resolved from the `riscv` layer of the worktree's own flake.
+
+`toolchain()` enters the layer's dev shell once per process (one per xdist worker) and asks
+it where llvm-mc, llvm-objdump, ld.lld and qemu-system-riscv64 are; the versions are the ones
+`flake.lock` pins. It reads stdout only: the flake's shell hook may print `==>` lines there
+on a fresh clone, and a tool missing from the layer prints no line, so the check is four
+lines, one per tool in the order asked, each a `/nix/store/` path ending in the tool's name,
+not the exit status of `command -v`. Anything else is a `ToolchainError` showing the command,
+its exit status, stdout and stderr. No `nix` is such an error too: an oracle that cannot run
+fails the test, it never skips it. The tools are then called by absolute path.
+"""
+
+import shlex
+import subprocess
+from dataclasses import dataclass
+from functools import cache
+from pathlib import Path
+
+HERE = Path(__file__).parent
+NAMES = ("llvm-mc", "llvm-objdump", "ld.lld", "qemu-system-riscv64")
+RESOLVE = "{nix} develop \"$(git rev-parse --show-toplevel)#riscv\" -c bash -c 'command -v {names}'"
+VERSIONS: dict[str, str] = dict(zip(NAMES, ("21.1.8", "21.1.8", "21.1.8", "10.2.4"), strict=True))
+
+
+class ToolchainError(Exception):
+    """The oracle tools could not be resolved, or are not the pinned versions."""
+
+
+@dataclass(frozen=True, slots=True)
+class Tools:
+    """Absolute paths of the oracle tools, in the order of `NAMES`."""
+
+    mc: Path
+    objdump: Path
+    lld: Path
+    qemu: Path
+
+    def by_name(self) -> dict[str, Path]:
+        """Each tool's path under the name it was asked for."""
+        return {
+            "llvm-mc": self.mc,
+            "llvm-objdump": self.objdump,
+            "ld.lld": self.lld,
+            "qemu-system-riscv64": self.qemu,
+        }
+
+
+def shown(command: str, done: subprocess.CompletedProcess[str]) -> str:
+    """The command and everything it said, for an error message."""
+    return (
+        f"{command}\nexited {done.returncode}\n"
+        f"--- stdout\n{done.stdout}--- stderr\n{done.stderr}--- end"
+    )
+
+
+def parse_paths(command: str, done: subprocess.CompletedProcess[str]) -> Tools:
+    """The four paths `command` printed, or a `ToolchainError` showing all it said."""
+    lines = done.stdout.splitlines()
+    if len(lines) != len(NAMES) or not all(
+        line.startswith("/nix/store/") and Path(line).name == name
+        for line, name in zip(lines, NAMES, strict=False)
+    ):
+        raise ToolchainError(
+            f"expected one /nix/store/ path per tool {NAMES} from\n" + shown(command, done)
+        )
+    return Tools(*(Path(line) for line in lines))
+
+
+def resolve(nix: str = "nix") -> Tools:
+    """Ask the `riscv` layer of the flake at the root of this checkout for the tools."""
+    command = RESOLVE.format(nix=shlex.quote(nix), names=" ".join(NAMES))
+    done = subprocess.run(
+        ["bash", "-c", command], cwd=HERE, capture_output=True, text=True, check=False
+    )
+    return parse_paths(command, done)
+
+
+def checked(tools: Tools) -> Tools:
+    """`tools`, once each has reported its pinned version with `--version`."""
+    for name, path in tools.by_name().items():
+        done = subprocess.run(
+            [path, "--version"], capture_output=True, text=True, check=False, timeout=10
+        )
+        if f" {VERSIONS[name]}" not in done.stdout:
+            raise ToolchainError(
+                f"{name} is not version {VERSIONS[name]}:\n" + shown(str(path), done)
+            )
+    return tools
+
+
+@cache
+def toolchain() -> Tools:
+    """The pinned oracle tools, resolved and version-checked once per process."""
+    return checked(resolve())
