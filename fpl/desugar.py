@@ -13,7 +13,11 @@ A head `name/` mounts its block as a directory: its definitions are named by pat
 directory keeps an ordered log of its definitions, subdirectories and `#name bind` mounts, where
 a later entry shadows an earlier one. A word's body is its own directory (decision f), so a name
 in it is looked up from there outward, `..` from the directory holding the word, and every word
-w has w/history and w/doc, its docstring.
+w has w/history, w/doc, its docstring, and w/effect.
+A `match` line in a body takes the values its balance counts, and each line of its block is a
+row: one pattern cell per value, then at most a body cell. A pattern is _, a name it binds, a
+literal, $x, ( constructor patterns ) or p ∈ test; a match with no row of only _ and names
+makes its word's effect +fail.
 A line with no code, a comment's or the empty first line, is no statement and no child; its
 comment is not carried into the core, but for a word's docs (fpl/trivia.py). Anything outside
 the implemented set is refused before evaluation (hole unimplemented-words).
@@ -37,18 +41,26 @@ from fpl.ast_core import (
     Define,
     Dict,
     Effect,
+    Equal,
+    Guarded,
+    Inverse,
     Keyed,
     Listed,
+    Match,
     Node,
     Number,
+    Pattern,
     Push,
     Quotation,
+    Row,
     Run,
     Slot,
     Statement,
     Strand,
     Symbol,
     Value,
+    Var,
+    Wild,
 )
 from fpl.ast_surface import Cell, Comment, Enclosure, Frame, Item, Line, Program, Text, Word
 from fpl.errors import FplError, Span
@@ -58,6 +70,7 @@ ARROWS = ("→", "->")
 LOCAL = Effect((), ("x",))
 HISTORY = Effect((), ("h",))
 DOC = Effect((), ("d",))
+QUERIES = {"history": HISTORY, "doc": DOC, "effect": Effect((), ("e",))}
 
 type Here = tuple[str, ...]
 
@@ -105,9 +118,8 @@ class Catalog:
                 log.append(head[0])
                 path = "/".join((*here, head[0]))
                 self.effects[path] = head[1]
-                self.effects[f"{path}/history"] = HISTORY
-                self.effects[f"{path}/doc"] = DOC
-                self.logs.setdefault((*here, head[0]), []).extend(("history", "doc"))
+                self.effects |= {f"{path}/{query}": e for query, e in QUERIES.items()}
+                self.logs.setdefault((*here, head[0]), []).extend(QUERIES)
             elif name is not None:
                 log.append(name)
                 self.enter(coded(line.block), (*here, name))
@@ -289,6 +301,27 @@ def scoped(code: tuple[Node, ...]) -> tuple[Node, ...]:
     return tuple(reversed(out))
 
 
+def fallible(code: tuple[Node, ...]) -> bool:
+    """Some match in the code, outside a quotation, has no row that catches every value."""
+    for node in code:
+        if isinstance(node, Match) and not any(map(catches, node.rows)):
+            return True
+        if isinstance(node, Bind) and fallible(node.body):
+            return True
+    return False
+
+
+def catches(row: Row) -> bool:
+    """Every pattern of the row is _ or a name."""
+    return all(isinstance(pattern, Wild | Var) for pattern in row.patterns)
+
+
+def matcher(line: Line) -> bool:
+    """A line of the one word match, with the rows as its block."""
+    items = [item for frame in line.frames for cell in frame.cells for item in cell.items]
+    return bool(line.block) and len(items) == 1 and plain(items[0]) == "match"
+
+
 def literal(item: Item) -> bool:
     """A number or a string: what strands."""
     return isinstance(item, Text) or (isinstance(item, Word) and item.kind == "number")
@@ -312,7 +345,8 @@ class _Desugar:
             if head is not None:
                 path = (*here, head[0])
                 code = self.body(line.block, len(head[1].ins), path)
-                yield Define("/".join(path), head[1], code, self.docs.get(line.span.line, ""))
+                effect = Effect(head[1].ins, head[1].outs, fallible(code), slots=head[1].slots)
+                yield Define("/".join(path), effect, code, self.docs.get(line.span.line, ""))
             elif name is not None:
                 yield from self.statements(coded(line.block), (*here, name))
             elif not here:
@@ -326,6 +360,10 @@ class _Desugar:
         self.here = here
         code: list[Node] = []
         for line in coded(lines):
+            if matcher(line):
+                code.append(self.match(line, balance))
+                balance = 0
+                continue
             parts = (
                 *(partial(self.child, child, kind) for child, kind in self.filled(line)),
                 *(partial(self.frame, frame) for frame in line.frames),
@@ -358,11 +396,92 @@ class _Desugar:
                 return 0, 1
             case Bind():
                 return 1, 0
+            case Match():  # pragma: no cover -- a match is a line of its own, never in a frame
+                return len(node.rows[0].patterns), 0
             case Call():
                 effect = self.effects[node.name]
                 return len(effect.ins), len(effect.outs)
             case _:
                 assert_never(node)
+
+    def match(self, line: Line, arity: int) -> Match:
+        """The rows of a match taking arity values."""
+        word = line.frames[0].cells[0].items[0]
+        return Match(tuple(self.row(row, arity) for row in coded(line.block)), word.span)
+
+    def row(self, line: Line, arity: int) -> Row:
+        """arity pattern cells, then at most a body cell, where the names they bind are read."""
+        cells = [cell for frame in line.frames for cell in frame.cells]
+        if line.block or len(line.frames) > 1 or len(cells) - arity not in (0, 1):
+            raise FplError(line.span, f"a row is {arity} patterns and a body")
+        outer = self.effects
+        patterns = tuple(self.pattern(cell.items) for cell in cells[:arity])
+        body = self.frame(Frame(tuple(cells[arity:]), line.span))
+        self.effects = outer
+        return Row(patterns, scoped(body))
+
+    def pattern(self, items: tuple[Item, ...]) -> Pattern:
+        """The one pattern of a cell or of ( p ∈ test )."""
+        found = self.patterns(items)
+        if len(found) != 1:
+            unimplemented()
+        return found[0]
+
+    def patterns(self, items: tuple[Item, ...]) -> tuple[Pattern, ...]:
+        """Items as patterns in turn, `∈ test` guarding the one before it."""
+        found: list[Pattern] = []
+        marks = iter(items)
+        for item in marks:
+            if plain(item) == "∈" and found:
+                test = next(marks, None)
+                if not isinstance(test, Word):
+                    unimplemented()
+                found[-1] = Guarded(found[-1], self.call(test).name, item.span)
+            else:
+                found.append(self.simple(item))
+        return tuple(found)
+
+    def simple(self, item: Item) -> Pattern:
+        """_, $x of a bound name, a name it binds, ( constructor patterns ), ( p ∈ test ) or
+        a literal."""
+        match item:
+            case Word(prefix="", kind="name", body=("_",), mods=""):
+                return Wild()
+            case Word(prefix="$", kind="name", body=(name,), mods="") if self.local(name):
+                return Equal(Call(name, item.span))
+            case Word() if plain(item) is not None:
+                self.effects = self.effects.new_child({item.body[0]: LOCAL})
+                return Var(item.body[0])
+            case Enclosure(pair="prefix"):
+                return self.inverse(contents(item))
+            case _:
+                return self.constant(item)
+
+    def local(self, name: str) -> bool:
+        """A name bound by a binder or an earlier pattern."""
+        return any(name in scope for scope in self.effects.maps[:-1])
+
+    def constant(self, item: Item) -> Equal:
+        """A literal, matching by equality."""
+        nodes = self.item(item)
+        if len(nodes) != 1 or not isinstance(nodes[0], Push):
+            unimplemented()
+        return Equal(nodes[0])
+
+    def inverse(self, items: list[Item]) -> Pattern:
+        """( p ∈ test ), or a constructor taking one pattern per input and leaving one value."""
+        if len(items) > 1 and plain(items[1]) == "∈":
+            return self.pattern(tuple(items))
+        head, *args = items
+        if not isinstance(head, Word):
+            unimplemented()
+        name = self.call(head).name
+        effect, found = self.effects[name], self.patterns(tuple(args))
+        if len(effect.outs) != 1:
+            raise FplError(head.span, f"{name} is not invertible")
+        if len(found) != len(effect.ins):
+            raise FplError(head.span, f"{name} takes {len(effect.ins)} patterns")
+        return Inverse(name, found, head.span)
 
     def quote(self, build: Callable[[], tuple[Node, ...]]) -> Push:
         """Code built in a scope of its own, pushed as a quotation."""
@@ -538,13 +657,13 @@ def written(statement: Statement) -> Line:
             return Line(sugared(statement.code), (), START)
         case Define():
             effect = statement.effect
+            fails = ("+fail",) if effect.fails else ()
             ins = zip(effect.ins, effect.slots, strict=True)
             taken = (item for name, kind in ins for item in declaration(name, kind))
             head = (named(statement.name), named(":"), *taken, named("--"))
             body = (Line(sugared(statement.code), (), START),) if statement.code else ()
-            return Line(
-                (framed((*head, *map(named, effect.outs))),), documented(statement) + body, START
-            )
+            outs = (*effect.outs, *fails)
+            return Line((framed((*head, *map(named, outs))),), documented(statement) + body, START)
         case _:
             assert_never(statement)
 
@@ -601,6 +720,8 @@ def spelled(node: Node) -> tuple[Item, ...]:
         case Keyed():
             pairs = tuple(item for key, n in node.entries for item in (named(key), *spelled(n)))
             return (Enclosure("dict", (framed(pairs),), START),)
+        case Match():
+            unimplemented()
         case _:
             assert_never(node)
 

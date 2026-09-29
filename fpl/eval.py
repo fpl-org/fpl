@@ -17,22 +17,32 @@ from fpl.ast_core import (
     Call,
     Define,
     Dict,
+    Equal,
+    Guarded,
+    Inverse,
     Keyed,
     Listed,
+    Match,
     Node,
     Number,
+    Pattern,
     Push,
     Quotation,
+    Row,
     Run,
     Statement,
     Strand,
     Value,
+    Var,
+    Wild,
 )
 from fpl.errors import FplError, Span
 
 type Builtin = Callable[..., tuple[Value, ...]]
 type Words = Mapping[str, tuple[Node, ...]]
 type Control = Callable[..., tuple[Node, ...]]
+type Bound = dict[str, Value]
+type Stack = tuple[Value, ...]
 
 LIMIT = 10**DIGITS
 """The least magnitude a number cannot have."""
@@ -50,7 +60,8 @@ class State:
 def evaluate(statements: tuple[Statement, ...]) -> tuple[tuple[Value, ...], ...]:
     """The stack each run line leaves, every line on a fresh stack. A later definition of a
     name shadows an earlier one, for every line; name/history pushes the ones it shadows,
-    oldest first, each as a quotation, and name/doc the docstring of the one in force."""
+    oldest first, each as a quotation, name/doc the docstring of the one in force and
+    name/effect its effect line as a list of strings, +fail last when it may fail."""
     logged: dict[str, list[Define]] = {}
     for s in statements:
         if isinstance(s, Define):
@@ -59,7 +70,15 @@ def evaluate(statements: tuple[Statement, ...]) -> tuple[tuple[Value, ...], ...]
     for name, log in logged.items():
         words[f"{name}/history"] = (Push(Listed(tuple(Quotation(d.code) for d in log[:-1]))),)
         words[f"{name}/doc"] = (Push(log[-1].doc),)
+        words[f"{name}/effect"] = (Push(effect_line(log[-1])),)
     return tuple(final(State((), s.code, words)) for s in statements if isinstance(s, Run))
+
+
+def effect_line(define: Define) -> Listed:
+    """ins -- outs, then +fail if the word may fail."""
+    effect = define.effect
+    fails = ("+fail",) if effect.fails else ()
+    return Listed((*effect.ins, "--", *effect.outs, *fails))
 
 
 def final(state: State) -> tuple[Value, ...]:
@@ -79,7 +98,7 @@ def step(state: State) -> State:
     """Run the first node: push its value, put a defined word's code in its place, apply a
     builtin to the values it takes, put a binder's scope in its place with the top for its
     name, or push the dict its values build. A control word puts the code it runs in its
-    place."""
+    place, and a match the body of the row it chose."""
     node, rest = state.code[0], state.code[1:]
     match node:
         case Push():
@@ -95,6 +114,8 @@ def step(state: State) -> State:
             return State(state.stack, state.words[node.name] + rest, state.words)
         case Call():
             return builtin(node, state, rest)
+        case Match():
+            return matching(node, state, rest)
         case _:
             assert_never(node)
 
@@ -116,10 +137,195 @@ def replaced(node: Node, name: str, value: Value) -> Node:
             body = node.body if node.name == name else substitute(node.body, name, value)
             return Bind(node.name, body, node.span)
         case Keyed():
-            entries = tuple((key, replaced(n, name, value)) for key, n in node.entries)
-            return Keyed(entries, node.span)
+            return rekeyed(node, name, value)
+        case Match():
+            return rematched(node, name, value)
         case _:
             assert_never(node)
+
+
+def rekeyed(node: Keyed, name: str, value: Value) -> Keyed:
+    """A dict's values with name standing for value."""
+    return Keyed(tuple((key, replaced(n, name, value)) for key, n in node.entries), node.span)
+
+
+def rematched(node: Match, name: str, value: Value) -> Match:
+    """A match's rows with name standing for value."""
+    return Match(tuple(rebound(row, name, value) for row in node.rows), node.span)
+
+
+def rebound(row: Row, name: str, value: Value) -> Row:
+    """A row with name standing for value, up to the pattern that binds name anew."""
+    patterns: list[Pattern] = []
+    shadowed = False
+    for pattern in row.patterns:
+        patterns.append(pattern if shadowed else pinned(pattern, name, value))
+        shadowed = shadowed or name in names(pattern)
+    body = row.body if shadowed else substitute(row.body, name, value)
+    return Row(tuple(patterns), body)
+
+
+def pinned(pattern: Pattern, name: str, value: Value) -> Pattern:
+    """A pattern with each $name the value it pins."""
+    match pattern:
+        case Equal():
+            return Equal(replaced(pattern.node, name, value))
+        case Inverse():
+            args = tuple(pinned(p, name, value) for p in pattern.args)
+            return Inverse(pattern.name, args, pattern.span)
+        case Guarded():
+            return Guarded(pinned(pattern.pattern, name, value), pattern.test, pattern.span)
+        case Wild() | Var():
+            return pattern
+        case _:
+            assert_never(pattern)
+
+
+def names(pattern: Pattern) -> frozenset[str]:
+    """The names a pattern binds."""
+    match pattern:
+        case Var():
+            return frozenset((pattern.name,))
+        case Inverse():
+            return frozenset[str]().union(*map(names, pattern.args))
+        case Guarded():
+            return names(pattern.pattern)
+        case Wild() | Equal():
+            return frozenset()
+        case _:
+            assert_never(pattern)
+
+
+def matching(node: Match, state: State, rest: tuple[Node, ...]) -> State:
+    """The values the match takes replaced by the body of the first row matching them, each
+    name a pattern bound standing for its value; no row matching raises +fail at the match."""
+    cut = len(state.stack) - len(node.rows[0].patterns)
+    if cut < 0:
+        raise FplError(node.span, "stack underflow")
+    for row in node.rows:
+        bound = matches(row.patterns, state.stack[cut:], state.words)
+        if bound is not None:
+            code = row.body
+            for name, value in bound.items():
+                code = substitute(code, name, value)
+            return State(state.stack[:cut], code + rest, state.words)
+    raise FplError(node.span, "no row matches")
+
+
+def matches(patterns: tuple[Pattern, ...], values: Stack, words: Words) -> Bound | None:
+    """Each pattern against its value, left to right, a name bound by one pinned in those
+    after it; None if one fails."""
+    bound: Bound = {}
+    for pattern, value in zip(patterns, values, strict=True):
+        for name, earlier in bound.items():
+            pattern = pinned(pattern, name, earlier)  # noqa: PLW2901 -- pinned in turn
+        got = matched(pattern, value, words)
+        if got is None:
+            return None
+        bound |= got
+    return bound
+
+
+def matched(pattern: Pattern, value: Value, words: Words) -> Bound | None:
+    """What one pattern binds on a value, or None: a guard is its word leaving 1 on the
+    value (hole guard-test)."""
+    match pattern:
+        case Wild():
+            return {}
+        case Var():
+            return {pattern.name: value}
+        case Equal():
+            return {} if pattern.node == Push(value) else None
+        case Guarded():
+            bound = matched(pattern.pattern, value, words)
+            test = final(State((value,), (Call(pattern.test, pattern.span),), words))
+            return bound if test == (1,) else None
+        case Inverse():
+            return unbuilt(pattern, value, words)
+        case _:
+            assert_never(pattern)
+
+
+def unbuilt(pattern: Inverse, value: Value, words: Words) -> Bound | None:
+    """What the arguments bind on the values the constructor, run backwards, gives."""
+    given = undone(pattern.name, (value,), words, pattern.span)
+    if given is None or len(given) != len(pattern.args):
+        return None
+    return matches(pattern.args, given, words)
+
+
+def undone(
+    name: str, stack: Stack, words: Words, span: Span, trail: frozenset[str] = frozenset()
+) -> Stack | None:
+    """The stack with the word run backwards on its top, or None where the top is not a value
+    it builds. A defined word runs its body backwards, a primitive its inverse; any other
+    word, or a word inside its own body, is refused where the pattern names it."""
+    if name in words and name not in trail:
+        state: Stack | None = stack
+        for node in reversed(words[name]):
+            if state is None:
+                return None
+            state = unrun(node, state, words, span, trail | {name})
+        return state
+    if name in words or name not in INVERSES:
+        raise FplError(span, f"{name} is not invertible")
+    return INVERSES[name](stack)
+
+
+def unrun(
+    node: Node, stack: Stack, words: Words, span: Span, trail: frozenset[str]
+) -> Stack | None:
+    """One node of a constructor's body run backwards: a push takes its value back off."""
+    match node:
+        case Push():
+            return unpush(node.value, stack)
+        case Call():
+            return undone(node.name, stack, words, span, trail)
+        case _:
+            raise FplError(span, "a constructor is words and literals: not invertible")
+
+
+def unpush(value: Value, stack: Stack) -> Stack | None:
+    """The stack below its top, when the top is the value."""
+    match stack:
+        case (*below, top) if top == value:
+            return tuple(below)
+        case _:
+            return None
+
+
+def unswap(stack: Stack) -> Stack | None:
+    """swap is its own inverse."""
+    match stack:
+        case (*below, x, y):
+            return (*below, y, x)
+        case _:
+            return None
+
+
+def unpair(stack: Stack) -> Stack | None:
+    """A pair's two items."""
+    match stack:
+        case (*below, Listed(items=(a, b))):
+            return (*below, a, b)
+        case _:
+            return None
+
+
+def uncons(stack: Stack) -> Stack | None:
+    """A non-empty list's first item and the rest."""
+    match stack:
+        case (*below, Listed(items=(x, *xs))):
+            return (*below, x, Listed(tuple(xs)))
+        case _:
+            return None
+
+
+INVERSES: dict[str, Callable[[Stack], Stack | None]] = {
+    "swap": unswap,
+    "pair": unpair,
+    "cons": uncons,
+}
 
 
 def held(inner: Value, name: str, value: Value) -> Value:
@@ -213,6 +419,18 @@ def join(span: Span, a: Value, b: Value) -> tuple[Value, ...]:
             raise FplError(span, ", joins two quotations or two lists")
 
 
+def pair(_span: Span, a: Value, b: Value) -> tuple[Value, ...]:
+    """a b -- p : a two-item list (hole pair-shape)."""
+    return (Listed((a, b)),)
+
+
+def cons(span: Span, x: Value, xs: Value) -> tuple[Value, ...]:
+    """x xs -- ys : x before the items of a list."""
+    if not isinstance(xs, Listed):
+        raise FplError(span, "cons takes a list")
+    return (Listed((x, *xs.items)),)
+
+
 BUILTINS: dict[str, Builtin] = {
     "+": partial(arithmetic, lambda x, y: x + y),
     "-": partial(arithmetic, lambda x, y: x - y),
@@ -222,6 +440,8 @@ BUILTINS: dict[str, Builtin] = {
     "drop": drop,
     "enclose": enclose,
     ",": join,
+    "pair": pair,
+    "cons": cons,
 }
 
 
