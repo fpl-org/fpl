@@ -20,16 +20,23 @@ multihash = st.one_of(
 unknown = st.integers(min_value=1, max_value=1 << 63).filter(lambda code: code != BLAKE2B_256)
 
 
-def padded(m: Multihash, groups: int) -> str:
-    """m's hex alias with its code varint stretched by redundant zero groups."""
+def padded(m: Multihash, groups: int, field: int) -> str:
+    """m's hex alias with its code (field 0) or length (field 1) varint stretched by redundant
+    zero groups."""
     raw = m.raw()
-    end = next(at for at, byte in enumerate(raw) if byte < 0x80) + 1
-    code = raw[: end - 1] + bytes([raw[end - 1] | 0x80]) + b"\x80" * (groups - 1) + b"\x00"
-    return (code + raw[end:]).hex()
+    end = [at for at, byte in enumerate(raw) if byte < 0x80][field] + 1
+    varint = raw[: end - 1] + bytes([raw[end - 1] | 0x80]) + b"\x80" * (groups - 1) + b"\x00"
+    return (varint + raw[end:]).hex()
 
 
-@given(multihash, unknown, digest, st.integers(1, 3), st.binary(max_size=80))
-def test_multihash_roundtrip(m: Multihash, code: int, d: bytes, groups: int, data: bytes) -> None:
+stretch = st.tuples(st.integers(1, 3), st.integers(0, 1))
+data = st.one_of(st.binary(max_size=80), st.integers(30, 35).map(bytes))
+
+
+@given(multihash, unknown, digest, stretch, data)
+def test_multihash_roundtrip(
+    m: Multihash, code: int, d: bytes, stretch: tuple[int, int], data: bytes
+) -> None:
     """[law: multihash-roundtrip] spelling(m.spelled()) == m == spelling(m.raw().hex()), leading
     zero bytes included; decimal parts have no leading zeros; unknown codes, the unencoded
     b22020 form and non-minimal varints are refused; content() is inline exactly when at most
@@ -38,10 +45,12 @@ def test_multihash_roundtrip(m: Multihash, code: int, d: bytes, groups: int, dat
     assert DECIMAL.fullmatch(m.spelled())
     stranger = Multihash(code, d)
     for text in (stranger.spelled(), stranger.raw().hex(), "b22020" + d.hex()):
-        with pytest.raises(ValueError, match="unknown multihash code"):
+        with pytest.raises(ValueError, match=r"^unknown multihash code"):
             spelling(text, inline=True)
-    with pytest.raises(ValueError, match="non-minimal varint"):
-        spelling(padded(m, groups), inline=True)
+    with pytest.raises(ValueError, match=r"^non-minimal varint"):
+        spelling(padded(m, *stretch), inline=True)
+    with pytest.raises(ValueError, match=r"^inline bytes cannot stand for an identity"):
+        spelling(content(data[:32]).raw().hex(), inline=False)
     short = len(data) <= 32
     assert content(data) == (Multihash(INLINE, data) if short else hashed(data))
     assert (content(data).code == INLINE) == short
@@ -72,8 +81,13 @@ def test_multihash_roundtrip(m: Multihash, code: int, d: bytes, groups: int, dat
     ],
 )
 def test_a_malformed_multihash_is_refused(text: str, inline: bool, error: str) -> None:
-    with pytest.raises(ValueError, match=re.escape(error)):
+    with pytest.raises(ValueError, match=r"^" + re.escape(error)):
         spelling(text, inline=inline)
+
+
+def test_a_varint_of_128_takes_two_bytes() -> None:
+    """128 is the least number LEB128 spells in two bytes."""
+    assert Multihash(128, b"").raw() == bytes([0x80, 0x01, 0x00])
 
 
 def test_blake2b_is_the_hash_of_record() -> None:
