@@ -159,6 +159,12 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Closes by: a root [policy] commit adding [fpl.print] to quality/obligations.toml
 - Evidence: quality/obligations.toml ("Owed once there is a printer")
 
+## eval-obligation-unlisted
+- Depends on it: tests/test_match.py test_the_row_chosen_is_the_first_whose_patterns_match and test_a_match_is_exhaustive_exactly_when_its_effect_has_no_fail, scripts/props
+- Default in force: the two properties are marked @pytest.mark.obligation("the row chosen is the first whose patterns match") and @pytest.mark.obligation("a match is exhaustive exactly when its effect has no +fail"), and the file imports fpl.eval and fpl.desugar so scripts/props credits both; quality/obligations.toml lists neither, so scripts/props does not enforce them (as print-obligation-unlisted)
+- Closes by: a root [policy] commit adding the first to [fpl.eval] (matching) and the second to [fpl.desugar] (fallible, catches) in quality/obligations.toml
+- Evidence: quality/obligations.toml (no [fpl.eval] table; [fpl.desugar] lists one obligation); campaign scope 06-match ("Property: the row chosen is the first whose patterns match. Property: exhaustive ⇔ no +fail.")
+
 ## fon-hash-sigil
 - Depends on it: fpl/fon.py
 - Default in force: &hex is a content hash, #name a symbol; SHAR's Hash class comment still says #hash
