@@ -6,8 +6,19 @@ from hypothesis import given
 from hypothesis import strategies as st
 from test_parse import spans
 
-from fpl.ast_core import EFFECTS, Call, Define, Effect, Push, Run, Strand
-from fpl.ast_surface import Text
+from fpl.ast_core import (
+    EFFECTS,
+    Call,
+    Define,
+    Effect,
+    Listed,
+    Push,
+    Quotation,
+    Run,
+    Statement,
+    Strand,
+)
+from fpl.ast_surface import Cell, Enclosure, Frame, Line, Pair, Program, Text
 from fpl.desugar import START, desugar, listing, resugar, text
 from fpl.driver import run
 from fpl.errors import FplError
@@ -30,6 +41,14 @@ lines = st.lists(st.lists(items, min_size=1, max_size=4).map(" ".join), min_size
 programs = st.lists(lines.map(" | ".join), min_size=1, max_size=3).map("\n".join)
 
 
+def core(source: str) -> tuple[Statement, ...] | str:
+    """A program's statements, or its error's message without the position."""
+    try:
+        return desugar(parse(source))
+    except FplError as error:
+        return error.message
+
+
 def outcome(source: str) -> str:
     """What a program prints, or its error's message without the position."""
     try:
@@ -45,6 +64,57 @@ def test_desugaring_preserves_meaning(head: str, body: str) -> None:
     meant: bars and ( ) only sequence, a section is its quotation, a block its children."""
     source = head + body + "\n"
     assert outcome(render(resugar(desugar(parse(source))))) == outcome(source)
+
+
+@given(programs)
+def test_comments_change_no_statement(body: str) -> None:
+    """A ;; line before each line and a note after it leave the core as it was: a comment is no
+    code, and its doc is not carried into the core yet."""
+    commented = "".join(f";; d\n{line} ; n\n" for line in body.split("\n"))
+    assert core(commented) == core(body + "\n")
+
+
+@pytest.mark.parametrize(
+    ("commented", "plain"),
+    [
+        (";;; s\n; a\n; b\n\n1 ; n\n;; d\n2\n", "1\n2\n"),
+        ("\n\n1\n", "1\n"),
+        (
+            CURRY.replace("\n\t", "\t; n\n\t;; body\n\t") + "1 [ + ] curry\n",
+            CURRY + "1 [ + ] curry\n",
+        ),
+        (",\n\t1\n\t; c\n\t2\n", ",\n\t1\n\t2\n"),
+        ("+ +\n\t1\n\t;; c\n\t2\n", "+ +\n\t1\n\t2\n"),
+    ],
+)
+def test_a_line_with_no_code_is_no_statement(commented: str, plain: str) -> None:
+    """A comment's line and the empty first line run nothing, at the top, in a block or in a
+    body, and a block counts only the children that hold code: under + + two children leave it
+    one short, so it is a section."""
+    assert core(commented) == core(plain)
+
+
+@pytest.mark.parametrize("source", ["", "\n", "\n\n", ";; d\n", "; a\n; b\n", "⍝ a\n\n;;;; f\n"])
+def test_a_program_of_comments_or_blank_lines_prints_nothing(source: str) -> None:
+    assert run(source) == ""
+
+
+@pytest.mark.parametrize(("pair", "value"), [("quotation", Quotation(())), ("group", Listed(()))])
+def test_an_empty_enclosure_means_what_no_frame_meant(
+    pair: Pair, value: Quotation | Listed
+) -> None:
+    """[] and ⟨⟩ hold one empty frame, the base case of bars + 1 frames; they desugar to the
+    empty quotation and the empty list, as an enclosure of no frames did."""
+
+    def program(enclosure: Enclosure) -> Program:
+        cell = Cell((enclosure,), START)
+        return Program((Line((Frame((cell,), START),), (), START),), START)
+
+    source = "[]\n" if pair == "quotation" else "⟨⟩\n"
+    one = Enclosure(pair, (Frame((), START),), START)
+    assert parse(source) == program(one)
+    expected = (Run((Push(value),)),)
+    assert desugar(program(one)) == desugar(program(Enclosure(pair, (), START))) == expected
 
 
 def test_literals_strand_inside_a_frame_and_the_bar_applies_across() -> None:
@@ -191,6 +261,7 @@ def test_a_word_refuses_at_its_position(source: str, error: str) -> None:
     "source",
     [
         *("∞\n", "#x\n", "#1\n", "$1\n", "1\u00b4\n", "a/b\n", "{ 1 }\n", "()\n", "“⟨1⟩”\n"),
+        *("{}\n", ";;; s\n\t1\n", "\n\t1\n", "1\n\t; c\n\t\t2\n"),
         *("⟨ (+ 1 2) ⟩\n", "f : x\n", "f : x -- y | 1\n", "f : #x -- y\n", "1 2 3 fold\n"),
     ],
 )
