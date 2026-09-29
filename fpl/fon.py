@@ -1,12 +1,14 @@
 """FON data: the inert, braced data profile of FPL, read within bounds and written canonically.
 
 The reader never evaluates, resolves or constructs typed objects: a bare name or #name is a
-symbol, $name a reference by identity, &hex a reference by content, [ ] opaque code, ( ) a
-tagged tuple, { } a dict with literal keys, a number an exact decimal and _ absence. Whitespace
-separates tokens only, in any amount; there are no comments, blocks or islands. Strings are
-counted by the code grammar's pre-lexer. Depth, token length and input size are parameters.
+symbol, $name or $<code>:<n> a reference by identity, &<multihash> a reference by content
+(fpl/multihash.py, the hex alias read too), [ ] opaque code, ( ) a tagged tuple, { } a dict
+with literal keys, a number an exact decimal and _ absence. Whitespace separates tokens only,
+in any amount; there are no comments, blocks or islands. Strings are counted by the code
+grammar's pre-lexer. Depth, token length and input size are parameters.
 """
 
+import contextlib
 import math
 import re
 import struct
@@ -20,6 +22,7 @@ from lark import Lark, Token, Tree, UnexpectedInput
 
 from fpl.errors import FplError, Span
 from fpl.lex import Lines, Prelexed, pairs
+from fpl.multihash import Multihash, spelling
 
 GRAMMAR = r"""
 start: value*
@@ -36,7 +39,6 @@ OPENERS = {"[": "]", "(": ")", "⟨": "⟩", "{": "}"}
 NUMBER = re.compile(r"-?(0|[1-9][0-9]*)(\.[0-9]+)?")
 NUMERIC = re.compile(r"-?(0x|[0-9])")
 HEXFLT = re.compile(r"-?0x(0|1)(\.[0-9a-f]*[1-9a-f])?p-?(0|[1-9][0-9]*)")
-HEX = re.compile(r"[0-9a-f]{6,}")
 TOKEN = re.compile(r"[^\s\[\]()“”「」⟦⟧⟨⟩{}|⍝¶]+")
 
 
@@ -113,24 +115,24 @@ class Sym:
 
 @dataclass(frozen=True)
 class Cell:
-    """$name: a reference by identity; not followed."""
+    """$name, or $<code>:<n> naming by hash: a reference by identity; not followed."""
 
-    name: str
+    name: str | Multihash
 
     def written(self) -> str:
         """Canonical FON."""
-        return "$" + self.name
+        return "$" + (self.name.spelled() if isinstance(self.name, Multihash) else self.name)
 
 
 @dataclass(frozen=True)
 class Hash:
-    """&hex: a reference by content; not followed."""
+    """&<multihash>: a reference by content, the bytes themselves up to 32; not followed."""
 
-    hex: str
+    ref: Multihash
 
     def written(self) -> str:
-        """Canonical FON."""
-        return "&" + self.hex
+        """Canonical FON: the decimal spelling."""
+        return "&" + self.ref.spelled()
 
 
 @dataclass(frozen=True)
@@ -221,14 +223,26 @@ class _RefusedError(Exception):
     """A token the profile refuses, before it is placed in the source."""
 
 
-def _hash(hex_: str) -> Hash:
-    """&hex: six or more lower-case hex digits."""
-    if not HEX.fullmatch(hex_):
-        raise _RefusedError(f"malformed hash reference &{hex_}")
-    return Hash(hex_)
+def _hash(text: str) -> Hash:
+    """&<multihash>, in decimal or the hex alias, inline bytes allowed."""
+    try:
+        return Hash(spelling(text, inline=True))
+    except ValueError:
+        raise _RefusedError(f"malformed hash reference &{text}") from None
 
 
-SIGILS: dict[str, Callable[[str], Leaf]] = {"$": Cell, "&": _hash, "#": Sym}
+def _cell(text: str) -> Cell:
+    """$name, or $<code>:<n> when it opens with a digit; no hex alias, which would read as a
+    name, and no inline bytes, which are content, not identity."""
+    if text[0] not in "0123456789":
+        return Cell(text)
+    if ":" in text:
+        with contextlib.suppress(ValueError):
+            return Cell(spelling(text, inline=False))
+    raise _RefusedError(f"malformed identity ${text}")
+
+
+SIGILS: dict[str, Callable[[str], Leaf]] = {"$": _cell, "&": _hash, "#": Sym}
 
 
 def leaf(token: str) -> Leaf:
