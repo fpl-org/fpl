@@ -198,7 +198,7 @@ EDGE_PAIRS = (
 
 def edge_program(imm: int, amount: int) -> tuple[Program, ...]:
     """Every R, I and shift op once, x1 (and x2) to its own rd, in chunks of 14 over x5..x18."""
-    ops = (
+    ops: tuple[R | I | Shift, ...] = (
         *(R(op, Reg.X0, Reg.X1, Reg.X2) for op in OpR),
         *(I(op, Reg.X0, Reg.X1, imm) for op in OpI),
         *(Shift(op, Reg.X0, Reg.X1, amount % (32 if op.endswith("w") else 64)) for op in OpShift),
