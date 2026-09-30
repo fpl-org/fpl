@@ -7,7 +7,7 @@ from fractions import Fraction
 
 import icontract
 import pytest
-from aarch64_strategies import forward_branching, register_only
+from aarch64_strategies import TOP, forward_branching, register_only, u64s
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -72,9 +72,7 @@ X0, X1, X2, X3, X4, X30, SP, ZR = Reg.X0, Reg.X1, Reg.X2, Reg.X3, Reg.X4, Reg.X3
 W32, W64 = Width.W32, Width.W64
 LSL = Shift.LSL
 BASE = 0x1_0000
-TOP = (1 << 64) - 1
-EDGES = [0, 1, 0x7FFF_FFFF, 0x8000_0000, 0xFFFF_FFFF, 1 << 32, (1 << 63) - 1, 1 << 63, TOP]
-words = st.one_of(st.sampled_from(EDGES), st.integers(0, TOP))
+words = u64s()
 widths = st.sampled_from(Width)
 
 

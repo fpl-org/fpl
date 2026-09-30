@@ -23,6 +23,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from functools import cache, partial
 
+from aarch64_frame import OBSERVED, Block
 from hypothesis import find
 from hypothesis import strategies as st
 
@@ -92,6 +93,8 @@ from fpl.asm.aarch64.model import (
     Width,
 )
 
+TOP = (1 << 64) - 1
+EDGES = [0, 1, 0x7FFF_FFFF, 0x8000_0000, 0xFFFF_FFFF, 1 << 32, (1 << 63) - 1, 1 << 63, TOP]
 GENERAL = [reg for reg in Reg if reg not in (Reg.X18, Reg.X29, Reg.SP, Reg.ZR)]
 widths = st.sampled_from(Width)
 conds = st.sampled_from(Cond)
@@ -104,6 +107,16 @@ def regs(role: str = "gp") -> st.SearchStrategy[Reg]:
     extra = {"zr": Reg.ZR, "sp": Reg.SP}.get(role)
     general = st.sampled_from(GENERAL)
     return general if extra is None else st.one_of(st.just(extra), general)
+
+
+def u64s() -> st.SearchStrategy[int]:
+    """Register values in [0, 2**64), the sign and width edges drawn often."""
+    return st.one_of(st.sampled_from(EDGES), st.integers(0, TOP))
+
+
+def nzcvs() -> st.SearchStrategy[int]:
+    """NZCV as four bits, all 16."""
+    return st.integers(0, 15)
 
 
 def bitmask_imms(width: Width) -> st.SearchStrategy[int]:
@@ -343,6 +356,22 @@ def forward_branching(draw: st.DrawFn, n: int = 12) -> Program:
         items += [labels[at]] if at in labels else []
         items += jumps[at] + body[at : at + 1]
     return tuple(items)
+
+
+@st.composite
+def block(draw: st.DrawFn) -> Block:
+    """A block for a run: the 29 observed registers and NZCV drawn, x18 and x29 zero (the
+    frame leaves them to the platform, and no block reads them), a straight_line or
+    forward_branching program."""
+    drawn = dict(zip(OBSERVED, draw(st.lists(u64s(), min_size=29, max_size=29)), strict=True))
+    regs = tuple(drawn.get(reg, 0) for reg in range(31))
+    program = draw(st.one_of(straight_line().map(tuple), forward_branching()))
+    return Block(regs, draw(nzcvs()), program)
+
+
+def blocks(k: int = 8) -> st.SearchStrategy[list[Block]]:
+    """A batch of one to `k` blocks for one run."""
+    return st.lists(block(), min_size=1, max_size=k)
 
 
 def programs() -> st.SearchStrategy[Program]:
