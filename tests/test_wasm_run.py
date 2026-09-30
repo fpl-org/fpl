@@ -8,7 +8,14 @@ from wasm_oracle import Calls, Get, Invoke, Item, Run, Tools, run_wabt, run_wasm
 from wasm_strategies import MAIN, functypes, operands, runnable_modules, step_bound
 
 from fpl.asm.wasm.exec import Instance, Values, instantiate, invoke
-from fpl.asm.wasm.instr import CallIndirect, Const, Instr, ReturnCallIndirect
+from fpl.asm.wasm.instr import (
+    Call,
+    CallIndirect,
+    Const,
+    Instr,
+    ReturnCall,
+    ReturnCallIndirect,
+)
 from fpl.asm.wasm.module import Elem, Export, Func, Module, Table
 from fpl.asm.wasm.numerics import Trap
 from fpl.asm.wasm.text import print_module
@@ -68,6 +75,33 @@ def test_an_indirect_call_through_a_duplicate_type_calls_the_function(
     assert invoke(instance, 0, (), 16) == Values(results)
     typed = tuple(zip(module.types[0].results, results, strict=True))
     agree(wasm_tools, [Run(print_module(module), typed)])
+
+
+def test_a_tail_call_drops_the_operands_under_its_arguments(wasm_tools: Tools) -> None:
+    """`return_call` ends its caller, whose operands under the call's arguments go with it
+    (3.4.2, 4.4.8): `main` pushes 5 and calls a function that pushes 9, then tail-calls one
+    returning 1, so `main` returns (5, 1) in the evaluator and wasmtime.
+
+    wabt 1.0.41's spectest-interp keeps the 9 and returns (9, 1). The wabt leg asserts that
+    wrong answer, so a wabt that fixes it fails here, and hole wabt-tail-call-operands closes.
+    """
+    types = (FuncType((), ("i32", "i32")), FuncType((), ("i32",)))
+    module = Module(
+        types=types,
+        funcs=(
+            Func(0, (), (Const("i32", 5), Call(1))),
+            Func(1, (), (Const("i32", 9), ReturnCall(2))),
+            Func(1, (), (Const("i32", 1),)),
+        ),
+        exports=(Export("main", "func", 0),),
+    )
+    assert check(module) is None
+    instance = instantiate(module)
+    assert isinstance(instance, Instance), instance
+    assert invoke(instance, 0, (), 16) == Values((5, 1))
+    item = Run(print_module(module), (("i32", 5), ("i32", 1)))
+    assert run_wasmtime(wasm_tools, [item]).wrong == ()
+    assert run_wabt(wasm_tools, [item]).wrong == (0,)
 
 
 def agree(tools: Tools, items: list[Item]) -> None:

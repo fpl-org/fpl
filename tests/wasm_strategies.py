@@ -202,7 +202,17 @@ INSTRS: dict[type[Instr], st.SearchStrategy[Instr]] = {
     **{cls: st.builds(cls) for cls in (Nop, Unreachable, Drop, Return, MemorySize)},
     **{
         cls: st.builds(cls, u32s)
-        for cls in (LocalGet, LocalSet, LocalTee, GlobalGet, GlobalSet, Br, BrIf, Call, ReturnCall)
+        for cls in (
+            LocalGet,
+            LocalSet,
+            LocalTee,
+            GlobalGet,
+            GlobalSet,
+            Br,
+            BrIf,
+            Call,
+            ReturnCall,
+        )
     },
 }
 """The builder of each instruction class; nested bodies hold up to three instructions."""
@@ -387,13 +397,15 @@ class Budget:
 @dataclass(frozen=True)
 class Frame:
     """Where code is drawn (3.1.1's C for one function): the module's context, the locals
-    (params first), the function's results, and the label types, innermost first."""
+    (params first), the function's results, the label types, innermost first, and whether a
+    tail call may stand over other operands or inside a block (hole wabt-tail-call-operands)."""
 
     context: Context
     locals: Stack
     results: Stack
     labels: tuple[Stack, ...]
     budget: Budget
+    loose_tails: bool
 
     def enter(self, label: Stack) -> "Frame":
         """The frame inside a block whose label has type `label`."""
@@ -449,12 +461,16 @@ def _sequence(draw: st.DrawFn, frame: Frame, stack: Stack, results: Stack) -> tu
 
 
 @st.composite
-def bodies(draw: st.DrawFn, context: Context, func: Func) -> tuple[Instr, ...]:
-    """A body for `func` in `context`, typed by construction to produce exactly its results."""
+def bodies(
+    draw: st.DrawFn, context: Context, func: Func, loose_tails: bool = True
+) -> tuple[Instr, ...]:
+    """A body for `func` in `context`, typed by construction to produce exactly its results;
+    without `loose_tails`, a tail call only in the body's own sequence over exactly its operands
+    (hole wabt-tail-call-operands)."""
     signature = context.types[func.type]
     locals_ = (*signature.params, *func.locals)
     results = signature.results
-    frame = Frame(context, locals_, results, (results,), Budget(LENGTH))
+    frame = Frame(context, locals_, results, (results,), Budget(LENGTH), loose_tails)
     return _sequence(draw, frame, (), results)
 
 
@@ -522,7 +538,8 @@ def _indexed(indices: list[int], step: Callable[[int], Step]) -> Move | None:
 
 def _local_get(frame: Frame, _stack: Stack) -> Move | None:
     return _indexed(
-        list(range(len(frame.locals))), lambda x: Step(LocalGet(x), 0, (frame.locals[x],))
+        list(range(len(frame.locals))),
+        lambda x: Step(LocalGet(x), 0, (frame.locals[x],)),
     )
 
 
@@ -651,11 +668,21 @@ def _call(frame: Frame, stack: Stack) -> Move | None:
     return _indexed(fits, lambda x: Step(Call(x), len(funcs[x].params), funcs[x].results))
 
 
+def _tail_fits(frame: Frame, stack: Stack, operands: Stack) -> bool:
+    """A tail call taking `operands` may stand over `stack` in `frame`: they end it, and, without
+    loose tails, they are all of it, in the body's own sequence (hole wabt-tail-call-operands)."""
+    if frame.loose_tails:
+        return _suffix(stack, operands)
+    return len(frame.labels) == 1 and stack == operands
+
+
 def _return_call(frame: Frame, stack: Stack) -> Move | None:
     """`return_call` of a function whose results are the caller's (3.4.2)."""
     funcs = frame.context.funcs
     fits = [
-        x for x, f in enumerate(funcs) if f.results == frame.results and _suffix(stack, f.params)
+        x
+        for x, f in enumerate(funcs)
+        if f.results == frame.results and _tail_fits(frame, stack, f.params)
     ]
     return _indexed(fits, lambda x: Step(ReturnCall(x), 0, (), ends=True))
 
@@ -665,10 +692,12 @@ def _indirect_types(frame: Frame, stack: Stack, tail: bool) -> list[int]:
     table; for a tail call, only those whose results are the caller's."""
     if not frame.context.tables or stack[-1:] != ("i32",):
         return []
+    if not tail:
+        return [y for y, t in enumerate(frame.context.types) if _suffix(stack[:-1], t.params)]
     return [
         y
         for y, t in enumerate(frame.context.types)
-        if _suffix(stack[:-1], t.params) and (not tail or t.results == frame.results)
+        if t.results == frame.results and _tail_fits(frame, stack, (*t.params, "i32"))
     ]
 
 
@@ -857,7 +886,10 @@ def _bad_func(module: Module, _func: Func) -> tuple[Module, tuple[Instr, ...]]:
 
 
 def _bad_table(module: Module, _func: Func) -> tuple[Module, tuple[Instr, ...]]:
-    return module, (Const("i32", 0), CallIndirect(context_of(module).tables, TypeUse(0)))
+    return module, (
+        Const("i32", 0),
+        CallIndirect(context_of(module).tables, TypeUse(0)),
+    )
 
 
 def _no_memory(module: Module, _func: Func) -> tuple[Module, tuple[Instr, ...]]:
@@ -870,14 +902,21 @@ def _immutable(module: Module, _func: Func) -> tuple[Module, tuple[Instr, ...]]:
     """An immutable global appended, and a probe setting it."""
     index = len(context_of(module).globals)
     fixed = Global(GlobalType(False, "i32"), (Const("i32", 0),))
-    return replace(module, globals=(*module.globals, fixed)), (Const("i32", 0), GlobalSet(index))
+    return replace(module, globals=(*module.globals, fixed)), (
+        Const("i32", 0),
+        GlobalSet(index),
+    )
 
 
 def _overaligned(module: Module, _func: Func) -> tuple[Module, tuple[Instr, ...]]:
     """A memory if there is none, and an i32.load aligned to 2**3 bytes, past its natural 2**2."""
     memory = () if context_of(module).memory else (Mem(MemType(Limits(1, None))),)
     load = Load("i32", MemArg(3, 0), None)
-    return replace(module, mems=(*module.mems, *memory)), (Const("i32", 0), load, Drop())
+    return replace(module, mems=(*module.mems, *memory)), (
+        Const("i32", 0),
+        load,
+        Drop(),
+    )
 
 
 def _tail_result(module: Module, func: Func) -> tuple[Module, tuple[Instr, ...]]:
@@ -1065,5 +1104,5 @@ def runnable_modules(draw: st.DrawFn) -> Module:
 def _fuelled(draw: st.DrawFn, context: Context, func: Func) -> Func:
     """`func` with a drawn body, guarded at its entry and every loop head."""
     results = context.types[func.type].results
-    body = draw(bodies(context, func))
+    body = draw(bodies(context, func, loose_tails=False))
     return replace(func, body=(*_guard(results), *_guarded(body, results)))
