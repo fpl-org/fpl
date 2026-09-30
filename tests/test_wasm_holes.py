@@ -62,13 +62,15 @@ def dropping(field: str) -> Callable[[Entry], Entry]:
     return lambda fields: {k: v for k, v in fields.items() if k != field}
 
 
-def depending_on_nothing(fields: Entry) -> Entry:
-    """A corruption that makes the entry depend on a file that does not exist."""
-    return {**fields, FIELDS[0]: fields[FIELDS[0]] + ", tests/test_wasm_nowhere.py"}
+def depending_on(path: str) -> Callable[[Entry], Entry]:
+    """A corruption that makes the entry depend on `path`, a file that does not exist."""
+    return lambda fields: {**fields, FIELDS[0]: f"{fields[FIELDS[0]]}, {path}"}
 
 
 HOLES = entries((TOPLEVEL / "HOLES.md").read_text())
-CORRUPTIONS = [*map(dropping, FIELDS), depending_on_nothing]
+# A path with a slash, and bare names a reader keeping only slashed paths would miss.
+MISSING = ["tests/test_wasm_nowhere.py", "nowhere.py", "nowhere.md"]
+CORRUPTIONS = [*map(dropping, FIELDS), *map(depending_on, MISSING)]
 
 
 @given(st.sampled_from(sorted(HOLES)), st.sampled_from(CORRUPTIONS))
@@ -86,3 +88,4 @@ def test_every_hole_is_well_formed(name: str, corrupt: Callable[[Entry], Entry])
 def test_paths_are_read_from_prose() -> None:
     depends = "fpl/asm/wasm/exec.py (Exhausted, DEPTH), `tests/wasm_oracle.py:12-30`, the D track"
     assert paths(depends) == ["fpl/asm/wasm/exec.py", "tests/wasm_oracle.py"]
+    assert paths("exec.py (DEPTH), `HOLES.md`, the D track") == ["exec.py", "HOLES.md"]
