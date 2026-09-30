@@ -2,11 +2,12 @@
 reaches, pinned by fixed modules."""
 
 from dataclasses import replace
+from typing import get_args
 
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
-from wasm_strategies import operands, valid_modules
+from wasm_strategies import NUMTYPES, operands, valid_modules
 
 from fpl.asm.wasm.exec import (
     DEPTH,
@@ -31,6 +32,7 @@ from fpl.asm.wasm.instr import (
     Drop,
     GlobalGet,
     GlobalSet,
+    IBinop,
     If,
     Instr,
     Load,
@@ -68,13 +70,36 @@ from fpl.asm.wasm.types import (
     GlobalType,
     Limits,
     MemType,
+    NumType,
     TableType,
     TypeUse,
 )
 from fpl.asm.wasm.valid import check
 
 
-@given(valid_modules(closed=True), st.data())
+@st.composite
+def every_binop(draw: st.DrawFn) -> Module:
+    """A closed module with one function per integer binary operator and type, each returning
+    `a op b` of operands biased to the edges, so every example meets carries and borrows."""
+    cases: list[tuple[NumType, IBinop]] = [(t, op) for t in NUMTYPES for op in get_args(IBinop)]
+    return Module(
+        types=tuple(FuncType((), (t,)) for t, _ in cases),
+        funcs=tuple(
+            Func(
+                k,
+                (),
+                (
+                    Const(t, draw(operands(t))),
+                    Const(t, draw(operands(t))),
+                    Binop(t, op),
+                ),
+            )
+            for k, (t, op) in enumerate(cases)
+        ),
+    )
+
+
+@given(valid_modules(closed=True) | every_binop(), st.data())
 def test_every_well_typed_run_ends_in_typed_values_a_trap_or_out_of_steps(
     module: Module, data: st.DataObject
 ) -> None:
@@ -83,18 +108,22 @@ def test_every_well_typed_run_ends_in_typed_values_a_trap_or_out_of_steps(
     of the declared result types (each in 0..2**N-1), a trap, or out of steps, and never raises
     (spec 7.4).
 
-    The budget stays below DEPTH: every call costs its instruction's step, so no run can reach
-    the depth limit, and each budget cuts the run at a different point.
+    Every function is invoked, exported or not, on operands biased to the edges; a module of
+    every binary operator stands beside the valid ones, so a result left unwrapped meets the
+    range check in every example. The budget stays below DEPTH: every call costs its
+    instruction's step, so no run can reach the depth limit; it is the largest such budget or a
+    smaller one that cuts the run at a different point. A module whose instantiation traps (an
+    active segment out of bounds) has no instance to invoke: the trap is its outcome.
     """
     assert check(module) is None
     instance = instantiate(module)
     if isinstance(instance, Trap):
         return
-    for export in (e for e in module.exports if e.kind == "func"):
-        t = module.types[module.funcs[export.index].type]
+    for index, func in enumerate(module.funcs):  # closed: function k is index k
+        t = module.types[func.type]
         args = tuple(data.draw(operands(p)) for p in t.params)
-        steps = data.draw(st.integers(min_value=0, max_value=DEPTH - 1))
-        match invoke(instance, export.index, args, steps):
+        steps = data.draw(st.just(DEPTH - 1) | st.integers(min_value=0, max_value=DEPTH - 1))
+        match invoke(instance, index, args, steps):
             case Values(values):
                 typed = zip(t.results, values, strict=True)
                 assert all(0 <= v < 1 << WIDTH[r] for r, v in typed)
