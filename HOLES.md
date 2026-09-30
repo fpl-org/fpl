@@ -564,3 +564,33 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Default in force: an output-count mismatch reads `f/1/2 leaves 2, f/1/1 1`, after the slot-kind message `f/1/2 takes a thunk at 1, f/1/1 a value`; the meet in `g/2/2 is ambiguous with g/2/1 at x: Int  y: Int` takes the earlier clause's slot names
 - Closes by: the design side, by fixing the wording
 - Evidence: design-09-v3.md §2.3, §3.3, §11 (the wording of the ambiguity error); the design gives no output-count message
+
+## refusal-not-fail
+- Depends on it: fpl/ast_core.py `Refuse`; fpl/desugar.py `fallible`; tests/test_overload.py test_an_ambiguity_is_a_refusal_not_a_miss, test_p5_refuses_a_call_both_crossing_clauses_fit
+- Default in force: landed in C10: an ambiguous call raises an `FplError` at the dispatcher's span, never `FailError`; `fallible` counts no `Refuse` row, so it adds no +fail; the walker has no `or` to tell the two apart outside guards
+- Closes by: the part that lands `or`, which must catch `FailError` (`no row matches`) only
+- Evidence: design-09-v3.md §3.4, §10 (refusal-not-fail)
+
+## guard-failure
+- Depends on it: fpl/eval.py `matched` (a guard's test), fpl/errors.py `FailError`; tests/test_overload.py test_a_guard_that_misses_is_not_fitting, test_an_error_in_a_guard_propagates
+- Default in force: landed in C10, decided: a predicate used as a slot type must be total over the values it can meet; a test that fails with `no row matches` (`FailError`) is a miss, in dispatcher and match rows alike; an ambiguity refusal, fuel exhaustion or any other error inside the test propagates out of the call as that error
+- Closes by: PSJ, only to widen the miss; order B itself waits on the row-18 amendment (dispatch-order), pending
+- Evidence: design-09-v3.md §3.9, §10 (guard-failure); combined-draft.md:138 (row 18)
+
+## number-split
+- Depends on it: fpl/types.py `tested`
+- Default in force: types has one number sort, so neither `Int` nor `Decimal` surely misses a number, and a more specific maybe row before a sure one keeps the call dynamic (P1's `5 f`)
+- Closes by: types, by splitting the number sort, which lets `Int` surely miss a decimal and `Decimal` an integer; a guarded row stays at most maybe (static-dispatch-residual)
+- Evidence: design-09-v3.md §3.6, §10 (number-split)
+
+## static-miss
+- Depends on it: fpl/types.py `chosen`; tests/test_overload.py test_a_call_types_leaves_unresolved_fails_at_run_time
+- Default in force: a call no row can fit keeps the dispatcher's arrow and is `no row matches` +fail at run time; types neither refuses nor warns
+- Closes by: types, with a warning
+- Evidence: design-09-v3.md §3.6, §10 (static-miss)
+
+## static-dispatch-residual
+- Depends on it: fpl/types.py `chosen`, `surviving`, `tested`, `taken`; tests/test_overload.py test_types_resolves_a_dispatch_where_one_clause_row_survives, test_static_and_dynamic_dispatch_agree, test_a_guarded_row_is_never_a_sure_fit
+- Default in force: pruning rows by verdict serves only static dispatch at a call site (`chosen`); a match in a body prunes nothing, every row of it counting for its word's sorts, dead rows included (decided by PSJ, 2026-10-05; hole typed-fragment), where design-09-v3.md §3.6 prunes there too; a row with a guard or an ascription (a cell with ∈, or `x: w`) is never a sure fit, so pruning never stops at it and TEXT_FIRST's `“a” f` keeps its catch-all row; a call keeps the dispatcher's arrow when a synthetic row survives, when an argument is an `Input` (even to a lone untyped clause of a two-group word), and when the one surviving row is a maybe whose clause's arrow refuses the argument sorts (`x: one` with body `1 +` on `“a”`: the run misses, so types does not refuse)
+- Closes by: the design side, by accepting the maybe-row condition and the guard rule, which §3.6 does not state, and by taking body-match pruning out of §3.6
+- Evidence: design-09-v3.md §3.6 (Pruning, Why an `Input` blocks resolution), §10 (static-dispatch-residual)
