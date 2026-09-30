@@ -30,6 +30,7 @@ from aarch64_strategies import (
     add_sub_imm,
     excluded,
     far_branches,
+    forward_branching,
     instructions,
     invalid_programs,
     load_store,
@@ -45,6 +46,7 @@ from fpl.asm.aarch64.check import Kind, check
 from fpl.asm.aarch64.model import (
     AddSubImm,
     Instr,
+    Label,
     LoadStore,
     Offset,
     OpAddSub,
@@ -302,3 +304,33 @@ def test_unpredictable_pairs_are_refused_by_the_checker_and_by_llvm_mc_but_five(
     again = verdict(tools, print_program(alone), tmp_path_factory.mktemp("accepted"))
     assert again.code == 0, again.said
 
+
+def targeted(program: Program) -> list[str]:
+    """print_program(p)'s instruction lines, each label reference replaced by the label's
+    address in hex: 4 x the number of instructions before its definition."""
+    at, count = {}, 0
+    for item in program:
+        if isinstance(item, Label):
+            at[item.name] = count
+        else:
+            count += 1
+    lines = [line for line in print_program(program).splitlines() if not line.endswith(":")]
+    reference = re.compile(r"\.L\w+$")
+    return [reference.sub(lambda m: f"{4 * at[m.group()]:#x}", line) for line in lines]
+
+
+# llvm-objdump names a target by its section offset after the address: `b.eq\t0x18 <.text+0x18>`.
+SYMBOLIC = re.compile(r" <\.text(\+0x[0-9a-f]+)?>$")
+
+
+@settings(backend="hypothesis")
+@given(program=forward_branching())
+def test_branch_and_adr_targets_are_the_label_addresses(
+    tmp_path_factory: pytest.TempPathFactory, worker_id: str, program: Program
+) -> None:
+    """[law: control-targets-agree] For programs with labels, each branch and adr in the
+    disassembly has the printed mnemonic and operands, and its absolute target is 4 x the
+    instruction index of its label in the object."""
+    tools = toolchain(tmp_path_factory, worker_id)
+    dumped = disassemble(tools, print_program(program), tmp_path_factory.mktemp("targets"))
+    assert [SYMBOLIC.sub("", line) for line in dumped] == targeted(program)
