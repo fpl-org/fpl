@@ -260,6 +260,18 @@ DISASSEMBLED = (
     "\tlsr\tx1, x2, #3",
     "\tldr\tx0, [x1, w2, uxtw]",
     "\tldr\tx0, [x1, x2]",
+    "\tmov\tw1, #1073741824",
+    "\tmov\tw1, #-65536",
+    "\tmov\tw1, #65536",
+    "\tmov\tx1, #281474976710656",
+    "\tmov\tx1, #-65536",
+    "\torr\tw1, wzr, #0xffff",
+    "\torr\tx1, xzr, #0xffff",
+    "\torr\tx1, xzr, #0xffff000000000000",
+    "\tands\tw1, w2, #0x1",
+    "\tands\tx1, x2, #0x1",
+    "\torr\tw1, wzr, w2, lsl #3",
+    "\torr\tx1, xzr, x2, lsr #0",
 )
 
 
@@ -329,6 +341,7 @@ X0, X1, X2, X3, SP = Reg.X0, Reg.X1, Reg.X2, Reg.X3, Reg.SP
             AddSubExtended(OpAddSub.ADD, Width.W32, X0, SP, X1, Extend.UXTW, 0),
             "\tadd\tw0, wsp, w1",
         ),
+        (AddSubImm(OpAddSub.ADD, Width.W64, X1, SP, 0, False), "\tmov\tx1, sp"),
         (BranchReg(OpBranchReg.RET, Reg.X30), "\tret"),
         (MulLong(OpMulLong.SMADDL, X0, X1, X2, X3), "\tsmaddl\tx0, w1, w2, x3"),
         (model.TestBranch(OpTestBranch.TBZ, X0, 0, L0), "\ttbz\tw0, #0, .L0"),
