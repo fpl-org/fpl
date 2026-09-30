@@ -120,3 +120,21 @@ def test_a_label_outside_the_dot_l_form_is_a_problem_where_defined_and_where_use
 def test_the_checker_names_exactly_the_violations_put_into_a_valid_program(case: Invalid) -> None:
     """Each operand out of range, second definition and undefined target, and nothing else."""
     assert set(kinds(case.program)) == case.problems
+
+
+def test_each_problem_says_what_it_refuses() -> None:
+    nops = [I(OpI.ADDI, Reg.X0, Reg.X0, 0)] * 1024
+    program: Program = (
+        BEQ,
+        *nops,
+        Label(".Lt"),
+        Label(".Lt"),
+        Label("Lx"),
+        I(OpI.ADDI, Reg.X1, Reg.X0, 2048),
+    )
+    assert set(check(program)) == {
+        Problem(0, Kind.BRANCH_RANGE, "beq to .Lt: 4100 is outside [-4096, 4094]"),
+        Problem(1026, Kind.DUPLICATE_LABEL, ".Lt is already defined"),
+        Problem(1027, Kind.LABEL_NAME, "label 'Lx' is not .L[A-Za-z0-9_]+"),
+        Problem(1028, Kind.IMM12, "addi 2048 is outside [-2048, 2047]"),
+    }

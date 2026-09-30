@@ -32,7 +32,7 @@ from fpl.asm.riscv.model import (
     Store,
     Upper,
 )
-from fpl.asm.riscv.text import ParseError, parse_program, print_program
+from fpl.asm.riscv.text import SHAPES, ParseError, line, parse_program, pattern, print_program
 
 # Every op and every register at least once, with the immediates' edges. The right-hand
 # lines are copied from `llvm-objdump -d -M no-aliases -M numeric --no-print-imm-hex
@@ -205,3 +205,12 @@ def test_a_line_an_assembler_might_read_is_still_refused(line: str) -> None:
 def test_text_without_its_last_newline_is_refused() -> None:
     with pytest.raises(ParseError, match="line 2: the text does not end with a newline"):
         parse_program("\tecall\n\tecall")
+
+
+@given(instructions())
+def test_the_pattern_of_a_mnemonic_and_its_shape_matches_the_line_printed_for_it(
+    instr: Instr,
+) -> None:
+    """The parser's table is built at import, where mutation testing cannot reach it."""
+    text = line(instr)
+    assert pattern(text.split("\t")[1], SHAPES[type(instr)]).fullmatch(text)

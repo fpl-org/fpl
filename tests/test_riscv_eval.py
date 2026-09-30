@@ -402,3 +402,19 @@ def test_the_evaluator_keeps_its_contracts(
 def test_run_refuses_a_machine_that_is_not_well_formed(regs: tuple[int, ...]) -> None:
     with pytest.raises(icontract.ViolationError):
         run((NOP,), Machine(regs), BASE, 1)
+
+
+def test_sext_takes_every_width_from_one_bit_and_refuses_zero() -> None:
+    assert (sext(1, 1), sext(2, 1)) == (ONES, 0)
+    with pytest.raises(icontract.ViolationError):
+        sext(1, 0)
+
+
+@pytest.mark.parametrize(("a", "b"), [(1 << 64, 0), (0, -1)])
+def test_alu_refuses_an_operand_that_is_not_a_register_value(a: int, b: int) -> None:
+    with pytest.raises(icontract.ViolationError):
+        alu(OpR.AND, a, b)
+
+
+def test_jalr_may_go_to_the_first_instruction() -> None:
+    assert isinstance(run((Jalr(Reg.X0, Reg.X5, 0),), machine({Reg.X5: BASE}), BASE, 3), OutOfFuel)
