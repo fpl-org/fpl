@@ -434,11 +434,15 @@ def locked(path: Path) -> Generator[None]:
 
 
 def _key_file(env: Mapping[str, str]) -> Path:
-    """$FPL_LOG_KEY, else $XDG_CONFIG_HOME/fpl/log.key, else $HOME/.config/fpl/log.key."""
+    """$FPL_LOG_KEY, else $XDG_CONFIG_HOME/fpl/log.key, else $HOME/.config/fpl/log.key.
+    Refused (RefusedError): none of the three set."""
     if env.get("FPL_LOG_KEY"):
         return Path(env["FPL_LOG_KEY"])
-    config = env.get("XDG_CONFIG_HOME") or f"{env['HOME']}/.config"
-    return Path(config, "fpl", "log.key")
+    if env.get("XDG_CONFIG_HOME"):
+        return Path(env["XDG_CONFIG_HOME"], "fpl", "log.key")
+    if env.get("HOME"):
+        return Path(env["HOME"], ".config", "fpl", "log.key")
+    raise RefusedError("no key file: $FPL_LOG_KEY, $XDG_CONFIG_HOME and $HOME are unset")
 
 
 def keyed(env: Mapping[str, str]) -> bytes:
