@@ -25,7 +25,7 @@
 
 ## oracle-settings
 - Depends on it: tests/test_riscv_via_llvm.py, tests/test_riscv_via_qemu.py, the law oracle-budget
-- Default in force: no per-test settings; oracle tests run at the harness profile's example counts (quick 100), because the house rule forbids max_examples or a per-test @settings count in a test; measured at quick with pytest --durations on fc3b95e, warm: checked-programs-halt 11.4 s and evaluator-agrees-with-qemu 11.1 s (100 batches of up to 20 blocks of up to 20 instructions each), print-is-disassembly 4.8 s, control-targets-agree 5.1 s, checker-agrees-per-program 4.8 s, no-silent-relaxation 5.3 s, checker-agrees-per-line 2.0 s, virt-smoke 1.0 s: 45.8 s for the two oracle files, against the 6 s oracle-budget; make check took 67 s wall on the tree of fc3b95e
+- Default in force: no per-test settings; oracle tests run at the harness profile's example counts (quick 100), because the house rule forbids max_examples or a per-test @settings count in a test; measured at quick with pytest --durations on fc3b95e, warm: checked-programs-halt 11.4 s and evaluator-agrees-with-qemu 11.1 s (100 batches of up to 20 blocks of up to 20 instructions each), print-is-disassembly 4.8 s, control-targets-agree 5.1 s, checker-agrees-per-program 4.8 s, no-silent-relaxation 5.3 s, checker-agrees-per-line 2.0 s, virt-smoke 1.0 s: 45.8 s for the two oracle files, against the 6 s oracle-budget; make check took 67 s wall on the tree of fc3b95e; on 0c6d28c, with window-agrees and traps-agree, pytest --durations (warm, serial): checked-programs-halt 12.8 s, window-agrees 12.7 s, evaluator-agrees-with-qemu 12.2 s, traps-agree 11.1 s, virt-smoke 5.6 s (the first call, toolchain resolution included), the llvm file 23.6 s: 78.0 s for the two oracle files; make check's pytest step took 83.1 s
 - Closes by: PSJ, sanctioning the design's ORACLE override (backend="hypothesis", max_examples 10/50/10), or adding a harness-level oracle profile in quality/noslop_pytest.py; at 10 examples the two QEMU laws would cost about 1.1 s each
 - Evidence: design section 7 "Budgets" (ORACLE settings, "PSJ's to veto (question 1)") and section 8 oracle-settings; implementer rule "Never put max_examples or a per-test @settings count in a test"; pytest --durations on b62fb41 and fc3b95e
 
@@ -46,3 +46,15 @@
 - Default in force: a jalr target inside the program but not 4-aligned ends the run as Unmodelled, the mechanism the design gives a target outside [base, base + 4n); without C, hardware raises instruction-address-misaligned (cause 0) instead
 - Closes by: the design, choosing Trapped(0, index) with a QEMU probe in traps-agree, or keeping Unmodelled
 - Evidence: design section 5 names only targets outside [base, base + 4n); spec 20250508 2.5.1 (jalr), fpl/asm/riscv/eval.py indirect()
+
+## misaligned-access
+- Depends on it: fpl/asm/riscv/eval.py (access), tests/test_riscv_eval.py (stores and loads at any offset), tests/riscv_strategies.py (in_window, memory_code), tests/test_riscv_via_qemu.py (window-agrees)
+- Default in force: a misaligned load or store inside the window completes, little-endian, like an aligned one, as QEMU 10.2.4 virt does; memory_code draws misaligned offsets on purpose and window-agrees compares them with QEMU
+- Closes by: H2 or E, when the bare-metal EEI is written down
+- Evidence: spec 20250508 section 2.6 (misaligned accesses are the execution environment's choice); design section 5 (Memory) and section 8; design section 11 probe log 5: ld 1(x5), sd 2(x5) at 0x80001001/2 exit 0; fpl/asm/riscv/eval.py:324
+
+## window-base
+- Depends on it: fpl/asm/riscv/eval.py (run, Code.window), tests/riscv_virt.py (framed_block: addi x3, x4, 496), tests/test_riscv_via_qemu.py (start)
+- Default in force: the window's first byte is at the address x3 holds when `run` starts, read once; a block that wrote x3 would not move its window, and a later access through the new x3 would be measured from the old base; the frame never lets a block write x3 (hole harness-registers), and the oracle test reads the window's address from x3's slot of QEMU's report, since the records are .L labels in .data that llvm-objdump -d does not list
+- Closes by: the design, choosing x3 at entry, x3 at each access, or a window address carried in Machine apart from the registers; or M's register roles, when they name x3
+- Evidence: design section 5 "256 bytes at the address in x3" (it does not say when x3 is read); fpl/asm/riscv/eval.py:402; tests/test_riscv_via_qemu.py:122
