@@ -198,7 +198,8 @@ def test_data_processing(instr: Instr, start: Machine, x0: int) -> None:
     assert halted([instr], start).regs[X0] == x0
 
 
-# NZCV after one instruction: ANDS and BICS set N and Z and clear C and V; ADD keeps them.
+# NZCV after one instruction: ANDS and BICS set N and Z and clear C and V; ADD keeps them;
+# CCMP takes its immediate nzcv when the condition fails and x1 - 5's flags when it holds.
 FLAGS: list[tuple[Instr, Machine, int]] = [
     (AddSubShifted(OpAddSub.SUBS, W64, ZR, X1, X2, LSL, 0), machine(x1=5, x2=5), 0b0110),
     (AddSubImm(OpAddSub.ADDS, W32, X0, X1, 1, False), machine(x1=0x7FFF_FFFF), 0b1001),
@@ -212,6 +213,11 @@ FLAGS: list[tuple[Instr, Machine, int]] = [
         CondCompareImm(OpCondCompare.CCMP, W64, X1, 5, 0b0010, Cond.NE),
         machine(0b0100, x1=5),
         0b0010,
+    ),
+    (
+        CondCompareImm(OpCondCompare.CCMP, W64, X1, 5, 0b1001, Cond.EQ),
+        machine(0b0100, x1=5),
+        0b0110,
     ),
     (CondCompareImm(OpCondCompare.CCMN, W64, X1, 1, 0, Cond.EQ), machine(0b0100, x1=TOP), 0b0110),
     (AddSubImm(OpAddSub.ADD, W64, X0, X1, 1, False), machine(0b0110, x1=5), 0b0110),
