@@ -97,6 +97,20 @@ def test_in_place_below_the_stack_is_an_effect_mismatch() -> None:
     assert refused.kind == RefusalKind.EFFECT_MISMATCH
 
 
+@pytest.mark.parametrize(
+    ("source", "kind"),
+    [
+        ("⟨ 1 2 ⟩ [ dup ] each", RefusalKind.STEP_ARITY),
+        ("⟨ 1 2 ⟩ [ + ] each", RefusalKind.EFFECT_MISMATCH),
+        ("[ ⟨ 1 ⟩ [ drop drop drop ] fold ]", RefusalKind.EFFECT_MISMATCH),
+    ],
+)
+def test_a_step_off_one_value_is_refused(source: str, kind: RefusalKind) -> None:
+    refused = polarise(lowered(source))
+    assert isinstance(refused, Refused)
+    assert refused.kind == kind
+
+
 def test_forcing_walker_data_is_a_quotation_unknown() -> None:
     source = source_of((word("g", 1, 0, BANG), Run((Push(1), Call("g", START)))))
     refused = cbpv_output(source)
@@ -122,6 +136,17 @@ QUOTING = (
     "1 | 2 | 3 swap-args",
     "f : i -- o\n[ 1 ] f\n",
     "[ 1 ] →a { k a }\n",
+    "1 2 3 [ 1 + ] each",
+    "1 2 3 [ + ] fold",
+    "1 2 3 [ + ] scan",
+    "⟨ ⟩ [ + ] fold",
+    "⟨ ⟩ [ + ] scan",
+    "1 [ + ] fold",
+    "⟨ 1 2 ⟩ 3 each",
+    "⟨ 1 [ 2 ] ⟩ [ 1 + ] each",
+    "⟨ 1 2 ⟩ [ drop [ 1 ] ] each",
+    "[ ⟨ 1 2 ⟩ [ 1 + ] each ] !",
+    "⟨ 1 2 ⟩ [ 1 + ] →q q each",
 )
 
 

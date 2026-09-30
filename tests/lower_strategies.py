@@ -154,13 +154,31 @@ def _bang(draw: Draw, stack: Stack, _env: Env) -> Moved:
     return (Call("!", START),), _applied(quoted, below)
 
 
+def _sweep(arrows: Mapping[str, Arrow], draw: Draw, stack: Stack, env: Env) -> Moved:
+    """A strand or list and a literal quotation `each`, `scan` or `fold` runs on every item,
+    its body padded with `drop`s or pushes to leave one value on the step's fresh stack."""
+    word = draw(st.sampled_from(("each", "scan", "fold")))
+    fresh = 1 if word == "each" else 2
+    n = draw(st.integers(fresh - 1, fresh))
+    code, left = _code(draw, arrows, tuple(map(Input, range(n))), env, draw(st.integers(0, 3)))
+    extra = len(left) - (n - fresh + 1)
+    pad = (Call("drop", START),) * extra if extra > 0 else (Push(1),) * -extra
+    listed = st.lists(plain, max_size=3).map(lambda xs: Listed(tuple(xs)))
+    xs = draw(st.one_of(listed, st.lists(digits, min_size=2, max_size=3).map(_strand)))
+    return (Push(xs), Push(Quotation((*code, *pad))), Call(word, START)), (*stack, Kind.VALUE)
+
+
+def _strand(xs: list[int | Decimal]) -> Strand:
+    return Strand(tuple(xs))
+
+
 def _moves(arrows: Mapping[str, Arrow], stack: Stack, env: Env) -> list[Callable[..., Moved]]:
     """Every step the code may take next without an elaboration error; quotations only where
     `arrows` offers `!`."""
     moves: list[Callable[..., Moved]] = [_push, _keyed, *(partial(_binder, n) for n in env)]
     moves += [partial(_call, n, a) for n, a in arrows.items() if n != "!" and _fits(a, stack)]
     if "!" in arrows:
-        moves.append(partial(_quote, arrows))
+        moves += [partial(_quote, arrows), partial(_sweep, arrows)]
         top = stack[-1] if stack else None
         if isinstance(top, Quoted) and len(stack) > top.ins:
             moves.append(_bang)
@@ -218,9 +236,11 @@ def straight(draw: Draw) -> str:
 @st.composite
 def controlled(draw: Draw) -> str:
     """Programs as `straight` draws them, whose run lines also push literal quotations (their
-    bodies naming binders in scope) and run them in place with `!` and `swap-args` on stacks
-    deep enough; every draw's first line opens with a quotation (design section 7). Nothing a
-    refusal kind names is drawn: no quotation reaches `!` as walker data or underflows."""
+    bodies naming binders in scope), run them in place with `!` and `swap-args` on stacks deep
+    enough, and run them on each item of a list or strand with `each`, `scan` and `fold`;
+    every draw's first line opens with a quotation (design section 7). Nothing a
+    refusal kind names is drawn: no quotation reaches `!` as walker data or underflows, and
+    every step leaves one value."""
     # "!" is no arrow of 07's: its key only switches the quotation moves on in `_moves`
     arrows = {n: ARROWS[n] for n in FIRST_ORDER} | {"!": ARROWS["drop"]}
     words = {n: ARROWS[n] for n in FIRST_ORDER}

@@ -21,12 +21,16 @@ stack of entries, an IR value with its type, and an environment from binder name
   `Dyn` input each time it pops below what it pushed, the first grown the top at entry. `!` and
   `swap-args` run a thunk entry in place on the top entries it takes; on an operand statically
   not a quotation they are the program's own `control` constant, which panics as the walker does.
+- `each`, `scan` and `fold` on `xs t` are the iterating constant over `xs` and a wrapper thunk:
+  `λx.` (`λx. λacc.` for scan and fold) over a fresh static stack of those names, `x` the top,
+  `t` in place, returning the one entry left, boxed.
 - Box rule: a thunk entry reaching a constant's, a word's or a thunk's input is first
   passed through `prim box`, so the input receives walker data.
 
 Refused, returned: `QUOTATION_UNKNOWN` for `!` or `swap-args` on walker data (a `Dyn` name),
-`EFFECT_MISMATCH` for a thunk run in place outside a quotation on fewer entries than it takes.
-Refused, by precondition: a match, the other control words, a word calling itself or in a
+`EFFECT_MISMATCH` for a thunk run in place outside a quotation (or in a wrapper) on fewer entries
+than it takes, `STEP_ARITY` for a wrapper whose fresh stack is left with other than one entry.
+Refused, by precondition: a match, `if` and `repeat`, a word calling itself or in a
 component of more than one word. Those lower in later passes (holes static-stack,
 effect-mismatch).
 """
@@ -83,7 +87,7 @@ type Extra = tuple[tuple[str, FirstOrder], ...]
 type Lowered = tuple[Program, Extra, tuple[Origin, ...]]
 
 PROBE = Symbol("probe")  # stands in for a binder while looking for its mentions
-OFF = frozenset(CONTROLS) - {"!", "swap-args"}
+OFF = frozenset(CONTROLS) - {"!", "swap-args", "each", "scan", "fold"}
 
 
 class _RefusalError(Exception):
@@ -111,7 +115,7 @@ def _off(node: Node, own: str) -> bool:
 
 
 def straight_line(core: CoreA) -> bool:
-    """No match, no control word but `!` and `swap-args`, no word calling itself, one word per
+    """No match, no `if` or `repeat`, no word calling itself, one word per
     component."""
     owned = ((s.name if isinstance(s, Define) else "", s.code) for s in core.statements)
     plain = not any(_off(node, own) for own, code in owned for node in _flat(code))
@@ -199,10 +203,14 @@ class _Lowering:
         return args
 
     def apply(self, head: Comp, args: Sequence[Entry], outs: Sequence[VType]) -> None:
-        """`head` applied to `args` (pushed the deepest first), its result bound to a fresh name
-        and split into `outs`."""
+        """`head` applied to `args` (pushed the deepest first), each boxed, its result bound to
+        a fresh name and split into `outs`."""
+        self.call(head, [self.boxed(a) for a in args], outs)
+
+    def call(self, head: Comp, values: Sequence[IRValue], outs: Sequence[VType]) -> None:
+        """`head` applied to `values`, pushed the deepest first, its result split into `outs`."""
         comp = head
-        for value in reversed([self.boxed(a) for a in args]):
+        for value in reversed(values):
             comp = App(value, comp)
         result = self.name()
         self.lets.append(lambda rest: To(comp, result, "ω", rest))
@@ -223,6 +231,24 @@ class _Lowering:
         value, t = thunk
         assert isinstance(t, U), t
         self.apply(Force(value), self.taken(len(inputs(t.comp)), node.span), results(t.comp))
+
+    def wrapper(self, t: Entry, fresh: int, node: Call) -> Thunk:
+        """`thunk (λx. … body)` over a fresh static stack of `fresh` names, `x` the top: `t` in
+        place, returning the one entry it leaves, boxed; any other count is `STEP_ARITY`."""
+        saved = self.stack, self.lets, self.grown
+        names = [self.name() for _ in range(fresh)]
+        self.stack, self.lets, self.grown = [(Var(x), Dyn()) for x in reversed(names)], [], None
+        self.in_place(t, node)
+        if len(self.stack) != 1:
+            left = f"{node.name} step leaves {len(self.stack)} values"
+            raise _RefusalError(Refused(RefusalKind.STEP_ARITY, node.span, left))
+        comp: Comp = Return(self.boxed(self.stack[0]))
+        for let in reversed(self.lets):
+            comp = let(comp)
+        for x in reversed(names):
+            comp = Lam(x, Dyn(), "ω", comp)
+        self.stack, self.lets, self.grown = saved
+        return Thunk(comp)
 
     def split(self, value: IRValue, outs: Sequence[VType]) -> None:
         """A right-nested pair of `outs` onto the static stack, one entry each."""
@@ -289,13 +315,30 @@ def _goal(low: _Lowering, node: Call) -> None:
     low.apply(Prim(node.name, instance([], []), frozenset(), _at(node)), [], [])
 
 
-def _controlled(low: _Lowering, node: Call, args: list[Entry]) -> None:
-    """A control word run in place on its thunk operand (the top), or refused: walker data may
-    be anything, while a constant or a base value is statically not a quotation."""
+def _in_place(low: _Lowering, node: Call, args: list[Entry]) -> None:
+    low.stack.extend(args[:-1])
+    low.in_place(args[-1], node)
+
+
+def _iterated(low: _Lowering, node: Call, args: list[Entry]) -> None:
+    """`prim w` applied to `xs` and the wrapper (the top), over one fresh name (two for scan and
+    fold), its one result named."""
+    xs, t = args
+    fresh = 1 if node.name == "each" else 2
+    wrapper = low.wrapper(t, fresh, node)
+    shape = U(instance([Dyn()] * fresh, [Dyn()]), frozenset())
+    prim = Prim(node.name, instance([shape, Dyn()], [Dyn()]), frozenset(), _at(node))
+    low.call(prim, [low.boxed(xs), wrapper], [Dyn()])
+
+
+def _controlled(
+    low: _Lowering, node: Call, args: list[Entry], run: Callable[..., None] = _in_place
+) -> None:
+    """A control word `run` on its thunk operand (the top), or refused: walker data may be
+    anything, while a constant or a base value is statically not a quotation."""
     top, t = args[-1]
     if isinstance(t, U):
-        low.stack.extend(args[:-1])
-        low.in_place(args[-1], node)
+        run(low, node, args)
     elif isinstance(top, Const) or not isinstance(t, Dyn):
         prim = Prim(node.name, instance([Dyn()] * len(args), []), frozenset(), _at(node))
         low.extra.append((node.name, control(node.name)))
@@ -315,7 +358,14 @@ def _commute(low: _Lowering, node: Call) -> None:
     _controlled(low, node, [y, x, t])
 
 
+def _iterate(low: _Lowering, node: Call) -> None:
+    _controlled(low, node, low.taken(2, node.span), _iterated)
+
+
 _CALLS: dict[str, Callable[[_Lowering, Call], None]] = {
+    "each": _iterate,
+    "scan": _iterate,
+    "fold": _iterate,
     "_": _inferred,
     "?": _goal,
     "!": _force,

@@ -13,6 +13,12 @@ borrowed, not restated (hole walker-constants).
 scope: it takes their values, outermost binder first, and substitutes each as the walker's
 `Bind` step does. `keyed(keys)` builds a dict from one value per key, the first key deepest.
 
+`each`, `scan` and `fold` are iterating constants over a list and the wrapper thunk pass 2
+builds: the items come from `fpl.eval.items`, the results are rebuilt with `fpl.eval.rebuilt`,
+and fold over nothing panics through `fpl.eval.fold`'s own check. `each` calls the wrapper on
+one item; `scan` and `fold` seed with the first item and call it on the next item (the top)
+over the result so far (hole iteration-constants).
+
 `box(origins)` turns a closure into the walker quotation it stands for, where a thunk meets a
 position that takes walker data; `control(w)` is the walker's control word `w` for an operand
 statically not a quotation, which the walker refuses before it runs any code.
@@ -24,14 +30,15 @@ as the walker's `Bind` steps do); a run's result is its final static stack, retu
 """
 
 from collections.abc import Callable, Hashable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
+from functools import partial
 
 import icontract
 
 from fpl.ast_core import EFFECTS, Dict, Listed, Node, Quotation, Strand, Symbol, Value
 from fpl.cbpv.machine import Closure, Env, Panicked, Val, VPair
-from fpl.cbpv.sig import FirstOrder, Panic, Signature
+from fpl.cbpv.sig import Call, Done, FirstOrder, Iterating, Panic, Signature, Step
 from fpl.cbpv.syntax import (
     Arrow,
     Base,
@@ -52,7 +59,7 @@ from fpl.cbpv.syntax import (
 )
 from fpl.cbpv.syntax import Value as IRValue
 from fpl.errors import FplError, Span
-from fpl.eval import BUILTINS, CONTROLS, substitute
+from fpl.eval import BUILTINS, CONTROLS, items, rebuilt, substitute
 from fpl.eval import held as substituted
 from fpl.types import Kind, sort
 
@@ -186,6 +193,66 @@ def control(word: str) -> FirstOrder:
 
 
 @dataclass(frozen=True)
+class Sweep:
+    """An iteration under way: its word, the list, the wrapper thunk, the items left, the
+    results so far, and the call site."""
+
+    word: str
+    xs: Value
+    body: object
+    todo: tuple[Value, ...]
+    done: tuple[Value, ...]
+    at: Span
+
+
+def _datum(value: Value) -> Const:
+    return Const(value, typed(value))
+
+
+def _begin(word: str, args: tuple[object, ...], at: Position | None) -> Step | Panic:
+    """The wrapper (the top) and the list: the walker's items, `each` seeding with none."""
+    body, xs = args
+    listed = readback(xs)
+    try:
+        values = items(listed, span(at))
+    except FplError as error:
+        return Panic(error)
+    seed = 0 if word == "each" else 1
+    return _sweep(Sweep(word, listed, body, values[seed:], values[:seed], span(at)))
+
+
+def _sweep(s: Sweep) -> Step | Panic:
+    """The wrapper on the next item (over the result so far, but for `each`), or the end."""
+    if not s.todo:
+        return _finished(s)
+    rest = replace(s, todo=s.todo[1:])
+    if s.word == "each":
+        return Call(s.body, (_datum(s.todo[0]),), rest)
+    return Call(s.body, (_datum(s.todo[0]), _datum(s.done[-1])), rest)
+
+
+def _finished(s: Sweep) -> Step | Panic:
+    if s.word != "fold":
+        return Done(Const(rebuilt(s.xs, list(s.done)).value, Dyn()))
+    if not s.done:
+        try:
+            CONTROLS["fold"](s.at, {}, s.xs, Quotation(()))
+        except FplError as error:
+            return Panic(error)
+        raise AssertionError(s.xs)  # pragma: no cover -- fold refuses no items
+    return Done(Const(s.done[-1], Dyn()))
+
+
+def _resume(s: Sweep, result: object) -> Step | Panic:
+    return _sweep(replace(s, done=(*s.done, readback(result))))
+
+
+ITERATING: dict[str, Iterating] = {
+    w: Iterating(2, partial(_begin, w), _resume) for w in ("each", "scan", "fold")
+}
+
+
+@dataclass(frozen=True)
 class Origin:
     """A literal quotation's code, the binders in scope where it is pushed (each walker name,
     outermost first, with the IR value of its innermost binding), and the counts of values its
@@ -214,13 +281,15 @@ def boxes(p: Prim) -> bool:
 
 def signature(extra: Iterable[tuple[str, FirstOrder]] = ()) -> Signature:
     """Σ_walker with a program's own `held` and `keyed` constants: an instance is admitted when
-    its constant is known, takes as many values as it declares, and every input is walker data."""
-    constants = {**CONSTANTS, **dict(extra)}
+    its constant is known, takes as many values as it declares, and every input is walker data
+    (but `box`'s thunk and an iterating constant's wrapper)."""
+    constants: dict[str, FirstOrder | Iterating] = {**CONSTANTS, **ITERATING, **dict(extra)}
 
     def admits(p: Prim) -> bool:
         ins = inputs(p.type)
         known = p.name in constants and len(ins) == constants[p.name].arity
-        return known and (all(isinstance(t, Dyn | Base) for t in ins) or boxes(p))
+        loops = p.name in ITERATING
+        return known and (all(isinstance(t, Dyn | Base) for t in ins) or boxes(p) or loops)
 
     return Signature(BASES, constants, admits, {}, Dyn())
 

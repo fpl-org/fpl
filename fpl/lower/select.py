@@ -50,6 +50,7 @@ class RefusalKind(StrEnum):
     BINDER_CAPTURES = "binder-captures"
     QUOTATION_UNKNOWN = "quotation-unknown"
     EFFECT_MISMATCH = "effect-mismatch"
+    STEP_ARITY = "step-stack"
 
 
 @dataclass(frozen=True)
