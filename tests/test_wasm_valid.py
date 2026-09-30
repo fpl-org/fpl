@@ -168,6 +168,7 @@ SITES: list[tuple[Module, Invalid | None]] = [
     ),
     (replace(ONE, start=1), Invalid("func", ())),
     (replace(ONE, start=0), None),
+    (replace(func_of(("i32",), ZERO), start=0), Invalid("start", ())),
     (func_of(("i32",), ZERO, Br(0)), None),
     (func_of(("i32",), ZERO, ZERO, BrIf(0)), None),
     (replace(func_of(("i32",)), funcs=(Func(0, ("i32",), (ZERO, LocalTee(0))),)), None),
