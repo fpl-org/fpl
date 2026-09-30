@@ -110,6 +110,9 @@
             pkgs.git
             pkgs.jujutsu # optional workflow, docs/JJ.md
             pkgs.diff2html-cli # scripts/review renders a branch as a page
+            # scripts/leak-check, which the hooks run on every commit and push: the
+            # repository is public, so it cannot wait in an opt-in layer.
+            pkgs.gitleaks
 
             # The implementation stack, docs/STACK.md, and the noslop gate, docs/QUALITY.md.
             # A bare Python 3.12, and uv, which syncs Lark and the gate's Python tools into
