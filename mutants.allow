@@ -1,1 +1,34 @@
 # Equivalent mutants of fpl/asm, one per line: <mutant> -- <why no test can kill it>.
+fpl.asm.wasm.exec.x__arity__mutmut_4 -- equivalent: the case _ arm is unreachable, BlockType is exhausted above it (assert_never)
+fpl.asm.wasm.exec.x__arity__mutmut_14 -- equivalent: assert_never(None) sits in the same unreachable arm
+fpl.asm.wasm.valid.x__blocktype__mutmut_4 -- equivalent: the case _ arm is unreachable, BlockType is exhausted above it (assert_never)
+fpl.asm.wasm.valid.x__blocktype__mutmut_25 -- equivalent: assert_never(None) sits in the same unreachable arm
+fpl.asm.wasm.exec.xǁ_BranchErrorǁ__init____mutmut_1 -- equivalent: the exception's args are never read; the depth is kept in its own attribute
+fpl.asm.wasm.exec.xǁ_StopErrorǁ__init____mutmut_1 -- equivalent: the exception's args are never read; the outcome is kept in its own attribute
+fpl.asm.wasm.exec.xǁ_TailCallErrorǁ__init____mutmut_1 -- equivalent: the exception's args are never read; the callee is kept in its own attribute
+fpl.asm.wasm.valid.xǁ_RefusedErrorǁ__init____mutmut_1 -- equivalent: the exception's args are never read; the verdict is kept in its own attribute
+fpl.asm.wasm.exec.x__call__mutmut_18 -- equivalent: a branch to the function label keeps the top arity values and _call returns exactly the top arity values, whatever the height
+fpl.asm.wasm.exec.x__call__mutmut_25 -- equivalent: as mutmut_18, height 1 instead of 0 changes only values below the returned ones
+fpl.asm.wasm.exec.x__constant__mutmut_2 -- equivalent: a constant expression of a closed module is one t.const (oracle-feature-set) and reads no local
+fpl.asm.wasm.exec.x__constant__mutmut_9 -- equivalent: a constant expression has no branch, so the label's height is never read
+fpl.asm.wasm.exec.x__constant__mutmut_10 -- equivalent: a constant expression has no branch, so the label's arity is never read
+fpl.asm.wasm.exec.x__constant__mutmut_16 -- equivalent: a closed module's constant is one t.const, which never reads the instance (global.get of an import only)
+fpl.asm.wasm.exec.x__constant__mutmut_20 -- equivalent: a constant expression has no branch, so the label's height is never read
+fpl.asm.wasm.exec.x__constant__mutmut_21 -- equivalent: a constant expression has no branch, so the label's arity is never read
+fpl.asm.wasm.exec.x__segmented__mutmut_8 -- equivalent: a closed module's offset is one t.const, which never reads the instance
+fpl.asm.wasm.exec.x__segmented__mutmut_22 -- equivalent: a closed module's offset is one t.const, which never reads the instance
+fpl.asm.wasm.exec.x_instantiate__mutmut_23 -- equivalent: a closed module's global initialiser is one t.const, which never reads the instance
+fpl.asm.wasm.exec.x__exec_load__mutmut_3 -- equivalent: the sign of an unpacked load is only compared with "s"; any other string reads it unsigned
+fpl.asm.wasm.exec.x__exec_load__mutmut_4 -- equivalent: as mutmut_3, "U" is not "s"
+fpl.asm.wasm.exec.x__exec_load__mutmut_14 -- equivalent: _address uses the size only in at + size > len(memory), where bits / 8 equals bits // 8 for 8, 16, 32, 64
+fpl.asm.wasm.exec.x__exec_testop__mutmut_2 -- equivalent: eqz, the only testop, ignores the width
+fpl.asm.wasm.numerics.x__quotient__mutmut_8 -- equivalent: a == 0 gives q == 0, and -0 == 0
+fpl.asm.wasm.numerics.x__quotient__mutmut_9 -- equivalent: a < 1 is a <= 0 over the integers, and a == 0 gives q == 0
+fpl.asm.wasm.numerics.x__quotient__mutmut_11 -- equivalent: b == 0 never reaches _quotient; div_s and rem_s trap on it first
+fpl.asm.wasm.numerics.x__quotient__mutmut_12 -- equivalent: b < 1 is b <= 0 over the integers, and b == 0 never reaches _quotient
+fpl.asm.wasm.numerics.x__ctz__mutmut_4 -- equivalent: for i > 0, i | -i == -(i & -i), and bit_length ignores the sign
+fpl.asm.wasm.valid.x__constant__mutmut_8 -- equivalent: _sequence refuses every non-constant instruction, local.get included, before its rule reads the locals
+fpl.asm.wasm.valid.x__funcs__mutmut_12 -- equivalent: constant is only read as a truth value, and None is false like False
+fpl.asm.wasm.valid.x__if__mutmut_17 -- equivalent: a frame's opcode is only compared with Loop (label types), and None is not Loop, like If
+fpl.asm.wasm.valid.x__if__mutmut_31 -- equivalent: as mutmut_17, for the else arm's frame
+fpl.asm.wasm.valid.x__select__mutmut_39 -- equivalent: an Unknown operand only comes from underflow at the frame's height, so the first operand popped is Unknown only when the second is too
