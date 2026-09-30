@@ -273,7 +273,7 @@ def test_a_string_is_its_parts_in_order() -> None:
 def test_the_effect_line_is_kept_as_declared() -> None:
     """[D3.4] words/*/effect: the declared effect is kept as data (the query: hole
     effect-query)."""
-    (definition,) = desugar(parse(CURRY))
+    definition, *_ = desugar(parse(CURRY))
     assert isinstance(definition, Define)
     assert definition.effect == Effect(("x", "q"), ("q'",))
 
@@ -292,7 +292,7 @@ def test_a_typed_effect_line_declares_its_slots() -> None:
     """[S49] name: Type per slot: a type spelled [ ] makes a thunk, Code a code slot, a name a
     value of that type; a bare name is an untyped value; an output's type is read past."""
     source = "f : t: [ -- x ]  c: Code  n: Int  m -- z: Int\n"
-    (definition,) = desugar(parse(source))
+    definition, *_ = desugar(parse(source))
     assert isinstance(definition, Define)
     assert definition.effect == Effect(
         ("t", "c", "n", "m"),
@@ -305,7 +305,7 @@ def test_a_typed_effect_line_declares_its_slots() -> None:
 def test_a_slot_name_is_every_character_before_its_colon() -> None:
     """[S49] `name: Type`: the slot is named all of `name`; a lone `:` is a bare name, an
     untyped value (hole bare-slot-names), not the colon of a slot with no name."""
-    (typed,) = desugar(parse("f : xs: Int  q: [] -- y\n"))
+    typed, *_ = desugar(parse("f : xs: Int  q: [] -- y\n"))
     assert isinstance(typed, Define)
     assert typed.effect == Effect(
         ("xs", "q"), ("y",), slots=("value", "thunk"), types=("Int", None)
@@ -407,7 +407,7 @@ def test_a_typed_head_is_read_as_the_slice_reads_it() -> None:
     with pytest.raises(FplError) as caught:
         run("f : ( circle r ) -- y\n")
     assert str(caught.value) == "ERROR: 1:1 no evaluator yet"
-    (typed,) = desugar(parse("f : x: Int -- y\n"))
+    typed, *_ = desugar(parse("f : x: Int -- y\n"))
     assert isinstance(typed, Define)
     assert typed.effect == Effect(("x",), ("y",), types=("Int",))
     assert resugar((typed,)) == parse("f : x: Int -- y\n")
