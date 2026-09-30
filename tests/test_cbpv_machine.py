@@ -63,6 +63,7 @@ from fpl.cbpv.syntax import (
     Position,
     Prim,
     Program,
+    Rec,
     Return,
     Thunk,
     To,
@@ -177,6 +178,24 @@ def test_preservation(program: Program) -> None:
             returned = check_config(Return(readback(r.end.value)), (), SIGMA_TEST)
             assert not isinstance(returned, TypeError_)
             assert fits(returned[0], typed[i][0]) is None
+
+
+@given(programs(SIGMA_TEST))
+def test_effect_sound(program: Program) -> None:
+    """[law: effect-sound] For every program `programs(Σ_test)` draws, a run typed `! ε` with
+    `fail ∉ ε` never ends in `Failed`, and with `div ∉ ε` takes no `rec` step."""
+    effects: dict[int, Effects] = {}
+    recs: set[int] = set()
+    for i, state in states(program, SIGMA_TEST, handler=counter()):
+        if i not in effects:
+            judged = check_config(*as_term(state), SIGMA_TEST)
+            assert not isinstance(judged, TypeError_)
+            effects[i] = judged[1]
+        if isinstance(state.focus, Rec):
+            recs.add(i)
+    for i, r in enumerate(run(program, SIGMA_TEST, handler=counter())):
+        assert "fail" in effects[i] or not isinstance(r.end, Failed)
+        assert "div" in effects[i] or i not in recs
 
 
 def _altered(log: tuple[Event, ...], i: int) -> tuple[Event, ...]:
