@@ -622,8 +622,8 @@ def extend_row(op: OpBitfield, mnemonic: str, imms: int, cite: str) -> Row[Bitfi
 SBFM, BFM, UBFM = OpBitfield.SBFM, OpBitfield.BFM, OpBitfield.UBFM
 
 
-def bitfield_rows() -> tuple[Row[Bitfield], ...]:
-    """The Bitfield alias rows, in the order they are tried."""
+def sbfm_rows() -> tuple[Row[Bitfield], ...]:
+    """The SBFM alias rows, in the order they are tried."""
     return (
         Row(
             "asr",
@@ -649,6 +649,12 @@ def bitfield_rows() -> tuple[Row[Bitfield], ...]:
         extend_row(SBFM, "sxtb", 7, "C6.2.355 SBFM, SXTB: immr == '000000' && imms == '000111'"),
         extend_row(SBFM, "sxth", 15, "C6.2.355 SBFM, SXTH: immr == '000000' && imms == '001111'"),
         extend_row(SBFM, "sxtw", 31, "C6.2.355 SBFM, SXTW: immr == '000000' && imms == '011111'"),
+    )
+
+
+def bfm_rows() -> tuple[Row[Bitfield], ...]:
+    """The BFM alias rows, in the order they are tried."""
+    return (
         Row(
             "bfi",
             "C6.2.39 BFM, BFI: Rn != '11111' && UInt(imms) < UInt(immr)",
@@ -671,6 +677,12 @@ def bitfield_rows() -> tuple[Row[Bitfield], ...]:
             extracted,
             partial(extract_of, BFM),
         ),
+    )
+
+
+def ubfm_rows() -> tuple[Row[Bitfield], ...]:
+    """The UBFM alias rows, in the order they are tried."""
+    return (
         Row(
             "lsl",
             "C6.2.487 UBFM, LSL (immediate): imms != sf:'11111' && imms + 1 == immr",
@@ -869,7 +881,7 @@ def rows() -> dict[type, tuple[Row[Any], ...]]:
         AddSubExtended: add_sub_extended_rows(),
         AddSubShifted: add_sub_shifted_rows(),
         AddSubCarry: add_sub_carry_rows(),
-        Bitfield: bitfield_rows(),
+        Bitfield: sbfm_rows() + bfm_rows() + ubfm_rows(),
         Extract: extract_rows(),
         DataProc2: data_proc2_rows(),
         MulAdd: mul_add_rows(),
