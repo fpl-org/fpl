@@ -14,13 +14,18 @@ from aarch64_oracle import (
     ToolchainError,
     Tools,
     command,
+    disassemble,
     parse_paths,
     reported,
     resolve,
     toolchain,
 )
-from hypothesis import given
+from aarch64_strategies import instructions, witnesses
+from hypothesis import given, settings
 from hypothesis import strategies as st
+
+from fpl.asm.aarch64.model import Program
+from fpl.asm.aarch64.text import print_program
 
 DARWIN = (
     'nix develop "$(git rev-parse --show-toplevel)#aarch64" -c bash -c '
@@ -110,3 +115,25 @@ def test_no_nix_is_an_error_showing_the_command(tmp_path: Path) -> None:
     with pytest.raises(ToolchainError, match="expected one /nix/store/") as refused:
         resolve(platform.system(), nix=missing)
     assert f"{missing} develop" in str(refused.value)
+
+
+@settings(backend="hypothesis")
+@given(program=st.lists(instructions(), min_size=1, max_size=48).map(tuple))
+def test_printed_text_is_what_llvm_objdump_prints(
+    tmp_path_factory: pytest.TempPathFactory, worker_id: str, program: Program
+) -> None:
+    """[law: print-is-disassembly] For label-free programs the valid strategies draw, llvm-mc
+    exits 0, and the lines llvm-objdump prints for the object, normalised, equal the lines of
+    print_program(p), as many of them."""
+    tools = toolchain(tmp_path_factory, worker_id)
+    text = print_program(program)
+    assert disassemble(tools, text, tmp_path_factory.mktemp("text")) == text.splitlines()
+
+
+def test_every_alias_row_prints_as_llvm_objdump_prints_it(
+    tmp_path_factory: pytest.TempPathFactory, worker_id: str
+) -> None:
+    """Every alias row, reached by the strategies, prints what llvm-objdump prints."""
+    tools = toolchain(tmp_path_factory, worker_id)
+    text = print_program(witnesses())
+    assert disassemble(tools, text, tmp_path_factory.mktemp("rows")) == text.splitlines()

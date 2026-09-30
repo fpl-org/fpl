@@ -196,3 +196,21 @@ def execute(tools: Tools, work: Path) -> subprocess.CompletedProcess[bytes]:
     if tools.system == "Linux":
         return run(tools.host, work / "prog")
     return run(work / "prog")
+
+
+# The text oracle: one triple on every host, never --mattr (an alias gated on a feature could
+# print differently under another CPU), and llvm-objdump's default aliases (design section 3).
+TEXT = "-triple=aarch64-linux-gnu"
+DUMP = ("-d", "--no-show-raw-insn", "--no-leading-addr", "--no-print-imm-hex")
+
+
+def disassemble(tools: Tools, source: str, work: Path) -> list[str]:
+    """The lines llvm-objdump prints for `source` assembled with `TEXT`, normalised as
+    print_program prints: symbol, header and blank lines dropped, `//` comments removed,
+    the indent before the tab and trailing space stripped. AssertionError if llvm-mc fails."""
+    (work / "text.s").write_text(source)
+    made = run(tools.mc, TEXT, "-filetype=obj", "-o", work / "text.o", work / "text.s")
+    assert made.returncode == 0, made.stderr.decode()
+    dumped = run(tools.objdump, *DUMP, work / "text.o").stdout.decode()
+    lines = (line.partition("//")[0].rstrip() for line in dumped.splitlines())
+    return [line.lstrip(" ") for line in lines if line.startswith(" ")]

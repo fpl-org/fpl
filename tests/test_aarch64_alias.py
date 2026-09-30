@@ -4,15 +4,17 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from fpl.asm.aarch64.alias import preferred
+from fpl.asm.aarch64.alias import ROWS, preferred
 from fpl.asm.aarch64.model import MoveWide, MulAdd, OpMoveWide, OpMulAdd, Reg, Width
 
 regs = st.sampled_from(Reg)
 widths = st.sampled_from(Width)
 # One past each end of the encodable ranges, so the out-of-range side is drawn too.
 imm16s, hws = st.integers(-1, 0x10000), st.integers(-1, 4)
-move_wides = st.builds(MoveWide, st.sampled_from(OpMoveWide), widths, regs, imm16s, hws)
-mul_adds = st.builds(MulAdd, st.sampled_from(OpMulAdd), widths, regs, regs, regs, regs)
+move_wides = st.builds(
+    MoveWide, st.sampled_from([OpMoveWide.MOVZ, OpMoveWide.MOVK]), widths, regs, imm16s, hws
+)
+mul_adds = st.builds(MulAdd, st.just(OpMulAdd.MADD), widths, regs, regs, regs, regs)
 
 
 @given(move_wides)
@@ -73,3 +75,15 @@ def test_mul_is_preferred_exactly_when_madd_accumulates_zero(i: MulAdd) -> None:
 def test_probe_texts(instr: MoveWide | MulAdd, text: tuple[str, str]) -> None:
     """Texts llvm-objdump printed in the design's probe, and register names at both widths."""
     assert preferred(instr) == text
+
+
+def test_the_divergent_rows_are_those_alias_divergence_names() -> None:
+    """The rows whose text follows llvm-objdump, not the C6.2 condition: BFM's bfi (the spec
+    prefers BFC) and ORR's mov (the spec's !MoveWidePreferred)."""
+    flagged = {
+        (row.mnemonic, row.cite.split(" ")[0])
+        for rows in ROWS.values()
+        for row in rows
+        if row.spec_differs
+    }
+    assert flagged == {("bfi", "C6.2.39"), ("mov", "C6.2.301")}
