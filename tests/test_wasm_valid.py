@@ -155,11 +155,14 @@ SITES: list[tuple[Module, Invalid | None]] = [
         Invalid("export-name", (1,)),
     ),
     (replace(ONE, start=1), Invalid("func", ())),
+    (replace(ONE, start=0), None),
+    (func_of(("i32",), ZERO, Br(0)), None),
     (Module(types=(EMPTY,), funcs=(Func(1, (), ()),)), Invalid("type", (0,))),
 ]
 """One fixed case per refusal site whose kind and place no property pins: memory accesses,
 the index spaces, `leftover`, `br-table-arity`, a typed `if`, an error in an `else` arm, and
-the data, element, export and start fields, and a block that takes a parameter."""
+the data, element, export and start fields, a block that takes a parameter and a br that
+carries one."""
 
 
 def test_the_checker_decides_the_fixed_cases_as_the_spec_does() -> None:
