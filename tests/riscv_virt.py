@@ -8,14 +8,16 @@ A frame is Zicsr and privileged text outside the IR, so it lives here as text, n
   device, whose low half 0x3333 asks QEMU to exit with the high half as its status.
 - `batch`, the frame for many blocks in one boot (design section 7). `_start` points `mtvec` at
   the trap handler; then, per block i, `tp` (x4) takes the address of the block's record, x1..x31
-  but x4 are loaded from it, the block runs from the symbol `block<i>` (its labels relabelled
-  `.Lb<i>_`), x1..x31 are stored to the record's save area, and the UART gets `R` and the save
-  area's 248 bytes. After the last block the test device gets 0x5555 (exit 0) and the hart spins.
-  A trap anywhere in block i sends `T`, `mcause` and `mepc` (8 bytes each, little-endian) and
-  resumes after block i's report, where the next block reloads every register.
+  but x3 and x4 are loaded from it, `gp` (x3) takes the address of the record's 256-byte window,
+  the block runs from the symbol `block<i>` (its labels relabelled `.Lb<i>_`), x1..x31 are
+  stored to the record's save area, and the UART gets `R`, the save area's 248 bytes and the
+  window's 256. After the last block the test device gets 0x5555 (exit 0) and the hart spins.
+  A trap anywhere in block i sends `T`, `mcause` and `mepc` (8 bytes each, little-endian), sets
+  `mepc` to block i's resume address from its record and `mret`s there, past block i's report,
+  where the next block reloads every register.
 
-The frame uses x4 as its own and the blocks touch neither x3 nor x4 (hole
-`harness-registers`); x4's slot in a report is the record's address, not a block's value.
+The frame uses x3 and x4 as its own and the blocks touch neither (hole `harness-registers`);
+x3's slot in a report is the window's address and x4's the record's, not a block's values.
 `decode` turns the UART's bytes back into one `Report` per block.
 """
 
@@ -41,15 +43,20 @@ def framed(program_text: str) -> str:
 
 SLOTS = 31  # x1..x31, x4's slot included: 248 bytes
 SAVE = 8 * SLOTS  # a record's save area follows its 31 initial values
-RESUME = 2 * SAVE  # then the address a trap in the block resumes at
+WINDOW = 256  # then the window's bytes, which x3 points at, so one loop dumps both
+RESUME = 2 * SAVE + WINDOW  # then the address a trap in the block resumes at
 EXIT_0 = 0x5555  # the test device's pass code: QEMU exits 0
 
 
 @dataclass(frozen=True, slots=True)
 class Block:
-    """A program and the values x1..x31 hold when it starts (x4's is the frame's, ignored)."""
+    """A program, the values x1..x31 hold when it starts and the window's 256 bytes.
+
+    x3's and x4's values are the frame's; the block's are ignored.
+    """
 
     regs: tuple[int, ...]
+    window: bytes
     program: Program
 
 
@@ -93,14 +100,14 @@ def uart_bytes(label: str, reg: str) -> str:
     )
 
 
-FRAME_REGS = tuple(r for r in range(1, SLOTS + 1) if r != 4)
+LOADED = tuple(r for r in range(1, SLOTS + 1) if r not in {3, 4})
 
 
 def framed_block(index: int, block: Block) -> str:
     """Block `index` between its prologue (load from its record) and epilogue (save, report)."""
     return (
         lines(f"lla\tx4, .Lrec{index}")
-        + lines(*(f"ld\tx{r}, {8 * (r - 1)}(x4)" for r in FRAME_REGS))
+        + lines(*(f"ld\tx{r}, {8 * (r - 1)}(x4)" for r in LOADED), f"addi\tx3, x4, {2 * SAVE}")
         + f"block{index}:\n"
         + print_program(relabelled(block.program, index))
         + lines(*(f"sd\tx{r}, {SAVE + 8 * (r - 1)}(x4)" for r in range(1, SLOTS + 1)))
@@ -139,9 +146,12 @@ HANDLER = (
 
 
 def record(index: int, block: Block) -> str:
-    """Block `index`'s record: its initial values, the save area, the resume address."""
+    """Block `index`'s record: its initial values, the save area, the window, the resume address."""
     return f".Lrec{index}:\n" + lines(
-        *(f".dword\t{value}" for value in block.regs), f".zero\t{SAVE}", f".dword\t.Lresume{index}"
+        *(f".dword\t{value}" for value in block.regs),
+        f".zero\t{SAVE}",
+        ".byte\t" + ", ".join(map(str, block.window)),
+        f".dword\t.Lresume{index}",
     )
 
 
@@ -160,9 +170,13 @@ def batch(blocks: Sequence[Block]) -> str:
 
 @dataclass(frozen=True, slots=True)
 class Regs:
-    """A block ran to its end: x1..x31 as it left them (x4's slot is the record's address)."""
+    """A block ran to its end: x1..x31 and the window as it left them.
+
+    x3's slot is the window's address, x4's the record's.
+    """
 
     values: tuple[int, ...]
+    window: bytes
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,11 +199,13 @@ def decode(uart: bytes) -> tuple[Report, ...]:
     reports: list[Report] = []
     at = 0
     while at < len(uart):
-        tag, size = uart[at : at + 1], {b"R": SAVE, b"T": 16}.get(uart[at : at + 1], 0)
+        tag, size = uart[at : at + 1], {b"R": SAVE + WINDOW, b"T": 16}.get(uart[at : at + 1], 0)
         body = uart[at + 1 : at + 1 + size]
         if not size or len(body) != size:
             raise DecodeError(f"no whole report at byte {at} of {uart!r}")
-        values = struct.unpack(f"<{size // 8}Q", body)
-        reports.append(Regs(values) if tag == b"R" else Trap(*values))
+        if tag == b"R":
+            reports.append(Regs(struct.unpack(f"<{SLOTS}Q", body[:SAVE]), body[SAVE:]))
+        else:
+            reports.append(Trap(*struct.unpack("<2Q", body)))
         at += 1 + size
     return tuple(reports)

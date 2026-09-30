@@ -2,16 +2,17 @@
 
 import tempfile
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from hypothesis import assume, given
 from hypothesis import strategies as st
 from riscv_oracle import Boot, assemble, boot, disassemble, dump, link, symbols, toolchain
-from riscv_strategies import FRAME_FORMS, blocks, forward_branching, straight_line
-from riscv_virt import TEST_DEVICE, UART, Block, Regs, Trap, batch, decode, framed
+from riscv_strategies import FRAME_FORMS, blocks, forward_branching, memory_code, straight_line
+from riscv_virt import TEST_DEVICE, UART, Block, Regs, Report, Trap, batch, decode, framed
 
 from fpl.asm.riscv.check import check
-from fpl.asm.riscv.eval import Halted, Machine, run
+from fpl.asm.riscv.eval import Halted, Machine, Outcome, run
 from fpl.asm.riscv.model import I, OpI, OpR, OpStore, OpUpper, Program, R, Reg, Store, Upper
 from fpl.asm.riscv.text import print_program
 
@@ -102,6 +103,40 @@ def but_x4(values: Sequence[int]) -> tuple[int, ...]:
     return (*values[:3], *values[4:])
 
 
+@dataclass(frozen=True, slots=True)
+class Side:
+    """One block of a boot, both ways: QEMU's report, the evaluator's outcome, the block's base."""
+
+    report: Report
+    outcome: Outcome
+    base: int
+
+
+def start(block: Block, report: Report) -> Machine:
+    """The machine block starts from: its values and window, x3 the window's address.
+
+    The frame sets x3 and blocks never write it, so a register report's x3 slot is that address.
+    """
+    x3 = report.values[2] if isinstance(report, Regs) else block.regs[2]
+    return Machine((0, *block.regs[:2], x3, *block.regs[3:]), block.window)
+
+
+def both_sides(batched: Sequence[Block]) -> list[Side]:
+    """Boot `batched`; it exits 0 with one report per block, set beside the evaluator's run.
+
+    `base` is the address llvm-objdump gives `block<i>`; one step per item is fuel to spare.
+    """
+    where, done = booted(batched)
+    reports = decode(done.uart)
+    assert (done.status, len(reports)) == (0, len(batched)), (done, reports)
+    sides: list[Side] = []
+    for index, (block, report) in enumerate(zip(batched, reports, strict=True)):
+        base = where[f"block{index}"]
+        outcome = run(block.program, start(block, report), base, len(block.program) + 1)
+        sides.append(Side(report, outcome, base))
+    return sides
+
+
 @given(
     blocks(
         BATCH, st.one_of(straight_line(BATCH, FRAME_FORMS), forward_branching(BATCH, FRAME_FORMS))
@@ -111,14 +146,25 @@ def test_the_evaluator_agrees_with_qemu_block_by_block(batched: list[Block]) -> 
     """[law: evaluator-agrees-with-qemu] Per block, `run` halts with the registers QEMU reports.
 
     `base` is the address llvm-objdump gives the block's symbol; the evaluator starts from the
-    block's initial values and the 31 registers but x4 it halts with are the 248 bytes QEMU wrote.
+    block's initial values (x3 the frame's), and the 31 registers but x4 it halts with are the
+    248 bytes QEMU wrote.
     """
-    where, done = booted(batched)
-    reports = decode(done.uart)
-    assert len(reports) == len(batched), reports
-    for index, (block, report) in enumerate(zip(batched, reports, strict=True)):
-        base = where[f"block{index}"]
-        outcome = run(block.program, Machine((0, *block.regs)), base, len(block.program) + 1)
-        assert isinstance(outcome, Halted), outcome
-        assert isinstance(report, Regs), report
-        assert but_x4(outcome.machine.regs[1:]) == but_x4(report.values), (index, block)
+    for index, side in enumerate(both_sides(batched)):
+        assert isinstance(side.outcome, Halted), side
+        assert isinstance(side.report, Regs), side
+        assert but_x4(side.outcome.machine.regs[1:]) == but_x4(side.report.values), batched[index]
+
+
+@given(blocks(BATCH, memory_code(BATCH)))
+def test_the_window_agrees_with_qemu_block_by_block(batched: list[Block]) -> None:
+    """[law: window-agrees] Per `memory_code` block, registers and all 256 window bytes agree.
+
+    Loads and stores go through x3 at offsets anywhere in the window, misaligned ones included;
+    the evaluator halts with the 31 registers but x4 and the window bytes QEMU dumped.
+    """
+    for index, side in enumerate(both_sides(batched)):
+        assert isinstance(side.outcome, Halted), side
+        assert isinstance(side.report, Regs), side
+        machine = side.outcome.machine
+        assert but_x4(machine.regs[1:]) == but_x4(side.report.values), batched[index]
+        assert machine.window == side.report.window, batched[index]

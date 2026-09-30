@@ -14,9 +14,10 @@ from collections import defaultdict
 from dataclasses import dataclass, replace
 
 from hypothesis import strategies as st
-from riscv_virt import Block
+from riscv_virt import WINDOW, Block
 
 from fpl.asm.riscv.check import Kind
+from fpl.asm.riscv.eval import size
 from fpl.asm.riscv.model import (
     CLASSES,
     Access,
@@ -91,7 +92,8 @@ def forms(regs: st.SearchStrategy[Reg]) -> Table:
 FORMS = forms(regs)
 # The registers a block run in the QEMU virt frame may name: not x3 (the window, unit 6) and
 # not x4 (the frame's record), neither read nor written (hole `harness-registers`).
-FRAME_FORMS = forms(st.sampled_from(tuple(reg for reg in Reg if reg not in {Reg.X3, Reg.X4})))
+FRAME_REGS = st.sampled_from(tuple(reg for reg in Reg if reg not in {Reg.X3, Reg.X4}))
+FRAME_FORMS = forms(FRAME_REGS)
 
 
 def instructions(*classes: type[Instr], table: Table = FORMS) -> st.SearchStrategy[Instr]:
@@ -106,6 +108,24 @@ STRAIGHT: tuple[type[Instr], ...] = (R, I, Shift, Upper, Fence)
 def straight_line(n: int, table: Table = FORMS) -> st.SearchStrategy[Program]:
     """One to `n` instructions of the `STRAIGHT` forms, drawn from `table`."""
     return st.lists(instructions(*STRAIGHT, table=table), min_size=1, max_size=n).map(tuple)
+
+
+def in_window(access: Load | Store) -> st.SearchStrategy[Load | Store]:
+    """`access` from x3 at an offset that keeps all its bytes in the window, aligned or not."""
+    return between(0, WINDOW - size(access)).map(lambda offset: replace(access, offset=offset))
+
+
+# A load or store of a frame register through x3, the window's address.
+ACCESSES = st.one_of(
+    st.builds(Load, st.sampled_from(OpLoad), FRAME_REGS, st.just(Reg.X3), st.just(0)),
+    st.builds(Store, st.sampled_from(OpStore), FRAME_REGS, st.just(Reg.X3), st.just(0)),
+).flatmap(in_window)
+
+
+def memory_code(n: int) -> st.SearchStrategy[Program]:
+    """One to `n` instructions, straight-line in the frame's registers or `ACCESSES`."""
+    body = st.one_of(instructions(*STRAIGHT, table=FRAME_FORMS), ACCESSES)
+    return st.lists(body, min_size=1, max_size=n).map(tuple)
 
 
 @st.composite
@@ -252,6 +272,8 @@ u64s = st.one_of(st.sampled_from((*EDGES, 0xFFFF_FFFF_8000_0000)), between(0, (1
 
 
 def blocks(k: int, programs: st.SearchStrategy[Program]) -> st.SearchStrategy[list[Block]]:
-    """One to `k` blocks for one boot, each a program of `programs` and 31 values for x1..x31."""
+    """One to `k` blocks for one boot, each a program of `programs`, 31 values for x1..x31 and
+    the window's bytes."""
     values = st.lists(u64s, min_size=31, max_size=31).map(tuple)
-    return st.lists(st.builds(Block, values, programs), min_size=1, max_size=k)
+    window = st.binary(min_size=WINDOW, max_size=WINDOW)
+    return st.lists(st.builds(Block, values, window, programs), min_size=1, max_size=k)
