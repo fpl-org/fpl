@@ -97,6 +97,7 @@ gates: venv
 	$(BIN)/python scripts/props --self-test
 	$(BIN)/python scripts/escapes --self-test
 	$(BIN)/python scripts/mutants --self-test
+	scripts/leak-check --self-test
 	$(BIN)/python scripts/gates
 
 clean-noslop:
