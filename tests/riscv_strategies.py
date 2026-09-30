@@ -94,6 +94,7 @@ FORMS = forms(regs)
 # not x4 (the frame's record), neither read nor written (hole `harness-registers`).
 FRAME_REGS = st.sampled_from(tuple(reg for reg in Reg if reg not in {Reg.X3, Reg.X4}))
 FRAME_FORMS = forms(FRAME_REGS)
+TRAPS = (OpBare.ECALL, OpBare.EBREAK)  # the instructions that always trap
 
 
 def instructions(*classes: type[Instr], table: Table = FORMS) -> st.SearchStrategy[Instr]:
@@ -126,6 +127,14 @@ def memory_code(n: int) -> st.SearchStrategy[Program]:
     """One to `n` instructions, straight-line in the frame's registers or `ACCESSES`."""
     body = st.one_of(instructions(*STRAIGHT, table=FRAME_FORMS), ACCESSES)
     return st.lists(body, min_size=1, max_size=n).map(tuple)
+
+
+@st.composite
+def trapping(draw: st.DrawFn, n: int) -> Program:
+    """A `straight_line` block in the frame's registers with an ecall or ebreak at a drawn index."""
+    body = list(draw(straight_line(n - 1, FRAME_FORMS)))
+    body.insert(draw(st.integers(0, len(body))), Bare(draw(st.sampled_from(TRAPS))))
+    return tuple(body)
 
 
 @st.composite

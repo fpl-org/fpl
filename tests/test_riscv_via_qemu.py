@@ -8,11 +8,18 @@ from pathlib import Path
 from hypothesis import assume, given
 from hypothesis import strategies as st
 from riscv_oracle import Boot, assemble, boot, disassemble, dump, link, symbols, toolchain
-from riscv_strategies import FRAME_FORMS, blocks, forward_branching, memory_code, straight_line
+from riscv_strategies import (
+    FRAME_FORMS,
+    blocks,
+    forward_branching,
+    memory_code,
+    straight_line,
+    trapping,
+)
 from riscv_virt import TEST_DEVICE, UART, Block, Regs, Report, Trap, batch, decode, framed
 
 from fpl.asm.riscv.check import check
-from fpl.asm.riscv.eval import Halted, Machine, Outcome, run
+from fpl.asm.riscv.eval import Halted, Machine, Outcome, Trapped, run
 from fpl.asm.riscv.model import I, OpI, OpR, OpStore, OpUpper, Program, R, Reg, Store, Upper
 from fpl.asm.riscv.text import print_program
 
@@ -168,3 +175,19 @@ def test_the_window_agrees_with_qemu_block_by_block(batched: list[Block]) -> Non
         machine = side.outcome.machine
         assert but_x4(machine.regs[1:]) == but_x4(side.report.values), batched[index]
         assert machine.window == side.report.window, batched[index]
+
+
+@given(blocks(BATCH, trapping(BATCH)))
+def test_traps_agree_with_qemu_and_the_batch_goes_on(batched: list[Block]) -> None:
+    """[law: traps-agree] Per `trapping` block, the evaluator's `Trapped(cause, index)` is QEMU's
+    `(mcause, (mepc - base) / 4)`, and the batch continues with the next block.
+
+    Every block traps; the frame's handler reports `T`, `mcause` and `mepc`, and resumes past the
+    block's report, so a batch that exits 0 with one report per block (`both_sides` requires it)
+    ran every block after a trap.
+    """
+    for index, side in enumerate(both_sides(batched)):
+        assert isinstance(side.outcome, Trapped), side
+        assert isinstance(side.report, Trap), side
+        trap = side.report.cause, side.report.mepc
+        assert (side.outcome.cause, side.base + 4 * side.outcome.index) == trap, batched[index]
