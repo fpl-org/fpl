@@ -1,0 +1,22 @@
+fpl.asm.riscv.check.x_jumps__mutmut_11 -- equivalent: `undefined` is a dict used as an ordered set; the value stored per name is never read
+fpl.asm.riscv.check.x_ranged__mutmut_6 -- equivalent: the case _ of an exhaustive match over a closed union, unreachable for well-typed input (pyright and mypy prove it); assert_never is the typed witness, not behaviour
+fpl.asm.riscv.check.x_ranged__mutmut_12 -- equivalent: the case _ of an exhaustive match over a closed union, unreachable for well-typed input (pyright and mypy prove it); assert_never is the typed witness, not behaviour
+fpl.asm.riscv.eval.x_access__mutmut_46 -- equivalent: a register value is below 2**64, so to_bytes(9) only adds a zero high byte, and [:width] with width <= 8 never reads it
+fpl.asm.riscv.eval.x_arithmetic__mutmut_5 -- equivalent: the case _ of an exhaustive match over a closed union, unreachable for well-typed input (pyright and mypy prove it); assert_never is the typed witness, not behaviour
+fpl.asm.riscv.eval.x_arithmetic__mutmut_30 -- equivalent: the case _ of an exhaustive match over a closed union, unreachable for well-typed input (pyright and mypy prove it); assert_never is the typed witness, not behaviour
+fpl.asm.riscv.eval.x_control__mutmut_4 -- equivalent: the case _ of an exhaustive match over a closed union, unreachable for well-typed input (pyright and mypy prove it); assert_never is the typed witness, not behaviour
+fpl.asm.riscv.eval.x_control__mutmut_36 -- equivalent: the case _ of an exhaustive match over a closed union, unreachable for well-typed input (pyright and mypy prove it); assert_never is the typed witness, not behaviour
+fpl.asm.riscv.eval.x_quotient__mutmut_11 -- equivalent: x < 0 against x <= 0 (or x < 1) differs only at x == 0, where the magnitude is 0 and -0 == 0
+fpl.asm.riscv.eval.x_quotient__mutmut_12 -- equivalent: x < 0 against x <= 0 (or x < 1) differs only at x == 0, where the magnitude is 0 and -0 == 0
+fpl.asm.riscv.eval.x_quotient__mutmut_14 -- equivalent: y < 0 against y <= 0 (or y < 1) differs only at y == 0, which returns -1 before the sign test (Table 11)
+fpl.asm.riscv.eval.x_quotient__mutmut_15 -- equivalent: y < 0 against y <= 0 (or y < 1) differs only at y == 0, which returns -1 before the sign test (Table 11)
+fpl.asm.riscv.eval.x_step__mutmut_6 -- equivalent: the case _ of an exhaustive match over a closed union, unreachable for well-typed input (pyright and mypy prove it); assert_never is the typed witness, not behaviour
+fpl.asm.riscv.eval.x_step__mutmut_48 -- equivalent: the case _ of an exhaustive match over a closed union, unreachable for well-typed input (pyright and mypy prove it); assert_never is the typed witness, not behaviour
+fpl.asm.riscv.text.x_addressed__mutmut_4 -- equivalent: the case _ of an exhaustive match over a closed union, unreachable for well-typed input (pyright and mypy prove it); assert_never is the typed witness, not behaviour
+fpl.asm.riscv.text.x_addressed__mutmut_11 -- equivalent: the case _ of an exhaustive match over a closed union, unreachable for well-typed input (pyright and mypy prove it); assert_never is the typed witness, not behaviour
+fpl.asm.riscv.text.x_computational__mutmut_5 -- equivalent: the case _ of an exhaustive match over a closed union, unreachable for well-typed input (pyright and mypy prove it); assert_never is the typed witness, not behaviour
+fpl.asm.riscv.text.x_computational__mutmut_14 -- equivalent: the case _ of an exhaustive match over a closed union, unreachable for well-typed input (pyright and mypy prove it); assert_never is the typed witness, not behaviour
+fpl.asm.riscv.text.x_line__mutmut_6 -- equivalent: the case _ of an exhaustive match over a closed union, unreachable for well-typed input (pyright and mypy prove it); assert_never is the typed witness, not behaviour
+fpl.asm.riscv.text.x_line__mutmut_10 -- equivalent: the case _ of an exhaustive match over a closed union, unreachable for well-typed input (pyright and mypy prove it); assert_never is the typed witness, not behaviour
+fpl.asm.riscv.text.x_named__mutmut_4 -- equivalent: the case _ of an exhaustive match over a closed union, unreachable for well-typed input (pyright and mypy prove it); assert_never is the typed witness, not behaviour
+fpl.asm.riscv.text.x_named__mutmut_10 -- equivalent: the case _ of an exhaustive match over a closed union, unreachable for well-typed input (pyright and mypy prove it); assert_never is the typed witness, not behaviour
