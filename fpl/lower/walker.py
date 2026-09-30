@@ -65,13 +65,18 @@ def typed(value: Value) -> VType:
 
 
 def packed(values: Sequence[Value]) -> IRValue:
-    """Results as one IR value: none as `Unit`, one as itself, several as a right-nested pair."""
-    consts = [Const(v, typed(v)) for v in values]
-    if not consts:
+    """Walker results as one IR value, each a `Const` of its sort's type (`paired`)."""
+    return paired([Const(v, typed(v)) for v in values])
+
+
+def paired(items: Sequence[IRValue]) -> IRValue:
+    """Values as one: none as `Unit`, one as itself, several as a right-nested pair, the first
+    outermost."""
+    if not items:
         return Unit()
-    tail: IRValue = consts[-1]
-    for c in reversed(consts[:-1]):
-        tail = Pair(c, tail)
+    tail = items[-1]
+    for item in reversed(items[:-1]):
+        tail = Pair(item, tail)
     return tail
 
 
