@@ -1,5 +1,7 @@
 """The checker: accepts what `programs()` builds, refuses each catalogue mutation by kind."""
 
+from dataclasses import replace
+
 import pytest
 from cbpv_strategies import (
     BINARY,
@@ -36,6 +38,7 @@ from fpl.cbpv.check import (
     check_config,
     fits,
 )
+from fpl.cbpv.sig import FirstOrder
 from fpl.cbpv.syntax import (
     Absurd,
     App,
@@ -141,6 +144,20 @@ def test_duplicate_def_refused() -> None:
     error = check(Program(DUPLICATE, ()), SIGMA_TEST, loops=False)
     assert error is not None
     assert (error.kind, error.where) == (K.DUPLICATE_DEF, (0, 1, 0))
+
+
+def test_first_order_thunk_needs_no_label() -> None:
+    """With `loops`, only an iterating constant's thunk arguments must lead with a label: a
+    first-order constant taking a thunk accepts an unlabelled one."""
+    twice = Prim("twice", Arrow(U(BODY, PURE), F(INT)), PURE, None)
+
+    def admits(p: Prim) -> bool:
+        return p == twice or SIGMA_TEST.admits(p)
+
+    constants = {**SIGMA_TEST.constants, "twice": FirstOrder(1, lambda _args, _at: ONE)}
+    sig = replace(SIGMA_TEST, constants=constants, admits=admits)
+    unlabelled = App(Thunk(Lam("n", INT, 1, Return(Var("n")))), twice)
+    assert check(Program((), (unlabelled,)), sig, loops=True) is None
 
 
 BOTTOM = Thunk(Fail(ONE))

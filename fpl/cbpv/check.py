@@ -581,10 +581,12 @@ def _spine(m: App | Prim, sig: Signature, path: Path) -> Path | None:
 def _loop_body(
     head: Prim, args: list[tuple[Value, Path]], sig: Signature, path: Path
 ) -> Path | None:
-    """Where a constant's spine fails the label rule: an iterating constant given fewer than
-    its arity, or a thunk argument that is not a literal leading with a label."""
+    """Where an iterating constant's spine fails the label rule: fewer arguments than its arity,
+    or a thunk argument that is not a literal leading with a label (design section 4)."""
     constant = sig.constants.get(head.name)
-    if isinstance(constant, Iterating) and len(args) < constant.arity:
+    if not isinstance(constant, Iterating):
+        return None
+    if len(args) < constant.arity:
         return path
     for (arg, where), param in zip(args, _params(head.type), strict=False):
         if isinstance(param, U) and not (isinstance(arg, Thunk) and leads(arg.body)):
