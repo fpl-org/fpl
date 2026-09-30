@@ -7,7 +7,7 @@ from typing import Any
 
 from hypothesis import given
 from hypothesis import strategies as st
-from wasm_oracle import Tools, wat2wasm
+from wasm_oracle import Item, Tools, Verdict, run_wabt, run_wasmtime, wat2wasm
 from wasm_strategies import (
     BINOPS,
     CVTOPS,
@@ -22,6 +22,7 @@ from wasm_strategies import (
     binop_mains,
     module_of,
     module_parts,
+    valid_modules,
 )
 
 from fpl.asm.wasm.instr import (
@@ -207,3 +208,16 @@ def test_different_modules_print_differently(
                 pairs.append((alone(one), alone(replace(one, **{field: getattr(donor, field)}))))
     for first, second in pairs:
         assert first == second or print_module(first) != print_module(second)
+
+
+@given(st.lists(st.booleans().flatmap(valid_modules), min_size=1, max_size=8))
+def test_every_valid_module_assembles_and_validates_in_both_engines(
+    wasm_tools: Tools, modules: list[Module]
+) -> None:
+    """[law: prints-and-validates] Every module the valid strategy draws, closed or not, prints
+    to WAT that wast2json assembles, that wabt validates, and that wasmtime compiles as a
+    `module definition`: a batch of them, each claimed valid, meets no disagreement."""
+    items: list[Item] = [Verdict(print_module(module), valid=True) for module in modules]
+    texts = "\n".join(item.module for item in items)
+    for report in (run_wabt(wasm_tools, items), run_wasmtime(wasm_tools, items)):
+        assert report.wrong == (), f"{report.output}\n{texts}"
