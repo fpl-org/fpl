@@ -462,3 +462,63 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Default in force: every allowed entry is kept even when a run reports it as no longer living, since dropping one that lives on the next run fails the gate; the gate reports stale entries and does not fail on them; runs on one head differ (9 allowed entries reported no longer living on 7d1c179 in one run, none in the next); returned also as mutmut-run-dependent-kills
 - Closes by: maintainer, deciding whether a Hypothesis-random kill falsifies an "equivalent" reason, or pinning the seed or profile scripts/mutants runs the suite under, then pruning mutants.allow
 - Evidence: mutants.allow; scripts/mutants; session pr/05-comments.md (its PR note; the run logs are not kept)
+
+## thunk-effect
+- Depends on it: fpl/cbpv/syntax.py U, fpl/cbpv/check.py force and thunk rules, fpl/lower/polarise.py
+- Default in force: the latent effect of a thunk is on its type, U_ε B; thunk M : U_ε B when M : B ! ε, force V : B ! ε when V : U_ε B; subsumption on ε
+- Closes by: incipit, amending the statement (the judgement Γ ⊢c M : B ! ε has an effect, U B carries none); the alternative is F_ε A
+- Evidence: Backend plan tab, "Statements for A and M", the grammar and judgement lines
+
+## section-as-quotation
+- Depends on it: fpl/lower/polarise.py (a pushed quotation), fpl/cbpv/machine.py Unsaturated
+- Default in force: desugar makes a section a pushed quotation, so the lowering produces return (thunk M) and readback prints its origin; the statement's terminal ⟨λx. M, ε⟩ is a machine outcome only IR-generated programs reach
+- Closes by: incipit, saying whether a section is a thunk or an unsaturated computation at the core level; the statement's clause "which the walker prints as a section" is kept verbatim and does not hold for the walker at the base, so incipit is asked to amend or explain it
+- Evidence: fpl/desugar.py module docstring (decision f); features/draft2/examples/01-frames.fpl line 3; statement "Terminal: ... ⟨λx. M, ε⟩ is an unsaturated word"
+
+## mu-types
+- Depends on it: fpl/cbpv/syntax.py (no Mu, no con, no pm con)
+- Default in force: μD, con V and pm V as con x. M, which the statement's grammar has, are excluded; lists, strands and dicts are walker data of type Dyn
+- Closes by: K5 (object value types as μ over meta codes, row 79)
+- Evidence: statement "μD from K5"
+
+## grades
+- Depends on it: fpl/cbpv/syntax.py Grade, fpl/cbpv/check.py
+- Default in force: every binder carries a grade (λ, to, both pair binders of pm, both case binders, rec); the checker refuses only a use of a grade-0 variable; 1 and ω are not counted; the lowering writes ω; grade-0 erasure is C1's pass, not here
+- Closes by: minimal B0 (grades by counting, "counted as in minimal B0"), then an A → A pass in C1
+- Evidence: statement "Γ, x :q A … q a grade (row 4); grade 0 erased by an early A → A pass"; incipit's answers on the Backend plan tab (rev-16 export line 31: "grades as annotations on binders (row 4, counted as in minimal B0)"), which is not part of the statement block; row 3
+
+## dynamic-sort
+- Depends on it: fpl/cbpv/syntax.py Dyn, fpl/cbpv/check.py consistency, fpl/lower/walker.py base types and box
+- Default in force: 07's VALUE and unresolved Input sorts are Dyn, consistent with every base type and with nothing else; a constant applied to a value outside its domain panics with the walker's error; a thunk meeting a Dyn position is boxed into walker data
+- Closes by: fpl/types.py typed-fragment (sorts for lists, quotations, dicts), then Dyn narrows or goes
+- Evidence: fpl/types.py met (types.py:348), sort (types.py:354); walker hole typed-fragment
+
+## statement-cites
+- Depends on it: no code; the row cites in the track prompt's STATEMENT block
+- Default in force: the statement's "q a grade (row 4)" is read as row 3 ("Where grades are written"; row 4 is "Effects and IO"); the tab's row 74 and row 75 for the nanopass pipeline and CerCo's labels are read as rows 74p and 75p; the statement is kept verbatim
+- Closes by: incipit, confirming or correcting the cites in the statement
+- Evidence: tracks/cbpv-ir/combined.now.md rows 3, 4, 74, 74p, 75p (main table rev 91)
+
+## op-typing
+- Depends on it: fpl/cbpv/check.py op rule, fpl/cbpv/sig.py caps
+- Default in force: op V W : F A' ! ∅ when V : β_cap and Σ.caps[β_cap][op] = (A, A') and W : A; an operation is not on the effect line
+- Closes by: incipit, giving the typing rule of op (the statement says only "operation op of capability V (row 26)")
+- Evidence: statement grammar line for op; row 26
+
+## fail-payload
+- Depends on it: fpl/cbpv/check.py fail rule, fpl/cbpv/sig.py fail_payload, fpl/lower/walker.py
+- Default in force: fail W : B ! {fail} for any B when W : Σ.fail_payload; Σ_walker's payload type is Dyn, carrying the walker's FplError
+- Closes by: incipit, typing W (the statement gives fail no payload type)
+- Evidence: statement grammar line for fail; walker hole fail-raises
+
+## with-effects
+- Depends on it: fpl/cbpv/check.py pair, fst and snd rules
+- Default in force: ⟨M, N⟩ : B & B' ! ε ∪ ε'; fst M and snd M have M's effect
+- Closes by: incipit, with the effect rules of & (the statement has ⟨M, N⟩, fst and snd without effects)
+- Evidence: statement grammar and judgement lines
+
+## prim-instances
+- Depends on it: fpl/cbpv/sig.py admits, fpl/cbpv/check.py constant rule, fpl/lower/walker.py box held_o control_w truth
+- Default in force: prim p : B ! ε when Σ.admits the instance; schematic constants are one instance per use; box, held_o, control_w and truth are constants of Σ_walker this design adds
+- Closes by: incipit, saying whether "computation constants of their CBPV type" admits instances and these added constants
+- Evidence: statement "primitive words are computation constants of their CBPV type"
