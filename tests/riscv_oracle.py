@@ -34,6 +34,8 @@ QEMU = ("-M", "virt", "-bios", "none", "-nographic", "-monitor", "none", "-seria
 # symbolization of an absolute target (` <_start+0x18>`, printed after `jalr x0, -2048(x0)` and
 # after a branch's address), which is a comment on the text, not part of it.
 INSTRUCTION = re.compile(r"^\s*([0-9a-f]+):\s+(\S.*?)(?: <[^<>]*>)?$")
+# A symbol heading its code in the disassembly: `0000000080000040 <block3>:`.
+HEADER = re.compile(r"^([0-9a-f]+) <([^<>]+)>:$")
 VERSIONS: dict[str, str] = dict(zip(NAMES, ("21.1.8", "21.1.8", "21.1.8", "10.2.4"), strict=True))
 
 
@@ -133,16 +135,29 @@ def link(tools: Tools, work: Path) -> subprocess.CompletedProcess[str]:
     return run(tools.lld, *LD, "-o", work / "prog.elf", work / "prog.o")
 
 
-def listing(tools: Tools, work: Path) -> list[tuple[int, str]]:
-    """Each instruction in `work/prog.elf`: its address and its canonical text, in order.
+def dump(tools: Tools, work: Path) -> str:
+    """What llvm-objdump prints for the code of `work/prog.elf`, with the design's flags."""
+    done = run(tools.objdump, *OBJDUMP, "--no-show-raw-insn", work / "prog.elf")
+    assert done.returncode == 0, shown("llvm-objdump", done)
+    return done.stdout
+
+
+def instructions(text: str) -> list[tuple[int, str]]:
+    """Each instruction in the dump `text`: its address and its canonical text, in order.
 
     A branch's or jal's target is the absolute address objdump resolved, symbol comment removed.
     """
-    done = run(tools.objdump, *OBJDUMP, "--no-show-raw-insn", work / "prog.elf")
-    assert done.returncode == 0, shown("llvm-objdump", done)
-    return [
-        (int(m[1], 16), m[2]) for line in done.stdout.splitlines() if (m := INSTRUCTION.match(line))
-    ]
+    return [(int(m[1], 16), m[2]) for line in text.splitlines() if (m := INSTRUCTION.match(line))]
+
+
+def symbols(text: str) -> dict[str, int]:
+    """The address of each symbol the dump `text` heads a run of code with (`.L` names are not)."""
+    return {m[2]: int(m[1], 16) for line in text.splitlines() if (m := HEADER.match(line))}
+
+
+def listing(tools: Tools, work: Path) -> list[tuple[int, str]]:
+    """Each instruction in `work/prog.elf`: its address and its canonical text, in order."""
+    return instructions(dump(tools, work))
 
 
 def disassemble(tools: Tools, work: Path) -> list[str]:
