@@ -69,8 +69,11 @@ def test_only_the_last_reached_definition_is_kept_in_component_order() -> None:
     h = Define("h", Effect((), ()), ())
     dead = Define("d", Effect((), ()), ())
     doc = Run((Call("f", AT), Call("h/doc", AT)))
-    got = select((h, dead, g, f, Define("h", Effect((), ()), (Push(1),)), doc))
+    redefined = Define("h", Effect((), ()), (Push(1),))
+    got = select((h, dead, g, f, redefined, doc))
     assert isinstance(got, CoreA)
+    assert redefined in got.statements
+    assert h not in got.statements
     assert got.components == (("h",), ("f", "g"))
     assert not in_core_a((dead, doc))
     assert in_core_a(got.statements)
