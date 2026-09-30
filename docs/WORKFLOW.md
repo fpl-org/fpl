@@ -48,12 +48,17 @@ top of base) · **restack** (rebase the stack when base or a lower commit change
    name a push sends (`.githooks/pre-push`), and a pull request's title and body
    (`scripts/pr`). It judges added lines, file names and messages against two sets of
    rules: gitleaks's defaults, which find keys and tokens, and a private list of terms.
-   The list is local and per maintainer, never committed: one extended regular expression
-   per line, matched regardless of case, in `.git/leak-patterns` (this clone and its
-   worktrees) and `~/.config/fpl/leak-patterns` (every clone). Its report names the rule,
-   the list line and the place, never the match. With no list only the defaults run.
+   The list is local and per maintainer, never committed: one regular expression per line
+   in Go's RE2 syntax (`\b`, not `\<`), matched regardless of case, `^` and `$` at line
+   ends, in `.git/leak-patterns` (this clone and its worktrees) and
+   `~/.config/fpl/leak-patterns` (every clone). A space in a line matches any run of
+   whitespace, a line break included, so a 72-column wrap cannot split a term. A push
+   judges the commits the remote it goes to lacks; a first push to a remote, or to a URL,
+   judges the branch's whole history. Its report names the rule, the list line and the
+   place, never the match. With no list only the defaults run.
    `FPL_LEAK_GATE=block` (default) · `warn` (report, don't block) · `off`. It covers what
-   leaves through git and `scripts/pr`; a comment written on the forge never passes it.
+   leaves through git and `scripts/pr`; the comments `scripts/export-review` posts, and
+   anything written on the forge by hand, do not pass it.
 
 ## Setup (once per clone/worktree)
 

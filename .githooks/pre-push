@@ -2,11 +2,13 @@
 #
 # .githooks/pre-push — two gates on what reaches a remote:
 #
-#   1. No private term or secret in what is pushed (scripts/leak-check): the patches,
-#      file names and messages of every commit the remote does not have yet, and the
-#      names of the refs pushed. A branch new to the remote is judged by the commits no
-#      remote-tracking ref has. This runs for every remote, Radicle included: publishing
-#      is publishing. FPL_LEAK_GATE = block (default) | warn | off, read by the script.
+#   1. No private term or secret in what is pushed (scripts/leak-check --push): the
+#      patches, file names, identities and messages of every commit the remote does not
+#      have yet, the names of the refs pushed, and annotated tags. A branch new to the
+#      remote is judged by the commits none of that remote's own remote-tracking refs
+#      has; a first push to a remote, or a push to a URL, judges its whole history. This
+#      runs for every remote, Radicle included: publishing is publishing.
+#      FPL_LEAK_GATE = block (default) | warn | off, read by the script.
 #
 #   2. Refuse to push to a remote branch whose name does not parse under
 #      docs/BRANCHES.md. reference-transaction stops a bad name at creation, but only in
@@ -18,28 +20,13 @@
 set -euo pipefail
 
 top="$(git rev-parse --show-toplevel)"
-zero='^0+$'
 mapfile -t updates
 
 # 1. leak gate -------------------------------------------------------------------------
-leak=0
-scratch="$(mktemp -d)"
-trap 'rm -rf "$scratch"' EXIT
-names="$scratch/ref-names"
-: >"$names"
-for u in "${updates[@]}"; do
-	read -r local_ref local_sha remote_ref remote_sha <<<"$u"
-	[ "$local_ref" = "(delete)" ] && continue
-	printf '%s\n' "$remote_ref" >>"$names"
-	if [[ "$remote_sha" =~ $zero ]] || ! git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
-		revs="$local_sha --not --remotes"
-	else
-		revs="$remote_sha..$local_sha"
-	fi
-	"$top/scripts/leak-check" --range "$revs" || leak=1
-done
-"$top/scripts/leak-check" --text "$names" || leak=1
-[ "$leak" -eq 0 ] || { echo "pre-push: nothing was pushed." >&2; exit 1; }
+# Fed by process substitution, not a pipe: with FPL_LEAK_GATE=off the script exits
+# unread, and a printf killed by SIGPIPE would fail the push under pipefail.
+"$top/scripts/leak-check" --push "$1" < <(printf '%s\n' "${updates[@]}") ||
+	{ echo "pre-push: nothing was pushed." >&2; exit 1; }
 
 # 2. branch names ----------------------------------------------------------------------
 mode="${FPL_BRANCH_GATE:-block}"

@@ -6,7 +6,9 @@
 #
 # Everything happens in a throwaway repository with a synthetic list, and with git's global
 # and system config, HOME and XDG_CONFIG_HOME pointed away from the maintainer's, so no real
-# list is read. Every word below is made up. gitleaks must be on PATH (nix develop): a
+# list is read. The global config that stands in is hostile, as a maintainer's own may
+# be: colour always on (and `git -c color.diff=always` on the hooked commits), no a/ b/
+# prefixes, relative diffs. Every word below is made up. gitleaks must be on PATH (nix develop): a
 # self-test that skipped without it would pass in exactly the place it is meant to bite.
 
 set -euo pipefail
@@ -19,7 +21,8 @@ command -v gitleaks >/dev/null || {
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/leak-check-self-test.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
-export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home" \
+printf '[color]\n\tui = always\n\tdiff = always\n[diff]\n\tnoprefix = true\n\trelative = true\n' >"$tmp/gitconfig"
+export GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home" \
 	XDG_CONFIG_HOME="$tmp/xdg" GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid \
 	GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
 unset FPL_LEAK_GATE GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE
@@ -39,8 +42,12 @@ quuxfrobnitz
    fnord[-_ ]?tab(le)?
 zeta\.corp
 blorp"x
+glorp widget
+^zapfoo
+endzap$
+grüntz
 EOF
-leaked='quuxfrobnitz|fnord|tabl|zeta|corp|blorp'
+leaked='quuxfrobnitz|fnord|tabl|zeta|corp|blorp|glorp|widget|zapfoo|endzap|grüntz|gruntz'
 
 commit() { git -c core.hooksPath=/dev/null commit -q "$@"; }
 echo base >base.txt
@@ -84,7 +91,7 @@ reset
 
 echo "at zeta.corp" >fnord-table.txt && git add fnord-table.txt
 expect 1 "a matching name with a matching line" --staged
-says "a file whose name matches too:1: leak-5" "a content finding hides a matching name"
+says "file 1 of 1:1: leak-5" "a content finding hides a matching name"
 reset
 
 git mv base.txt moved.txt && echo "see zeta.corp" >>moved.txt && git add moved.txt
@@ -130,6 +137,31 @@ says "aws-access-token" "warn still reports"
 FPL_LEAK_GATE=off expect 0 "off passes" --staged
 reset
 
+printf 'x\0 quuxfrobnitz\n' >bin.dat && git add bin.dat
+expect 1 "binary content" --staged
+says "bin.dat:1: leak-3" "binary content names file and rule"
+printf '*.txt -diff\n' >.gitattributes && echo "at zeta.corp" >hid.txt && git add .gitattributes hid.txt
+expect 1 "a -diff attribute" --staged
+says "hid.txt:1: leak-5" "a -diff attribute names file and rule"
+reset
+
+printf 'We rebuilt the glorp\nwidget pipeline.\n' >wrap.txt && git add wrap.txt
+expect 1 "a term wrapped across lines" --staged
+says "wrap.txt:1: leak-7" "a wrapped term names its first line"
+printf 'one\nzapfoo here\nendzap\n' >anchor.txt && git add anchor.txt
+expect 1 "^ and \$ at the ends of a line" --staged
+says "anchor.txt:2: leak-8" "^ anchors at a line start"
+says "anchor.txt:3: leak-9" "\$ anchors at a line end"
+reset
+
+echo "at zeta.corp" >$'quuxfrobnitz\tx.txt' && echo "at zeta.corp" >$'fnord\ntable.txt'
+echo "at zeta.corp" >$'plain\tname.txt' && git add .
+expect 1 "names with a tab and a newline" --staged
+says "file name 1 of 3" "a name with a newline is judged as one name"
+says "file name 3 of 3" "a name with a tab is judged as one name"
+says "file 2 of 3:1: leak-5" "a clean name with a tab is reported by position"
+reset
+
 # As a real pre-commit hook: `commit -a` and `commit <path>` stage into a temporary index
 # that git names in GIT_INDEX_FILE, relative to the top of the tree.
 mkdir -p "$tmp/hooks"
@@ -139,7 +171,7 @@ hooked() {
 	local what="$1" rc=0
 	shift
 	total=$((total + 1))
-	git -c core.hooksPath="$tmp/hooks" commit -q "$@" >"$tmp/out" 2>&1 || rc=$?
+	git -c core.hooksPath="$tmp/hooks" -c color.diff=always commit -q "$@" >"$tmp/out" 2>&1 || rc=$?
 	cat "$tmp/out" >>"$tmp/log"
 	[ "$rc" -ne 0 ] || { fails=$((fails + 1)); echo "self-test: $what: committed" >&2; }
 	says "base.txt:2: leak-3" "$what names file and rule"
@@ -167,6 +199,15 @@ printf 'feat(x): add y\n\nBody.\n\nRefs: Fnord_Table\n' >"$tmp/m2"
 expect 1 "a message trailer" --message "$tmp/m2"
 printf 'feat(x): add y\n\nBody.\n# ------------------------ >8 ------------------------\n-quuxfrobnitz\n' >"$tmp/m3"
 expect 0 "the diff below the scissors" --message "$tmp/m3"
+printf 'feat(x): add y\n\nWe rebuilt the glorp\nwidget pipeline.\n' >"$tmp/m4"
+expect 1 "a term the 72-column wrap split" --message "$tmp/m4"
+says "the message, line 3: leak-7" "a wrapped term names its line"
+printf 'feat(x): add y\n\nBody.\nzapfoo came up\n' >"$tmp/m5"
+expect 1 "^ in a message line after the first" --message "$tmp/m5"
+says "the message, line 4: leak-8" "^ anchors in a message"
+printf 'feat(x): add y\n\nThe key is %s.\n' "$secret" >"$tmp/m6"
+expect 1 "a key in a message, by the default rules" --message "$tmp/m6"
+says "aws-access-token" "a key in a message names the default rule"
 
 # --text --------------------------------------------------------------------------------
 printf 'Add the thing\n\nIt came from zeta.corp.\n' >"$tmp/pr"
@@ -181,7 +222,7 @@ echo main >main.txt && git add main.txt && commit -m main
 git merge -q --no-edit side
 expect 0 "a clean merge" --range "$start..HEAD"
 git reset -q --hard HEAD~1
-git merge -q --no-commit side >/dev/null
+git merge -q --no-commit side >/dev/null 2>&1
 echo "quuxfrobnitz" >evil.txt && git add evil.txt && commit -m "merge side"
 expect 1 "an evil merge" --range "$start..HEAD"
 says "evil.txt:1: leak-3" "an evil merge names the file"
@@ -205,6 +246,51 @@ echo x >quuxfrobnitz.txt && git add quuxfrobnitz.txt && commit -m name
 git rm -q quuxfrobnitz.txt && commit -m unname
 expect 1 "a name that came and went" --range "$start..HEAD"
 git reset -q --hard "$start"
+printf 'x\0 quuxfrobnitz\n' >bin.dat && git add bin.dat && commit -m bin
+expect 1 "binary content in the range" --range "$start..HEAD"
+says "bin.dat:1: leak-3" "binary content in the range names the file"
+git reset -q --hard "$start"
+echo fine >grüntz.txt && git add grüntz.txt && commit -m accent
+expect 1 "a name with an accent in the range" --range "$start..HEAD"
+says "file name 1 of 1" "a name with an accent is reported by position"
+git reset -q --hard "$start"
+echo fine >id.txt && git add id.txt && GIT_AUTHOR_EMAIL=me@zeta.corp commit -m id
+GIT_COMMITTER_EMAIL=ops@zeta.corp commit --allow-empty -m id2
+expect 1 "an author and a committer" --range "$start..HEAD"
+says " author: leak-5" "an author names the rule"
+says " committer: leak-5" "a committer names the rule"
+git reset -q --hard "$start"
+echo "quuxfrobnitz" >r.txt && git add r.txt && commit -m leaky
+leaky="$(git rev-parse HEAD)"
+git reset -q --hard "$start"
+echo clean >r.txt && git add r.txt && commit -m clean
+git replace "$leaky" HEAD && git reset -q --hard "$leaky"
+expect 1 "a commit a replace ref hides" --range "$start..HEAD"
+says "r.txt:1: leak-3" "a replaced commit names the file"
+git replace -d "$leaky" >/dev/null && git reset -q --hard "$start"
+
+# --push --------------------------------------------------------------------------------
+zero=0000000000000000000000000000000000000000
+git init -q --bare "$tmp/priv.git" && git init -q --bare "$tmp/pub.git"
+git remote add priv "$tmp/priv.git" && git remote add pub "$tmp/pub.git"
+git switch -q -c leaky && echo "quuxfrobnitz" >p.txt && git add p.txt && commit -m p
+git -c core.hooksPath=/dev/null push -q priv leaky
+sha="$(git rev-parse HEAD)"
+printf 'refs/heads/leaky %s refs/heads/leaky %s\n' "$sha" "$zero" >"$tmp/updates"
+expect 1 "a branch new to this remote, though another has it" --push pub <"$tmp/updates"
+says "p.txt:1: leak-3" "a push names file and rule"
+expect 0 "a branch this remote has" --push priv <"$tmp/updates"
+expect 1 "a push to a URL" --push "$tmp/pub.git" <"$tmp/updates"
+printf 'refs/heads/main %s refs/heads/main %s\n' "$(git rev-parse main)" "$zero" |
+	cat - "$tmp/updates" >"$tmp/two"
+expect 1 "several refs, the leaky one last" --push pub <"$tmp/two"
+says "p.txt:1: leak-3" "every ref of a push is judged"
+git switch -q main && git -c core.hooksPath=/dev/null push -q priv main
+git tag -a -m "Refs: quuxfrobnitz" rel && sha="$(git rev-parse rel)"
+printf 'refs/tags/rel %s refs/tags/rel %s\n' "$sha" "$zero" >"$tmp/updates"
+expect 1 "an annotated tag's message" --push priv <"$tmp/updates"
+says "leak-3" "a tag message names the rule"
+git tag -d rel >/dev/null && git branch -q -D leaky
 
 # The lists -----------------------------------------------------------------------------
 mv "$list" "$tmp/aside"
@@ -216,6 +302,15 @@ rm "$XDG_CONFIG_HOME/fpl/leak-patterns"
 printf 'fine\nquuxfrobnitz(\n' >"$list"
 expect 1 "an invalid expression" --text "$tmp/pr"
 says "leak-patterns:2: gitleaks cannot use this line" "an invalid line is named"
+printf '\xef\xbb\xbfzeta\\.corp\n' >"$list"
+expect 1 "a list with a byte order mark" --text "$tmp/pr"
+says "leak-1" "a byte order mark does not hide line 1"
+if [ "$(id -u)" -ne 0 ]; then
+	chmod 000 "$list"
+	expect 1 "a list that cannot be read" --text "$tmp/pr"
+	says "cannot be read" "an unreadable list is named"
+	chmod 600 "$list"
+fi
 mv "$tmp/aside" "$list"
 
 # Nothing printed may carry a term. The list's own path is fine, so it is dropped first.
