@@ -585,3 +585,9 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Default in force: pass 2 keeps the walker's data stack as static names (a static stack of entries in the environment); a call pushes only its inputs as argument frames above a to frame, and results come back as a tuple split into names; so the data stack is not the CK stack's argument frames between calls
 - Closes by: incipit, saying whether "The data stack is the CK stack's argument frames" describes the lowering (then the statement wants a stack-passing lowering) or only a call's inputs (then it is amended)
 - Evidence: statement, "Words" paragraph; design section 6.3
+
+## inverse-patterns
+- Depends on it: fpl/lower/select.py, fpl/lower/polarise.py, tests/test_lower_polarise.py; RefusalKind.INVERSE_PATTERN
+- Default in force: a ( constructor … ) pattern is refused by pass 1 (INVERSE_PATTERN at the pattern's span), and by pass 2 on Core_A that holds one; the walker runs it backwards through fpl/eval.py's inverses
+- Closes by: K5, when constructors are con of μD and pm V as con x. M replaces running them backwards
+- Evidence: design section 9 (inverse-patterns) and 6.1; fpl/eval.py undone
