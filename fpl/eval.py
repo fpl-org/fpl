@@ -231,7 +231,7 @@ def quoted(value: Value, span: Span) -> Quotation:
 
 
 def force(span: Span, _words: Words, q: Value) -> tuple[Node, ...]:
-    """q -- : q run in place; a quotation forced is a thunk (hole thunk-or-code)."""
+    """q -- : q run in place; q fills a thunk slot, as every control word's quotation does."""
     return quoted(q, span).code
 
 
