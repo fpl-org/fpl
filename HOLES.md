@@ -43,8 +43,8 @@
 - Evidence: design.md sections 5 and 8; fpl/asm/aarch64/eval.py:657; probe: the frame's sp is ASLR'd per run, and blocks must not move it (records are sp-relative)
 
 ## harness-registers
-- Depends on it: tests/aarch64_strategies.py (GENERAL, regs, block), tests/aarch64_frame.py (OBSERVED, setup)
-- Default in force: generated code never reads or writes x18, x29 or sp, and memory blocks will also keep off x27 and x28; the frame sets and stores only the other 29 registers, and a Block holds 0 for x18 and x29, which no block reads; the checker does not know this
+- Depends on it: tests/aarch64_strategies.py (GENERAL, regs, block, memory_code, memory_block), tests/aarch64_frame.py (OBSERVED, setup, based)
+- Default in force: generated code never reads or writes x18, x29 or sp; memory blocks also keep x27 and x28 (the window's bases, which the frame sets) and one drawn index register, holding [0, 31] and used only as the register offset, out of every transfer slot (tests/aarch64_strategies.py, memory_code); the frame sets and stores only the other 29 registers, and a Block holds 0 for x18 and x29, which no block reads; the checker does not know this
 - Closes by: M's register roles and H0's calling convention (C3a), which name reserved registers per target
 - Evidence: design.md sections 6 and 8; Apple, "Writing ARM64 code for Apple platforms": "The platforms reserve register x18. Don't use this register." and "The frame pointer register (x29) must always address a valid frame record."
 
@@ -53,3 +53,9 @@
 - Default in force: the run laws use RUN = settings(backend="hypothesis", deadline=None, max_examples 4/20/4 for quick/harden/symbolic), and checked-programs-run and evaluator-agrees-with-run assert on one shared batch of one to eight blocks per example (blocks(k=8)); the llvm oracle tests carry backend="hypothesis" only and run at the profile's 100/2000/50, not the design's 10/50/10
 - Closes by: PSJ, accepting, or asking for a harness-level oracle profile in quality/noslop_pytest.py
 - Evidence: design.md section 7 (Budgets); measured on this Mac: the run law, quick 4 examples 1.2 s, harden 20 examples 20.2 s under load average 27
+
+## misaligned-access
+- Depends on it: fpl/asm/aarch64/eval.py (inside, transfer), tests/aarch64_strategies.py (memory_code), tests/test_aarch64_via_run.py (test_memory_blocks_leave_the_window_the_evaluator_leaves, test_memory_blocks_reach_misaligned_accesses)
+- Default in force: a misaligned access inside the window completes, little-endian, as it does natively on Apple silicon at EL0; the evaluator checks only that every byte is inside the window, never the alignment
+- Closes by: E or H0, when the target's memory model is written down
+- Evidence: B2.8.2; design.md section 5 and probe 9 (stur/ldur at +1, stp/ldp at +3, ldrsh at +17 on the stack, exit 0); native: window-agrees green in make check at 265ad6d on this Mac, over memory_code blocks whose unscaled accesses sit at any byte offset and whose x27 writebacks move by single bytes (test_memory_blocks_reach_misaligned_accesses shows the draws reach them); qemu-aarch64: not yet run, pending the first CI run of the draft PR on ubuntu-latest (hole elf-route-unrun)
