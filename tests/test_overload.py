@@ -161,3 +161,27 @@ def test_a_guard_or_compound_type_on_an_effect_line_is_refused(
     source = f"{prefix} Int{'' if guard else ' ⟩'} -- y\n"
     with pytest.raises(FplError, match=r"^ERROR: 1:1 no evaluator yet$"):
         desugar(parse(source))
+
+
+LONE = "f : x: Int -- y\n\tdrop #int\n"
+
+
+def test_a_second_typed_clause_of_one_arity_is_refused() -> None:
+    """[S49] Pinned until clauses of one arity are ordered: `f : x: Int` beside `f : x: Text`
+    is refused as unimplemented."""
+    with pytest.raises(FplError, match=r"^ERROR: 1:1 no evaluator yet$"):
+        run(LONE + "f : x: Text -- y\n\tdrop #text\n5 f\n")
+
+
+def test_a_lone_typed_clause_runs_its_body_on_any_value() -> None:
+    """[S49] Pinned until a typed clause is guarded: a lone `f : x: Int -- y` runs its body on
+    a text."""
+    assert run(LONE + "“a” f\n5 f\n") == "#int\n#int\n"
+
+
+def test_a_guard_with_no_row_for_its_value_is_an_error() -> None:
+    """[S49] Pinned until a failing guard is a miss: a match row guarded by `p`, whose match has
+    no row for 5, stops with `no row matches` from inside `p`."""
+    source = "p : x -- b\n\tmatch\n\t\t0\t1\nf : x -- y\n\tmatch\n\t\t( _ ∈ p )\t#p\n\t\t_\t#any\n"
+    with pytest.raises(FplError, match=r"^ERROR: 2:2 no row matches$"):
+        run(source + "5 f\n")
