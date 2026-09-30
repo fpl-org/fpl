@@ -19,3 +19,9 @@ Undecided choices of the wasm-ir track, each with the default in force until som
 - Default in force: the oracles run at their defaults plus wabt's --enable-tail-call; every constant expression is one t.const or global.get of an imported immutable global, and there is one memory, where wabt 1.0.41, wasmtime 45.0.2 and Release 3.0 agree. Where wabt leaves 3.0 (it accepts a block type index out of range and a typed select with no type, both refused by wasmtime), the checker follows 3.0, those cases stay fixed tests off the oracles, and the catalogue's type mutation raises a function's type index instead of a block's
 - Closes by: the implementer of a later track that needs extended constants or multi-memory, adding the wabt flags and re-probing wasmtime; the two wabt divergences by an upstream wabt issue, then moving the SPEC_ONLY cases to AGREED
 - Evidence: design sections 0 (probe cexpr.wast) and 9; spec 3.0 3.2.8, 3.4.1, 3.4.13, 7.8; this unit's smoke of each invalid family through both engines (block type index and empty typed select: wabt valid, wasmtime invalid)
+
+## exhaustion-outcome
+- Depends on it: fpl/asm/wasm/exec.py (Exhausted, DEPTH), tests/test_wasm_exec.py, the D track's lowering of non-tail recursion
+- Default in force: the evaluator stops at a call depth of 64 active calls with Exhausted, never compared with an engine; tail calls loop in the call driver and never count; generated runnable programs cannot reach it (fuel), and the type-soundness property keeps its step budget below 64 so no run can
+- Closes by: palimpsest, saying whether stack exhaustion is a root panic like a trap (row 43) or something the lowering must rule out
+- Evidence: design section 6 and section 9 exhaustion-outcome; spec 3.0 7.3.3 (the number of frames is an implementation limit); row 81 (1) names stack exhaustion among the sources of nondeterminism
