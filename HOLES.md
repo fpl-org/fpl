@@ -61,7 +61,7 @@
 - Evidence: B2.8.2; design.md section 5 and probe 9 (stur/ldur at +1, stp/ldp at +3, ldrsh at +17 on the stack, exit 0); native: window-agrees green in make check at 265ad6d on this Mac, over memory_code blocks whose unscaled accesses sit at any byte offset and whose x27 writebacks move by single bytes (test_memory_blocks_reach_misaligned_accesses shows the draws reach them); qemu-aarch64: not yet run, pending the first CI run of the draft PR on ubuntu-latest (hole elf-route-unrun)
 
 ## mutants-in-import-time-tables
-- Depends on it: fpl/asm/aarch64/alias.py (the alias rows and encodings built at import), mutants.allow, the ready-green law
-- Default in force: 410 of 3282 fpl mutants live (1815 s wall) after scripts/mutants at 2d53cb7 (about 300 in alias.py table builders: decode_bitmask 52, same_row 42, extend_row 41, add_sub_row 39, set_row 33); none named in mutants.allow; make ready is red on the mutants lane
-- Closes by: PSJ, choosing between building the tables per call (so mutmut's forked runs see the mutant), `# pragma: no mutate -- why` on table construction, or naming them in mutants.allow
-- Evidence: mutants/mutmut-stats.json maps x_decode_bitmask and x_same_row to one test each; the tables are module constants (alias.py COND_SELECT), built in mutmut's parent before it forks a run per mutant, so the mutant never executes
+- Depends on it: fpl/asm/aarch64/alias.py (rows(), candidates(), encodings()), tests/aarch64_strategies.py (fresh_tables), mutants.allow, the ready-green law
+- Default in force: the alias tables are built on first call and cached; the caches are emptied before each alias and text test (fresh_tables), so mutmut runs a row builder's mutant in the tests that read the rows. 4333 mutants, 223 live at cacb1fc; tests pinning each row's cite and mnemonic and 97 llvm-checked lines at both widths kill the builders' mutants, and the equivalent rest are named with reasons in mutants.allow
+- Closes by: PSJ, confirming call-time cached tables with per-test cache clearing over `# pragma: no mutate` on the tables, or ruling otherwise
+- Evidence: mutants/mutmut-stats.json maps each row builder to the fresh_tables tests; scratchpad logs hcont-d.log (cacb1fc) and the lane d log of this unit
