@@ -29,11 +29,11 @@ from fpl.ast_core import (
     Wild,
 )
 from fpl.desugar import desugar, resugar
-from fpl.driver import run
+from fpl.driver import checked, run
 from fpl.errors import FailError, FplError, Span
 from fpl.eval import BUILTINS, effect_line, evaluate
 from fpl.parse import parse
-from fpl.types import Arrow, Kind, elaborate
+from fpl.types import Arrow, Kind, elaborate, reported
 
 TYPES = ("Int", "Decimal", "Text", "Symbol")
 ATOMS = [
@@ -884,3 +884,24 @@ def test_a_dispatcher_answers_as_b_does(choice: tuple[list[Key], tuple[str, ...]
             run(source)
         return
     assert run(source) == f"{expected}\n"
+
+
+FG = "f : x: Int -- y\n\t1 +\nf : x: Text -- y\n\tdrop #text\ng : x -- y\n\tf\n"
+TEXT_FIRST = "f : x: Text -- y\n\tdrop #t\nf : x -- y\n\tdrop 1\n"
+
+
+def goal(source: str) -> str:
+    """The arrow of the one goal a program meets, as its effect line."""
+    (met,) = checked(source)[1]
+    return reported(met).split(" ? : ")[1]
+
+
+PINNED = [(FG, "“a” f ?"), (FG, "5 f ?"), (FG, "5 g ?"), (TEXT_FIRST, "“a” f ?")]
+
+
+@given(st.sampled_from(PINNED))
+def test_a_dispatch_leaves_what_all_its_rows_agree_on(case: tuple[str, str]) -> None:
+    """Pinned before types resolves a dispatch: every row is joined, so a call whose clauses
+    leave different sorts leaves a value of no known sort."""
+    clauses, line = case
+    assert goal(clauses + line + "\n") == "value --"
