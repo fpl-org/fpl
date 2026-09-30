@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from decimal import Decimal
-from enum import Enum
+from enum import Enum, IntEnum
 from typing import assert_never
 
 from fpl.ast_core import (
@@ -29,6 +29,8 @@ from fpl.ast_core import (
     Node,
     Pattern,
     Push,
+    Refuse,
+    Row,
     Run,
     Statement,
     Strand,
@@ -46,6 +48,15 @@ class Input:
     """The index-th value a word takes, its sort not known yet."""
 
     index: int
+
+
+class Verdict(IntEnum):
+    """Whether values of known sorts fit a pattern: surely not, perhaps, surely; a conjunction
+    is the least of its parts."""
+
+    NO = 0
+    MAYBE = 1
+    YES = 2
 
 
 class Kind(Enum):
@@ -70,6 +81,13 @@ class Arrow:
 
 
 @dataclass(frozen=True)
+class Dispatch(Arrow):
+    """A dispatcher's arrow, and its rows in the order it tries them (design 09 §3.6)."""
+
+    rows: tuple[Row, ...]
+
+
+@dataclass(frozen=True)
 class Goal:
     """A ? met: where it is and the arrow that would fill it."""
 
@@ -81,12 +99,13 @@ class Goal:
 class Typing:
     """What elaboration knows at a point in the code: the sorts on the stack, top last; the sort
     each bound name stands for; the sorts the body's inputs have been found to be; the goals
-    met so far."""
+    met so far; whether the code gets here, which a refusal never passes."""
 
     stack: tuple[Sort, ...]
     env: Mapping[str, Sort]
     known: Mapping[int, Sort]
     goals: tuple[Goal, ...] = ()
+    reached: bool = True
 
 
 class UntypedError(Exception):
@@ -117,6 +136,7 @@ ARROWS: dict[str, Arrow] = {
     "drop": Arrow((Input(0),), ()),
 }
 QUERIES = ("history", "doc", "effect")
+TESTED = {"Int": Kind.NUMBER, "Decimal": Kind.NUMBER, "Text": Kind.TEXT, "Symbol": Kind.SYMBOL}
 
 
 def elaborate(statements: tuple[Statement, ...]) -> tuple[dict[str, Arrow], tuple[Goal, ...]]:
@@ -128,9 +148,9 @@ def elaborate(statements: tuple[Statement, ...]) -> tuple[dict[str, Arrow], tupl
     arrows = dict(ARROWS)
     defines = [s for s in statements if isinstance(s, Define)]
     for d in defines:
-        arrows[d.name] = declared(d)
-        arrows.update({f"{d.name}/{query}": Arrow((), (Kind.VALUE,)) for query in QUERIES})
-    last = {d.name: d for d in defines}
+        arrows[d.word] = dispatching(d, declared(d))
+        arrows.update({f"{d.word}/{query}": Arrow((), (Kind.VALUE,)) for query in QUERIES})
+    last = {d.word: d for d in defines}
     goals: list[Goal] = []
     for s in statements:
         with suppress(UntypedError):
@@ -145,9 +165,18 @@ def checked(
     if isinstance(statement, Run):
         return after(Typing((), {}, {}), statement.code, arrows).goals
     arrow, goals = inferred(statement, arrows)
-    if last[statement.name] is statement:
-        arrows[statement.name] = arrow
+    if last[statement.word] is statement:
+        arrows[statement.word] = dispatching(statement, arrow)
     return goals
+
+
+def dispatching(define: Define, arrow: Arrow) -> Arrow:
+    """A dispatcher's arrow with its rows; any other word's as it is."""
+    match define.code:
+        case (Match(rows=rows),) if len(define.clause) == 1:
+            return Dispatch(arrow.ins, arrow.outs, rows)
+        case _:
+            return arrow
 
 
 def declared(define: Define) -> Arrow:
@@ -167,7 +196,7 @@ def inferred(define: Define, arrows: Mapping[str, Arrow]) -> tuple[Arrow, tuple[
         return declared(define), ()
     if len(end.stack) != promised:
         message = f"leaves {len(end.stack)} values, its effect line {promised}"
-        raise FplError(define.span, f"{define.name} {message}")
+        raise FplError(define.span, f"{define.word} {message}")
     return Arrow(resolved(start.stack, end), resolved(end.stack, end)), end.goals
 
 
@@ -256,6 +285,8 @@ def through(
             return called(typing, node, arrows)
         case Match():
             return matched(typing, node, arrows, need)
+        case Refuse():
+            return replace(typing, reached=False)
         case _:
             assert_never(node)
 
@@ -270,14 +301,15 @@ def bound(typing: Typing, node: Bind, arrows: Mapping[str, Arrow], need: int | N
 
 
 def matched(typing: Typing, node: Match, arrows: Mapping[str, Arrow], need: int | None) -> Typing:
-    """Each row's body run on the values under those the match takes, its pattern names
-    standing for values of no known sort; the sorts the rows agree on, where they leave as many
-    values, else untyped."""
+    """Each row the values may take run on the values under them, its pattern names standing
+    for values of no known sort; the sorts those rows agree on, where they leave as many
+    values, else untyped. Every row runs when each surely misses (design 09 §3.6)."""
     cut = len(typing.stack) - len(node.rows[0].patterns)
     if cut < 0:
         raise UnderflowError(node.span)
+    sorts = resolved(typing.stack[cut:], typing)
     ends: list[Typing] = []
-    for row in node.rows:
+    for row in surviving(node.rows, sorts, arrows) or node.rows:
         names = dict.fromkeys(bindings(row.patterns), Kind.VALUE)
         begun = replace(typing, stack=typing.stack[:cut], env={**typing.env, **names})
         ends.append(after(begun, row.body, arrows, need))
@@ -287,8 +319,8 @@ def matched(typing: Typing, node: Match, arrows: Mapping[str, Arrow], need: int 
 
 def agreed(ends: list[Typing]) -> tuple[Sort, ...]:
     """The sorts rows leave: each where they agree, else of no known sort; untyped where they
-    leave different counts."""
-    stacks = {resolved(end.stack, end) for end in ends}
+    leave different counts. A row that refuses leaves nothing."""
+    stacks = {resolved(end.stack, end) for end in ends if end.reached}
     if len({len(stack) for stack in stacks}) != 1:
         raise UntypedError
     columns = map(set, zip(*stacks, strict=True))
@@ -321,7 +353,83 @@ def called(typing: Typing, node: Call, arrows: Mapping[str, Arrow]) -> Typing:
         return replace(typing, stack=(*typing.stack, typing.env[node.name]))
     if node.name not in arrows:
         raise UntypedError
-    return applied(typing, arrows[node.name], node.span)
+    return applied(typing, chosen(typing, arrows[node.name], arrows), node.span)
+
+
+def chosen(typing: Typing, arrow: Arrow, arrows: Mapping[str, Arrow]) -> Arrow:
+    """The arrow a call applies: a dispatcher's resolved to its clause's when exactly one row
+    survives, it is a clause's, no value is an input and, where the row only may fit, the
+    clause takes the values' sorts, since the run would miss where it refuses; else the arrow
+    as it is."""
+    cut = len(typing.stack) - len(arrow.ins)
+    if not isinstance(arrow, Dispatch) or cut < 0:
+        return arrow
+    sorts = resolved(typing.stack[cut:], typing)
+    if any(isinstance(s, Input) for s in sorts):
+        return arrow
+    match surviving(arrow.rows, sorts, arrows):
+        case (Row(body=(*_, Call(name=clause))) as row,):
+            found = arrows[clause]
+            if verdict(row, sorts, arrows) is Verdict.YES or taken(found, sorts):
+                return found
+            return arrow
+        case _:
+            return arrow
+
+
+def surviving(
+    rows: tuple[Row, ...], sorts: tuple[Sort, ...], arrows: Mapping[str, Arrow]
+) -> tuple[Row, ...]:
+    """The rows values of the sorts may take, in order: those that surely miss dropped, none
+    after the first that surely fits."""
+    kept: list[Row] = []
+    for row in rows:
+        fit = verdict(row, sorts, arrows)
+        if fit is not Verdict.NO:
+            kept.append(row)
+        if fit is Verdict.YES:
+            break
+    return tuple(kept)
+
+
+def verdict(row: Row, sorts: tuple[Sort, ...], arrows: Mapping[str, Arrow]) -> Verdict:
+    """How surely values of the sorts fit the row's patterns."""
+    fits = (fitted(have, p, arrows) for have, p in zip(sorts, row.patterns, strict=True))
+    return min(fits, default=Verdict.YES)
+
+
+def fitted(have: Sort, pattern: Pattern, arrows: Mapping[str, Arrow]) -> Verdict:
+    """How surely a value of the sort fits the pattern: a name or _ surely does, a guarded
+    pattern as surely as both its pattern and its test; a literal or a constructor may."""
+    match pattern:
+        case Var() | Wild():
+            return Verdict.YES
+        case Guarded():
+            return min(fitted(have, pattern.pattern, arrows), tested(have, pattern.test, arrows))
+        case Equal() | Inverse():
+            return Verdict.MAYBE
+        case _:
+            assert_never(pattern)
+
+
+def tested(have: Sort, test: str, arrows: Mapping[str, Arrow]) -> Verdict:
+    """How surely a test leaves 1 on a value of the sort: a builtin type word surely does on its
+    own sort, surely not on another known one, and may on a number or a value of no known sort;
+    any other test, a type word the program redefines included, may."""
+    want = TESTED.get(test)
+    if want is None or arrows.get(test) is not ARROWS[test]:
+        return Verdict.MAYBE
+    if isinstance(have, Input) or have is Kind.VALUE:
+        return Verdict.MAYBE
+    if have is not want:
+        return Verdict.NO
+    return Verdict.MAYBE if want is Kind.NUMBER else Verdict.YES
+
+
+def taken(arrow: Arrow, sorts: tuple[Sort, ...]) -> bool:
+    """Whether the arrow takes values of the sorts, as `met` finds."""
+    pairs = zip(arrow.ins, sorts, strict=True)
+    return all(isinstance(need, Input) or have in (need, Kind.VALUE) for need, have in pairs)
 
 
 def applied(typing: Typing, arrow: Arrow, span: Span) -> Typing:

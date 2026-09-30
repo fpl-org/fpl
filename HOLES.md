@@ -119,7 +119,7 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 
 ## unimplemented-words
 - Depends on it: fpl/desugar.py unimplemented; the 23 of 28 examples still at ERROR: 1:1 no evaluator yet, each named with the first thing desugar refuses: features/draft1/examples/draft1.fpl (newline), features/draft2/examples/03-operatives-thunks.fpl (debug), features/draft2/examples/04-effects-holes-ascription.fpl (shape), features/draft2/examples/05-the-dictionary-is.fpl (words), features/draft2/examples/06-constructors-run-backwards.fpl (unpair), features/draft2/examples/08-objects-are-directories.fpl (dict), features/draft2/examples/10-quasiquote-inside.fpl ($q, an unquote), features/draft2/examples/11-laziness.fpl (curry), features/draft3/examples/draft3.fpl (shape), features/match/examples/01-1-constructors-run.fpl (pos), features/match/examples/02-2-the-same.fpl (a pattern on the effect line), features/match/examples/03-3-multiple-dispatch.fpl (Asteroid), features/match/examples/04-4-list-patterns.fpl (false), features/match/examples/05-5-prolog-s-family.fpl (x in mother's body), features/match/examples/06-6-python-s-keywords.fpl (a record pattern on the effect line), features/server/examples/server.fpl (+in/data on the effect line), features/sketch/examples/05-5-multiple-dispatch.fpl (shape/r), and features/sketch/examples/01, 02, 03, 04, 06 and 07 (seam ∈ … in a directory, no definition nor bind)
-- Default in force: desugar refuses, before anything runs, all but: decimal numbers, strings without islands, [ ], ( ) of one cell, ⟨ ⟩ of literals, bars, tabs, blocks, name : ins -- outs definitions (each slot a name or name: Type), →x and ->x of a plain name or a path, #name symbols, { } of plain keys each with one item pushing one value, name/ heads with a block of definitions, subdirectories and #name bind lines, paths a/b and ../x that name a defined word, w/history, w/doc, w/effect, a match line with its block of rows in a definition's body, and the words of fpl/ast_core.py EFFECTS (+ - times swap dup drop enclose , pair cons ! if swap-args repeat each scan fold, and ? and _ in a term), with ERROR: 1:1 no evaluator yet (the skeleton's message and position, reused)
+- Default in force: desugar refuses, before anything runs, all but: decimal numbers, strings without islands, [ ], ( ) of one cell, ⟨ ⟩ of literals, bars, tabs, blocks, name : ins -- outs definitions (each slot a name or name: Type), →x and ->x of a plain name or a path, #name symbols, { } of plain keys each with one item pushing one value, name/ heads with a block of definitions, subdirectories and #name bind lines, paths a/b and ../x that name a defined word, w/history, w/doc, w/effect, a match line with its block of rows in a definition's body, clauses of one word whose typed inputs cross only where their meet is a clause or two builtin type words make them disjoint, and the words of fpl/ast_core.py EFFECTS (+ - times swap dup drop enclose , pair cons ! if swap-args repeat each scan fold, and ? and _ in a term), with ERROR: 1:1 no evaluator yet (the skeleton's message and position, reused)
 - Closes by: each step-3 part, shrinking the set
 - Evidence: fpl/driver.py (skeleton); fpl/ast_core.py EFFECTS; each example run through fpl.driver.run at 203e0ba, the refusal traced to its caller in fpl/desugar.py (resolve, origin, effect_line, mount)
 
@@ -516,3 +516,75 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Default in force: an error in an earlier event is ERROR: @<seq> <l>:<c>; CHANGED <seq> $<id> names an earlier input whose output moved; HEAD <seq> $<id> follows an append on stderr; an input after the first starts at the left margin; an input ends at a blank line or once it is not pending; a first line with : is a command (:show :log :rewind E :canonical :quit); joined outputs differ from the file's only where a run leaves a single empty stack; at a terminal a tab inserts itself (GNU readline; libedit untried)
 - Closes by: design, fixing the transcript's form
 - Evidence: tests/test_session.py:117, :126, :136; tests/test_repl.py:264, :299, :345; fpl/print.py:24-31
+
+## head-group-pin
+- Depends on it: fpl/desugar.py `_Desugar.code`, tests/test_overload.py test_a_pin_in_a_head_group_is_refused
+- Default in force: a `$` pin inside a head group `( p )` is refused as unimplemented; a group clause binds its other inputs by fresh names `x′i` (the dispatcher-row mechanism), so a pin by the written name could not resolve
+- Closes by: the part that binds head names, by binding a head's written names
+- Evidence: design-09-v3.md §2.1 (Groups), §10 head-group-pin
+
+## group-clause-fails
+- Depends on it: fpl/desugar.py `_Desugar.statements`, `tests`; `f/n/i/effect` of a clause with a head group
+- Default in force: a clause with a head group keeps `fallible(code)`, so its own effect is `+fail` (its one row misses when called by path); its dispatcher's `+fail` is computed from the dispatcher's rows, as for every match
+- Closes by: the design side, by choosing between the written line and the computed `+fail` for `f/n/i/effect`
+- Evidence: design-09-v3.md §1.1 (`f/n/i` effect as written) against §3.5 (a group clause's own +fail)
+
+## dispatch-order
+- Depends on it: fpl/desugar.py `_Desugar.dispatcher`, `crossed`, `disjoint`, `met`; tests/test_overload.py test_the_most_specific_then_the_newest_fitting_clause_wins, test_p1_and_p2, test_rows_sort_by_typed_count_then_newest, test_p3_is_refused_until_its_meet_is_a_clause, test_crossing_clauses_are_refused_unless_their_meet_is_a_clause
+- Default in force: order B as the orchestrator defined it: a clause's typed inputs decide its specificity, whatever the types; rows sort by typed-input count descending, newest first by path ordinal among as many; crossing clauses are refused at the later head unless disjoint (two different builtin type words the program does not define) or their meet is a clause; a meet one input would type two ways is refused as unimplemented. First-row-wins `Match` reuses eval's `matching`
+- Closes by: palimpsest, confirming the definition and amending combined-draft row 18 ("No automatic specificity") and row 73 for overloading, PSJ confirming; both pending
+- Evidence: design-09-v3.md Read first, §3.1-§3.3; combined-draft.md:138 (row 18), :197 (row 73)
+
+## tie-age
+- Depends on it: fpl/desugar.py `Catalog.keyed`, `Catalog.ordinal`; tests/test_overload.py test_a_shadowing_clause_keeps_its_age, test_a_clause_keeps_the_ordinal_of_its_key
+- Default in force: a same-key redefinition shadows its clause in place and keeps its path ordinal, which is its age among equally specific clauses (the log's later-shadows-earlier, keyed by path)
+- Closes by: PSJ, choosing between keeping the place and taking the newest ordinal
+- Evidence: design-09-v3.md §3.4 (Newest under shadowing), §11
+
+## repl-crossing-order
+- Depends on it: fpl/desugar.py `crossed`, run on every prefix a session desugars
+- Default in force: the crossing check runs on the whole program each time; a file whose meet follows both crossing clauses is accepted, while typed into the REPL in that order the second crossing clause is refused, so the meet must be entered first
+- Closes by: the design side, by accepting the narrowing of "REPL equals file" or deferring the check
+- Evidence: design-09-v3.md §3.3 (The REPL checks every prefix)
+
+## group-disjoint
+- Depends on it: fpl/desugar.py `disjoint`
+- Default in force: a head group is disjoint from nothing, since two groups may both match one value (`⟨ #circle ⟨ #rect 5 ⟩ ⟩`); two group clauses at one input are equally specific and the newest wins
+- Closes by: the design side, if constructor patterns gain a static disjointness
+- Evidence: design-09-v3.md §3.1 (Disjoint), §4 P7
+
+## ambiguity-wording
+- Depends on it: fpl/desugar.py `agree`, `crossed`; tests/test_overload.py test_clauses_of_one_arity_leave_as_many_values, test_crossing_clauses_are_refused_unless_their_meet_is_a_clause
+- Default in force: an output-count mismatch reads `f/1/2 leaves 2, f/1/1 1`, after the slot-kind message `f/1/2 takes a thunk at 1, f/1/1 a value`; the meet in `g/2/2 is ambiguous with g/2/1 at x: Int  y: Int` takes the earlier clause's slot names
+- Closes by: the design side, by fixing the wording
+- Evidence: design-09-v3.md §2.3, §3.3, §11 (the wording of the ambiguity error); the design gives no output-count message
+
+## refusal-not-fail
+- Depends on it: fpl/ast_core.py `Refuse`; fpl/desugar.py `fallible`; tests/test_overload.py test_an_ambiguity_is_a_refusal_not_a_miss, test_p5_refuses_a_call_both_crossing_clauses_fit
+- Default in force: landed in C10: an ambiguous call raises an `FplError` at the dispatcher's span, never `FailError`; `fallible` counts no `Refuse` row, so it adds no +fail; the walker has no `or` to tell the two apart outside guards
+- Closes by: the part that lands `or`, which must catch `FailError` (`no row matches`) only
+- Evidence: design-09-v3.md §3.4, §10 (refusal-not-fail)
+
+## guard-failure
+- Depends on it: fpl/eval.py `matched` (a guard's test), fpl/errors.py `FailError`; tests/test_overload.py test_a_guard_that_misses_is_not_fitting, test_an_error_in_a_guard_propagates
+- Default in force: landed in C10, decided: a predicate used as a slot type must be total over the values it can meet; a test that fails with `no row matches` (`FailError`) is a miss, in dispatcher and match rows alike; an ambiguity refusal, fuel exhaustion or any other error inside the test propagates out of the call as that error
+- Closes by: PSJ, only to widen the miss; order B itself waits on the row-18 amendment (dispatch-order), pending
+- Evidence: design-09-v3.md §3.9, §10 (guard-failure); combined-draft.md:138 (row 18)
+
+## number-split
+- Depends on it: fpl/types.py `tested`
+- Default in force: types has one number sort, so `Int` and `Decimal` are maybe against a number and a more specific maybe row before a sure one keeps the call dynamic (P1's `5 f`)
+- Closes by: types, by splitting the number sort
+- Evidence: design-09-v3.md §3.6, §10 (number-split)
+
+## static-miss
+- Depends on it: fpl/types.py `chosen`; tests/test_overload.py test_a_call_types_leaves_unresolved_fails_at_run_time
+- Default in force: a call no row can fit keeps the dispatcher's arrow and is `no row matches` +fail at run time; types neither refuses nor warns
+- Closes by: types, with a warning
+- Evidence: design-09-v3.md §3.6, §10 (static-miss)
+
+## static-dispatch-residual
+- Depends on it: fpl/types.py `chosen`, `taken`, `matched`; tests/test_overload.py test_types_resolves_a_dispatch_where_one_clause_row_survives, test_static_and_dynamic_dispatch_agree
+- Default in force: a call keeps the dispatcher's arrow when a synthetic row survives, when an argument is an `Input` (even to a lone untyped clause of a two-group word), and when the one surviving row is a maybe whose clause's arrow refuses the argument sorts (`x: one` with body `1 +` on `“a”`: the run misses, so types does not refuse); a body match all of whose rows surely miss joins every row, as before 09
+- Closes by: the design side, by accepting the maybe-row condition and the all-miss join, which §3.6 does not state
+- Evidence: design-09-v3.md §3.6 (Pruning, Why an `Input` blocks resolution), §10 (static-dispatch-residual)

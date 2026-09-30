@@ -273,7 +273,7 @@ def test_a_string_is_its_parts_in_order() -> None:
 def test_the_effect_line_is_kept_as_declared() -> None:
     """[D3.4] words/*/effect: the declared effect is kept as data (the query: hole
     effect-query)."""
-    (definition,) = desugar(parse(CURRY))
+    definition, *_ = desugar(parse(CURRY))
     assert isinstance(definition, Define)
     assert definition.effect == Effect(("x", "q"), ("q'",))
 
@@ -289,22 +289,27 @@ def test_an_effect_takes_values_unless_its_slots_say_otherwise() -> None:
 
 
 def test_a_typed_effect_line_declares_its_slots() -> None:
-    """[S49] name: Type per slot: a type spelled [ ] makes a thunk, Code a code slot, any other
-    a value; a bare name is an untyped value; an output's type is read past."""
-    source = "f : t: [ -- x ]  c: Code  l: ⟨ a b ⟩  n: Int  m -- z: Int\n"
-    (definition,) = desugar(parse(source))
+    """[S49] name: Type per slot: a type spelled [ ] makes a thunk, Code a code slot, a name a
+    value of that type; a bare name is an untyped value; an output's type is read past."""
+    source = "f : t: [ -- x ]  c: Code  n: Int  m -- z: Int\n"
+    definition, *_ = desugar(parse(source))
     assert isinstance(definition, Define)
     assert definition.effect == Effect(
-        ("t", "c", "l", "n", "m"), ("z",), slots=("thunk", "code", "value", "value", "value")
+        ("t", "c", "n", "m"),
+        ("z",),
+        slots=("thunk", "code", "value", "value"),
+        types=(None, None, "Int", None),
     )
 
 
 def test_a_slot_name_is_every_character_before_its_colon() -> None:
     """[S49] `name: Type`: the slot is named all of `name`; a lone `:` is a bare name, an
     untyped value (hole bare-slot-names), not the colon of a slot with no name."""
-    (typed,) = desugar(parse("f : xs: Int  q: [] -- y\n"))
+    typed, *_ = desugar(parse("f : xs: Int  q: [] -- y\n"))
     assert isinstance(typed, Define)
-    assert typed.effect == Effect(("xs", "q"), ("y",), slots=("value", "thunk"))
+    assert typed.effect == Effect(
+        ("xs", "q"), ("y",), slots=("value", "thunk"), types=("Int", None)
+    )
     (bare,) = desugar(parse("f : a : b -- c\n"))
     assert isinstance(bare, Define)
     assert bare.effect == Effect(("a", ":", "b"), ("c",))
@@ -392,3 +397,26 @@ def test_a_run_is_placed_at_its_line(head: str, body: str) -> None:
     first = head.count("\n") + 1
     lines = [Span(first + index, 1) for index in range(body.count("\n") + 1)]
     assert [s.span for s in statements if isinstance(s, Run)] == lines
+
+
+def test_a_typed_head_is_read_as_the_slice_reads_it() -> None:
+    """[S49] `∈` on an effect line is refused; a group slot `( p )` is a clause of its own
+    word; `x: Int` is a value slot of type Int, written back as it is written."""
+    with pytest.raises(FplError, match=r"^ERROR: 1:1 no evaluator yet$"):
+        desugar(parse("f : x ∈ number -- y\n"))
+    circle = "circle : r -- shape\n\t#circle swap pair\n"
+    grouped = desugar(parse(circle + "f : ( circle r ) -- y\n\tr\n"))
+    words = [s.word for s in grouped if isinstance(s, Define)]
+    assert words == ["circle", "f/1/1", "f/1/1\N{PRIME}1", "f/1"]
+    typed, *_ = desugar(parse("f : x: Int -- y\n"))
+    assert isinstance(typed, Define)
+    assert typed.effect == Effect(("x",), ("y",), types=("Int",))
+    assert resugar((typed,)) == parse("f : x: Int -- y\n")
+
+
+def test_a_slot_kind_disagreeing_within_an_arity_is_refused() -> None:
+    """[S49] Two definitions of one word taking as many inputs must agree on their slot kinds,
+    else the later is refused at its head; a same key shadows as before."""
+    with pytest.raises(FplError, match=r"^ERROR: 3:1 f/1/2 takes a thunk at 1, f/1/1 a value$"):
+        run("f : x -- y\n\t1\nf : t: [ ] -- y\n\t2\n")
+    assert run("f : x -- y\n\tdrop 1\nf : x -- y\n\tdrop 2\n5 f\n") == "2\n"

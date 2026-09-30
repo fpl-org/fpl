@@ -27,15 +27,17 @@ from fpl.ast_core import (
     Pattern,
     Push,
     Quotation,
+    Refuse,
     Row,
     Run,
     Statement,
     Strand,
+    Symbol,
     Value,
     Var,
     Wild,
 )
-from fpl.errors import FplError, Span
+from fpl.errors import FailError, FplError, Span
 
 type Builtin = Callable[..., tuple[Value, ...]]
 type Words = Mapping[str, tuple[Node, ...]]
@@ -57,19 +59,19 @@ def evaluate(
     statements: tuple[Statement, ...], fuel: int | None = None
 ) -> tuple[tuple[Value, ...], ...]:
     """The stack each run line leaves, every line on a fresh stack and within fuel steps, or
-    with no bound when fuel is None. A later definition of a
-    name shadows an earlier one, for every line; name/history pushes the ones it shadows,
-    oldest first, each as a quotation, name/doc the docstring of the one in force and
-    name/effect its effect line as a list of strings, +fail last when it may fail."""
+    with no bound when fuel is None. A definition is called at its word; a later definition of
+    a word shadows an earlier one, for every line; word/history pushes the ones it shadows,
+    oldest first, each as a quotation, word/doc the docstring of the one in force and
+    word/effect its effect line as a list of strings, +fail last when it may fail."""
     logged: dict[str, list[Define]] = {}
     for s in statements:
         if isinstance(s, Define):
-            logged.setdefault(s.name, []).append(s)
-    words = {name: log[-1].code for name, log in logged.items()}
-    for name, log in logged.items():
-        words[f"{name}/history"] = (Push(Listed(tuple(Quotation(d.code) for d in log[:-1]))),)
-        words[f"{name}/doc"] = (Push(log[-1].doc),)
-        words[f"{name}/effect"] = (Push(effect_line(log[-1])),)
+            logged.setdefault(s.word, []).append(s)
+    words = {word: log[-1].code for word, log in logged.items()}
+    for word, log in logged.items():
+        words[f"{word}/history"] = (Push(Listed(tuple(Quotation(d.code) for d in log[:-1]))),)
+        words[f"{word}/doc"] = (Push(log[-1].doc),)
+        words[f"{word}/effect"] = (Push(effect_line(log[-1])),)
     return tuple(metered(s, words, fuel) for s in statements if isinstance(s, Run))
 
 
@@ -105,10 +107,18 @@ def metered(run: Run, words: Words, fuel: int | None) -> tuple[Value, ...]:
 
 
 def effect_line(define: Define) -> Listed:
-    """ins -- outs, then +fail if the word may fail."""
+    """ins -- outs, a typed input as its two strings `x:` and its type, then +fail if the word
+    may fail (hole effect-query)."""
     effect = define.effect
     fails = ("+fail",) if effect.fails else ()
-    return Listed((*effect.ins, "--", *effect.outs, *fails))
+    typed = zip(effect.ins, effect.types, strict=True)
+    ins = (text for name, part in typed for text in slotted(name, part))
+    return Listed((*ins, "--", *effect.outs, *fails))
+
+
+def slotted(name: str, part: str | None) -> tuple[str, ...]:
+    """An input as its effect line writes it: the name, or `name:` and its type."""
+    return (name,) if part is None else (name + ":", part)
 
 
 def final(state: State) -> tuple[Value, ...]:
@@ -130,16 +140,13 @@ def step(state: State) -> State:
     """Run the first node: push its value, put a defined word's code in its place, apply a
     builtin to the values it takes, put a binder's scope in its place with the top for its
     name, or push the dict its values build. A control word puts the code it runs in its
-    place, and a match the body of the row it chose."""
+    place, and a match the body of the row it chose. A refusal raises its error."""
     node, rest = state.code[0], state.code[1:]
     match node:
         case Push():
             return State((*state.stack, node.value), rest, state.words)
         case Bind():
-            if not state.stack:
-                raise FplError(node.span, "stack underflow")
-            scope = substitute(node.body, node.name, state.stack[-1])
-            return State(state.stack[:-1], scope + rest, state.words)
+            return binding(node, state, rest)
         case Keyed():
             return State((*state.stack, gathered(node, state.words)), rest, state.words)
         case Call() if node.name in state.words:
@@ -148,8 +155,18 @@ def step(state: State) -> State:
             return builtin(node, state, rest)
         case Match():
             return matching(node, state, rest)
+        case Refuse():
+            raise FplError(node.span, node.message)
         case _:
             assert_never(node)
+
+
+def binding(node: Bind, state: State, rest: tuple[Node, ...]) -> State:
+    """The binder's scope in its place, the top standing for its name."""
+    if not state.stack:
+        raise FplError(node.span, "stack underflow")
+    scope = substitute(node.body, node.name, state.stack[-1])
+    return State(state.stack[:-1], scope + rest, state.words)
 
 
 def substitute(code: tuple[Node, ...], name: str, value: Value) -> tuple[Node, ...]:
@@ -166,14 +183,21 @@ def replaced(node: Node, name: str, value: Value) -> Node:
         case Push():
             return Push(held(node.value, name, value))
         case Bind():
-            body = node.body if node.name == name else substitute(node.body, name, value)
-            return Bind(node.name, body, node.span)
+            return rebinder(node, name, value)
         case Keyed():
             return rekeyed(node, name, value)
         case Match():
             return rematched(node, name, value)
+        case Refuse():  # pragma: no cover -- a refusing row binds nothing, so nothing substitutes
+            return node
         case _:
             assert_never(node)
+
+
+def rebinder(node: Bind, name: str, value: Value) -> Bind:
+    """A binder's body with name standing for value, unless it binds name anew."""
+    body = node.body if node.name == name else substitute(node.body, name, value)
+    return Bind(node.name, body, node.span)
 
 
 def rekeyed(node: Keyed, name: str, value: Value) -> Keyed:
@@ -230,7 +254,8 @@ def names(pattern: Pattern) -> frozenset[str]:
 
 def matching(node: Match, state: State, rest: tuple[Node, ...]) -> State:
     """The values the match takes replaced by the body of the first row matching them, each
-    name a pattern bound standing for its value; no row matching raises +fail at the match."""
+    name a pattern bound standing for its value; no row matching raises +fail, a FailError, at
+    the match."""
     cut = len(state.stack) - len(node.rows[0].patterns)
     if cut < 0:
         raise FplError(node.span, "stack underflow")
@@ -241,7 +266,7 @@ def matching(node: Match, state: State, rest: tuple[Node, ...]) -> State:
             for name, value in bound.items():
                 code = substitute(code, name, value)
             return State(state.stack[:cut], code + rest, state.words)
-    raise FplError(node.span, "no row matches")
+    raise FailError(node.span, "no row matches")
 
 
 def matches(patterns: tuple[Pattern, ...], values: Stack, words: Words) -> Bound | None:
@@ -259,8 +284,8 @@ def matches(patterns: tuple[Pattern, ...], values: Stack, words: Words) -> Bound
 
 
 def matched(pattern: Pattern, value: Value, words: Words) -> Bound | None:
-    """What one pattern binds on a value, or None: a guard is its word leaving 1 on the
-    value (hole guard-test)."""
+    """What one pattern binds on a value, or None: a guard is its pattern matching and then its
+    word leaving 1 on the value (hole guard-test)."""
     match pattern:
         case Wild():
             return {}
@@ -269,13 +294,27 @@ def matched(pattern: Pattern, value: Value, words: Words) -> Bound | None:
         case Equal():
             return {} if pattern.node == Push(value) else None
         case Guarded():
-            bound = matched(pattern.pattern, value, words)
-            test = final(State((value,), (Call(pattern.test, pattern.span),), words))
-            return bound if test == (1,) else None
+            return guarded(pattern, value, words)
         case Inverse():
             return unbuilt(pattern, value, words)
         case _:
             assert_never(pattern)
+
+
+def guarded(guard: Guarded, value: Value, words: Words) -> Bound | None:
+    """What a guard's pattern binds on a value, when its word then leaves 1 on the value."""
+    bound = matched(guard.pattern, value, words)
+    return bound if bound is not None and tested(guard, value, words) else None
+
+
+def tested(guard: Guarded, value: Value, words: Words) -> bool:
+    """The guard's word leaves 1 on the value; its miss is not fitting, and any other error in
+    it propagates as that error (design 09 §3.9)."""
+    try:
+        left = final(State((value,), (Call(guard.test, guard.span),), words))
+    except FailError:
+        return False
+    return left == (1,)
 
 
 def unbuilt(pattern: Inverse, value: Value, words: Words) -> Bound | None:
@@ -460,6 +499,13 @@ def cons(span: Span, x: Value, xs: Value) -> tuple[Value, ...]:
     return (Listed((x, *xs.items)),)
 
 
+def typed(kind: type[object], _span: Span, value: Value) -> tuple[Value, ...]:
+    """x -- b : 1 when x is of the type, or is a strand whose items all are; 0 on any other value,
+    an empty strand included."""
+    items = value.items if isinstance(value, Strand) else (value,)
+    return (int(bool(items) and all(isinstance(item, kind) for item in items)),)
+
+
 def unfilled(span: Span) -> tuple[Value, ...]:
     """-- : a goal left in the code, refused where it runs (hole goal-placeholder)."""
     raise FplError(span, "unfilled goal")
@@ -483,6 +529,10 @@ BUILTINS: dict[str, Builtin] = {
     ",": join,
     "pair": pair,
     "cons": cons,
+    "Int": partial(typed, int),
+    "Decimal": partial(typed, Decimal),
+    "Text": partial(typed, str),
+    "Symbol": partial(typed, Symbol),
 }
 
 
