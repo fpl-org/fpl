@@ -1,7 +1,7 @@
 """The canonical text: what llvm-objdump 21.1.8 prints for the program's bytes, and back."""
 
 import pytest
-from hypothesis import given
+from hypothesis import example, given
 from hypothesis import strategies as st
 from riscv_strategies import instructions
 
@@ -208,9 +208,14 @@ def test_text_without_its_last_newline_is_refused() -> None:
 
 
 @given(instructions())
+@example(Bare(OpBare.ECALL))
 def test_the_pattern_of_a_mnemonic_and_its_shape_matches_the_line_printed_for_it(
     instr: Instr,
 ) -> None:
-    """The parser's table is built at import, where mutation testing cannot reach it."""
+    """The parser's table is built at import, where mutation testing cannot reach it.
+
+    The explicit operand-free example makes the empty-shape branch run on every call, not only
+    when the draw happens to hold one; a mutant there survived a mutation run without it.
+    """
     text = line(instr)
     assert pattern(text.split("\t")[1], SHAPES[type(instr)]).fullmatch(text)
