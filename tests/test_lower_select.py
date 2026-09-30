@@ -44,8 +44,9 @@ def refused(statements: tuple[Define | Run, ...]) -> tuple[RefusalKind, Span, st
 
 
 def test_a_binder_a_quotation_calls_as_a_word_is_refused() -> None:
-    kind, at, _ = refused(desugar(parse("[ dup ] →x 2 →dup x !")))
-    assert (kind, at) == (RefusalKind.BINDER_CAPTURES, Span(1, 14))
+    source = "[ dup ] →x 2 →dup x !"
+    kind, at, _ = refused(desugar(parse(source)))
+    assert (kind, at) == (RefusalKind.BINDER_CAPTURES, Span(1, source.index("→dup") + 1))
 
 
 def test_a_binder_that_only_shadows_is_kept() -> None:
