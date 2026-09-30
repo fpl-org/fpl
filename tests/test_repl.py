@@ -9,7 +9,7 @@ import readline
 import shutil
 import tempfile
 import threading
-from collections.abc import Generator, Mapping, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from io import StringIO
 from pathlib import Path
 from typing import override
@@ -446,3 +446,66 @@ def test_the_loop_as_of_an_event_checks_no_head(monkeypatch: pytest.MonkeyPatch)
         out, err = StringIO(), StringIO()
         assert main([*SESSION, "--at", "1"], Terminal(), out, err, env) == 0
         assert (out.getvalue(), err.getvalue()) == ("2\n2\n", "")
+
+
+def _as_given(_work: Path, env: dict[str, str]) -> dict[str, str]:
+    """Nothing prepared."""
+    return env
+
+
+def _a_directory(work: Path, env: dict[str, str]) -> dict[str, str]:
+    """A directory where the log goes."""
+    (work / "s.fon").mkdir()
+    return env
+
+
+def _unwritable(work: Path, env: dict[str, str]) -> dict[str, str]:
+    """A working directory no file can be made in."""
+    work.chmod(0o500)
+    return env
+
+
+def _key_unwritable(work: Path, env: dict[str, str]) -> dict[str, str]:
+    """A key file in a directory no file can be made in."""
+    keys = work.parent / "keys"
+    keys.mkdir(mode=0o500)
+    return {**env, "FPL_LOG_KEY": f"{keys}/key"}
+
+
+def _no_home(_work: Path, _env: dict[str, str]) -> dict[str, str]:
+    """No variable that names a key file."""
+    return {}
+
+
+@pytest.mark.parametrize(
+    ("argv", "stdin", "made", "named"),
+    [
+        (["--session", "gone/s.fon", "-e", "1"], "", _as_given, "gone/s.fon"),
+        (["--session", "gone/s.fon"], "1\n", _as_given, "gone/s.fon"),
+        ([*SESSION, "--log"], "", _a_directory, "s.fon"),
+        ([*SESSION, "-e", "1"], "", _a_directory, "s.fon"),
+        ([*SESSION, "-e", "1"], "", _unwritable, "s.fon"),
+        ([*SESSION, "--show"], "", _key_unwritable, "keys/key"),
+        ([*SESSION, "--log"], "", _no_home, "$HOME"),
+    ],
+)
+def test_a_path_refused(
+    argv: list[str],
+    stdin: str,
+    made: Callable[[Path, dict[str, str]], dict[str, str]],
+    named: str,
+) -> None:
+    """A path the system refuses, or none to find the key by, is a refusal: one ERROR line
+    naming it, exit 2, and nothing written but a lock."""
+    with session() as (work, given):
+        env = made(work, given)
+        before = files(work)
+        try:
+            code, out, err = called(argv, env, stdin)
+        finally:
+            work.chmod(0o700)
+        assert (code, err, out.count("\n")) == (2, "", 1)
+        assert out.startswith("ERROR: ")
+        assert named in out
+        after = {path: data for path, data in files(work).items() if path.suffix != ".lock"}
+        assert after == before

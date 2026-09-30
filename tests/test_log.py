@@ -411,6 +411,8 @@ def test_key(tmp_path: Path) -> None:
     assert os.listdir(tmp_path / ".config") == ["fpl"]
     assert keyed({"XDG_CONFIG_HOME": str(tmp_path / ".config")}) == key
     assert keyed({"FPL_LOG_KEY": str(made), "HOME": "/nonexistent"}) == key
+    with pytest.raises(RefusedError, match=r"^no key file: \$FPL_LOG_KEY, \$XDG_CONFIG_HOME and"):
+        keyed({})
     made.chmod(0o640)
     with pytest.raises(RefusedError, match=r"log\.key is open to others"):
         keyed(home)
