@@ -5,6 +5,7 @@ third-party packages other than icontract, and names the file and the import it 
 """
 
 import ast
+import os
 import sys
 from pathlib import Path
 
@@ -57,6 +58,19 @@ def refused(path: Path, root: Path = ROOT) -> list[str]:
 def test_every_module_of_fpl_asm_imports_only_the_stdlib_icontract_and_fpl_asm(path: Path) -> None:
     """[law: fpl-free] Every import in fpl/asm/**/*.py is stdlib, icontract, or fpl.asm."""
     assert refused(path) == []
+
+
+def test_the_law_walks_every_module_of_fpl_asm_however_deep() -> None:
+    """`FILES` is every .py file under fpl/asm: over fewer, the law would pass vacuously."""
+    walked = {
+        Path(folder) / name
+        for folder, _, names in os.walk(ROOT / "fpl" / "asm")
+        for name in names
+        if name.endswith(".py")
+    }
+    assert set(FILES) == walked
+    riscv = ROOT / "fpl" / "asm" / "riscv"
+    assert {ROOT / "fpl" / "asm" / "__init__.py", riscv / "model.py", riscv / "text.py"} <= walked
 
 
 @pytest.mark.parametrize(

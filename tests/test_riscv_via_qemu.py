@@ -2,12 +2,21 @@
 
 import tempfile
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from hypothesis import assume, given
+from hypothesis import assume, example, given
 from hypothesis import strategies as st
-from riscv_oracle import Boot, assemble, boot, disassemble, dump, link, symbols, toolchain
+from riscv_oracle import (
+    Boot,
+    assemble,
+    boot,
+    disassemble,
+    dump,
+    link,
+    symbols,
+    toolchain,
+)
 from riscv_strategies import (
     FRAME_FORMS,
     blocks,
@@ -16,17 +25,44 @@ from riscv_strategies import (
     straight_line,
     trapping,
 )
-from riscv_virt import TEST_DEVICE, UART, Block, Regs, Report, Trap, batch, decode, framed
+from riscv_virt import (
+    TEST_DEVICE,
+    UART,
+    WINDOW,
+    Block,
+    Regs,
+    Report,
+    Trap,
+    batch,
+    decode,
+    framed,
+)
 
 from fpl.asm.riscv.check import check
 from fpl.asm.riscv.eval import Halted, Machine, Outcome, Trapped, run
-from fpl.asm.riscv.model import I, OpI, OpR, OpStore, OpUpper, Program, R, Reg, Store, Upper
+from fpl.asm.riscv.model import (
+    I,
+    OpI,
+    OpR,
+    OpShift,
+    OpStore,
+    OpUpper,
+    Program,
+    R,
+    Reg,
+    Shift,
+    Store,
+    Upper,
+)
 from fpl.asm.riscv.text import print_program
 
 
 def uart_byte(char: str) -> Program:
     """Store `char` to the UART, whose address is in x5."""
-    return (I(OpI.ADDI, Reg.X6, Reg.X0, ord(char)), Store(OpStore.SB, Reg.X6, Reg.X5, 0))
+    return (
+        I(OpI.ADDI, Reg.X6, Reg.X0, ord(char)),
+        Store(OpStore.SB, Reg.X6, Reg.X5, 0),
+    )
 
 
 # 6 * 7 = 42, printed as "42\n" on the UART, then 42 << 16 | 0x3333 to the test device, the
@@ -50,7 +86,9 @@ SMOKE: Program = (
 
 
 @given(st.just(SMOKE))
-def test_a_printed_program_boots_on_virt_prints_42_and_exits_42(program: Program) -> None:
+def test_a_printed_program_boots_on_virt_prints_42_and_exits_42(
+    program: Program,
+) -> None:
     """[law: virt-smoke] The fixed program, printed and framed, says b"42\\n" and exits 42.
 
     Its body also comes back from llvm-objdump as the printer's lines, leading tab removed.
@@ -144,9 +182,45 @@ def both_sides(batched: Sequence[Block]) -> list[Side]:
     return sides
 
 
+ONES = (1 << 64) - 1
+# x1 and x2 of the edge batch, with the immediate and shift amount each pair is given: sign
+# bits, zero low words, a zero divisor at both widths, signed overflow at both widths, and
+# register shift amounts of 32 and more (a W shift must read only the low 5 bits).
+EDGE_PAIRS = (
+    (1 << 63, ONES, -2048, 63),
+    (0x8000_0000, ONES, 2047, 32),
+    (ONES, 0, -1, 0),
+    (0xFFFF_FFFF_0000_0001, 1 << 32, 0, 31),
+    (0x8000_0000_8000_0001, 63, 1, 1),
+    (0x7FFF_FFFF_FFFF_FFFF, 32 + 7, 1024, 33),
+)
+
+
+def edge_program(imm: int, amount: int) -> tuple[Program, ...]:
+    """Every R, I and shift op once, x1 (and x2) to its own rd, in chunks of 14 over x5..x18."""
+    ops = (
+        *(R(op, Reg.X0, Reg.X1, Reg.X2) for op in OpR),
+        *(I(op, Reg.X0, Reg.X1, imm) for op in OpI),
+        *(Shift(op, Reg.X0, Reg.X1, amount % (32 if op.endswith("w") else 64)) for op in OpShift),
+    )
+    chunks = [ops[at : at + 14] for at in range(0, len(ops), 14)]
+    return tuple(
+        tuple(replace(op, rd=Reg(5 + k)) for k, op in enumerate(chunk)) for chunk in chunks
+    )
+
+
+EDGE_BATCH = [
+    Block((a, b, *(0,) * 29), bytes(WINDOW), program)
+    for a, b, imm, amount in EDGE_PAIRS
+    for program in edge_program(imm, amount)
+]
+
+
+@example(batched=EDGE_BATCH)
 @given(
     blocks(
-        BATCH, st.one_of(straight_line(BATCH, FRAME_FORMS), forward_branching(BATCH, FRAME_FORMS))
+        BATCH,
+        st.one_of(straight_line(BATCH, FRAME_FORMS), forward_branching(BATCH, FRAME_FORMS)),
     )
 )
 def test_the_evaluator_agrees_with_qemu_block_by_block(batched: list[Block]) -> None:

@@ -2,6 +2,7 @@
 
 import math
 from fractions import Fraction
+from itertools import product
 
 import icontract
 import pytest
@@ -9,7 +10,16 @@ from hypothesis import given
 from hypothesis import strategies as st
 from riscv_strategies import STRAIGHT, between, forward_branching, instructions
 
-from fpl.asm.riscv.eval import Halted, Machine, OutOfFuel, Trapped, Unmodelled, alu, run, sext
+from fpl.asm.riscv.eval import (
+    Halted,
+    Machine,
+    OutOfFuel,
+    Trapped,
+    Unmodelled,
+    alu,
+    run,
+    sext,
+)
 from fpl.asm.riscv.model import (
     Access,
     Bare,
@@ -142,7 +152,12 @@ def test_fences_do_nothing_on_one_hart() -> None:
 
 
 WINDOW = 0x8000_1000  # where x3 points: the window's first byte
-SIZES = {"b": 1, "h": 2, "w": 4, "d": 8}  # a load's or store's second letter names its size
+SIZES = {
+    "b": 1,
+    "h": 2,
+    "w": 4,
+    "d": 8,
+}  # a load's or store's second letter names its size
 
 
 def size(op: OpLoad | OpStore) -> int:
@@ -193,7 +208,9 @@ OUTSIDE = (
 
 
 @pytest.mark.parametrize("instr", OUTSIDE)
-def test_an_access_leaving_the_window_is_unmodelled_naming_itself(instr: Load | Store) -> None:
+def test_an_access_leaving_the_window_is_unmodelled_naming_itself(
+    instr: Load | Store,
+) -> None:
     """A byte outside the 256 at x3 is real RAM or a fault: the evaluator does not know which."""
     outcome = run((NOP, instr), windowed(bytes(256), {}), BASE, 10)
     assert isinstance(outcome, Unmodelled)
@@ -273,7 +290,11 @@ def test_jal_links_the_next_address_and_jumps_to_its_label() -> None:
 
 def test_jalr_clears_bit_0_and_links_after_reading_rs1() -> None:
     """rd is rs1: the target comes from the old x5, the link replaces it."""
-    program = (Jalr(Reg.X5, Reg.X5, 1), addi(Reg.X3, Reg.X0, 1), addi(Reg.X4, Reg.X0, 3))
+    program = (
+        Jalr(Reg.X5, Reg.X5, 1),
+        addi(Reg.X3, Reg.X0, 1),
+        addi(Reg.X4, Reg.X0, 3),
+    )
     after = halted(program, machine({Reg.X5: BASE + 8}))
     assert after == machine({Reg.X4: 3, Reg.X5: BASE + 4})
 
@@ -291,8 +312,26 @@ def test_a_jump_to_an_undefined_label_is_unmodelled(jump: Jal | Branch) -> None:
     assert outcome == Unmodelled(1, ".Lend is not defined")
 
 
-DIVISIONS = (OpR.DIV, OpR.DIVU, OpR.REM, OpR.REMU, OpR.DIVW, OpR.DIVUW, OpR.REMW, OpR.REMUW)
-EDGES = (0, 1, ONES, 1 << 63, (1 << 63) - 1, 1 << 31, (1 << 32) - 1, 0xFFFF_FFFF_8000_0000)
+DIVISIONS = (
+    OpR.DIV,
+    OpR.DIVU,
+    OpR.REM,
+    OpR.REMU,
+    OpR.DIVW,
+    OpR.DIVUW,
+    OpR.REMW,
+    OpR.REMUW,
+)
+EDGES = (
+    0,
+    1,
+    ONES,
+    1 << 63,
+    (1 << 63) - 1,
+    1 << 31,
+    (1 << 32) - 1,
+    0xFFFF_FFFF_8000_0000,
+)
 operands = st.one_of(st.sampled_from(EDGES), between(0, ONES))
 
 
@@ -348,21 +387,26 @@ def test_table_11_row_by_row(op: OpR, a: int, b: int, expected: int) -> None:
     assert x3(r(op), a, b) == expected
 
 
-def x3_only(ops: tuple[OpR, ...] | tuple[OpShift, ...]) -> st.SearchStrategy[Instr]:
-    """An instruction of `ops` from x1 (and x2) to x3."""
-    op = st.sampled_from(ops)
-    if isinstance(ops[0], OpR):
-        return st.builds(R, op, st.just(Reg.X3), st.just(Reg.X1), st.just(Reg.X2))
-    return st.builds(Shift, op, st.just(Reg.X3), st.just(Reg.X1), between(0, 31))
-
-
 W_SHIFTS = (OpR.SLLW, OpR.SRLW, OpR.SRAW)
-WORDS = st.one_of(
-    x3_only(tuple(op for op in OpR if op.endswith("w"))),
-    x3_only((OpShift.SLLIW, OpShift.SRLIW, OpShift.SRAIW)),
-    st.builds(I, st.just(OpI.ADDIW), st.just(Reg.X3), st.just(Reg.X1), between(-2048, 2047)),
-    st.builds(Upper, st.sampled_from(OpUpper), st.just(Reg.X3), between(0, (1 << 20) - 1)),
-)
+
+
+@st.composite
+def w_forms(draw: st.DrawFn) -> tuple[Instr, ...]:
+    """Every W form, lui and auipc once each, from x1 (and x2) to x3, their immediates drawn."""
+    amount, imm, upper = (
+        draw(between(0, 31)),
+        draw(between(-2048, 2047)),
+        draw(between(0, (1 << 20) - 1)),
+    )
+    return (
+        *(R(op, Reg.X3, Reg.X1, Reg.X2) for op in OpR if op.endswith("w")),
+        *(
+            Shift(op, Reg.X3, Reg.X1, amount)
+            for op in (OpShift.SLLIW, OpShift.SRLIW, OpShift.SRAIW)
+        ),
+        I(OpI.ADDIW, Reg.X3, Reg.X1, imm),
+        *(Upper(op, Reg.X3, upper) for op in OpUpper),
+    )
 
 
 def is_word(value: int) -> bool:
@@ -370,31 +414,46 @@ def is_word(value: int) -> bool:
     return value >> 31 in (0, (1 << 33) - 1)
 
 
-@given(WORDS, operands, operands, st.integers(1, (1 << 59) - 1))
-def test_w_forms_sign_extend_32_bits(instr: Instr, a: int, b: int, high: int) -> None:
-    """[law: w-ops-sign-extend] Every W form's result is its low 32 bits sign-extended; so is
-    lui's, and auipc's offset from its own address, whose low 32 bits are the immediate's; the
-    register W shifts read only the low 5 bits of the amount."""
+def assert_word(instr: Instr, a: int, b: int, high: int) -> None:
+    """`instr`'s result from x1 = a, x2 = b is a sign-extended word, as w-ops-sign-extend says."""
     result = x3(instr, a, b)
     if isinstance(instr, Upper):
         result = (result - BASE) % (1 << 64) if instr.op is OpUpper.AUIPC else result
         assert result % (1 << 32) == (instr.imm << 12) % (1 << 32)
-    assert is_word(result)
+    assert is_word(result), instr
     if isinstance(instr, R) and instr.op in W_SHIFTS:
-        assert x3(instr, a, b ^ (high << 5)) == result
+        assert x3(instr, a, b ^ 32) == result, instr
+        assert x3(instr, a, b ^ (high << 5)) == result, instr
 
 
-@given(forward_branching(20), registers, st.sampled_from(OpR), operands, operands)
+@given(w_forms(), operands, operands, st.integers(1, (1 << 59) - 1))
+def test_w_forms_sign_extend_32_bits(forms: tuple[Instr, ...], a: int, b: int, high: int) -> None:
+    """[law: w-ops-sign-extend] Every W form's result is its low 32 bits sign-extended; so is
+    lui's, and auipc's offset from its own address, whose low 32 bits are the immediate's; the
+    register W shifts read only the low 5 bits of the amount (bit 5 flipped, and any above it).
+    Every form sees every drawn pair."""
+    for instr in forms:
+        assert_word(instr, a, b, high)
+
+
+# Operand pairs every ALU row is also given: the extremes of both widths, both ways round.
+ALU_EDGES = tuple(product((0, 1, ONES, 1 << 63, (1 << 63) - 1, 0xFFFF_FFFF_8000_0000), repeat=2))
+
+
+@given(forward_branching(20), registers, operands, operands)
 def test_the_evaluator_keeps_its_contracts(
-    program: Program, start: Machine, op: OpR, a: int, b: int
+    program: Program, start: Machine, a: int, b: int
 ) -> None:
     """[law: evaluator-contracts] A forward-branching program halts within one step per
-    instruction, every register in range and x0 zero; every ALU row, and `sext` at every width
-    of the operands' difference, give values in `[0, 2**64)`. icontract checks on every call."""
+    instruction, every register in range and x0 zero; every ALU row, on the drawn pair and on
+    each edge pair, and `sext` at every width of the operands' difference, give values in
+    `[0, 2**64)`. icontract checks on every call."""
     outcome = run(program, start, BASE, sum(not isinstance(item, Label) for item in program))
     assert isinstance(outcome, Halted)
     assert outcome.machine.regs[0] == 0
-    assert all(0 <= reg <= ONES for reg in (*outcome.machine.regs, alu(op, a, b)))
+    assert all(0 <= reg <= ONES for reg in outcome.machine.regs)
+    for op, (x, y) in product(OpR, ((a, b), *ALU_EDGES)):
+        assert 0 <= alu(op, x, y) <= ONES, (op, x, y)
     assert all(0 <= sext(a - b, bits) <= ONES for bits in (8, 12, 16, 32, 64))
 
 
