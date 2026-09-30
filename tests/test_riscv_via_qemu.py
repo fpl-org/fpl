@@ -7,10 +7,11 @@ from pathlib import Path
 from hypothesis import assume, given
 from hypothesis import strategies as st
 from riscv_oracle import Boot, assemble, boot, disassemble, dump, link, symbols, toolchain
-from riscv_strategies import FRAME_FORMS, blocks, forward_branching
-from riscv_virt import TEST_DEVICE, UART, Block, Trap, batch, decode, framed
+from riscv_strategies import FRAME_FORMS, blocks, forward_branching, straight_line
+from riscv_virt import TEST_DEVICE, UART, Block, Regs, Trap, batch, decode, framed
 
 from fpl.asm.riscv.check import check
+from fpl.asm.riscv.eval import Halted, Machine, run
 from fpl.asm.riscv.model import I, OpI, OpR, OpStore, OpUpper, Program, R, Reg, Store, Upper
 from fpl.asm.riscv.text import print_program
 
@@ -94,3 +95,30 @@ def test_checked_forward_branching_batches_halt_on_virt(batched: list[Block]) ->
     # A block's report is its registers; a trap in it (cause, address) would stand in their place.
     traps = [(report.cause, hex(report.mepc)) for report in reports if isinstance(report, Trap)]
     assert not traps, traps
+
+
+def but_x4(values: Sequence[int]) -> tuple[int, ...]:
+    """x1..x31 from `values`, x4 (the frame's) left out."""
+    return (*values[:3], *values[4:])
+
+
+@given(
+    blocks(
+        BATCH, st.one_of(straight_line(BATCH, FRAME_FORMS), forward_branching(BATCH, FRAME_FORMS))
+    )
+)
+def test_the_evaluator_agrees_with_qemu_block_by_block(batched: list[Block]) -> None:
+    """[law: evaluator-agrees-with-qemu] Per block, `run` halts with the registers QEMU reports.
+
+    `base` is the address llvm-objdump gives the block's symbol; the evaluator starts from the
+    block's initial values and the 31 registers but x4 it halts with are the 248 bytes QEMU wrote.
+    """
+    where, done = booted(batched)
+    reports = decode(done.uart)
+    assert len(reports) == len(batched), reports
+    for index, (block, report) in enumerate(zip(batched, reports, strict=True)):
+        base = where[f"block{index}"]
+        outcome = run(block.program, Machine((0, *block.regs)), base, len(block.program) + 1)
+        assert isinstance(outcome, Halted), outcome
+        assert isinstance(report, Regs), report
+        assert but_x4(outcome.machine.regs[1:]) == but_x4(report.values), (index, block)

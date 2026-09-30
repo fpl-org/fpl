@@ -103,6 +103,11 @@ def instructions(*classes: type[Instr], table: Table = FORMS) -> st.SearchStrate
 STRAIGHT: tuple[type[Instr], ...] = (R, I, Shift, Upper, Fence)
 
 
+def straight_line(n: int, table: Table = FORMS) -> st.SearchStrategy[Program]:
+    """One to `n` instructions of the `STRAIGHT` forms, drawn from `table`."""
+    return st.lists(instructions(*STRAIGHT, table=table), min_size=1, max_size=n).map(tuple)
+
+
 @st.composite
 def forward_branching(draw: st.DrawFn, n: int, table: Table = FORMS) -> Program:
     """One to `n` instructions, straight-line or `Branch`/`Jal`, each jump to a later label.
