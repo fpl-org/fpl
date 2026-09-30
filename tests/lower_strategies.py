@@ -341,3 +341,9 @@ def broad_match(draw: Draw) -> str:
     k = ["k : v -- r", "\tmatch", f"\t\t{pattern}\t{body}", f"\t\t_\t{draw(COUNTS)}"]
     arg = draw(st.sampled_from(("⟨ 1 2 ⟩", "0", "#z")))
     return "\n".join(k) + "\n" + draw(recursive()) + f"{arg} k\n"
+
+
+def walker_programs() -> st.SearchStrategy[str]:
+    """The label pass's domain (design section 7): straight-line, controlled and recursive
+    programs, as source."""
+    return st.one_of(straight(), controlled(), recursive())
