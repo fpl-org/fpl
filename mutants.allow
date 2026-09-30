@@ -1,0 +1,43 @@
+# Mutants no test can tell from the original, one per line with the reason (scripts/mutants).
+fpl.asm.aarch64.alias.x_bfx_preferred__mutmut_2 -- equivalent: 32-bit imms 31 is sf:'11111', taken by ASR and LSR before SBFX and UBFX
+fpl.asm.aarch64.alias.x_bfx_preferred__mutmut_22 -- equivalent: imms == width - 1 is ASR or LSR, tried before SBFX and UBFX
+fpl.asm.aarch64.alias.x_bfx_preferred__mutmut_23 -- equivalent: bitfield() already holds imms below the width
+fpl.asm.aarch64.alias.x_ubfm_rows__mutmut_24 -- equivalent: imms + 1 == immr with immr below the width already puts imms below width - 1
+fpl.asm.aarch64.alias.x_extend_row__mutmut_3 -- equivalent: 32-bit SBFM immr 0 imms 31 is ASR, tried before SXTW
+fpl.asm.aarch64.alias.x_extend_row__mutmut_5 -- equivalent: 64-bit UBFM immr 0 imms 7 is UBFX (BFXPreferred), tried before UXTB
+fpl.asm.aarch64.alias.x_extend_row__mutmut_7 -- equivalent: 64-bit UBFM immr 0 imms 15 is UBFX (BFXPreferred), tried before UXTH
+fpl.asm.aarch64.alias.x_extend_row__mutmut_9 -- equivalent: each extend row's other width is taken by an earlier row (ASR for SXTW, UBFX for UXTB and UXTH)
+fpl.asm.aarch64.alias.x_cond_select_rows__mutmut_15 -- equivalent: zero=None is falsy like False
+fpl.asm.aarch64.alias.x_cond_select_rows__mutmut_25 -- equivalent: Rn == Rm == '11111' with cond not 111x is CSET, tried before CINC
+fpl.asm.aarch64.alias.x_cond_select_rows__mutmut_40 -- equivalent: zero=None is falsy like False
+fpl.asm.aarch64.alias.x_cond_select_rows__mutmut_50 -- equivalent: Rn == Rm == '11111' with cond not 111x is CSETM, tried before CINV
+fpl.asm.aarch64.alias.x_bfm_rows__mutmut_5 -- equivalent: the BFI and BFC rows both read bfi lines with partial(insert_of, BFM); the parser falls through to the other
+fpl.asm.aarch64.alias.x_bfm_rows__mutmut_28 -- equivalent: the BFI and BFC rows both read bfi lines with partial(insert_of, BFM); the parser falls through to the other
+fpl.asm.aarch64.alias.x_bfm_rows__mutmut_33 -- equivalent: the BFI and BFC rows both read bfi lines with partial(insert_of, BFM); the parser falls through to the other
+fpl.asm.aarch64.alias.x_bfm_rows__mutmut_56 -- equivalent: the BFI and BFC rows both read bfi lines with partial(insert_of, BFM); the parser falls through to the other
+fpl.asm.aarch64.alias.x_bfm_rows__mutmut_58 -- equivalent: the BFI and BFC rows both read bfi lines with partial(insert_of, BFM); the parser falls through to the other
+fpl.asm.aarch64.alias.x_chunk__mutmut_18 -- equivalent: the parser catches the ValueError and never reads its argument
+fpl.asm.aarch64.alias.x_wide_movable__mutmut_4 -- equivalent: orr_mov's answer reads it only for an encodable immediate, already below 2^width
+fpl.asm.aarch64.alias.x_mov_wide__mutmut_14 -- equivalent: for an int hw and width 32 or 64, hw < width / 16 iff hw < width // 16
+fpl.asm.aarch64.alias.x_extension__mutmut_2 -- equivalent: name_at prints the w name for any width but W64, None included
+fpl.asm.aarch64.alias.x_long_product__mutmut_2 -- equivalent: name_at prints the w name for any width but W64, None included
+fpl.asm.aarch64.model.xǁMulLongǁoperands__mutmut_5 -- equivalent: name_at prints the w name for any width but W64, None included
+fpl.asm.aarch64.check.x_move_wide__mutmut_14 -- equivalent: for an int hw and width 32 or 64, hw < width / 16 iff hw < width // 16
+fpl.asm.aarch64.check.x_pair__mutmut_6 -- equivalent: a size of 8.0 scales as 8 (offset % 8.0 and offset // 8.0 compare equal to the ints)
+fpl.asm.aarch64.check.x_scaled__mutmut_5 -- equivalent: offset % size == 0 is checked first, so offset / size is the exact quotient
+fpl.asm.aarch64.check.x_address__mutmut_4 -- unreachable: assert_never after an exhaustive match over Addr
+fpl.asm.aarch64.check.x_address__mutmut_38 -- unreachable: assert_never after an exhaustive match over Addr
+fpl.asm.aarch64.eval.x_effective__mutmut_5 -- unreachable: assert_never after an exhaustive match over Addr
+fpl.asm.aarch64.eval.x_effective__mutmut_58 -- unreachable: assert_never after an exhaustive match over Addr
+fpl.asm.aarch64.model.x_address__mutmut_6 -- unreachable: assert_never after an exhaustive match over Mode
+fpl.asm.aarch64.model.x_address__mutmut_9 -- unreachable: assert_never after an exhaustive match over Mode
+fpl.asm.aarch64.eval.x_mul_add__mutmut_5 -- equivalent: the low width bits of a product do not depend on reading the factors signed
+fpl.asm.aarch64.eval.x_mul_add__mutmut_10 -- equivalent: the low width bits of a product do not depend on reading the factors signed
+fpl.asm.aarch64.eval.x_pair__mutmut_11 -- equivalent: effective reads size only for a register offset, which a pair never has
+fpl.asm.aarch64.eval.x_reverse_bytes__mutmut_5 -- equivalent: int.to_bytes defaults to big-endian since Python 3.11
+fpl.asm.aarch64.eval.x_reverse_bytes__mutmut_24 -- equivalent: int.from_bytes defaults to big-endian since Python 3.11
+fpl.asm.aarch64.eval.x_sdiv__mutmut_19 -- equivalent: a == 0 gives quotient 0, and -0 == 0
+fpl.asm.aarch64.eval.x_sdiv__mutmut_20 -- equivalent: a == 0 gives quotient 0, and -0 == 0
+fpl.asm.aarch64.eval.x_sdiv__mutmut_22 -- equivalent: b == 0 returns 0 before the sign test
+fpl.asm.aarch64.eval.x_sdiv__mutmut_23 -- equivalent: b == 0 returns 0 before the sign test
+fpl.asm.aarch64.text.x_instruction__mutmut_10 -- equivalent: only nop and ret have no operands; nop reads none and ret reads no register from XXXX, so x30
