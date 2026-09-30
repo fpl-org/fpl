@@ -15,6 +15,7 @@ from fpl.cbpv.syntax import (
     Program,
     Rec,
     Return,
+    Second,
     Var,
 )
 from fpl.cbpv.text import print as text
@@ -44,3 +45,8 @@ def test_one_binder_per_line() -> None:
 def test_program_lists_defs_then_runs() -> None:
     program = Program((("k", Const(3, INT)),), (Return(Var("k")),))
     assert text(program) == "k = (3 : Int)\nrun (return k)"
+
+
+def test_projections_print_their_side() -> None:
+    """Fixed, so coverage does not wait on `shapes()` drawing a `snd`."""
+    assert text(Second(Return(Var("x")))) == "snd (return x)"
