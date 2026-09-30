@@ -10,6 +10,10 @@ module's context first (types with deliberate duplicates, imports unless `closed
 most one memory, tables, function signatures), then each body against it, so every module it
 draws is one every validator must accept.
 
+The runnable strategy (`runnable_modules`) draws closed modules that end by their own fuel:
+global 0 counts down from K at every function entry and loop head, and when it is out, the guard
+there returns; `step_bound` is the number of steps within which every run of one ends.
+
 The invalid strategy (`invalid_modules`) applies one mutation of `CATALOGUE`, one per
 `InvalidKind`, to a drawn valid module. Most open one function's body with a probe block typed
 [] -> [] that breaks exactly one rule; the rest append one bad module field. A valid body stays
@@ -25,6 +29,7 @@ from typing import Any, assert_never, get_args
 
 from hypothesis import strategies as st
 
+from fpl.asm.wasm.exec import PAGE
 from fpl.asm.wasm.instr import (
     Binop,
     Block,
@@ -938,3 +943,127 @@ def invalid_modules(draw: st.DrawFn) -> tuple[InvalidKind, Module]:
     """A drawn kind, and a drawn valid module that kind's mutation made invalid."""
     kind: InvalidKind = draw(st.sampled_from(get_args(InvalidKind)))
     return kind, CATALOGUE[kind](draw, draw(st.booleans().flatmap(valid_modules)))
+
+
+FUEL = 32
+"""The most fuel a runnable module starts with (design section 7)."""
+MAIN = 0
+"""The index of a runnable module's function `main`, of type [] -> t*."""
+
+
+def _guard(results: Stack) -> tuple[Instr, ...]:
+    """At a function's entry or a loop's head: return constants of the function's `results`
+    when the fuel (global 0) is out, else spend one.
+
+    Type-neutral wherever it stands: the `if` takes and leaves nothing, and `return` is
+    stack-polymorphic, so loop params below it stay as they are.
+    """
+    out: tuple[Instr, ...] = (*(Const(t, 0) for t in results), Return())
+    spend = (GlobalGet(0), Const("i32", 1), Binop("i32", "sub"), GlobalSet(0))
+    return (GlobalGet(0), Testop("i32", "eqz"), If(None, out, ()), *spend)
+
+
+def _guarded(body: tuple[Instr, ...], results: Stack) -> tuple[Instr, ...]:
+    """`body` of a function with `results`, a guard at the head of every loop in it, and each
+    memory offset cut below PAGE + 16, so most accesses land in the one page and some past it."""
+    return tuple(_guarded_instr(instr, results) for instr in body)
+
+
+def _guarded_instr(instr: Instr, results: Stack) -> Instr:
+    match instr:
+        case Loop(bt, body):
+            return Loop(bt, (*_guard(results), *_guarded(body, results)))
+        case Block(bt, body):
+            return Block(bt, _guarded(body, results))
+        case If(bt, then, else_):
+            return If(bt, _guarded(then, results), _guarded(else_, results))
+        case Load() | Store():
+            return replace(instr, arg=replace(instr.arg, offset=instr.arg.offset % (PAGE + 16)))
+        case _:
+            return instr
+
+
+def _size(body: tuple[Instr, ...]) -> int:
+    """The instructions of `body`, nested ones included."""
+    return sum(1 + _size(_nested(instr)) for instr in body)
+
+
+def _nested(instr: Instr) -> tuple[Instr, ...]:
+    match instr:
+        case Block(_, body) | Loop(_, body):
+            return body
+        case If(_, then, else_):
+            return (*then, *else_)
+        case _:
+            return ()
+
+
+def fuel_of(module: Module) -> int:
+    """The fuel K a runnable module starts with: global 0's initial constant."""
+    init = module.globals[0].init[0]
+    assert isinstance(init, Const)
+    return init.value
+
+
+def step_bound(module: Module) -> int:
+    """Steps within which every run of the runnable `module` ends: (K + 1) * (S + 1) ** 2, S the
+    size of all its code.
+
+    A segment runs from a guard that passes to the next guard of its activation (or the
+    activation's end), leaving out its callees' steps. Only a branch back to a loop head repeats
+    an instruction, and a loop head holds a guard, so a segment runs each instruction at most
+    once: S steps at most. A passing guard spends one fuel, so at most K segments. A failing
+    guard returns at once, in at most S steps, and each is reached from an instruction of a
+    segment or from the first entry of `main`: at most K * S + 1 of them. Each active call but the
+    innermost has passed its guard, so at most K + 1 <= 33 calls are active, below exec's DEPTH.
+    """
+    size = sum(_size(f.body) for f in module.funcs)
+    return (fuel_of(module) + 1) * (size + 1) ** 2
+
+
+def _data(init: bytes) -> st.SearchStrategy[Data]:
+    """An active data segment of `init` inside the one page."""
+    offsets = st.integers(0, PAGE - len(init)).map(lambda at: (Const("i32", at),))
+    return st.builds(Data, offsets, st.just(init))
+
+
+@st.composite
+def runnable_modules(draw: st.DrawFn) -> Module:
+    """A closed module that ends by its own fuel (design section 7): global 0 `(mut i32)`,
+    exported as "fuel", starts at K in 0..FUEL and is guarded at every function entry and loop
+    head; calls of every kind reach any function, cycles included; one memory `(memory 1 1)` with
+    active data inside it; one table holding an element segment and null slots; `main` (function
+    MAIN) of type [] -> t* exported as "main", and every other mutable global i as "g<i>".
+    """
+    types_ = (FuncType((), draw(valtypes)), *draw(st.lists(functypes, max_size=2)))
+    types = (*types_, *draw(st.lists(st.sampled_from(types_), max_size=2)))
+    fuel = Global(GlobalType(True, "i32"), (Const("i32", draw(st.integers(0, FUEL))),))
+    drawn = draw(st.lists(globaltypes, max_size=2))
+    others = tuple(Global(t, (draw(consts(t.type)),)) for t in drawn)
+    signatures = st.builds(Func, st.integers(0, len(types) - 1), valtypes, st.just(()))
+    funcs = (Func(MAIN, (), ()), *draw(st.lists(signatures, max_size=2)))
+    placed = tuple(draw(st.lists(st.integers(0, len(funcs) - 1), max_size=3)))
+    nulls = draw(st.integers(0, 2))
+    slots = Limits(len(placed) + nulls, len(placed) + nulls)
+    exported = [Export(f"g{i}", "global", i) for i, g in enumerate(others, 1) if g.type.mutable]
+    shells = Module(
+        types=types,
+        globals=(fuel, *others),
+        mems=(Mem(MemType(Limits(1, 1))),),
+        tables=(Table(TableType(slots)),),
+        funcs=funcs,
+        datas=tuple(draw(st.lists(st.binary(max_size=4).flatmap(_data), max_size=2))),
+        elems=(Elem(0, (Const("i32", draw(st.integers(0, nulls))),), placed),),
+        exports=(Export("main", "func", MAIN), Export("fuel", "global", 0), *exported),
+    )
+    # Drawn code reads the fuel but never writes it: only the guards spend it.
+    context = context_of(shells)
+    context = replace(context, globals=(GlobalType(False, "i32"), *context.globals[1:]))
+    return replace(shells, funcs=tuple(_fuelled(draw, context, f) for f in funcs))
+
+
+def _fuelled(draw: st.DrawFn, context: Context, func: Func) -> Func:
+    """`func` with a drawn body, guarded at its entry and every loop head."""
+    results = context.types[func.type].results
+    body = draw(bodies(context, func))
+    return replace(func, body=(*_guard(results), *_guarded(body, results)))
