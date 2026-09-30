@@ -1,4 +1,5 @@
-"""Typed dispatch (design 09): the type words and the types of an effect's slots."""
+"""Typed dispatch (design 09): the type words, the types of an effect's slots and the words of
+a definition's clauses."""
 
 from dataclasses import fields
 
@@ -6,13 +7,20 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from fpl.ast_core import Effect, Strand
+from fpl.ast_core import Call, Define, Effect, Listed, Push, Quotation, Run, Strand
 from fpl.driver import run
-from fpl.errors import Span
-from fpl.eval import BUILTINS
+from fpl.errors import FplError, Span
+from fpl.eval import BUILTINS, evaluate
+from fpl.types import Arrow, Kind, elaborate
 
 TYPES = ("Int", "Decimal", "Text", "Symbol")
-ATOMS = [("1", "Int"), ("-9", "Int"), ("1.5", "Decimal"), ("0.0", "Decimal"), ("“a”", "Text")]
+ATOMS = [
+    ("1", "Int"),
+    ("-9", "Int"),
+    ("1.5", "Decimal"),
+    ("0.0", "Decimal"),
+    ("“a”", "Text"),
+]
 atoms = st.sampled_from(ATOMS)
 
 
@@ -64,3 +72,60 @@ def test_an_effect_has_one_type_per_input(ins: list[str], types: list[str | None
         effect = Effect(tuple(ins), (), types=tuple(types))
         assert effect.types == (tuple(types) or (None,) * len(ins))
         assert effect.slots == ("value",) * len(ins)
+
+
+HERE = Span(1, 1)
+LINE = Effect((), ("y",))
+WORDS: dict[tuple[int, ...], str] = {
+    (): "f",
+    (1,): "f/1",
+    (2,): "f/2",
+    (1, 1): "f/1/1",
+    (1, 2): "f/1/2",
+    (2, 1): "f/2/1",
+}
+QUERIES = ("", "/history", "/doc", "/effect")
+
+
+@given(st.lists(st.sampled_from(list(WORDS)), min_size=1, max_size=4, unique=True))
+def test_a_definition_is_called_and_queried_at_its_word(
+    clauses: list[tuple[int, ...]],
+) -> None:
+    """[law: clause-word] a definition's word is its name when `clause == ()`, `name/n/i` for
+    clause i of arity n and `name/n` for the arity-n dispatcher; eval's words, types' arrows and
+    the queries `history`, `doc` and `effect` key on `Define.word`, so a hand-built clause is
+    called and queried at its path, and a definition with `clause == ()` behaves as before."""
+    defines = [
+        define
+        for clause in clauses
+        for define in (
+            Define("f", LINE, (Push(0),), clause=clause),
+            Define("f", LINE, (Push(WORDS[clause]),), WORDS[clause], clause=clause),
+        )
+    ]
+    runs = [Run((Call(WORDS[clause] + query, HERE),)) for clause in clauses for query in QUERIES]
+    stacks = iter(evaluate((*defines, *runs)))
+    arrows, _ = elaborate((*defines, *runs))
+    for clause in clauses:
+        word = WORDS[clause]
+        assert [next(stacks) for _ in QUERIES] == [
+            (word,),
+            (Listed((Quotation((Push(0),)),)),),
+            (word,),
+            (Listed(("--", "y")),),
+        ]
+        assert arrows[word] == Arrow((), (Kind.TEXT,))
+        assert defines[-1].word == WORDS[clauses[-1]]
+        assert Define("f", LINE, (), clause=clause).paths == tuple(
+            WORDS[clause[:end]] for end in range(len(clause) + 1)
+        )
+
+
+def test_a_clause_is_named_by_its_word_and_a_dispatcher_lists_its_clauses() -> None:
+    """[law: clause-word] a clause's refusal names it by its word; a dispatcher carries its
+    clauses' words in order."""
+    with pytest.raises(FplError, match=r"^ERROR: 1:1 f/1/1 leaves 0 values, its effect line 1$"):
+        elaborate((Define("f", LINE, (), clause=(1, 1)),))
+    dispatcher = Define("f", LINE, (), clause=(1,), clauses=("f/1/1", "f/1/2"))
+    assert (dispatcher.word, dispatcher.clauses) == ("f/1", ("f/1/1", "f/1/2"))
+    assert Define("f", LINE, ()).clauses == ()
