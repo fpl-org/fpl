@@ -482,3 +482,19 @@ def test_a_run_is_placed_at_its_line(head: str, body: str) -> None:
     first = head.count("\n") + 1
     lines = [Span(first + index, 1) for index in range(body.count("\n") + 1)]
     assert [s.span for s in statements if isinstance(s, Run)] == lines
+
+
+def test_a_typed_head_is_read_as_the_slice_reads_it() -> None:
+    """[S49] Before typed dispatch: `∈` is a plain name, so `x ∈ number` is three untyped
+    slots; a group slot `( p )` is refused; `x: Int` is an untyped value slot, written back
+    bare."""
+    (guard,) = desugar(parse("f : x ∈ number -- y\n"))
+    assert isinstance(guard, Define)
+    assert guard.effect == Effect(("x", "∈", "number"), ("y",))
+    with pytest.raises(FplError) as caught:
+        run("f : ( circle r ) -- y\n")
+    assert str(caught.value) == "ERROR: 1:1 no evaluator yet"
+    (typed,) = desugar(parse("f : x: Int -- y\n"))
+    assert isinstance(typed, Define)
+    assert typed.effect == Effect(("x",), ("y",))
+    assert resugar((typed,)) == parse("f : x -- y\n")
