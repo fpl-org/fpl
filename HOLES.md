@@ -591,3 +591,15 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Default in force: a ( constructor … ) pattern is refused by pass 1 (INVERSE_PATTERN at the pattern's span), and by pass 2 on Core_A that holds one; the walker runs it backwards through fpl/eval.py's inverses
 - Closes by: K5, when constructors are con of μD and pm V as con x. M replaces running them backwards
 - Evidence: design section 9 (inverse-patterns) and 6.1; fpl/eval.py undone
+
+## label-keys
+- Depends on it: fpl/cbpv/syntax.py LabelKey, fpl/lower/label.py, tests/test_lower_label.py
+- Default in force: a label is keyed by the word's path (or "line N") and an ordinal in the order pass 3 meets it; the word is the definition's name (for a recursive group, the fresh name pass 2 gives its rec, which holds a space), and N counts a program's runs from 1, since the IR keeps no source line
+- Closes by: A1, keying by the definition's & plus the ordinal (row 82 (5), row 75p)
+- Evidence: incipit's answer on the Backend plan tab ("keyed by the definition's & plus an ordinal"); design section 6.4; fpl/lower/label.py label
+
+## stack-language
+- Depends on it: nothing in this track; D's lowering from cbpv to asm-common
+- Default in force: none: cbpv lowers to asm-common directly, as the Backend plan's shape says
+- Closes by: incipit, answering PSJ's question whether a stack language S sits between cbpv-ir and asm-common (PSJ said yes to asking, 2026-09-30)
+- Evidence: Backend plan tab, "Shape"; PSJ to Manicule 2026-09-30
