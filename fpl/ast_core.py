@@ -160,21 +160,27 @@ type Node = Push | Call | Bind | Keyed | Match
 class Effect:
     """An effect line's names: what a word takes, then what it leaves, and whether it may fail
     (+fail); and the slot of each input (S49 rule 5): a value, run at once; a thunk, run when and
-    if the word chooses; code, inspected, never run. No slots given means every input is a value;
-    a count other than one per input is refused."""
+    if the word chooses; code, inspected, never run; and the type of each, a type word's name,
+    None for an untyped slot. No slots given means every input is a value, no types that every
+    input is untyped; a count other than one per input is refused."""
 
     ins: tuple[str, ...]
     outs: tuple[str, ...]
     fails: bool = False
     _: KW_ONLY
     slots: tuple[Slot, ...] = ()
+    types: tuple[str | None, ...] = ()
 
     def __post_init__(self) -> None:
         """Fill the default slots, one value per input, and refuse a count that does not match."""
         slots = self.slots or ("value",) * len(self.ins)
+        types = self.types or (None,) * len(self.ins)
         if len(slots) != len(self.ins):
             raise ValueError("one slot per input")
+        if len(types) != len(self.ins):
+            raise ValueError("one type per input")
         object.__setattr__(self, "slots", slots)  # frozen: the default is filled once, here
+        object.__setattr__(self, "types", types)
 
 
 @dataclass(frozen=True)
@@ -218,6 +224,7 @@ EFFECTS: dict[str, Effect] = {
     "each": Effect(("xs", "q"), ("ys",), slots=("value", "thunk")),
     "scan": Effect(("xs", "q"), ("ys",), slots=("value", "thunk")),
     "fold": Effect(("xs", "q"), ("x",), slots=("value", "thunk")),
+    **dict.fromkeys(("Int", "Decimal", "Text", "Symbol"), Effect(("x",), ("b",))),
     "?": Effect((), ()),
     "_": Effect((), ()),
 }

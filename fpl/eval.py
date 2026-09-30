@@ -33,6 +33,7 @@ from fpl.ast_core import (
     Run,
     Statement,
     Strand,
+    Symbol,
     Value,
     Var,
     Wild,
@@ -485,6 +486,13 @@ def cons(span: Span, x: Value, xs: Value) -> tuple[Value, ...]:
     return (Listed((x, *xs.items)),)
 
 
+def typed(kind: type[object], _span: Span, value: Value) -> tuple[Value, ...]:
+    """x -- b : 1 when x is of the type, or is a strand whose items all are; 0 on any other value,
+    an empty strand included."""
+    items = value.items if isinstance(value, Strand) else (value,)
+    return (int(bool(items) and all(isinstance(item, kind) for item in items)),)
+
+
 def unfilled(span: Span) -> tuple[Value, ...]:
     """-- : a goal left in the code, refused where it runs (hole goal-placeholder)."""
     raise FplError(span, "unfilled goal")
@@ -508,6 +516,10 @@ BUILTINS: dict[str, Builtin] = {
     ",": join,
     "pair": pair,
     "cons": cons,
+    "Int": partial(typed, int),
+    "Decimal": partial(typed, Decimal),
+    "Text": partial(typed, str),
+    "Symbol": partial(typed, Symbol),
 }
 
 
