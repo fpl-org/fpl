@@ -546,3 +546,15 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Default in force: absurd V has no CK rule; no closed checked run reaches it; the machine ends such a state Stuck, reached only by a fixed test on an unchecked program
 - Closes by: incipit, if a rule is wanted (none is needed while 0 has no closed values)
 - Evidence: statement CK rules (none for absurd)
+
+## walker-constants
+- Depends on it: fpl/lower/walker.py, tests/test_lower_walker.py
+- Default in force: every constant of Σ_walker is the walker's own function (fpl.eval.BUILTINS, and fpl.eval.held for a literal that captures binders), wrapped: arguments handed over reversed, results packed as a Const, a pair or Unit; the differential tests what A adds, not arithmetic
+- Closes by: D (pipeline-wasm), which reimplements the constants and whose differential covers them
+- Evidence: design section 6.2; fpl/eval.py BUILTINS, held
+
+## panics
+- Depends on it: fpl/lower/walker.py, fpl/cbpv/machine.py, tests/test_lower_walker.py
+- Default in force: a constant outside its domain panics, not on the effect line: the FplError the walker function raises (arithmetic on a non-number, cons takes a list, unfilled goal, …) is the Panic payload, and the run ends with the walker's own error line
+- Closes by: palimpsest, saying whether these are root panics (row 43) or become impossible once typed-fragment closes
+- Evidence: design section 9 "panics"; row 43; row 81 (3); fpl/eval.py error sites
