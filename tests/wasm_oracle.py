@@ -90,9 +90,19 @@ def resolve(command: str = RESOLVE) -> Tools:
     wat2wasm, wasmtime = paths
     wabt = wat2wasm.parent
     tools = Tools(
-        wat2wasm, wabt / "wast2json", wabt / "spectest-interp", wabt / "wasm-validate", wasmtime
+        wat2wasm,
+        wabt / "wast2json",
+        wabt / "spectest-interp",
+        wabt / "wasm-validate",
+        wasmtime,
     )
-    every = (tools.wat2wasm, tools.wast2json, tools.spectest_interp, tools.wasm_validate, wasmtime)
+    every = (
+        tools.wat2wasm,
+        tools.wast2json,
+        tools.spectest_interp,
+        tools.wasm_validate,
+        wasmtime,
+    )
     missing = [str(path) for path in every if not path.is_file()]
     if missing or versions(tools) != VERSIONS:
         raise OracleError(f"{command}\nmissing: {missing}\nversions: {versions(tools)}")
@@ -127,7 +137,24 @@ class Verdict:
     valid: bool
 
 
-Item = Run | Verdict
+@dataclass(frozen=True)
+class Invoke:
+    """An exported function called on typed arguments, and what it gives, as `Run.expect`."""
+
+    name: str
+    args: tuple[tuple[NumType, int], ...]
+    expect: tuple[tuple[NumType, int], ...] | str
+
+
+@dataclass(frozen=True)
+class Calls:
+    """A module, and the invocations checked against it in order: one item, many directives."""
+
+    module: str
+    invokes: tuple[Invoke, ...]
+
+
+Item = Run | Verdict | Calls
 Dialect = Literal["wabt", "wasmtime"]
 BATCH = "batch.wast"
 LINE = re.compile(r"batch\.wast:(\d+)")
@@ -143,19 +170,26 @@ class Report:
     output: str
 
 
-def _invoke(run: Run) -> str:
-    """The directive that checks what invoking "main" gives."""
-    if isinstance(run.expect, str):
-        return f'(assert_trap (invoke "main") "{run.expect}")\n'
-    values = " ".join(f"({t}.const {value})" for t, value in run.expect)
-    return f'(assert_return (invoke "main") {values})\n'
+def _values(typed: tuple[tuple[NumType, int], ...]) -> str:
+    """Typed values as constants, space-separated."""
+    return " ".join(f"({t}.const {value})" for t, value in typed)
+
+
+def _invoke(call: Invoke) -> str:
+    """The directive that checks what the invocation gives."""
+    action = f'(invoke "{call.name}" {_values(call.args)})'
+    if isinstance(call.expect, str):
+        return f'(assert_trap {action} "{call.expect}")\n'
+    return f"(assert_return {action} {_values(call.expect)})\n"
 
 
 def directives(item: Item, dialect: Dialect) -> str:
     """One item as .wast directives in `dialect`, ending in a newline."""
     match item:
         case Run():
-            return item.module + _invoke(item)
+            return item.module + _invoke(Invoke("main", (), item.expect))
+        case Calls():
+            return item.module + "".join(map(_invoke, item.invokes))
         case Verdict(valid=True) if dialect == "wasmtime":
             return "(module definition" + item.module.removeprefix("(module")
         case Verdict():
