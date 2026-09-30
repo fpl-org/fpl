@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+#
+# scripts/leak-check-self-test — proof that scripts/leak-check refuses what it must, lets
+# through what it must, and never repeats a term. Run by `scripts/leak-check --self-test`
+# and `make gates`.
+#
+# Everything happens in a throwaway repository with a synthetic list, and with git's global
+# and system config, HOME and XDG_CONFIG_HOME pointed away from the maintainer's, so no real
+# list is read. Every word below is made up. gitleaks must be on PATH (nix develop): a
+# self-test that skipped without it would pass in exactly the place it is meant to bite.
+
+set -euo pipefail
+
+check="$(cd "$(dirname "$0")" && pwd)/leak-check"
+command -v gitleaks >/dev/null || {
+	echo "leak-check: self-test needs gitleaks; enter the dev shell (nix develop)" >&2
+	exit 1
+}
+
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/leak-check-self-test.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home" \
+	XDG_CONFIG_HOME="$tmp/xdg" GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid \
+	GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
+unset FPL_LEAK_GATE GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE
+mkdir -p "$HOME" "$XDG_CONFIG_HOME/fpl"
+repo="$tmp/repo"
+git init -q -b main "$repo"
+cd "$repo"
+list="$(git rev-parse --git-common-dir)/leak-patterns"
+
+# The synthetic terms. Each output line of every run is searched for these afterwards.
+# (A key-shaped string, assembled so this file does not itself trip the default rules.)
+secret="AKIA""Z3MSJV4WWNKWW5FG"
+cat >"$list" <<'EOF'
+# a comment, then a blank line
+
+quuxfrobnitz
+   fnord[-_ ]?tab(le)?
+zeta\.corp
+blorp"x
+EOF
+leaked='quuxfrobnitz|fnord|tabl|zeta|corp|blorp'
+
+commit() { git -c core.hooksPath=/dev/null commit -q "$@"; }
+echo base >base.txt
+git add base.txt
+commit -m base
+
+fails=0 total=0
+# expect <exit code> <description> <leak-check arguments...>; output lands in $tmp/log.
+expect() {
+	local want="$1" what="$2" rc=0
+	shift 2
+	total=$((total + 1))
+	"$check" "$@" >"$tmp/out" 2>&1 || rc=$?
+	cat "$tmp/out" >>"$tmp/log"
+	if [ "$rc" -ne "$want" ]; then
+		fails=$((fails + 1))
+		echo "self-test: $what: exit $rc, want $want" >&2
+		sed 's/^/    /' "$tmp/out" >&2
+	fi
+}
+# says <text> <description>: the last run's output contains text.
+says() {
+	grep -Fq -- "$1" "$tmp/out" || {
+		fails=$((fails + 1))
+		echo "self-test: $2: output lacks '$1'" >&2
+	}
+}
+reset() { git reset -q --hard && git clean -qfdx; }
+
+# --staged ------------------------------------------------------------------------------
+echo "a Quuxfrobnitz b" >new.txt && git add new.txt
+expect 1 "a new file" --staged
+says "new.txt:1: leak-3" "a new file names file, line, rule"
+says "leak-patterns:3" "a new file names the list line"
+reset
+
+git mv base.txt quuxfrobnitz-notes.txt
+expect 1 "a file renamed to a matching name" --staged
+says "file name 1 of 1" "a matching name is reported by position"
+reset
+
+echo "at zeta.corp" >fnord-table.txt && git add fnord-table.txt
+expect 1 "a matching name with a matching line" --staged
+says "a file whose name matches too:1: leak-5" "a content finding hides a matching name"
+reset
+
+git mv base.txt moved.txt && echo "see zeta.corp" >>moved.txt && git add moved.txt
+expect 1 "a renamed file with an added line" --staged
+reset
+
+printf 'keep\nfnord table\n' >old.txt && git add old.txt && commit -m old
+printf 'keep\n' >old.txt && git add old.txt
+expect 0 "a removed line" --staged
+git rm -qf old.txt
+expect 0 "a removed file" --staged
+commit -m gone
+
+echo "FNORD-TABLE" >a.txt && echo 'blorp"x' >b.txt && echo "zetaxcorp fnordtab" >c.txt
+git add a.txt b.txt c.txt
+expect 1 "metacharacters and mixed case" --staged
+says "a.txt:1: leak-4" "a class and a group, in upper case"
+says "b.txt:1: leak-6" "a quote in a term"
+says "c.txt:1: leak-4" "an optional group"
+grep -q "c.txt:1: leak-5" "$tmp/out" && {
+	fails=$((fails + 1))
+	echo "self-test: an escaped dot matched any character" >&2
+}
+reset
+
+mkdir -p node_modules && echo "quuxfrobnitz" >go.sum && echo "quuxfrobnitz" >node_modules/x.js
+git add -f go.sum node_modules/x.js
+expect 1 "files the default rules allowlist" --staged
+says "go.sum:1: leak-3" "a lock file is judged"
+reset
+
+echo "quuxfrobnitz # gitleaks:allow" >allow.txt && git add allow.txt
+expect 1 "a gitleaks:allow comment" --staged
+printf 'allow.txt:leak-3:1\n' >.gitleaksignore && git add .gitleaksignore
+expect 1 "a .gitleaksignore" --staged
+reset
+
+echo "aws_key = \"$secret\"" >key.txt && git add key.txt
+expect 1 "a key, by the default rules" --staged
+says "aws-access-token (a gitleaks default rule)" "a key names the default rule"
+FPL_LEAK_GATE=warn expect 0 "warn reports but passes" --staged
+says "aws-access-token" "warn still reports"
+FPL_LEAK_GATE=off expect 0 "off passes" --staged
+reset
+
+# As a real pre-commit hook: `commit -a` and `commit <path>` stage into a temporary index
+# that git names in GIT_INDEX_FILE, relative to the top of the tree.
+mkdir -p "$tmp/hooks"
+printf '#!/usr/bin/env bash\nexec "%s" --staged\n' "$check" >"$tmp/hooks/pre-commit"
+chmod +x "$tmp/hooks/pre-commit"
+hooked() {
+	local what="$1" rc=0
+	shift
+	total=$((total + 1))
+	git -c core.hooksPath="$tmp/hooks" commit -q "$@" >"$tmp/out" 2>&1 || rc=$?
+	cat "$tmp/out" >>"$tmp/log"
+	[ "$rc" -ne 0 ] || { fails=$((fails + 1)); echo "self-test: $what: committed" >&2; }
+	says "base.txt:2: leak-3" "$what names file and rule"
+}
+echo "quuxfrobnitz" >>base.txt
+hooked "commit -a, through the hook" -am x
+hooked "commit <path>, through the hook" -m x base.txt
+git add base.txt
+GIT_DIR=.git expect 1 "a relative GIT_DIR, as a caller may set it" --staged
+says "base.txt:2: leak-3" "a relative GIT_DIR names file and rule"
+reset
+git worktree add -q "$tmp/linked" -b linked
+(cd "$tmp/linked" && echo "quuxfrobnitz" >w.txt && git add w.txt && "$check" --staged) \
+	>"$tmp/out" 2>&1 && { fails=$((fails + 1)); echo "self-test: a linked worktree: passed" >&2; }
+total=$((total + 1))
+cat "$tmp/out" >>"$tmp/log"
+says "w.txt:1: leak-3" "a linked worktree names file and rule"
+git worktree remove -f "$tmp/linked" && git branch -q -D linked
+
+# --message -----------------------------------------------------------------------------
+printf 'feat(x): add y\n\nThe quuxfrobnitz body.\n' >"$tmp/m1"
+expect 1 "a message body" --message "$tmp/m1"
+says "the message, line 3: leak-3" "a message finding names its line"
+printf 'feat(x): add y\n\nBody.\n\nRefs: Fnord_Table\n' >"$tmp/m2"
+expect 1 "a message trailer" --message "$tmp/m2"
+printf 'feat(x): add y\n\nBody.\n# ------------------------ >8 ------------------------\n-quuxfrobnitz\n' >"$tmp/m3"
+expect 0 "the diff below the scissors" --message "$tmp/m3"
+
+# --text --------------------------------------------------------------------------------
+printf 'Add the thing\n\nIt came from zeta.corp.\n' >"$tmp/pr"
+expect 1 "a pull request body" --text "$tmp/pr"
+
+# --range -------------------------------------------------------------------------------
+start="$(git rev-parse HEAD)"
+git switch -q -c side
+echo side >side.txt && git add side.txt && commit -m side
+git switch -q main
+echo main >main.txt && git add main.txt && commit -m main
+git merge -q --no-edit side
+expect 0 "a clean merge" --range "$start..HEAD"
+git reset -q --hard HEAD~1
+git merge -q --no-commit side >/dev/null
+echo "quuxfrobnitz" >evil.txt && git add evil.txt && commit -m "merge side"
+expect 1 "an evil merge" --range "$start..HEAD"
+says "evil.txt:1: leak-3" "an evil merge names the file"
+git reset -q --hard HEAD~1
+echo one >clash.txt && git add clash.txt && commit -m one
+git switch -q side
+echo two >clash.txt && git add clash.txt && commit -m two
+git switch -q main
+git merge -q side >/dev/null 2>&1 || true
+echo "fnord table" >clash.txt && git add clash.txt && commit --no-edit
+expect 1 "a conflict resolved with a term" --range "$start..HEAD"
+says "clash.txt:1: leak-4" "a resolution names the file"
+expect 1 "a new branch, as pre-push passes it" --range "HEAD --not --remotes"
+expect 0 "a range with no commits" --range "HEAD..HEAD"
+git reset -q --hard "$start"
+echo fine >ok.txt && git add ok.txt && commit -m fine -m "Refs: quuxfrobnitz"
+expect 1 "a message in the range" --range "$start..HEAD"
+says " message, line 3: leak-3" "a range message names commit and line"
+git reset -q --hard "$start"
+echo x >quuxfrobnitz.txt && git add quuxfrobnitz.txt && commit -m name
+git rm -q quuxfrobnitz.txt && commit -m unname
+expect 1 "a name that came and went" --range "$start..HEAD"
+git reset -q --hard "$start"
+
+# The lists -----------------------------------------------------------------------------
+mv "$list" "$tmp/aside"
+expect 0 "no list" --text "$tmp/pr"
+echo "Zeta.Corp" >"$XDG_CONFIG_HOME/fpl/leak-patterns"
+expect 1 "the maintainer's list" --text "$tmp/pr"
+says "leak-u1" "the maintainer's list numbers its own rules"
+rm "$XDG_CONFIG_HOME/fpl/leak-patterns"
+printf 'fine\nquuxfrobnitz(\n' >"$list"
+expect 1 "an invalid expression" --text "$tmp/pr"
+says "leak-patterns:2: gitleaks cannot use this line" "an invalid line is named"
+mv "$tmp/aside" "$list"
+
+# Nothing printed may carry a term. The list's own path is fine, so it is dropped first.
+if sed "s#$list##g" "$tmp/log" | grep -Eiq "$leaked"; then
+	fails=$((fails + 1))
+	echo "self-test: a term appears in the output:" >&2
+	sed "s#$list##g" "$tmp/log" | grep -Ein "$leaked" | sed 's/^/    /' >&2
+fi
+
+echo "leak-check: self-test $([ "$fails" -eq 0 ] && echo ok || echo FAILED) ($total runs, $fails failures)"
+[ "$fails" -eq 0 ]
