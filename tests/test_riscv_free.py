@@ -15,6 +15,9 @@ from hypothesis import strategies as st
 ROOT = Path(__file__).parent.parent
 FILES = sorted((ROOT / "fpl" / "asm").rglob("*.py"))
 ALLOWED = sys.stdlib_module_names | {"icontract"}
+# mutmut writes this import into every module it copies to mutants/, where the mutation lane
+# runs this test; the source tree never has it, and deptry refuses mutmut in fpl/ anyway.
+MUTMUT = "mutmut.mutation.trampoline"
 
 
 def imported(node: ast.Import | ast.ImportFrom, package: str) -> list[str]:
@@ -37,7 +40,7 @@ def foreign(source: str, package: str) -> list[str]:
         name
         for name in names
         if name.split(".")[0] not in ALLOWED
-        and name != "fpl.asm"
+        and name not in {"fpl.asm", MUTMUT}
         and not name.startswith("fpl.asm.")
     ]
 
@@ -65,6 +68,7 @@ def test_every_module_of_fpl_asm_imports_only_the_stdlib_icontract_and_fpl_asm(p
         ("from ...errors import Span", "fpl.errors"),
         ("import hypothesis.strategies", "hypothesis.strategies"),
         ("import fpl.asmx", "fpl.asmx"),
+        ("import mutmut", "mutmut"),
     ],
 )
 def test_a_foreign_import_is_refused_naming_the_file_and_the_import(
@@ -86,6 +90,7 @@ def test_a_foreign_import_is_refused_naming_the_file_and_the_import(
         "from .model import Reg",
         "from .. import riscv",
         "from fpl.asm.riscv.model import R",
+        "from mutmut.mutation.trampoline import wrap_in_trampoline",
     ],
 )
 def test_the_stdlib_icontract_and_fpl_asm_itself_are_allowed(source: str) -> None:
