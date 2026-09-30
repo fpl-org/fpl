@@ -64,6 +64,11 @@ def test_the_one_signed_quotient_past_the_range_traps_and_its_remainder_is_zero(
     assert BINOPS["rem_s"](n, low, minus_one) == 0
 
 
+@pytest.mark.parametrize(("op", "result"), [("rotl", 1), ("rotr", 0x40000000)])
+def test_a_rotation_carries_the_bit_it_shifts_out(op: IBinop, result: int) -> None:
+    assert BINOPS[op](32, 0x80000000, 1) == result
+
+
 def test_extend_reads_the_low_bits_as_signed() -> None:
     """UNOPS calls `_extend` at import, where mutmut's trampoline cannot switch its mutants on;
     this calls it at run time, and the oracle properties pin the operators it builds."""

@@ -13,6 +13,7 @@ from fpl.asm.wasm.instr import (
     Binop,
     Block,
     Br,
+    BrIf,
     BrTable,
     CallIndirect,
     Const,
@@ -157,6 +158,8 @@ SITES: list[tuple[Module, Invalid | None]] = [
     (replace(ONE, start=1), Invalid("func", ())),
     (replace(ONE, start=0), None),
     (func_of(("i32",), ZERO, Br(0)), None),
+    (func_of(("i32",), ZERO, ZERO, BrIf(0)), None),
+    (replace(func_of(("i32",)), funcs=(Func(0, ("i32",), (ZERO, LocalTee(0))),)), None),
     (Module(types=(EMPTY,), funcs=(Func(1, (), ()),)), Invalid("type", (0,))),
 ]
 """One fixed case per refusal site whose kind and place no property pins: memory accesses,
