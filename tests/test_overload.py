@@ -8,9 +8,11 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from fpl.ast_core import Call, Define, Effect, Listed, Push, Quotation, Run, Strand
+from fpl.desugar import desugar, resugar
 from fpl.driver import run
 from fpl.errors import FplError, Span
-from fpl.eval import BUILTINS, evaluate
+from fpl.eval import BUILTINS, effect_line, evaluate
+from fpl.parse import parse
 from fpl.types import Arrow, Kind, elaborate
 
 TYPES = ("Int", "Decimal", "Text", "Symbol")
@@ -129,3 +131,33 @@ def test_a_clause_is_named_by_its_word_and_a_dispatcher_lists_its_clauses() -> N
     dispatcher = Define("f", LINE, (), clause=(1,), clauses=("f/1/1", "f/1/2"))
     assert (dispatcher.word, dispatcher.clauses) == ("f/1", ("f/1/1", "f/1/2"))
     assert Define("f", LINE, ()).clauses == ()
+
+
+PARTS = (None, "Int", "Text", "one")
+
+
+@given(st.lists(st.sampled_from(PARTS), max_size=3))
+def test_a_typed_slot_is_written_back_as_written(parts: list[str | None]) -> None:
+    """[law: typed-read] `x: T` on an effect line is a value slot of type T and is written back
+    as `x: T`; resugar after desugar gives the source back for untyped and value-typed heads."""
+    slots = [f"a{i}" if part is None else f"a{i}: {part}" for i, part in enumerate(parts)]
+    source = f"f : {' '.join([*slots, '--'])}\n"
+    (define,) = desugar(parse(source))
+    assert isinstance(define, Define)
+    assert define.effect.types == tuple(parts)
+    assert define.effect.slots == ("value",) * len(parts)
+    assert resugar((define,)) == parse(source)
+    assert effect_line(define) == Listed((*" ".join(slots).replace(": ", ": ").split(), "--"))
+
+
+@given(st.lists(st.sampled_from(["a", "bc: Int", "t: [ ]"]), max_size=2), st.booleans())
+def test_a_guard_or_compound_type_on_an_effect_line_is_refused(
+    before: list[str], guard: bool
+) -> None:
+    """[law: head-refusals] `∈` on an effect line and a compound type `x: ⟨ … ⟩` are refused as
+    unimplemented, at the source's start as every unimplemented construct is (hole
+    unimplemented-words)."""
+    prefix = " ".join(["f", ":", *before, "x ∈" if guard else "x: ⟨"])
+    source = f"{prefix} Int{'' if guard else ' ⟩'} -- y\n"
+    with pytest.raises(FplError, match=r"^ERROR: 1:1 no evaluator yet$"):
+        desugar(parse(source))
