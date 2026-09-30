@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# .githooks/pre-commit — two symbolic gates on where a commit may be made:
+# .githooks/pre-commit — three symbolic gates on what a commit may hold and where:
+#   0. no private term or secret in the staged change (scripts/leak-check)
 #   1. the root/worktree edit boundary (below)
 #   2. no direct commits on main (end of file)
 #
@@ -22,6 +23,10 @@
 # merge — so restacking a worktree onto a main whose harness moved is unaffected.
 
 set -euo pipefail
+
+# Gate 0 first: the repository is public, and the others let a commit through on warn.
+# FPL_LEAK_GATE = block (default) | warn | off, read by the script.
+"$(git rev-parse --show-toplevel)/scripts/leak-check" --staged
 
 # Gate 2 lives in a function so gate 1's early exits still reach it.
 #
