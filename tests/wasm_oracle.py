@@ -13,8 +13,9 @@ Batches. One .wast script holds a batch of items, each a module with what is exp
 one of two dialects: wabt 1.0.41 has no `module definition`, so its verdicts are all
 `(assert_invalid (module ...) "")`, which a valid module fails; wasmtime compiles a module
 claimed valid as a `module definition` and asserts one claimed invalid invalid. Runs are
-`assert_return` or `assert_trap` on `(invoke "main")` in both. Every wabt tool that reads a tail
-call gets --enable-tail-call; wasmtime 45 needs no flag.
+`assert_return` or `assert_trap` on `(invoke "main")` in both, and an exported global is read by
+`(assert_return (get "g") ...)`, which both engines answer after a trap too. Every wabt tool
+that reads a tail call gets --enable-tail-call; wasmtime 45 needs no flag.
 
 Verdicts. A runner reports the indices of the items its engine disagreed with, found by mapping
 a line of the script back to the item that holds it. wabt: a malformed token makes wast2json
@@ -147,11 +148,20 @@ class Invoke:
 
 
 @dataclass(frozen=True)
+class Get:
+    """An exported global, and the typed value it holds."""
+
+    name: str
+    expect: tuple[NumType, int]
+
+
+@dataclass(frozen=True)
 class Calls:
-    """A module, and the invocations checked against it in order: one item, many directives."""
+    """A module, and the invocations and global reads checked against it in order: one item,
+    many directives."""
 
     module: str
-    invokes: tuple[Invoke, ...]
+    invokes: tuple[Invoke | Get, ...]
 
 
 Item = Run | Verdict | Calls
@@ -175,8 +185,10 @@ def _values(typed: tuple[tuple[NumType, int], ...]) -> str:
     return " ".join(f"({t}.const {value})" for t, value in typed)
 
 
-def _invoke(call: Invoke) -> str:
-    """The directive that checks what the invocation gives."""
+def _invoke(call: Invoke | Get) -> str:
+    """The directive that checks what the invocation gives, or what the global holds."""
+    if isinstance(call, Get):
+        return f'(assert_return (get "{call.name}") {_values((call.expect,))})\n'
     action = f'(invoke "{call.name}" {_values(call.args)})'
     if isinstance(call.expect, str):
         return f'(assert_trap {action} "{call.expect}")\n'
