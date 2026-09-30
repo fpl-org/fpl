@@ -190,6 +190,15 @@ def test_rows_agree_on_the_sort_a_later_row_finds() -> None:
     assert arrows["f"] == Arrow((Kind.NUMBER, Input(1)), (Kind.NUMBER,))
 
 
+def test_a_dead_row_counts_for_the_sorts_its_word_leaves() -> None:
+    """A row after a sure fit never runs, yet counts for what the word leaves as for its
+    inputs: a first `_` leaving a number and a later `_` leaving a text leave a value of no
+    known sort, never a number (hole typed-fragment)."""
+    rows = (Row((Wild(),), (Push(1),)), Row((Wild(),), (Push("t"),)))
+    arrows, _ = elaborate((Define("f", Effect(("x",), ("y",)), (Match(rows, HERE),)),))
+    assert arrows["f"].outs == (Kind.VALUE,)
+
+
 def test_a_match_row_is_typed() -> None:
     """A row's body is typed with its pattern names standing for values of no known sort."""
     with pytest.raises(FplError) as caught:
