@@ -313,3 +313,11 @@ def test_a_w_name_is_its_x_name_with_w(reg: Reg) -> None:
     """The 32-bit view renames x to w, sp to wsp and xzr to wzr."""
     x = reg.name_at(Width.W64)
     assert reg.name_at(Width.W32) == ("wsp" if x == "sp" else "w" + x[1:])
+
+
+def test_each_condition_inverts_to_its_pair() -> None:
+    """C1.2.4 pairs each condition with its negation; al and nv pair with each other."""
+    pairs = [("eq", "ne"), ("hs", "lo"), ("mi", "pl"), ("vs", "vc")]
+    pairs += [("hi", "ls"), ("ge", "lt"), ("gt", "le"), ("al", "nv")]
+    inverse = {cond.text: cond.inverse().text for cond in Cond}
+    assert inverse == dict(pairs) | {b: a for a, b in pairs}

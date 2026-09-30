@@ -14,7 +14,18 @@ from hypothesis import strategies as st
 
 from fpl.asm.aarch64 import model
 from fpl.asm.aarch64.check import slots
-from fpl.asm.aarch64.eval import Halted, Machine, Outcome, OutOfFuel, Unmodelled, run
+from fpl.asm.aarch64.eval import (
+    Halted,
+    Machine,
+    Outcome,
+    OutOfFuel,
+    Unmodelled,
+    fits,
+    flags_in_range,
+    in_x,
+    run,
+    runnable,
+)
 from fpl.asm.aarch64.model import (
     AddSubCarry,
     AddSubExtended,
@@ -386,7 +397,12 @@ def test_control(program: list[Item], start: Machine, outcome: Outcome) -> None:
         ([BranchReg(OpBranchReg.BR, X1)], machine(x1=BASE + 2), 0, "not base + 4i"),
         ([BranchReg(OpBranchReg.BR, X1)], machine(x1=BASE + 8), 0, "not base + 4i"),
         ([BranchReg(OpBranchReg.BR, X1)], machine(x1=BASE - 4), 0, "not base + 4i"),
-        ([Nop(), L1, AddSubImm(OpAddSub.ADD, W64, X1, SP, 0, False)], machine(), 1, "sp"),
+        (
+            [Nop(), L1, AddSubImm(OpAddSub.ADD, W64, X1, SP, 0, False)],
+            machine(),
+            1,
+            "AddSubImm uses sp",
+        ),
         ([LoadStore(OpLoadStore.LDR_X, X1, Offset(X2, 0))], machine(), 0, "memory"),
     ],
 )
@@ -551,3 +567,65 @@ def test_memory(program: list[Item], start: Machine, end: Machine) -> None:
 def test_memory_outside(program: list[Item]) -> None:
     """An access with a byte past either end of the window is Unmodelled at its index."""
     assert run(tuple(program), windowed(), 4) == Unmodelled(0, "memory access outside the window")
+
+
+@pytest.mark.parametrize("cond", Cond)
+def test_csel_reads_each_condition_on_each_nzcv(cond: Cond) -> None:
+    """csel picks Rn exactly when the condition holds, for all sixteen NZCV values."""
+    select = CondSelect(OpCondSelect.CSEL, W64, X0, X1, X2, cond)
+    for nzcv in range(16):
+        flags = dict(zip("nzcv", (bool(nzcv >> bit & 1) for bit in (3, 2, 1, 0)), strict=True))
+        picked = halted([select], machine(nzcv, x1=1, x2=2)).regs[0]
+        assert picked == (1 if HOLDS[cond](flags) else 2), nzcv
+
+
+def test_the_contract_predicates_stop_at_their_bounds() -> None:
+    """Each ensure and require admits its last value and refuses the next."""
+    assert in_x((1 << 64) - 1)
+    assert not in_x(1 << 64)
+    assert fits((1 << 32) - 1, W32)
+    assert not fits(1 << 32, W32)
+    assert flags_in_range((0, 15))
+    assert not flags_in_range((0, 16))
+    assert runnable((), machine(15))
+    assert not runnable((), machine(16))
+
+
+@pytest.mark.parametrize(
+    ("instr", "start", "x0"),
+    [
+        # uxtb, sxtb of a positive byte, and lsl #59 (immr 5 > imms 4, tmask all ones)
+        (Bitfield(OpBitfield.UBFM, W64, X0, X1, 0, 7), machine(x0=TOP, x1=0x1FF), 0xFF),
+        (Bitfield(OpBitfield.SBFM, W64, X0, X1, 0, 7), machine(x0=TOP, x1=0x7F), 0x7F),
+        (Bitfield(OpBitfield.UBFM, W64, X0, X1, 5, 4), machine(x1=0x21), 1 << 59),
+        (DataProc1(OpDataProc1.RBIT, W64, X0, X1), machine(x1=1), 1 << 63),
+        (DataProc1(OpDataProc1.RBIT, W32, X0, X1), machine(x1=0b110), 0b011 << 29),
+        (
+            AddSubExtended(OpAddSub.ADD, W64, X0, X1, X2, Extend.UXTB, 0),
+            machine(x2=0x80),
+            0x80,
+        ),
+    ],
+)
+def test_bit_pins(instr: Instr, start: Machine, x0: int) -> None:
+    """Bitfield moves whose other bits must stay clear, rbit, and a zero-extending uxtb."""
+    assert halted([instr], start).regs[0] == x0
+
+
+def test_br_may_return_to_instruction_zero() -> None:
+    """br to base + 0 runs the program again: x2 counts two passes, then tbnz leaves."""
+    loop: list[Item] = [
+        AddSubImm(OpAddSub.ADD, W64, X2, X2, 1, False),
+        model.TestBranch(OpTestBranch.TBNZ, X2, 1, END),
+        BranchReg(OpBranchReg.BR, X1),
+        END,
+    ]
+    assert halted(loop, machine(x1=BASE)).regs[2] == 2
+
+
+def test_an_access_may_start_at_the_window() -> None:
+    """ldrb at x28 reads the window's first byte; a register offset without S is unscaled."""
+    first = LoadStore(OpLoadStore.LDRB, X1, Offset(X28, 0))
+    unscaled = LoadStore(OpLoadStore.LDR_X, X1, model.RegOffset(X28, X2, Extend.UXTX, False))
+    assert halted([first], windowed(x1=TOP)).regs[1] == WINDOW[0]
+    assert halted([unscaled], windowed(x2=8)).regs[1] == word(8)

@@ -147,7 +147,7 @@ def test_a_line_not_in_canonical_form_is_refused_with_its_number(line: str) -> N
     with pytest.raises(ParseError) as refused:
         parse_program(f"\tnop\n.L0:\n{line}\n")
     assert refused.value.line == 3
-    assert str(refused.value).startswith("line 3: ")
+    assert str(refused.value) == f"line 3: not an instruction in canonical form: {line!r}"
 
 
 @pytest.mark.parametrize(
@@ -165,3 +165,39 @@ def test_a_line_not_in_canonical_form_is_refused_with_its_number(line: str) -> N
 def test_base_forms_with_out_of_range_fields_are_read(line: str, instr: Instr) -> None:
     """No alias row matches an out-of-range field, so its base form prints and parses."""
     assert parse_program(line + "\n") == (instr,)
+
+
+X0, X1, X2, X3, SP = Reg.X0, Reg.X1, Reg.X2, Reg.X3, Reg.SP
+
+
+@pytest.mark.parametrize(
+    ("instr", "line"),
+    [
+        (LoadStore(OpLoadStore.LDR_X, X0, Offset(X1, 0)), "\tldr\tx0, [x1]"),
+        (
+            LoadStore(OpLoadStore.LDR_X, X0, RegOffset(X1, X2, Extend.UXTX, s=True)),
+            "\tldr\tx0, [x1, x2, lsl #3]",
+        ),
+        (
+            AddSubExtended(OpAddSub.ADD, Width.W64, X0, SP, X1, Extend.UXTX, 0),
+            "\tadd\tx0, sp, x1",
+        ),
+        (
+            AddSubExtended(OpAddSub.ADD, Width.W64, X0, SP, X1, Extend.UXTX, 2),
+            "\tadd\tx0, sp, x1, lsl #2",
+        ),
+        (
+            AddSubExtended(OpAddSub.ADD, Width.W32, X0, SP, X1, Extend.UXTW, 0),
+            "\tadd\tw0, wsp, w1",
+        ),
+        (BranchReg(OpBranchReg.RET, Reg.X30), "\tret"),
+        (MulLong(OpMulLong.SMADDL, X0, X1, X2, X3), "\tsmaddl\tx0, w1, w2, x3"),
+        (model.TestBranch(OpTestBranch.TBZ, X0, 0, L0), "\ttbz\tw0, #0, .L0"),
+        (model.TestBranch(OpTestBranch.TBZ, X0, 31, L0), "\ttbz\tw0, #31, .L0"),
+        (model.TestBranch(OpTestBranch.TBZ, X0, 32, L0), "\ttbz\tx0, #32, .L0"),
+    ],
+)
+def test_operand_forms_print_as_llvm_objdump_does(instr: Instr, line: str) -> None:
+    """A zero offset, a scaled uxtx index, the extend next to sp, ret's default register,
+    a long multiply's w sources and tbz's register width at the edges of each width."""
+    assert print_program((instr,)) == line + "\n"
