@@ -8,6 +8,7 @@ from fpl.cbpv.syntax import (
     Base,
     Const,
     F,
+    First,
     Label,
     LabelKey,
     Lam,
@@ -48,5 +49,6 @@ def test_program_lists_defs_then_runs() -> None:
 
 
 def test_projections_print_their_side() -> None:
-    """Fixed, so coverage does not wait on `shapes()` drawing a `snd`."""
+    """Fixed, so coverage does not wait on `shapes()` drawing a `fst` or a `snd`."""
+    assert text(First(Return(Var("x")))) == "fst (return x)"
     assert text(Second(Return(Var("x")))) == "snd (return x)"
