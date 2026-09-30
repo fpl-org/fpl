@@ -28,7 +28,7 @@ newest first among as many; a call takes the arity group its balance picks.
 """
 
 from collections import ChainMap
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from functools import partial
@@ -55,6 +55,7 @@ from fpl.ast_core import (
     Pattern,
     Push,
     Quotation,
+    Refuse,
     Row,
     Run,
     Slot,
@@ -82,6 +83,8 @@ type Here = tuple[str, ...]
 type Part = str | None
 type Key = tuple[Part, ...]
 type Head = tuple[Effect, Span]
+type Pair = tuple[int, int]
+type Clause = tuple[str, Effect]
 
 
 def unimplemented() -> NoReturn:
@@ -116,7 +119,7 @@ class Catalog:
     """Every directory's log, by path, and the effect of every word, by its path joined. A word
     is a directory too, holding its history. Each word's heads by key, in the order first
     written; each dispatched word's arities; the queries that answer at another path, and those
-    refused."""
+    refused; per arity group the pairs of clauses that cross typed two ways at one input."""
 
     logs: dict[Here, list[str | Mount]]
     effects: dict[str, Effect]
@@ -124,6 +127,7 @@ class Catalog:
     groups: dict[str, tuple[int, ...]] = field(default_factory=dict[str, tuple[int, ...]])
     aliases: dict[str, str] = field(default_factory=dict[str, str])
     refused: dict[str, str] = field(default_factory=dict[str, str])
+    crossings: dict[str, list[Pair]] = field(default_factory=dict[str, list[Pair]])
 
     def enter(self, lines: tuple[Line, ...], here: Here) -> None:
         """Log the definitions, subdirectories and mounts of one directory's lines."""
@@ -177,7 +181,8 @@ class Catalog:
 
     def dispatched(self, path: str, builtins: frozenset[str]) -> None:
         """A word's arity groups f/n, each with its clauses f/n/i, of which two whose typed
-        inputs cross are refused unless builtins make them disjoint or their meet is a clause;
+        inputs cross are refused unless builtins make them disjoint or their meet is a clause or
+        is typed two ways at one input;
         f/n's doc and history are its clause's when it has one, refused naming its clauses
         otherwise; f's queries are those of its only group, refused naming its groups when it
         has more."""
@@ -185,7 +190,7 @@ class Catalog:
         groups = {len(key): self.clauses(path, len(key)) for key in self.heads[path]}
         self.groups[path] = tuple(sorted(groups))
         for n, clauses in groups.items():
-            crossed(f"{path}/{n}", clauses, builtins)
+            self.crossings[f"{path}/{n}"] = crossed(f"{path}/{n}", clauses, builtins)
             self.logs[here].append(str(n))
             ordinals = [str(i) for i in range(1, len(clauses) + 1)]
             self.queried((*here, str(n)), shared([effect for effect, _ in clauses]), ordinals)
@@ -398,12 +403,13 @@ def typings(effect: Effect) -> frozenset[int]:
     return frozenset(i for i, part in enumerate(effect.types) if part is not None)
 
 
-def crossed(group: str, clauses: list[Head], builtins: frozenset[str]) -> None:
+def crossed(group: str, clauses: list[Head], builtins: frozenset[str]) -> list[Pair]:
     """Refuse two clauses each typed where the other is not, unless disjoint, two different
     builtins at one position, or their meet, each input typed as either types it, is itself a
-    clause: at the later head, naming the meet (design 09 §3.3). A meet one input would type
-    two ways is refused as unimplemented (hole unimplemented-words)."""
+    clause: at the later head, naming the meet (design 09 §3.3). The pairs, by ordinal, whose
+    meet one input would type two ways: only a run can tell whether both fit (§3.4)."""
     written = {effect.types for effect, _ in clauses}
+    undecided: list[Pair] = []
     for a, b in combinations(enumerate(clauses, 1), 2):
         first, second = a[1][0], b[1][0]
         ordered = typings(first) <= typings(second) or typings(second) <= typings(first)
@@ -411,11 +417,12 @@ def crossed(group: str, clauses: list[Head], builtins: frozenset[str]) -> None:
             continue
         meet = met(first, second)
         if meet is None:
-            unimplemented()
-        if meet.types not in written:
+            undecided.append((a[0], b[0]))
+        elif meet.types not in written:
             (later, (_, span)), (earlier, _) = sorted((a, b), key=lambda c: -c[1][1].line)
             message = f"{group}/{later} is ambiguous with {group}/{earlier} at {spoken(meet)}"
             raise FplError(span, message)
+    return undecided
 
 
 def disjoint(a: Effect, b: Effect, builtins: frozenset[str]) -> bool:
@@ -589,26 +596,49 @@ class _Desugar:
             yield self.dispatcher(define.name, n, clause.span, here)
 
     def dispatcher(self, name: str, n: int, span: Span, here: Here) -> Define:
-        """The dispatcher of an arity group: a row per clause, the most typed inputs first and
-        the newest first among as many; +fail when no row catches every value."""
-        clauses = [effect for effect, _ in self.catalog.clauses(name, n)]
-        words = tuple(f"{name}/{n}/{i}" for i in range(1, len(clauses) + 1))
-        rows = [self.guarding(word, c, span, here) for word, c in zip(words, clauses, strict=True)]
-        ranked = sorted(range(len(rows)), key=lambda i: (-len(typings(clauses[i])), -i))
-        code = (Match(tuple(rows[i] for i in ranked), span),)
-        effect = replace(self.catalog.effects[f"{name}/{n}"], fails=fallible(code))
+        """The dispatcher of an arity group: a row per clause and a refusing row per pair that
+        crosses typed two ways at one input, the most typed inputs first; among as many the
+        clauses' rows, newest first, then the refusing ones (design 09 §3.2); +fail when no
+        row catches every value."""
+        group = f"{name}/{n}"
+        clauses = [(f"{group}/{i}", c) for i, (c, _) in enumerate(self.catalog.clauses(name, n), 1)]
+        ranked = [
+            ((-len(typings(effect)), 0, -i, 0), self.guarding(word, effect, span, here))
+            for i, (word, effect) in enumerate(clauses, 1)
+        ]
+        for i, j in self.catalog.crossings[group]:
+            sides = (clauses[i - 1], clauses[j - 1])
+            count = len(typings(sides[0][1]) | typings(sides[1][1]))
+            ranked.append(((-count, 1, i, j), self.refusing(name, sides, span, here)))
+        rows = tuple(row for _, row in sorted(ranked, key=lambda rank: rank[0]))
+        code = (Match(rows, span),)
+        effect = replace(self.catalog.effects[group], fails=fallible(code))
+        words = tuple(word for word, _ in clauses)
         return Define(name, effect, code, span=span, clause=(n,), clauses=words)
 
     def guarding(self, word: str, effect: Effect, span: Span, here: Here) -> Row:
         """A clause's dispatcher row: at each input a fresh name, its slot's name, a prime and
         its position, guarding each typed input with its test, then every input pushed back in
         order and the clause called."""
-        names, test = fresh(effect), partial(self.tested, word)
-        patterns = tuple(
-            Var(name) if part is None else Guarded(Var(name), test(part, i, here), span)
-            for i, (name, part) in enumerate(zip(names, effect.types, strict=True), 1)
-        )
+        names = fresh(effect)
+        tests = zip(names, self.checks(word, effect, here), strict=True)
+        patterns = tuple(guard(Var(name), (test,), span) for name, test in tests)
         return Row(patterns, (*(Call(name, span) for name in names), Call(word, span)))
+
+    def refusing(self, name: str, sides: tuple[Clause, Clause], span: Span, here: Here) -> Row:
+        """The row fitting where both clauses fit, each input under the first clause's test and
+        then the second's, refusing the call as ambiguous (design 09 §2.4)."""
+        tests = [self.checks(word, effect, here) for word, effect in sides]
+        patterns = tuple(guard(Wild(), column, span) for column in zip(*tests, strict=True))
+        both = " and ".join(word for word, _ in sides)
+        return Row(patterns, (Refuse(f"ambiguous call to {name}: {both} both fit", span),))
+
+    def checks(self, word: str, effect: Effect, here: Here) -> list[str | None]:
+        """The test of each input of a clause, None where it is untyped."""
+        return [
+            None if part is None else self.tested(word, part, i, here)
+            for i, part in enumerate(effect.types, 1)
+        ]
 
     def tested(self, word: str, part: str, position: int, here: Here) -> str:
         """The word testing a clause's typed input: a group's generated word, else the word its
@@ -677,6 +707,8 @@ class _Desugar:
                 return 1, 0
             case Match():  # pragma: no cover -- a match is a line of its own, never in a frame
                 return len(node.rows[0].patterns), 0
+            case Refuse():  # pragma: no cover -- a dispatcher's code is generated, never routed
+                return 0, 0
             case Call():
                 effect = self.effects[node.name]
                 return len(effect.ins), len(effect.outs)
@@ -952,6 +984,14 @@ def generated(statement: Statement) -> bool:
     return made or any(map(grouped, statement.effect.types))
 
 
+def guard(pattern: Pattern, tests: Iterable[str | None], span: Span) -> Pattern:
+    """The pattern guarded by each test in turn, the first innermost; None is no test."""
+    for test in tests:
+        if test is not None:
+            pattern = Guarded(pattern, test, span)
+    return pattern
+
+
 def fresh(effect: Effect) -> list[str]:
     """A fresh name per input: its slot's name, a prime and its position (design 09 §2.4)."""
     return [f"{name}{PRIME}{i}" for i, name in enumerate(effect.ins, 1)]
@@ -1032,7 +1072,7 @@ def spelled(node: Node) -> tuple[Item, ...]:
         case Keyed():
             pairs = tuple(item for key, n in node.entries for item in (named(key), *spelled(n)))
             return (Enclosure("dict", (framed(pairs),), START),)
-        case Match():
+        case Match() | Refuse():
             unimplemented()
         case _:
             assert_never(node)

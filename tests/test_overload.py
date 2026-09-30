@@ -3,6 +3,7 @@ a definition's clauses."""
 
 from collections.abc import Iterator
 from dataclasses import fields, replace
+from itertools import combinations
 
 import pytest
 from hypothesis import given
@@ -19,15 +20,17 @@ from fpl.ast_core import (
     Node,
     Push,
     Quotation,
+    Refuse,
     Row,
     Run,
     Strand,
     Value,
     Var,
+    Wild,
 )
 from fpl.desugar import desugar, resugar
 from fpl.driver import run
-from fpl.errors import FplError, Span
+from fpl.errors import FailError, FplError, Span
 from fpl.eval import BUILTINS, effect_line, evaluate
 from fpl.parse import parse
 from fpl.types import Arrow, Kind, elaborate
@@ -191,12 +194,33 @@ def test_a_lone_typed_clause_is_guarded() -> None:
         run(LONE + "“a” f\n")
 
 
-def test_a_guard_with_no_row_for_its_value_is_an_error() -> None:
-    """[S49] Pinned until a failing guard is a miss: a match row guarded by `p`, whose match has
-    no row for 5, stops with `no row matches` from inside `p`."""
-    source = "p : x -- b\n\tmatch\n\t\t0\t1\nf : x -- y\n\tmatch\n\t\t( _ ∈ p )\t#p\n\t\t_\t#any\n"
-    with pytest.raises(FplError, match=r"^ERROR: 2:2 no row matches$"):
-        run(source + "5 f\n")
+PARTIAL = "p : x -- b\n\tmatch\n\t\t0\t1\n"
+
+
+@given(st.sampled_from([("5", "#any"), ("0", "#p")]))
+def test_a_guard_that_misses_is_not_fitting(call: tuple[str, str]) -> None:
+    """[law: guard-failure] a guard whose test word fails with `no row matches` counts as a
+    miss, in a dispatcher row and in a match row alike: with `p : x -- b` a match whose one row
+    is `0 1`, `f : x: p -- y` beside `f : x -- y`/`drop #any` prints `#any` for `5 f`."""
+    value, printed = call
+    row = "f : x -- y\n\tmatch\n\t\t( _ ∈ p )\t#p\n\t\t_\t#any\n"
+    clauses = "f : x: p -- y\n\tdrop #p\nf : x -- y\n\tdrop #any\n"
+    assert run(PARTIAL + row + f"{value} f\n") == f"{printed}\n"
+    assert run(PARTIAL + clauses + f"{value} f\n") == f"{printed}\n"
+
+
+TWO = "two : x -- b\n\t2 -\n\tmatch\n\t\t0\t1\n\t\t_\t0\n"
+
+
+def test_an_error_in_a_guard_propagates() -> None:
+    """[law: guard-failure] a predicate used as a slot type must be total over the values it can
+    meet: an error other than the miss propagates out of the call as that error, so with `two`,
+    `f : x: Text`/`drop #text` then `f : x: two`/`drop #two`, `“a” f` gives `arithmetic on a
+    non-number` from `two`, not `#text`."""
+    clauses = "f : x: Text -- y\n\tdrop #text\nf : x: two -- y\n\tdrop #two\n"
+    assert run(TWO + clauses + "2 f\n") == "#two\n"
+    with pytest.raises(FplError, match=r"^ERROR: 2:4 arithmetic on a non-number$"):
+        run(TWO + clauses + "“a” f\n")
 
 
 def clauses(groups: set[int], part: str | None = None) -> str:
@@ -655,11 +679,11 @@ def test_a_redefined_type_word_is_disjoint_from_nothing(redefined: bool, value: 
     assert run(source + f"{value} f\n") == ("#int\n" if int_wins else "#text\n")
     body = "\tdrop drop drop 1\n"
     h = f"h : x: Int  y: Int  z -- o\n{body}h : x: Text  y  z: Int -- o\n{body}"
+    assert run(prelude + h) == ""
     if redefined:
-        with pytest.raises(FplError, match=r"^ERROR: 1:1 no evaluator yet$"):
-            desugar(parse(prelude + h))
-        return
-    assert run(h) == ""
+        refusal = r"^ERROR: 3:1 ambiguous call to h: h/3/1 and h/3/2 both fit$"
+        with pytest.raises(FplError, match=refusal):
+            run(prelude + h + "1 | 2 | 3 h\n")
 
 
 P7 = SHAPES + AREA + "area : ( rect w h ) -- n\n\tw h times\narea : s -- n\n\tdrop 0\n"
@@ -710,7 +734,8 @@ def test_crossing_clauses_are_refused_unless_their_meet_is_a_clause(
 ) -> None:
     """[law: static-ambiguity] two clauses of one arity whose typed positions cross, that are
     not disjoint and agree wherever both are typed, are refused at the later head before
-    anything runs, unless the meet is itself a clause."""
+    anything runs, unless the meet is itself a clause; a pair typed two ways at one input is
+    accepted, a call both fit refused at run time."""
     s, t = ({j for j, part in enumerate(key) if part} for key in (a, b))
     pairs = list(zip(a, b, strict=True))
     clash = [{x, y} for x, y in pairs if x and y and x != y]
@@ -722,12 +747,140 @@ def test_crossing_clauses_are_refused_unless_their_meet_is_a_clause(
     heads = [" ".join(key) for key in keys[: 2 + meet]]
     clauses = "".join(f"h : {h} -- o\n\tdrop drop drop 1\n" for h in heads)
     source = "p : x -- b\n\tdrop 1\n" + clauses
-    if clash:
-        with pytest.raises(FplError, match=r"^ERROR: 1:1 no evaluator yet$"):
-            desugar(parse(source))
-    elif meet:
+    if clash or meet:
         assert run(source) == ""
     else:
         refusal = f"^ERROR: 5:1 h/3/2 is ambiguous with h/3/1 at {'  '.join(keys[2])}$"
         with pytest.raises(FplError, match=refusal):
             desugar(parse(source))
+
+
+H = (
+    "h : a: one  b: Int  c -- o\n\tdrop drop drop #first\n"
+    "h : a: Int  b  c: Int -- o\n\tdrop drop drop #second\n"
+)
+COVER = "h : a: one  b: Int  c: Int -- o\n\tdrop drop drop #both\n"
+AMBIGUOUS = r"^ERROR: 5:1 ambiguous call to h: h/3/1 and h/3/2 both fit$"
+
+
+@given(st.booleans())
+def test_p5_refuses_a_call_both_crossing_clauses_fit(covered: bool) -> None:
+    """[law: runtime-ambiguity] for a crossing pair whose meet is undefined the dispatcher has a
+    synthetic row that conjoins both clauses' tests as nested `Guarded`, sorts after the real
+    rows of equal count and refuses at the dispatcher's span: P5 prints `#first`, `#second` and
+    refuses `1 | 2 | 3 h`, and with its cover clause added prints `#both` there."""
+    source = ONE + H + (COVER if covered else "")
+    assert run(source + "1 | 2 | #c h\n2 | 2 | 3 h\n") == "#first\n#second\n"
+    if covered:
+        assert run(source + "1 | 2 | 3 h\n") == "#both\n"
+    else:
+        with pytest.raises(FplError, match=AMBIGUOUS):
+            run(source + "1 | 2 | 3 h\n")
+    span = Span(5, 1)
+    ints = Guarded(Wild(), "Int", span)
+    both = (Guarded(Guarded(Wild(), "one", span), "Int", span), ints, ints)
+    dispatcher = next(s for s in desugar(parse(source)) if isinstance(s, Define) and s.clauses)
+    match dispatcher.code:
+        case (Match(rows=rows),):
+            refusing = [i for i, row in enumerate(rows) if isinstance(row.body[0], Refuse)]
+            assert refusing == [int(covered)]
+            assert rows[int(covered)].patterns == both
+        case _:
+            pytest.fail(f"not a match: {dispatcher.code}")
+
+
+@given(st.booleans())
+def test_an_ambiguity_is_a_refusal_not_a_miss(catch_all: bool) -> None:
+    """[law: refusal-not-fail] an ambiguity refusal is an error, not +fail: `fallible` never
+    counts a refusing row and it adds no +fail to any effect line, so P5's `h/effect` is +fail
+    only for want of a clause taking every value."""
+    tail = "h : a  b  c -- o\n\tdrop drop drop #any\n" if catch_all else ""
+    fails = "" if catch_all else " “+fail”"
+    assert run(ONE + H + tail + "h/effect\n") == f"⟨ “a” “b” “c” “--” “o”{fails} ⟩\n"
+    with pytest.raises(FplError, match=AMBIGUOUS) as caught:
+        run(ONE + H + tail + "1 | 2 | 3 h\n")
+    assert not isinstance(caught.value, FailError)
+
+
+type Key = tuple[str | None, ...]
+CIRCLE = "( circle r )"
+FITS = {"Int": "1", "Text": "“a”", "one": "1", CIRCLE: "3 circle"}
+CHOICES = st.integers(1, 2).flatmap(
+    lambda n: st.tuples(
+        st.lists(st.tuples(*[st.sampled_from([None, *FITS])] * n), min_size=1, max_size=3),
+        st.tuples(*[st.sampled_from(["1", "“a”", "#s", "3 circle"])] * n),
+    )
+)
+ANSWERS = {
+    "refused": r" is ambiguous with f/",
+    "none": r"^ERROR: 9:1 no row matches$",
+    "ambiguous": r"^ERROR: 9:1 ambiguous call to f: f/\d/\d and f/\d/\d both fit$",
+}
+
+
+def positions(key: Key) -> frozenset[int]:
+    """A generated clause's typed inputs."""
+    return frozenset(j for j, part in enumerate(key) if part)
+
+
+def slotted(position: int, part: str | None) -> str:
+    """A generated slot: its name, typed by part; a group names its radius by position."""
+    name = "ab"[position]
+    if part == CIRCLE:
+        return f"( circle r{position} )"
+    return name if part is None else f"{name}: {part}"
+
+
+def refused(keys: list[Key]) -> bool:
+    """The static check: two keys crossing, not disjoint, whose meet is defined and not a key."""
+    for a, b in combinations(keys, 2):
+        pairs = list(zip(a, b, strict=True))
+        crossing = not (positions(a) <= positions(b) or positions(b) <= positions(a))
+        disjoint = any(x != y and {x, y} <= {"Int", "Text"} for x, y in pairs)
+        clash = any(x and y and x != y for x, y in pairs)
+        if crossing and not disjoint and not clash and tuple(x or y for x, y in pairs) not in keys:
+            return True
+    return False
+
+
+def answered(keys: list[Key], values: tuple[str, ...]) -> str:
+    """B by brute force over the written keys: the newest body of the newest of the most specific
+    fitting clauses when they share their typed inputs, else `ambiguous`, `none` or `refused`."""
+    order = list(dict.fromkeys(keys))
+    if refused(order):
+        return "refused"
+    fitting = [
+        key
+        for key in order
+        if all(part is None or FITS[part] == value for part, value in zip(key, values, strict=True))
+    ]
+    best = [key for key in fitting if not any(positions(key) < positions(o) for o in fitting)]
+    if not best:
+        return "none"
+    if len({positions(key) for key in best}) > 1:
+        return "ambiguous"
+    newest = max(best, key=order.index)
+    return f"#k{max(i for i, key in enumerate(keys) if key == newest)}"
+
+
+@given(CHOICES)
+def test_a_dispatcher_answers_as_b_does(choice: tuple[list[Key], tuple[str, ...]]) -> None:
+    """[law: clause-choice] over generated clause sets of arity 1-2 with slots from untyped,
+    `Int`, `Text`, the predicate `one` and the group `( circle r )`, every accepted set's
+    dispatcher answers a call with the newest of its most specific fitting clauses when they
+    share one set of typed positions, refuses it as ambiguous when they do not, and fails with
+    `no row matches` when none fits, as a brute-force oracle over the specificity order
+    computes."""
+    keys, values = choice
+    clauses = ""
+    for i, key in enumerate(keys):
+        head = "  ".join(slotted(j, part) for j, part in enumerate(key))
+        body = ["drop"] * sum(part != CIRCLE for part in key) + [f"#k{i}"]
+        clauses += f"f : {head} -- y\n\t{' '.join(body)}\n"
+    source = SHAPES + ONE + clauses + " | ".join(values) + " f\n"
+    expected = answered(keys, values)
+    if expected in ANSWERS:
+        with pytest.raises(FplError, match=ANSWERS[expected]):
+            run(source)
+        return
+    assert run(source) == f"{expected}\n"

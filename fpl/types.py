@@ -29,6 +29,7 @@ from fpl.ast_core import (
     Node,
     Pattern,
     Push,
+    Refuse,
     Run,
     Statement,
     Strand,
@@ -81,12 +82,13 @@ class Goal:
 class Typing:
     """What elaboration knows at a point in the code: the sorts on the stack, top last; the sort
     each bound name stands for; the sorts the body's inputs have been found to be; the goals
-    met so far."""
+    met so far; whether the code gets here, which a refusal never passes."""
 
     stack: tuple[Sort, ...]
     env: Mapping[str, Sort]
     known: Mapping[int, Sort]
     goals: tuple[Goal, ...] = ()
+    reached: bool = True
 
 
 class UntypedError(Exception):
@@ -256,6 +258,8 @@ def through(
             return called(typing, node, arrows)
         case Match():
             return matched(typing, node, arrows, need)
+        case Refuse():
+            return replace(typing, reached=False)
         case _:
             assert_never(node)
 
@@ -287,8 +291,8 @@ def matched(typing: Typing, node: Match, arrows: Mapping[str, Arrow], need: int 
 
 def agreed(ends: list[Typing]) -> tuple[Sort, ...]:
     """The sorts rows leave: each where they agree, else of no known sort; untyped where they
-    leave different counts."""
-    stacks = {resolved(end.stack, end) for end in ends}
+    leave different counts. A row that refuses leaves nothing."""
+    stacks = {resolved(end.stack, end) for end in ends if end.reached}
     if len({len(stack) for stack in stacks}) != 1:
         raise UntypedError
     columns = map(set, zip(*stacks, strict=True))
