@@ -23,3 +23,15 @@
 - Default in force: every run batch is a freshly linked, ad-hoc signed Mach-O whose first execution costs 126-300 ms on macOS; run laws draw 4 examples at the quick profile, and checked-programs-run and evaluator-agrees-with-run share one batch per example
 - Closes by: PSJ, either accepting the cost, or granting the terminal Developer Tools permission (a system security setting, his to change), or a persistent runner that maps code with MAP_JIT (not a linked executable, so it would change the oracle)
 - Evidence: design.md section 7, probe: ten fresh links 126-300 ms, the same binary rerun 2 ms
+
+## alias-divergence
+- Depends on it: fpl/asm/aarch64/alias.py (the rows with spec_differs: BITFIELD's bfi, LOGICAL_IMM's mov), tests/test_aarch64_via_llvm.py (test_every_alias_row_prints_as_llvm_objdump_prints_it)
+- Default in force: where llvm-objdump's preferred disassembly differs from the C6.2 "Alias is preferred when" condition, the printer follows llvm-objdump; known: BFM with Rn = 11111 and imms < immr prints bfi, the spec prefers BFC (C6.2.37, C6.2.39); ORR (immediate) with Rn = 11111 prints mov exactly when no MOVZ or MOVN makes the value at the width (LLVM's isAnyMOVWMovAlias), where the spec's !MoveWidePreferred (C6.2.301, J1.2) also prefers mov for some values MOVN makes
+- Closes by: PSJ or palimpsest, choosing the spec's text and a normalising oracle, or LLVM printing BFC by default
+- Evidence: design.md section 8; probe: `bfm x1, xzr, #61, #2` disassembles as `bfi x1, xzr, #3, #3` on aarch64-linux-gnu and arm64-apple-macos14.0; `orr x0, xzr, #0xfffffffffffeffff` (N 1, immr 47, imms 62, so !MoveWidePreferred) disassembles as orr, `orr x0, xzr, #0xffff0000ffff0000` as mov
+
+## asm-syntax-authority
+- Depends on it: fpl/asm/aarch64/text.py, fpl/asm/aarch64/alias.py, tests/aarch64_oracle.py (disassemble), tests/test_aarch64_via_llvm.py
+- Default in force: the printed form is llvm-objdump 21.1.8's default disassembly (aliases, --no-print-imm-hex) of -triple=aarch64-linux-gnu objects, and it must assemble with llvm-mc 21.1.8 to the same bytes
+- Closes by: PSJ or palimpsest, adopting the Arm ARM's assembler syntax (C1.2) with GNU as as a second oracle
+- Evidence: C1.4; design.md section 3; probe: 159 forms over all 105 pages, default text reassembled to identical bytes, -M no-aliases changed 8
