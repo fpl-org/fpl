@@ -5,7 +5,8 @@ cannot wrap the `__setstate__` a slotted dataclass generates), compared and hash
 only; source positions (`Prim.at`) and a thunk's origin (`Thunk.origin`) ride along without
 entering equality, so two nodes that differ only there are equal. Names are compared as written (no
 alpha-equivalence). Refused at construction (icontract `ViolationError`): an empty binder name, an
-effect outside `{div, fail}`, a negative label ordinal, a program defining a name twice.
+effect outside `{div, fail}`, a negative label ordinal. A program defining a name twice is built:
+the checker refuses it (`DUPLICATE_DEF`).
 """
 
 from __future__ import annotations
@@ -46,11 +47,6 @@ def effects_known(self: U | Rec | Prim) -> bool:
 def ordinal_natural(self: LabelKey) -> bool:
     """A label's ordinal counts from 0."""
     return self.ordinal >= 0
-
-
-def defs_distinct(self: Program) -> bool:
-    """A program binds each top-level name once."""
-    return len({name for name, _ in self.defs}) == len(self.defs)
 
 
 @dataclass(frozen=True, slots=True)
@@ -358,8 +354,7 @@ class Prim:
     at: Position | None = field(compare=False)
 
 
-@icontract.invariant(defs_distinct)
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Program:
     """Top-level definitions, each a closed value over those before it, and the runs."""
 

@@ -541,12 +541,21 @@ CATALOGUE: tuple[tuple[TypeErrorKind, Comp], ...] = (
 )
 
 
+DUPLICATE: tuple[tuple[str, Value], ...] = (("dup", ONE), ("dup", ONE))  # one name bound twice
+
+
 def invalid(sig: Signature) -> st.SearchStrategy[tuple[TypeErrorKind, Program]]:
-    """A drawn program with one catalogue run appended, tagged with the kind it must get."""
+    """A drawn program with one catalogue run appended, or with `DUPLICATE` appended to its
+    defs, tagged with the kind it must get."""
 
     def mutate(
         program: Program, entry: tuple[TypeErrorKind, Comp]
     ) -> tuple[TypeErrorKind, Program]:
         return entry[0], Program(program.defs, (*program.runs, entry[1]))
 
-    return st.builds(mutate, programs(sig), st.sampled_from(CATALOGUE))
+    def duplicate(program: Program) -> tuple[TypeErrorKind, Program]:
+        return K.DUPLICATE_DEF, Program((*program.defs, *DUPLICATE), program.runs)
+
+    return st.builds(mutate, programs(sig), st.sampled_from(CATALOGUE)) | st.builds(
+        duplicate, programs(sig)
+    )

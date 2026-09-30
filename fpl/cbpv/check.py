@@ -95,6 +95,7 @@ class TypeErrorKind(StrEnum):
     PRIM_INSTANCE = auto()
     OP_UNKNOWN = auto()
     LOOP_UNLABELLED = auto()
+    DUPLICATE_DEF = auto()
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +159,8 @@ def check(program: Program, sig: Signature, *, loops: bool) -> TypeError_ | None
 def _program(program: Program, sig: Signature) -> None:
     scope: Mapping[str, tuple[VType, Grade]] = {}
     for i, (name, value) in enumerate(program.defs):
+        if name in scope:
+            _Env(sig, scope, (0, i, 0)).refuse(TypeErrorKind.DUPLICATE_DEF, f"{name} defined twice")
         scope = {**scope, name: (_value(value, _Env(sig, scope, (0, i, 1))), "ω")}
     for j, run in enumerate(program.runs):
         env = _Env(sig, scope, (1, j))

@@ -6,6 +6,7 @@ from cbpv_strategies import (
     BODY,
     CATALOGUE,
     DIV,
+    DUPLICATE,
     HANDLE,
     INT,
     LOG,
@@ -126,12 +127,20 @@ def test_check_kind_exact(case: tuple[TypeErrorKind, Program]) -> None:
     error = check(program, SIGMA_TEST, loops=True)
     assert error is not None
     assert error.kind == kind
-    assert error.where[:2] == (1, len(program.runs) - 1)
+    at_defs = kind is TypeErrorKind.DUPLICATE_DEF
+    last = (0, len(program.defs) - 1) if at_defs else (1, len(program.runs) - 1)
+    assert error.where[:2] == last
     assert error.detail
 
 
 def test_catalogue_has_every_kind() -> None:
-    assert {kind for kind, _ in CATALOGUE} == set(TypeErrorKind)
+    assert {kind for kind, _ in CATALOGUE} | {TypeErrorKind.DUPLICATE_DEF} == set(TypeErrorKind)
+
+
+def test_duplicate_def_refused() -> None:
+    error = check(Program(DUPLICATE, ()), SIGMA_TEST, loops=False)
+    assert error is not None
+    assert (error.kind, error.where) == (K.DUPLICATE_DEF, (0, 1, 0))
 
 
 BOTTOM = Thunk(Fail(ONE))

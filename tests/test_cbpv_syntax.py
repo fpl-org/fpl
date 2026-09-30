@@ -18,7 +18,6 @@ from fpl.cbpv.syntax import (
     One,
     Position,
     Prim,
-    Program,
     Rec,
     Return,
     SplitPair,
@@ -92,7 +91,6 @@ VIOLATIONS: dict[str, Callable[[], object]] = {
     "thunk effect": lambda: U(Top(), UNKNOWN),
     "prim effect": lambda: Prim("p", Top(), UNKNOWN, None),
     "label ordinal": lambda: LabelKey("w", -1),
-    "defs distinct": lambda: Program((("x", Unit()), ("x", Unit())), ()),
 }
 
 
