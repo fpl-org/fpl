@@ -3,7 +3,7 @@
 import contextlib
 import re
 from dataclasses import fields, replace
-from typing import Any
+from typing import Any, get_args
 
 from hypothesis import given
 from hypothesis import strategies as st
@@ -17,6 +17,7 @@ from wasm_strategies import (
     RELOPS,
     STORES,
     TESTOPS,
+    TYPED,
     UNOPS,
     BinopMain,
     binop_mains,
@@ -208,6 +209,10 @@ def test_different_modules_print_differently(
                 pairs.append((alone(one), alone(replace(one, **{field: getattr(donor, field)}))))
     for first, second in pairs:
         assert first == second or print_module(first) != print_module(second)
+
+
+def test_the_valid_strategy_has_an_entry_for_every_instruction_class() -> None:
+    assert set(TYPED) == set(get_args(Instr))
 
 
 @given(st.lists(st.booleans().flatmap(valid_modules), min_size=1, max_size=8))

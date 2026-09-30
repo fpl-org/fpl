@@ -680,6 +680,42 @@ def _return_call_indirect(frame: Frame, stack: Stack) -> Move | None:
     return _indexed_draw(_indirect_types(frame, stack, tail=True), step)
 
 
+def _aligned[M: (Load, Store)](draw: st.DrawFn, instr: M, bits: int) -> M:
+    """`instr` with a drawn offset and an alignment no greater than natural for `bits` (3.4.5)."""
+    natural = (bits // 8).bit_length() - 1
+    return _rearg(instr, MemArg(draw(st.integers(0, natural)), draw(u32s)))
+
+
+def _load(frame: Frame, stack: Stack) -> Move | None:
+    """A load, plain or narrow, from an i32 address, in a module with a memory."""
+    if not frame.context.memory or stack[-1:] != ("i32",):
+        return None
+
+    def move(draw: st.DrawFn) -> Step:
+        load = draw(st.sampled_from(LOADS))
+        bits = load.pack[0] if load.pack else WIDTH[load.type]
+        return Step(_aligned(draw, load, bits), 1, (load.type,))
+
+    return move
+
+
+def _store(frame: Frame, stack: Stack) -> Move | None:
+    """A store, plain or narrow, of the value on top to an i32 address below it."""
+    choices = [store for store in STORES if stack[-2:] == ("i32", store.type)]
+    if not frame.context.memory or not choices:
+        return None
+
+    def move(draw: st.DrawFn) -> Step:
+        store = draw(st.sampled_from(choices))
+        return Step(_aligned(draw, store, store.size or WIDTH[store.type]), 2, ())
+
+    return move
+
+
+def _memory_size(frame: Frame, _stack: Stack) -> Move | None:
+    return _step(Step(MemorySize(), 0, ("i32",))) if frame.context.memory else None
+
+
 def _const(_frame: Frame, _stack: Stack) -> Move:
     def move(draw: st.DrawFn) -> Step:
         c = draw(numtypes.flatmap(consts))
@@ -715,6 +751,9 @@ TYPED: dict[type[Instr], Entry] = {
     CallIndirect: _call_indirect,
     ReturnCall: _return_call,
     ReturnCallIndirect: _return_call_indirect,
+    Load: _load,
+    Store: _store,
+    MemorySize: _memory_size,
 }
 """The typed entry of each instruction class: what of it fits a given operand stack."""
 
