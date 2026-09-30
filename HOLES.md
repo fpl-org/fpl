@@ -516,3 +516,15 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Default in force: an error in an earlier event is ERROR: @<seq> <l>:<c>; CHANGED <seq> $<id> names an earlier input whose output moved; HEAD <seq> $<id> follows an append on stderr; an input after the first starts at the left margin; an input ends at a blank line or once it is not pending; a first line with : is a command (:show :log :rewind E :canonical :quit); joined outputs differ from the file's only where a run leaves a single empty stack; at a terminal a tab inserts itself (GNU readline; libedit untried)
 - Closes by: design, fixing the transcript's form
 - Evidence: tests/test_session.py:117, :126, :136; tests/test_repl.py:264, :299, :345; fpl/print.py:24-31
+
+## head-group-pin
+- Depends on it: fpl/desugar.py `_Desugar.code`, tests/test_overload.py test_a_pin_in_a_head_group_is_refused
+- Default in force: a `$` pin inside a head group `( p )` is refused as unimplemented; a group clause binds its other inputs by fresh names `x′i` (the dispatcher-row mechanism), so a pin by the written name could not resolve
+- Closes by: the part that binds head names, by binding a head's written names
+- Evidence: design-09-v3.md §2.1 (Groups), §10 head-group-pin
+
+## group-clause-fails
+- Depends on it: fpl/desugar.py `_Desugar.statements`, `tests`; `f/n/i/effect` of a clause with a head group
+- Default in force: a clause with a head group keeps `fallible(code)`, so its own effect is `+fail` (its one row misses when called by path); its dispatcher's `+fail` is computed from the dispatcher's rows, as for every match
+- Closes by: the design side, by choosing between the written line and the computed `+fail` for `f/n/i/effect`
+- Evidence: design-09-v3.md §1.1 (`f/n/i` effect as written) against §3.5 (a group clause's own +fail)
