@@ -1,5 +1,6 @@
 """The oracles of fpl.asm.wasm: pinned, resolved once, and able to fail."""
 
+import dataclasses
 from collections.abc import Callable
 from typing import Literal, get_args
 
@@ -147,3 +148,26 @@ def test_a_corrupted_item_fails_each_engine_by_its_index(
     items[k] = corrupt(run(cases[k]), data.draw(st.sampled_from(get_args(Corruption))))
     for report in (run_wabt(wasm_tools, items), run_wasmtime(wasm_tools, items)):
         assert report.wrong == (k,), report.output
+
+
+TRAPS_TWICE = '(module (func (export "main") (result i32 i64) unreachable))\n'
+
+
+def test_wabt_reads_a_trap_of_a_multi_result_main(wasm_tools: Tools) -> None:
+    """wast2json 1.0.41 writes an assert_trap's expected list of two types with no comma between
+    them, which spectest-interp refuses to parse; the batch is still read, and the wrong item
+    named."""
+    items: list[Item] = [
+        Run(TRAPS_TWICE, "unreachable"),
+        Run(TRAPS_TWICE, (("i32", 0), ("i64", 0))),
+    ]
+    for report in (run_wabt(wasm_tools, items), run_wasmtime(wasm_tools, items)):
+        assert report.wrong == (1,), report.output
+
+
+def test_wabt_that_reports_no_summary_is_an_error(wasm_tools: Tools) -> None:
+    """spectest-interp that writes to stderr, or ends without its `N/M tests passed.` line, has
+    not run the batch: an error, never an empty verdict. wat2wasm stands in for it here."""
+    broken = dataclasses.replace(wasm_tools, spectest_interp=wasm_tools.wat2wasm)
+    with pytest.raises(OracleError, match="tests passed"):
+        run_wabt(broken, [Run(TRAPS_TWICE, "unreachable")])

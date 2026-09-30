@@ -170,6 +170,7 @@ BATCH = "batch.wast"
 LINE = re.compile(r"batch\.wast:(\d+)")
 DIRECTIVE = re.compile(r"^batch\.wast:(\d+): (.*)$", re.MULTILINE)
 PASSED = re.compile(r"\w+ passed")
+SUMMARY = re.compile(r"^\d+/\d+ tests passed\.$", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -230,15 +231,31 @@ def _located(output: str, starts: list[int]) -> tuple[int, ...]:
     return (bisect_right(starts, int(found[1])) - 1,)
 
 
+def _commas(json: str) -> str:
+    """wast2json's output with the comma it leaves out put back: 1.0.41 writes an assert_trap's
+    expected list of two or more types as `[{...}{...}]`, which spectest-interp refuses. `}{`
+    occurs nowhere else, as no string in a batch's JSON holds a brace."""
+    return json.replace("}{", "},{")
+
+
 def run_wabt(tools: Tools, items: list[Item]) -> Report:
-    """The items wast2json and spectest-interp disagree with."""
+    """The items wast2json and spectest-interp disagree with; OracleError when spectest-interp
+    writes to stderr or ends without its `N/M tests passed.` line, as it then has not run the
+    batch and an empty verdict would pass every item."""
     text, starts = write_batch(items, "wabt")
     with tempfile.TemporaryDirectory() as tmp:
         Path(tmp, BATCH).write_text(text)
         assembled = _run(tmp, tools.wast2json, "--enable-tail-call", BATCH, "-o", "batch.json")
         if assembled.returncode != 0:
             return Report(_located(assembled.stderr, starts), assembled.stderr)
+        json = Path(tmp, "batch.json")
+        json.write_text(_commas(json.read_text()))
         interp = _run(tmp, tools.spectest_interp, "--enable-tail-call", "batch.json")
+    if interp.stderr or not SUMMARY.search(interp.stdout):
+        raise OracleError(
+            f"spectest-interp did not run the batch, no N/M tests passed:\n"
+            f"{interp.stdout}{interp.stderr}"
+        )
     failed = {
         bisect_right(starts, int(line)) - 1
         for line, message in DIRECTIVE.findall(interp.stdout)
