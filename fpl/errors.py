@@ -33,3 +33,7 @@ class FplError(Exception):
         text = lines[self.span.line - 1]
         caret = " " * (min(self.span.col, len(text) + 1) - 1) + "^"
         return f"{self}\n{text}\n{caret}"
+
+
+class FailError(FplError):
+    """A miss: no row of a match fits, the +fail a guard counts as not fitting."""

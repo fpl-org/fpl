@@ -29,6 +29,7 @@ from fpl.ast_core import (
     Pattern,
     Push,
     Quotation,
+    Refuse,
     Row,
     Run,
     Statement,
@@ -38,7 +39,7 @@ from fpl.ast_core import (
     Var,
     Wild,
 )
-from fpl.errors import FplError, Span
+from fpl.errors import FailError, FplError, Span
 
 type Builtin = Callable[..., tuple[Value, ...]]
 type Words = Mapping[str, tuple[Node, ...]]
@@ -152,16 +153,13 @@ def step(state: State) -> State:
     """Run the first node: push its value, put a defined word's code in its place, apply a
     builtin to the values it takes, put a binder's scope in its place with the top for its
     name, or push the dict its values build. A control word puts the code it runs in its
-    place, and a match the body of the row it chose."""
+    place, and a match the body of the row it chose. A refusal raises its error."""
     node, rest = state.code[0], state.code[1:]
     match node:
         case Push():
             return State((*state.stack, node.value), rest, state.words)
         case Bind():
-            if not state.stack:
-                raise FplError(node.span, "stack underflow")
-            scope = substitute(node.body, node.name, state.stack[-1])
-            return State(state.stack[:-1], scope + rest, state.words)
+            return binding(node, state, rest)
         case Keyed():
             return State((*state.stack, gathered(node, state.words)), rest, state.words)
         case Call() if node.name in state.words:
@@ -170,8 +168,18 @@ def step(state: State) -> State:
             return builtin(node, state, rest)
         case Match():
             return matching(node, state, rest)
+        case Refuse():
+            raise FplError(node.span, node.message)
         case _:
             assert_never(node)
+
+
+def binding(node: Bind, state: State, rest: tuple[Node, ...]) -> State:
+    """The binder's scope in its place, the top standing for its name."""
+    if not state.stack:
+        raise FplError(node.span, "stack underflow")
+    scope = substitute(node.body, node.name, state.stack[-1])
+    return State(state.stack[:-1], scope + rest, state.words)
 
 
 def substitute(code: tuple[Node, ...], name: str, value: Value) -> tuple[Node, ...]:
@@ -188,14 +196,21 @@ def replaced(node: Node, name: str, value: Value) -> Node:
         case Push():
             return Push(held(node.value, name, value))
         case Bind():
-            body = node.body if node.name == name else substitute(node.body, name, value)
-            return Bind(node.name, body, node.span)
+            return rebinder(node, name, value)
         case Keyed():
             return rekeyed(node, name, value)
         case Match():
             return rematched(node, name, value)
+        case Refuse():  # pragma: no cover -- a refusing row binds nothing, so nothing substitutes
+            return node
         case _:
             assert_never(node)
+
+
+def rebinder(node: Bind, name: str, value: Value) -> Bind:
+    """A binder's body with name standing for value, unless it binds name anew."""
+    body = node.body if node.name == name else substitute(node.body, name, value)
+    return Bind(node.name, body, node.span)
 
 
 def rekeyed(node: Keyed, name: str, value: Value) -> Keyed:
@@ -252,7 +267,8 @@ def names(pattern: Pattern) -> frozenset[str]:
 
 def matching(node: Match, state: State, rest: tuple[Node, ...]) -> State:
     """The values the match takes replaced by the body of the first row matching them, each
-    name a pattern bound standing for its value; no row matching raises +fail at the match."""
+    name a pattern bound standing for its value; no row matching raises +fail, a FailError, at
+    the match."""
     cut = len(state.stack) - len(node.rows[0].patterns)
     if cut < 0:
         raise FplError(node.span, "stack underflow")
@@ -263,7 +279,7 @@ def matching(node: Match, state: State, rest: tuple[Node, ...]) -> State:
             for name, value in bound.items():
                 code = substitute(code, name, value)
             return State(state.stack[:cut], code + rest, state.words)
-    raise FplError(node.span, "no row matches")
+    raise FailError(node.span, "no row matches")
 
 
 def matches(patterns: tuple[Pattern, ...], values: Stack, words: Words) -> Bound | None:
@@ -281,8 +297,8 @@ def matches(patterns: tuple[Pattern, ...], values: Stack, words: Words) -> Bound
 
 
 def matched(pattern: Pattern, value: Value, words: Words) -> Bound | None:
-    """What one pattern binds on a value, or None: a guard is its word leaving 1 on the
-    value (hole guard-test)."""
+    """What one pattern binds on a value, or None: a guard is its pattern matching and then its
+    word leaving 1 on the value (hole guard-test)."""
     match pattern:
         case Wild():
             return {}
@@ -298,15 +314,22 @@ def matched(pattern: Pattern, value: Value, words: Words) -> Bound | None:
             assert_never(pattern)
 
 
-def guarded(pattern: Guarded, value: Value, words: Words) -> Bound | None:
+def guarded(guard: Guarded, value: Value, words: Words) -> Bound | None:
     """What the inner pattern binds on the value, if the guard word then leaves 1 on it; the
     word runs only on a value the inner pattern matched, so a row whose pattern refuses the
     value falls through even where the word would raise on it."""
-    bound = matched(pattern.pattern, value, words)
-    if bound is None:
-        return None
-    test = final(State((value,), (Call(pattern.test, pattern.span),), words))
-    return bound if test == (1,) else None
+    bound = matched(guard.pattern, value, words)
+    return bound if bound is not None and tested(guard, value, words) else None
+
+
+def tested(guard: Guarded, value: Value, words: Words) -> bool:
+    """The guard's word leaves 1 on the value; its miss is not fitting, and any other error in
+    it propagates as that error (design 09 §3.9)."""
+    try:
+        left = final(State((value,), (Call(guard.test, guard.span),), words))
+    except FailError:
+        return False
+    return left == (1,)
 
 
 def unbuilt(pattern: Inverse, value: Value, words: Words) -> Bound | None:
