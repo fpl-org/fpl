@@ -183,13 +183,6 @@ def test_a_guard_or_compound_type_on_an_effect_line_is_refused(
 LONE = "f : x: Int -- y\n\tdrop #int\n"
 
 
-def test_a_second_typed_clause_of_one_arity_is_refused() -> None:
-    """[S49] Pinned until clauses of one arity are ordered: `f : x: Int` beside `f : x: Text`
-    is refused as unimplemented."""
-    with pytest.raises(FplError, match=r"^ERROR: 1:1 no evaluator yet$"):
-        run(LONE + "f : x: Text -- y\n\tdrop #text\n5 f\n")
-
-
 def test_a_lone_typed_clause_is_guarded() -> None:
     """[law: no-clause-fails] a lone `f : x: Int -- y` fails on `“a” f` with `no row matches`
     at its head, and runs its body on 5."""
@@ -453,3 +446,235 @@ def test_a_pin_in_a_head_group_is_refused() -> None:
     the pin could not resolve (hole head-group-pin)."""
     with pytest.raises(FplError, match=r"^ERROR: 1:1 no evaluator yet$"):
         run(SHAPES + "area : y  ( circle $y ) -- n\n\tdrop 1\n")
+
+
+F = "f : x: Int -- y\n\t1 +\nf : x: Text -- y\n\tdrop #text\n"
+G = "g : x -- y\n\tf\n"
+
+
+def test_two_typed_clauses_of_one_arity_are_dispatched() -> None:
+    """[law: dispatcher-effect] F's Int and Text clauses answer through f and g; `#s` fits no
+    row and fails at F's first head; a catch-all added later takes `#s` and removes the +fail,
+    while `5 f` still takes the Int clause."""
+    assert run(F + G + "5 f\n“a” f\n5 g\n“a” g\n") == "6\n#text\n6\n#text\n"
+    for call in ("#s g", "#s f"):
+        with pytest.raises(FplError, match=r"^ERROR: 1:1 no row matches$"):
+            run(F + G + call + "\n")
+    assert top(F + "f/1/1/effect\n") == Listed(("x:", "Int", "--", "y"))
+    assert top(F + "f/1/2/effect\n") == Listed(("x:", "Text", "--", "y"))
+    other = F + G + "f : x -- y\n\tdrop #other\n"
+    assert run(other + "#s g\n5 f\n") == "#other\n6\n"
+    assert top(other + "f/effect\n") == Listed(("x", "--", "y"))
+
+
+@given(
+    st.lists(st.sampled_from(TYPES), min_size=1, max_size=4, unique=True),
+    st.integers(0, 4),
+    st.booleans(),
+)
+def test_a_dispatcher_effect_keeps_what_its_clauses_share(
+    types: list[str], at: int, catchall: bool
+) -> None:
+    """[law: dispatcher-effect] a dispatcher's effect takes its slot names and kinds from its
+    group's first clause in written order, keeps a type at a position only where all its
+    clauses have that same type, and carries +fail iff its group has no all-untyped clause."""
+    parts: list[str | None] = list(types)
+    if catchall:
+        parts.insert(min(at, len(parts)), None)
+    heads = [f"v{i}" if part is None else f"v{i}: {part}" for i, part in enumerate(parts)]
+    source = "".join(f"f : {head} -- y\n\tdrop {i}\n" for i, head in enumerate(heads))
+    first = ("v0",) if len(parts) > 1 or parts[0] is None else ("v0:", parts[0])
+    fails = () if catchall else ("+fail",)
+    assert top(source + "f/effect\n") == Listed((*first, "--", "y", *fails))
+    assert top(source + "f/1/effect\n") == top(source + "f/effect\n")
+
+
+KINDS = {"value": "x{}", "thunk": "t{}: [ ]", "code": "c{}: Code"}
+kinds = st.lists(st.sampled_from(list(KINDS)), min_size=1, max_size=2)
+
+
+@given(kinds, kinds)
+def test_clauses_of_one_arity_agree_on_slot_kinds(first: list[str], second: list[str]) -> None:
+    """[law: slot-agreement] clauses of one arity agree on the slot kind at every position, else
+    the later head is refused (`f/1/2 takes a thunk at 1, f/1/1 a value`); clauses that agree
+    are accepted."""
+    second = (second * 2)[: len(first)]
+    n = len(first)
+    written = [KINDS[k].format(i) for i, k in enumerate(first)]
+    typed = [f"x{i}: Int" if k == "value" else KINDS[k].format(i) for i, k in enumerate(second)]
+    body = "\t" + "drop " * n + "1\n"
+    source = f"f : {' '.join(written)} -- y\n{body}f : {' '.join(typed)} -- y\n{body}"
+    differ = [(j, a, b) for j, (a, b) in enumerate(zip(first, second, strict=True), 1) if a != b]
+    if not differ:
+        assert run(source) == ""
+        return
+    j, earlier, later = differ[0]
+    refusal = rf"^ERROR: 3:1 f/{n}/2 takes a {later} at {j}, f/{n}/1 a {earlier}$"
+    with pytest.raises(FplError, match=refusal):
+        run(source)
+
+
+@given(st.integers(1, 3), st.integers(1, 3))
+def test_clauses_of_one_arity_leave_as_many_values(first: int, second: int) -> None:
+    """[law: output-count] clauses of one arity leave as many values, else the later head is
+    refused; clauses that agree are accepted."""
+
+    def clause(head: str, outs: int) -> str:
+        names = " ".join(f"y{i}" for i in range(outs))
+        return f"f : {head} -- {names}\n\tdrop 1{' dup' * (outs - 1)}\n"
+
+    source = clause("x", first) + clause("x: Int", second) + "5 f\n"
+    if first == second:
+        assert run(source) == run("1" + " dup" * (first - 1) + "\n")
+        return
+    with pytest.raises(FplError, match=rf"^ERROR: 3:1 f/1/2 leaves {second}, f/1/1 {first}$"):
+        run(source)
+
+
+PQ = "p : x -- b\n\tdrop 1\nq : x -- b\n\tdrop 1\n"
+
+
+@given(st.lists(st.sampled_from([None, "Int", "p", "q"]), min_size=1, max_size=6))
+def test_a_clause_keeps_the_ordinal_of_its_key(keys: list[str | None]) -> None:
+    """[law: clause-key] a clause's key is its per-input parts; a later clause with an existing
+    key shadows that clause and keeps its path ordinal, which is also its age among equally
+    specific clauses; a clause with a new key takes the next ordinal, and no path moves."""
+    if set(keys) == {None}:
+        return
+    order = list(dict.fromkeys(keys))
+    heads = ["x" if key is None else f"x: {key}" for key in keys]
+    source = PQ + "".join(f"f : {h} -- y\n\tdrop {k}\n" for k, h in enumerate(heads))
+    statements = desugar(parse(source))
+    clauses = [s.word for s in statements if isinstance(s, Define) and len(s.clause) == 2]
+    assert clauses == [f"f/1/{order.index(key) + 1}" for key in keys]
+    typed = [key for key in order if key is not None]
+    winner = typed[-1] if typed else None
+    assert run(source + "1 f\n") == f"{max(k for k, key in enumerate(keys) if key == winner)}\n"
+    for i, key in enumerate(order, 1):
+        shadowed = [k for k, other in enumerate(keys) if other == key][:-1]
+        bodies = "".join(f" [ drop {k} ]" for k in shadowed)
+        assert run(source + f"f/1/{i}/history\n") == f"⟨{bodies} ⟩\n".replace("⟨ ⟩", "⟨⟩")
+
+
+def test_a_shadowing_clause_keeps_its_age() -> None:
+    """[law: clause-key] `f : x: p`, `f : x: q`, then `f : x: p` again: a call both accept goes
+    to the q clause, the newest by path ordinal, and `f/1/1/history` holds the first p body."""
+    source = PQ + "f : x: p -- y\n\tdrop #p1\nf : x: q -- y\n\tdrop #q\nf : x: p -- y\n\tdrop #p2\n"
+    assert run(source + "1 f\nf/1/1/history\n") == "#q\n⟨ [ drop #p1 ] ⟩\n"
+
+
+ONE = "one : x -- b\n\tmatch\n\t\t1\t1\n\t\t_\t0\n"
+ONE_CLAUSE = "f : x: one -- y\n\tdrop #one\n"
+INT_CLAUSE = "f : x: Int -- y\n\tdrop #int\n"
+
+
+@given(st.booleans(), st.sampled_from(["1", "2", "“a”"]))
+def test_the_most_specific_then_the_newest_fitting_clause_wins(one_first: bool, value: str) -> None:
+    """[law: specificity] among the clauses that fit a call the most specific wins and, among
+    equally specific ones, the newest by path ordinal: `f : x: one` then `f : x: Int` sends
+    `1 f` to the Int clause, written the other way round to the one clause (P6)."""
+    clauses = ONE_CLAUSE + INT_CLAUSE if one_first else INT_CLAUSE + ONE_CLAUSE
+    fits = {"one": value == "1", "int": value != "“a”"}
+    written = ["one", "int"] if one_first else ["int", "one"]
+    winner = next((word for word in reversed(written) if fits[word]), None)
+    if winner is None:
+        with pytest.raises(FplError, match=r"^ERROR: 5:1 no row matches$"):
+            run(ONE + clauses + f"{value} f\n")
+        return
+    assert run(ONE + clauses + f"{value} f\n") == f"#{winner}\n"
+
+
+def test_p1_and_p2() -> None:
+    """[law: specificity] P1 prints `#int` then `#any`; P2, Draft 4's collide, prints `#boom
+    #boom #bounce #miss`."""
+    p1 = "f : x -- y\n\tdrop #any\nf : x: Int -- y\n\tdrop #int\n5 f\n“a” f\n"
+    assert run(p1) == "#int\n#any\n"
+    p2 = (
+        "ship : x -- b\n\tmatch\n\t\t#ship\t1\n\t\t_\t0\n"
+        "rock : x -- b\n\tmatch\n\t\t#rock\t1\n\t\t_\t0\n"
+        "collide : a: rock  b: ship -- o\n\tdrop drop #boom\n"
+        "collide : a: ship  b: rock -- o\n\tswap collide\n"
+        "collide : a: ship  b: ship -- o\n\tdrop drop #bounce\n"
+        "collide : a  b -- o\n\tdrop drop #miss\n"
+        "#rock | #ship collide\n#ship | #rock collide\n"
+        "#ship | #ship collide\n#rock | #rock collide\n"
+    )
+    assert run(p2) == "#boom\n#boom\n#bounce\n#miss\n"
+
+
+def rowed(define: Define) -> list[str]:
+    """The clause each row of a dispatcher calls, in row order."""
+    match define.code:
+        case (Match(rows=rows),):
+            return [call.name for row in rows for call in row.body[-1:] if isinstance(call, Call)]
+        case _:
+            return []
+
+
+@given(
+    st.lists(
+        st.tuples(st.sampled_from([None, "p", "q"]), st.sampled_from([None, "p", "q"])),
+        min_size=1,
+        max_size=5,
+    )
+)
+def test_rows_sort_by_typed_count_then_newest(keys: list[tuple[str | None, str | None]]) -> None:
+    """[law: dispatch-order] a dispatcher's real rows sort by typed-position count descending
+    and, at equal count, newest first by path ordinal; a crossing pair not disjoint is refused
+    as unimplemented until its meet is checked."""
+    order = list(dict.fromkeys(keys))
+    typings = [frozenset(j for j, part in enumerate(key) if part) for key in order]
+    slots = [[f"{v}: {t}" if t else v for v, t in zip("ab", key, strict=True)] for key in keys]
+    heads = [" ".join(slot) for slot in slots]
+    source = PQ + "".join(f"f : {h} -- y\n\tdrop drop {k}\n" for k, h in enumerate(heads))
+    if any(not (s <= t or t <= s) for s in typings for t in typings):
+        with pytest.raises(FplError, match=r"^ERROR: 1:1 no evaluator yet$"):
+            desugar(parse(source))
+        return
+    if len(order) == 1 and not typings[0]:
+        return
+    dispatcher = next(s for s in desugar(parse(source)) if isinstance(s, Define) and s.clauses)
+    ranked = sorted(range(len(order)), key=lambda i: (-len(typings[i]), -i))
+    assert rowed(dispatcher) == [f"f/2/{i + 1}" for i in ranked]
+
+
+TEXT = "Text : x -- b\n\tdrop 1\n"
+
+
+@given(st.booleans(), st.sampled_from(["5", "“a”"]))
+def test_a_redefined_type_word_is_disjoint_from_nothing(redefined: bool, value: str) -> None:
+    """[law: shadowed-disjoint] two different unshadowed builtin type words at one position make
+    two clauses disjoint and nothing else does; a type word the program redefines is a user
+    predicate everywhere, run as the slot's guard and disjoint from nothing."""
+    prelude = TEXT if redefined else ""
+    source = prelude + "f : x: Int -- y\n\tdrop #int\nf : x: Text -- y\n\tdrop #text\n"
+    int_wins = value == "5" and not redefined
+    assert run(source + f"{value} f\n") == ("#int\n" if int_wins else "#text\n")
+    body = "\tdrop drop drop 1\n"
+    h = f"h : x: Int  y: Int  z -- o\n{body}h : x: Text  y  z: Int -- o\n{body}"
+    if redefined:
+        with pytest.raises(FplError, match=r"^ERROR: 1:1 no evaluator yet$"):
+            desugar(parse(prelude + h))
+        return
+    assert run(h) == ""
+
+
+P7 = SHAPES + AREA + "area : ( rect w h ) -- n\n\tw h times\narea : s -- n\n\tdrop 0\n"
+
+
+@given(st.integers(0, 9), st.integers(0, 9), st.integers(0, 9))
+def test_head_groups_dispatch_beside_other_clauses(radius: int, w: int, h: int) -> None:
+    """[law: head-group] beside other clauses a group clause's dispatcher row binds a prime-fresh
+    `_` at the group and tests it with the generated word `f/n/i`, a prime and `k`, without
+    consuming the value: P7 prints the circle's and the rect's areas, and 0."""
+    runs = f"{radius} circle area\n{w} | {h} rect area\n5 area\n"
+    assert run(P7 + runs) == f"{radius * radius}\n{w * h}\n0\n"
+    dispatcher = next(s for s in desugar(parse(P7)) if isinstance(s, Define) and s.clauses)
+    blank = Var("_\N{PRIME}1")
+    tests = [Guarded(blank, f"area/1/{i}\N{PRIME}1", Span(5, 1)) for i in (2, 1)]
+    match dispatcher.code:
+        case (Match(rows=rows),):
+            patterns = [row.patterns for row in rows]
+            assert patterns == [(tests[0],), (tests[1],), (Var("s\N{PRIME}1"),)]
+        case _:
+            pytest.fail(f"not a match: {dispatcher.code}")
