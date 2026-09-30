@@ -522,3 +522,27 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Default in force: prim p : B ! ε when Σ.admits the instance; schematic constants are one instance per use; box, held_o, control_w and truth are constants of Σ_walker this design adds
 - Closes by: incipit, saying whether "computation constants of their CBPV type" admits instances and these added constants
 - Evidence: statement "primitive words are computation constants of their CBPV type"
+
+## iteration-constants
+- Depends on it: fpl/cbpv/sig.py Iterating, fpl/cbpv/machine.py Loop frame, fpl/lower/walker.py each scan fold repeat_w
+- Default in force: each, scan, fold and repeat are constants that run a thunk through a loop frame in the machine; they are total (no div), their bodies are machine steps (fuel, labels, events, fail)
+- Closes by: incipit, adding the constant rules to the statement's CK machine, or deriving the four with rec and accepting div on them
+- Evidence: statement: "primitive words are computation constants"; incipit's label rule "every body an iteration primitive repeats begins with a label"; fpl/eval.py each, scan, fold, repeat
+
+## fail-frames
+- Depends on it: fpl/cbpv/machine.py fail rule, fpl/lower/polarise.py match
+- Default in force: the statement's K has supervisor :: K, but no term installs a supervisor frame; fail W always unwinds to the root and ends the run as Failed(W); the walker's match failure maps to it with the walker's error line
+- Closes by: incipit and palimpsest, with the term that installs a supervisor, the frame shape (rows 15, 16, 43) and rescue in the walker
+- Evidence: statement's CK rule for fail ("frame shape: hole fail-frames"); walker hole fail-raises
+
+## capabilities-unexercised
+- Depends on it: fpl/cbpv/check.py op rule, fpl/cbpv/machine.py op rule and replay
+- Default in force: op V W is typed, run and replayed only in IR-generated programs over a test capability; the walker has no capability and the lowering never emits op
+- Closes by: the first walker capability (in, out, rows 25-26), and the lowering of its words
+- Evidence: fpl/ast_core.py EFFECTS (no capability words)
+
+## absurd-rule
+- Depends on it: fpl/cbpv/machine.py, tests/cbpv_ck.py
+- Default in force: absurd V has no CK rule; no closed checked run reaches it; the machine ends such a state Stuck, reached only by a fixed test on an unchecked program
+- Closes by: incipit, if a rule is wanted (none is needed while 0 has no closed values)
+- Evidence: statement CK rules (none for absurd)
