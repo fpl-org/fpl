@@ -5,6 +5,7 @@ third-party packages other than icontract, and names the file and the import it 
 """
 
 import ast
+import subprocess
 import sys
 from pathlib import Path
 
@@ -12,7 +13,17 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-ROOT = Path(__file__).parent.parent
+# The checkout's sources, not the test file's parent: under mutmut the tests run from mutants/,
+# whose rewritten copies import mutmut's trampoline, and the law is about the code as written.
+ROOT = Path(
+    subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=Path(__file__).parent,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+)
 FILES = sorted((ROOT / "fpl" / "asm" / "aarch64").rglob("*.py"))
 ALLOWED = sys.stdlib_module_names | {"icontract"}
 
