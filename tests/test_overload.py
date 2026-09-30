@@ -620,15 +620,18 @@ def rowed(define: Define) -> list[str]:
 )
 def test_rows_sort_by_typed_count_then_newest(keys: list[tuple[str | None, str | None]]) -> None:
     """[law: dispatch-order] a dispatcher's real rows sort by typed-position count descending
-    and, at equal count, newest first by path ordinal; a crossing pair not disjoint is refused
-    as unimplemented until its meet is checked."""
+    and, at equal count, newest first by path ordinal; a crossing pair whose meet is not a
+    clause is refused."""
     order = list(dict.fromkeys(keys))
     typings = [frozenset(j for j, part in enumerate(key) if part) for key in order]
     slots = [[f"{v}: {t}" if t else v for v, t in zip("ab", key, strict=True)] for key in keys]
     heads = [" ".join(slot) for slot in slots]
     source = PQ + "".join(f"f : {h} -- y\n\tdrop drop {k}\n" for k, h in enumerate(heads))
-    if any(not (s <= t or t <= s) for s in typings for t in typings):
-        with pytest.raises(FplError, match=r"^ERROR: 1:1 no evaluator yet$"):
+    typed = list(zip(order, typings, strict=True))
+    crossing = [(a, b) for a, s in typed for b, t in typed if s - t]
+    meets = {tuple(x or y for x, y in zip(a, b, strict=True)) for a, b in crossing}
+    if not meets <= set(order):
+        with pytest.raises(FplError, match=r" is ambiguous with f/2/\d at "):
             desugar(parse(source))
         return
     if len(order) == 1 and not typings[0]:
@@ -678,3 +681,53 @@ def test_head_groups_dispatch_beside_other_clauses(radius: int, w: int, h: int) 
             assert patterns == [(tests[0],), (tests[1],), (Var("s\N{PRIME}1"),)]
         case _:
             pytest.fail(f"not a match: {dispatcher.code}")
+
+
+P3 = "g : x: Int  y -- z\n\tdrop drop #left\ng : x  y: Int -- z\n\tdrop drop #right\n"
+MEET = "g : x: Int  y: Int -- z\n\tdrop drop #both\n"
+
+
+@given(st.integers(0, 2))
+def test_p3_is_refused_until_its_meet_is_a_clause(at: int) -> None:
+    """[law: static-ambiguity] P3 is refused at 3:1, `g/2/2 is ambiguous with g/2/1 at x: Int
+    y: Int`; with the meet written anywhere it prints `#both #left #right`."""
+    runs = "1 | 2 g\n1 | “a” g\n“a” | 2 g\n"
+    refusal = r"^ERROR: 3:1 g/2/2 is ambiguous with g/2/1 at x: Int  y: Int$"
+    with pytest.raises(FplError, match=refusal):
+        run(P3 + runs)
+    lines = P3.splitlines(keepends=True)
+    clauses = ["".join(lines[:2]), "".join(lines[2:])]
+    clauses.insert(at, MEET)
+    assert run("".join(clauses) + runs) == "#both\n#left\n#right\n"
+
+
+PARTS3 = st.tuples(*[st.sampled_from([None, "Int", "Text", "p"])] * 3)
+
+
+@given(PARTS3, PARTS3, st.booleans())
+def test_crossing_clauses_are_refused_unless_their_meet_is_a_clause(
+    a: tuple[str | None, ...], b: tuple[str | None, ...], meet: bool
+) -> None:
+    """[law: static-ambiguity] two clauses of one arity whose typed positions cross, that are
+    not disjoint and agree wherever both are typed, are refused at the later head before
+    anything runs, unless the meet is itself a clause."""
+    s, t = ({j for j, part in enumerate(key) if part} for key in (a, b))
+    pairs = list(zip(a, b, strict=True))
+    clash = [{x, y} for x, y in pairs if x and y and x != y]
+    if s <= t or t <= s or {"Int", "Text"} in clash:
+        return
+    joined = tuple(x or y for x, y in pairs)
+    slots = [[f"{v}: {p}" if p else v for v, p in zip("xyz", key, strict=True)] for key in (a, b)]
+    keys = [*slots, [f"{v}: {p}" if p else v for v, p in zip("xyz", joined, strict=True)]]
+    heads = [" ".join(key) for key in keys[: 2 + meet]]
+    clauses = "".join(f"h : {h} -- o\n\tdrop drop drop 1\n" for h in heads)
+    source = "p : x -- b\n\tdrop 1\n" + clauses
+    if clash:
+        with pytest.raises(FplError, match=r"^ERROR: 1:1 no evaluator yet$"):
+            desugar(parse(source))
+    elif meet:
+        assert run(source) == ""
+    else:
+        refusal = f"^ERROR: 5:1 h/3/2 is ambiguous with h/3/1 at {'  '.join(keys[2])}$"
+        with pytest.raises(FplError, match=refusal):
+            desugar(parse(source))

@@ -177,7 +177,7 @@ class Catalog:
 
     def dispatched(self, path: str, builtins: frozenset[str]) -> None:
         """A word's arity groups f/n, each with its clauses f/n/i, of which two whose typed
-        inputs cross are refused (hole unimplemented-words) unless builtins make them disjoint;
+        inputs cross are refused unless builtins make them disjoint or their meet is a clause;
         f/n's doc and history are its clause's when it has one, refused naming its clauses
         otherwise; f's queries are those of its only group, refused naming its groups when it
         has more."""
@@ -185,7 +185,7 @@ class Catalog:
         groups = {len(key): self.clauses(path, len(key)) for key in self.heads[path]}
         self.groups[path] = tuple(sorted(groups))
         for n, clauses in groups.items():
-            crossed(clauses, builtins)
+            crossed(f"{path}/{n}", clauses, builtins)
             self.logs[here].append(str(n))
             ordinals = [str(i) for i in range(1, len(clauses) + 1)]
             self.queried((*here, str(n)), shared([effect for effect, _ in clauses]), ordinals)
@@ -398,14 +398,44 @@ def typings(effect: Effect) -> frozenset[int]:
     return frozenset(i for i, part in enumerate(effect.types) if part is not None)
 
 
-def crossed(clauses: list[Head], builtins: frozenset[str]) -> None:
-    """Refuse two clauses each typed where the other is not, unless disjoint: two different
-    builtins at one position (hole unimplemented-words)."""
-    for (a, _), (b, _) in combinations(clauses, 2):
-        ordered = typings(a) <= typings(b) or typings(b) <= typings(a)
-        pairs = zip(a.types, b.types, strict=True)
-        if not ordered and not any(x != y and {x, y} <= builtins for x, y in pairs):
+def crossed(group: str, clauses: list[Head], builtins: frozenset[str]) -> None:
+    """Refuse two clauses each typed where the other is not, unless disjoint, two different
+    builtins at one position, or their meet, each input typed as either types it, is itself a
+    clause: at the later head, naming the meet (design 09 §3.3). A meet one input would type
+    two ways is refused as unimplemented (hole unimplemented-words)."""
+    written = {effect.types for effect, _ in clauses}
+    for a, b in combinations(enumerate(clauses, 1), 2):
+        first, second = a[1][0], b[1][0]
+        ordered = typings(first) <= typings(second) or typings(second) <= typings(first)
+        if ordered or disjoint(first, second, builtins):
+            continue
+        meet = met(first, second)
+        if meet is None:
             unimplemented()
+        if meet.types not in written:
+            (later, (_, span)), (earlier, _) = sorted((a, b), key=lambda c: -c[1][1].line)
+            message = f"{group}/{later} is ambiguous with {group}/{earlier} at {spoken(meet)}"
+            raise FplError(span, message)
+
+
+def disjoint(a: Effect, b: Effect, builtins: frozenset[str]) -> bool:
+    """Two clauses no value fits both of: two different builtins at one position."""
+    return any(x != y and {x, y} <= builtins for x, y in zip(a.types, b.types, strict=True))
+
+
+def met(a: Effect, b: Effect) -> Effect | None:
+    """Two clauses' meet: a's effect, each input typed as either types it; None when both type
+    one input differently."""
+    pairs = list(zip(a.types, b.types, strict=True))
+    if any(x is not None and y is not None and x != y for x, y in pairs):
+        return None
+    return replace(a, types=tuple(x or y for x, y in pairs))
+
+
+def spoken(effect: Effect) -> str:
+    """An effect's inputs as a head writes them, `x: T` where typed, two spaces apart."""
+    pairs = zip(effect.ins, effect.types, strict=True)
+    return "  ".join(name if part is None else f"{name}: {part}" for name, part in pairs)
 
 
 def shared(clauses: list[Effect]) -> Effect:
