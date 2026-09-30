@@ -28,6 +28,9 @@
 # Advisory (documented, not machine-checkable): imperative mood, one logical
 # change per commit, hunk-level staging.
 #
+# Leak gate (first, before any bypass: a merge message names branches): no private
+# term or secret in the message (scripts/leak-check; FPL_LEAK_GATE=warn overrides).
+#
 # Bypassed for merge/revert/fixup/squash messages.
 #
 # Lint mode (scripts/commit-lint, CI): FPL_LINT_COMMIT=<sha> judges a commit that
@@ -44,6 +47,9 @@ msg_file="$1"
 repo_root="$(git rev-parse --show-toplevel)"
 first="$(sed -n '1p' "$msg_file")"
 lint_commit="${FPL_LINT_COMMIT:-}"
+
+# The private list is local, so there is nothing to judge a landed commit against in CI.
+[ -n "$lint_commit" ] || "$repo_root/scripts/leak-check" --message "$msg_file"
 
 fail() {
 	echo "commit-msg: $1" >&2
