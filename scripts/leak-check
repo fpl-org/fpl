@@ -1,0 +1,282 @@
+#!/usr/bin/env bash
+#
+# scripts/leak-check — keep private terms, and secrets, out of a public repository.
+#
+#   leak-check --staged          the staged change: its added lines and its file names
+#   leak-check --message FILE    a commit message, as commit-msg is handed it
+#   leak-check --range REVS      every commit REVS names: patches, file names, messages.
+#                                REVS is what git rev-list takes: A..B, or
+#                                'B --not --remotes' for a branch new to the forge
+#   leak-check --text FILE       free text: a pull request's title and body, ref names
+#   leak-check --self-test       every mode against a synthetic list, in a temp repo
+#
+# The mechanism is public, the terms are not (Kerckhoffs). The terms live in private lists
+# that are never committed, one per clone and one per maintainer, either or both absent:
+#
+#   $(git rev-parse --git-common-dir)/leak-patterns
+#   ${XDG_CONFIG_HOME:-$HOME/.config}/fpl/leak-patterns
+#
+# One extended regular expression per line, matched case-insensitively; blank lines and
+# lines starting with '#' are skipped, and so is whitespace around a line. Line n of the
+# clone's list is rule leak-<n>, of the maintainer's leak-u<n>: gitleaks keys rules by id,
+# so two lists cannot share one numbering.
+#
+# gitleaks does the matching. It runs twice over the same input: once with a config that
+# holds only the private rules, and once with its own default rules, which find real
+# secrets (keys, tokens) with no list at all. Two runs, not one config extending the
+# defaults, because the defaults carry a global allowlist (lock files, images, vendored
+# code, gitleaks.toml) that would hide a private term in any of those files. Its escape
+# hatches are shut: 'gitleaks:allow' comments are ignored, and so is any .gitleaksignore,
+# since both would sit in the very tree being judged. Only added lines are judged, so
+# removing a line never trips the check. A merge is judged by what it adds beyond the
+# automatic merge (git's remerge diff), which is where an evil merge hides.
+#
+# Nothing it prints contains a term: gitleaks redacts what it matched, its own messages
+# (which may quote a rule) are swallowed while a private list exists, and a file name that
+# itself matches is reported by position, never by name. A report gives the rule, the list
+# line it came from, and where: commit, file, line.
+#
+#   FPL_LEAK_GATE = block (default) | warn (report, don't refuse) | off
+#
+# Exit 0: nothing found (or warn/off). 1: something found, or the check could not run
+# while a private list exists. With no list and no gitleaks it warns and passes: there is
+# nothing private to protect, and the default rules are a bonus, not the point.
+
+set -euo pipefail
+
+die() {
+	printf 'leak-check: %s\n' "$*" >&2
+	exit 1
+}
+
+gate="${FPL_LEAK_GATE:-block}"
+case "$gate" in
+block | warn) ;;
+off) exit 0 ;;
+*) die "FPL_LEAK_GATE is '$gate'; it takes block, warn or off" ;;
+esac
+
+# The private lists, as "<tag>|<path>" lines; the tag prefixes the rule number. The
+# clone's list resolves only inside a repository; --text and --message work outside one.
+lists() {
+	local common
+	if common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
+		printf '|%s\n' "$common/leak-patterns"
+	fi
+	printf 'u|%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/fpl/leak-patterns"
+}
+
+# Writes the private config to $tmp/private.toml, one rule per term, and $tmp/ids, which
+# maps each rule id to "<list>:<line>". Sets $terms to the number of rules.
+build() {
+	local tag list n line re id
+	terms=0
+	: >"$tmp/private.toml"
+	: >"$tmp/ids"
+	while IFS='|' read -r tag list; do
+		[ -r "$list" ] || continue
+		n=0
+		while IFS= read -r line || [ -n "$line" ]; do
+			n=$((n + 1))
+			line="${line%$'\r'}"
+			line="${line#"${line%%[![:space:]]*}"}"
+			line="${line%"${line##*[![:space:]]}"}"
+			case "$line" in '' | '#'*) continue ;; esac
+			id="leak-$tag$n"
+			# A TOML basic string: only the backslash and the quote need escaping.
+			re="${line//\\/\\\\}"
+			re="${re//\"/\\\"}"
+			printf '[[rules]]\nid = "%s"\ndescription = "a private term"\nregex = "(?i)%s"\n\n' \
+				"$id" "$re" >"$tmp/rule-$id.toml"
+			cat "$tmp/rule-$id.toml" >>"$tmp/private.toml"
+			printf '%s\t%s:%s\n' "$id" "$list" "$n" >>"$tmp/ids"
+			terms=$((terms + 1))
+		done <"$list"
+	done < <(lists)
+}
+
+# gitleaks with the given config and arguments, the findings appended to $tmp/hits as
+# "rule<TAB>file<TAB>line<TAB>commit". Returns 0 clean, 3 found, anything else: failed.
+scan() {
+	local config="$1" rc=0
+	shift
+	# --gitleaks-ignore-path points at an empty directory, but gitleaks also honours a
+	# .gitleaksignore in the root it scans; so the callers hand it the git directory.
+	gitleaks "$@" --config "$config" --no-banner --redact=100 --exit-code 3 \
+		--ignore-gitleaks-allow --gitleaks-ignore-path "$tmp/noignore" \
+		--report-format template --report-template "$tmp/report.tmpl" --report-path - \
+		>>"$tmp/hits" 2>"$tmp/stderr" || rc=$?
+	case "$rc" in 0 | 3) return "$rc" ;; esac
+	# gitleaks failed. Its message may quote a rule, so it is shown only when no rule is
+	# private. With a list, find the line it choked on by trying each rule alone.
+	if [ "$terms" -eq 0 ]; then
+		sed 's/^/leak-check: gitleaks: /' "$tmp/stderr" >&2
+		die "gitleaks failed (exit $rc)"
+	fi
+	local id where
+	while IFS=$'\t' read -r id where; do
+		gitleaks stdin --config "$tmp/rule-$id.toml" --no-banner </dev/null >/dev/null 2>&1 ||
+			die "$where: gitleaks cannot use this line as a regular expression"
+	done <"$tmp/ids"
+	die "gitleaks failed (exit $rc); its message is withheld, since it may quote a private term"
+}
+
+# Both rule sets over one input. $1 is how gitleaks reads it: "git" or "stdin" (then
+# stdin is the input, saved once and replayed). Returns 0 clean, 3 found.
+scan_both() {
+	local how="$1" rc=0
+	shift
+	if [ "$how" = stdin ]; then
+		cat >"$tmp/input"
+		[ "$terms" -eq 0 ] || scan "$tmp/private.toml" stdin "$@" <"$tmp/input" || rc=$?
+		scan "$tmp/default.toml" stdin "$@" <"$tmp/input" || rc=$?
+	else
+		[ "$terms" -eq 0 ] || scan "$tmp/private.toml" git "$@" || rc=$?
+		scan "$tmp/default.toml" git "$@" || rc=$?
+	fi
+	return "$rc"
+}
+
+# File names through the private rules: $tmp/names holds them, one per line. Writes the
+# 1-based positions of the names that match to $tmp/namehits, and keeps those findings
+# out of $tmp/hits, where a content finding would print the name.
+names() {
+	: >"$tmp/namehits"
+	[ "$terms" -gt 0 ] || return 0
+	cp "$tmp/hits" "$tmp/hits.keep"
+	: >"$tmp/hits"
+	scan "$tmp/private.toml" stdin <"$tmp/names" || true
+	cut -f3 "$tmp/hits" | sort -un >"$tmp/namehits"
+	mv "$tmp/hits.keep" "$tmp/hits"
+}
+
+# Prints one line per finding. $1 says where a stdin finding sits ("the message"); for
+# git findings the file and commit come from gitleaks. Names listed in $tmp/badnames are
+# never printed. $2, if given, maps a stdin line to a commit ($tmp/lines: "line<TAB>sha").
+report() {
+	local what="$1"
+	sort -u "$tmp/hits" | awk -F'\t' -v what="$what" \
+		-v ids="$tmp/ids" -v bad="$tmp/badnames" -v lines="$tmp/lines" '
+		BEGIN {
+			while ((getline l < ids) > 0) { split(l, f, "\t"); from[f[1]] = f[2] }
+			while ((getline l < bad) > 0) hidden[l] = 1
+			while ((getline l < lines) > 0) { split(l, f, "\t"); sha[f[1]] = f[2]; off[f[1]] = f[3] }
+		}
+		{
+			rule = $1 " (" ($1 in from ? from[$1] : "a gitleaks default rule") ")"
+			if ($2 == "") {
+				if ($3 in sha) where = substr(sha[$3], 1, 12) " message, line " ($3 - off[$3])
+				else where = what ", line " $3
+			} else {
+				file = ($2 in hidden) ? "a file whose name matches too" : $2
+				where = ($4 == "" ? "" : substr($4, 1, 12) " ") file ":" $3
+			}
+			printf "leak-check: %s: %s\n", where, rule
+		}' >&2
+}
+
+# One summary for everything found, and the verdict.
+verdict() {
+	local found="$1"
+	[ "$found" -eq 0 ] && return 0
+	{
+		echo "leak-check: found what may not be published (the match itself is withheld)."
+		echo "            Remove it, or FPL_LEAK_GATE=warn to override."
+	} >&2
+	[ "$gate" = warn ] && return 0
+	return 1
+}
+
+# File names: a name that matches is reported by its position among the names, and
+# remembered in $tmp/badnames so no content finding prints it either. Returns 3 on a match.
+check_names() {
+	local where="$1" pos total
+	names
+	[ -s "$tmp/namehits" ] || return 0
+	total="$(wc -l <"$tmp/names" | tr -d ' ')"
+	while read -r pos; do
+		sed -n "${pos}p" "$tmp/names" >>"$tmp/badnames"
+		printf 'leak-check: %s, file name %s of %s: %s\n' "$where" "$pos" "$total" \
+			"the name itself matches a private term" >&2
+	done <"$tmp/namehits"
+	return 3
+}
+
+self_test() {
+	exec "$(dirname "$0")/leak-check-self-test"
+}
+
+[ "${1:-}" = --self-test ] && self_test
+
+mode="${1:-}"
+arg="${2:-}"
+case "$mode" in
+--staged) [ $# -eq 1 ] || die "usage: leak-check --staged" ;;
+--message | --text) [ $# -eq 2 ] && [ -r "$arg" ] || die "usage: leak-check $mode <readable file>" ;;
+--range) [ $# -eq 2 ] && [ -n "$arg" ] || die "usage: leak-check --range <revs>" ;;
+*) die "usage: leak-check --staged | --message FILE | --range REVS | --text FILE | --self-test" ;;
+esac
+
+# git hands a hook relative paths in these; gitleaks runs git from elsewhere.
+for v in GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY; do
+	case "${!v:-/}" in /*) ;; *) export "$v=$PWD/${!v}" ;; esac
+done
+
+tmp="$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/leak-check.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+umask 077
+mkdir "$tmp/noignore"
+: >"$tmp/hits"
+: >"$tmp/badnames"
+: >"$tmp/lines"
+build
+
+if ! command -v gitleaks >/dev/null; then
+	[ "$terms" -eq 0 ] || die "gitleaks not found; enter the dev shell (nix develop)"
+	echo "leak-check: gitleaks not found, so nothing was checked (nix develop has it)" >&2
+	exit 0
+fi
+
+printf '{{range .}}{{.RuleID}}\t{{.File}}\t{{.StartLine}}\t{{.Commit}}\n{{end}}' >"$tmp/report.tmpl"
+printf '[extend]\nuseDefault = true\n' >"$tmp/default.toml"
+
+found=0
+case "$mode" in
+--staged)
+	gitdir="$(git rev-parse --absolute-git-dir)"
+	git diff --cached --name-only --no-renames --diff-filter=d -z | tr '\0' '\n' >"$tmp/names"
+	check_names "the staged change" || found=1
+	scan_both git --staged "$gitdir" || found=1
+	report "the staged change"
+	;;
+--message)
+	# commit-msg sees the message before cleanup: with `git commit -v` the diff sits
+	# below the scissors line, removed lines included. Git drops all of that.
+	sed '/^# -\{24\} >8 -\{24\}$/,$d' "$arg" >"$tmp/message"
+	scan_both stdin <"$tmp/message" || found=1
+	report "the message"
+	;;
+--text)
+	scan_both stdin <"$arg" || found=1
+	report "$arg"
+	;;
+--range)
+	gitdir="$(git rev-parse --absolute-git-dir)"
+	# shellcheck disable=SC2086 # REVS is a list of rev-list arguments, split on purpose
+	git log --format= --name-only --diff-filter=d -m $arg | sort -u >"$tmp/names"
+	check_names "the commits of $arg" || found=1
+	scan_both git "--log-opts=--diff-merges=remerge $arg" "$gitdir" || found=1
+	# Every message in one stdin run. A marker line per commit, blanked before the scan,
+	# gives each finding's line its commit: $tmp/lines holds line, sha, marker line.
+	# shellcheck disable=SC2086
+	git log --format=$'\x01%H%n%B' $arg >"$tmp/messages"
+	: >"$tmp/blanked"
+	awk -v blanked="$tmp/blanked" '
+		/^\x01/ { sha = substr($0, 2); at = NR; print "" > blanked; next }
+		{ print > blanked; if (sha != "") print NR "\t" sha "\t" at }' \
+		"$tmp/messages" >"$tmp/lines"
+	scan_both stdin <"$tmp/blanked" || found=1
+	report "the messages of $arg"
+	;;
+esac
+verdict "$found"
