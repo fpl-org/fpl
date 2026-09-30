@@ -1,6 +1,7 @@
 """Oracle tests against the pinned LLVM tools: first, that they are the pinned ones."""
 
 import platform
+import re
 import subprocess
 from dataclasses import replace
 from functools import cache, partial
@@ -23,13 +24,16 @@ from aarch64_oracle import (
     verdict,
 )
 from aarch64_strategies import (
+    CELLS,
     Drawn,
+    accepted_cell,
     add_sub_imm,
     excluded,
     far_branches,
     instructions,
     invalid_programs,
     load_store,
+    pair_cell,
     programs,
     rewrites_offset,
     witnesses,
@@ -45,6 +49,8 @@ from fpl.asm.aarch64.model import (
     Offset,
     OpAddSub,
     OpLoadStore,
+    OpPair,
+    Pair,
     Program,
     Reg,
     Width,
@@ -257,3 +263,42 @@ def test_past_the_rewrite_sets_both_refuse_and_at_the_boundaries_neither(
     found = verdict(tools, print_program((instr,)), tmp_path_factory.mktemp("edge"))
     assert found.lines == ({1} if refused else set()), found.said
     assert (check((instr,)) != ()) == refused
+
+
+# llvm-mc's error lines with their messages; `verdict` keeps the line numbers only.
+MESSAGE = re.compile(r"^[^\n:]+:(\d+):\d+: error: (.*)$", re.MULTILINE)
+
+
+def refusal(cell: tuple[OpPair, Width, object, str]) -> str:
+    """What llvm-mc says on a refused cell: Rt2==Rt for rt == rt2, else the writeback base
+    is a destination (loads) or a source (stp)."""
+    op, _, _, overlap = cell
+    if overlap == "rt2":
+        return "Rt2==Rt"
+    return "writeback base is also a " + ("source" if op is OpPair.STP else "destination")
+
+
+@settings(backend="hypothesis")
+@given(pairs=st.tuples(*(pair_cell(*cell) for cell in CELLS)))
+def test_unpredictable_pairs_are_refused_by_the_checker_and_by_llvm_mc_but_five(
+    tmp_path_factory: pytest.TempPathFactory, worker_id: str, pairs: tuple[Pair, ...]
+) -> None:
+    """[law: unpredictable-pairs] Both grids of design section 4, cell by cell, one cell per
+    line: check reports UNPREDICTABLE on every line; llvm-mc accepts exactly the five
+    checker-only cells (ldp rt == rt2 pre- and post-indexed, ldpsw rt == rt2 pre-indexed,
+    post-indexed ldpsw with rn == rt or rn == rt2) and refuses every other cell on its line
+    with the grid's message; the accepted lines alone assemble."""
+    tools = toolchain(tmp_path_factory, worker_id)
+    unpredictable = {p.index for p in check(pairs) if p.kind is Kind.UNPREDICTABLE}
+    assert unpredictable == set(range(len(pairs)))
+    found = verdict(tools, print_program(pairs), tmp_path_factory.mktemp("cells"))
+    said = {int(line): message for line, message in MESSAGE.findall(found.said)}
+    for line, (cell, i) in enumerate(zip(CELLS, pairs, strict=True), 1):
+        accepted = accepted_cell(i)
+        assert (line not in said) == accepted, (cell, i, found.said)
+        assert accepted or refusal(cell) in said[line], (cell, i, said[line])
+    alone = tuple(i for i in pairs if accepted_cell(i))
+    assert len(alone) == 7  # the five cells, ldp's two counted at X and at W
+    again = verdict(tools, print_program(alone), tmp_path_factory.mktemp("accepted"))
+    assert again.code == 0, again.said
+
