@@ -2,8 +2,9 @@
 
 import contextlib
 import re
-from dataclasses import fields, replace
-from typing import Any, get_args
+from collections.abc import Iterator
+from dataclasses import fields, is_dataclass, replace
+from typing import TYPE_CHECKING, Any, cast, get_args
 
 from hypothesis import given
 from hypothesis import strategies as st
@@ -25,6 +26,9 @@ from wasm_strategies import (
     module_parts,
     valid_modules,
 )
+
+if TYPE_CHECKING:
+    from _typeshed import DataclassInstance
 
 from fpl.asm.wasm.instr import (
     Binop,
@@ -161,7 +165,9 @@ def test_a_module_prints_its_types_locals_and_name_exactly() -> None:
     )
 
 
-def test_every_construct_prints_to_wat_that_wabt_assembles_and_validates(wasm_tools: Tools) -> None:
+def test_every_construct_prints_to_wat_that_wabt_assembles_and_validates(
+    wasm_tools: Tools,
+) -> None:
     text = print_module(EVERY_CONSTRUCT)
     done = wat2wasm(wasm_tools, text)
     assert done.returncode == 0, f"{text}\n{done.stderr}"
@@ -195,6 +201,34 @@ def test_the_forms_wabt_cannot_meet_in_one_module_print_exactly() -> None:
     )
 
 
+def _replaced[D: DataclassInstance](value: D, name: str, new: object) -> list[D]:
+    """`value` with field `name` set to `new`, or nothing when its class refuses that."""
+    try:
+        return [replace(value, **{name: new})]
+    except ValueError:
+        return []
+
+
+def one_field_off[T](value: T, donor: T) -> Iterator[T]:
+    """Copies of `value` differing from it in one field at one place: at every dataclass in it
+    whose counterpart in `donor` (tuples aligned by index) is of the same class, each field in
+    turn taken from that counterpart; a copy its class refuses is left out."""
+    node = cast("object", value)
+    if type(donor) is type(node) and is_dataclass(node) and not isinstance(node, type):
+        for f in fields(node):
+            theirs = getattr(donor, f.name)
+            yield from cast("list[T]", _replaced(node, f.name, theirs))
+            for w in one_field_off(getattr(node, f.name), theirs):
+                yield from cast("list[T]", _replaced(node, f.name, w))
+    elif isinstance(node, tuple) and isinstance(donor, tuple):
+        mine, others = (
+            cast("tuple[object, ...]", node),
+            cast("tuple[object, ...]", donor),
+        )
+        for k, (v, d) in enumerate(zip(mine, others, strict=False)):
+            yield from (cast("T", (*mine[:k], w, *mine[k + 1 :])) for w in one_field_off(v, d))
+
+
 def alone(instr: Instr) -> Module:
     """A module whose one function's body is `instr`."""
     return Module(funcs=(Func(0, (), (instr,)),))
@@ -205,14 +239,19 @@ def test_different_modules_print_differently(
     parts: dict[str, Any], name: str, data: st.DataObject
 ) -> None:
     """[law: print-injective] Two different modules print to different text: a module and
-    itself with one field redrawn and, for every instruction class with fields, a module
+    itself with one field redrawn; a module and each copy of it with one field of one of its
+    dataclasses (Limits, GlobalType, Export, Global, Data, Elem, Func, an instruction, ...)
+    taken from a second drawn module; for every instruction class with fields, a module
     holding a drawn instruction and one holding it with one field taken from another draw,
     so near misses such as `select` against `select (result)` meet in every example; and
     every enumerated instance of a finite-operator class prints apart from every other."""
     finite: list[Instr] = [*UNOPS, *BINOPS, *TESTOPS, *RELOPS, *CVTOPS, *LOADS, *STORES]
     assert len({print_module(alone(instr)) for instr in finite}) == len(finite)
     redrawn = data.draw(FIELDS[name].filter(lambda value: value != parts[name]))
-    pairs = [(module_of(parts), module_of(parts | {name: redrawn}))]
+    first = module_of(parts)
+    pairs = [(first, module_of(parts | {name: redrawn}))]
+    second = module_of(data.draw(module_parts))
+    pairs += [(first, other) for other in one_field_off(first, second)]
     for builder in INSTRS.values():
         one, donor = data.draw(builder), data.draw(builder)
         names = [f.name for f in fields(one)]
