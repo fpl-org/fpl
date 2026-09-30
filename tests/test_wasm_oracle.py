@@ -3,8 +3,10 @@
 import dataclasses
 from collections.abc import Callable
 from typing import Literal, get_args
+from unittest import mock
 
 import pytest
+import wasm_oracle
 from hypothesis import given
 from hypothesis import strategies as st
 from wasm_oracle import (
@@ -16,6 +18,7 @@ from wasm_oracle import (
     Run,
     Tools,
     Verdict,
+    pinned,
     resolve,
     run_wabt,
     run_wasmtime,
@@ -30,16 +33,31 @@ from fpl.asm.wasm.types import WIDTH, NumType
 
 store_lines = st.text(alphabet="abc0123456789-./", min_size=1).map(lambda rest: STORE + rest)
 other_lines = st.sampled_from(["", "==> wiring the git hooks", "wat2wasm", " /nix/store/x"])
+seen_versions = st.fixed_dictionaries(
+    {tool: st.sampled_from([version, version + ".1", ""]) for tool, version in VERSIONS.items()}
+)
+DESIGNED = (  # design section 10, law oracle-pinned, verbatim
+    'nix develop "$(git rev-parse --show-toplevel)#wasm"'
+    " -c bash -c 'command -v wat2wasm wasmtime'"
+)
 
 
-@given(st.lists(store_lines | other_lines, max_size=4))
-def test_the_oracles_are_the_pinned_store_paths(wasm_tools: Tools, lines: list[str]) -> None:
-    """[law: oracle-pinned] Resolution takes exactly one /nix/store/ line per tool, no more.
+@given(st.lists(store_lines | other_lines, max_size=4), seen_versions)
+def test_the_oracles_are_the_pinned_store_paths(
+    wasm_tools: Tools, lines: list[str], seen: dict[str, str]
+) -> None:
+    """[law: oracle-pinned] The fixture resolves wabt 1.0.41 and wasmtime 45.0.2 once per
+    session from the worktree's own flake by the design's command, takes exactly one
+    /nix/store/ line per tool, calls absolute paths, and a missing nix is an error.
 
-    The fixture resolved wabt 1.0.41 and wasmtime 45.0.2 from the worktree's own wasm layer;
-    every binary it hands out is an absolute path into the store; and of any stdout the resolving
-    command could print, only exactly two /nix/store/ lines are accepted.
+    RESOLVE is the design's command verbatim; the fixture's value is the one cached resolution
+    of this process; of any stdout the command could print, only exactly two /nix/store/ lines
+    are accepted; every binary is an absolute store path; resolving store paths whose tools
+    report any other versions raises; and the command run without nix raises, never skips.
     """
+    assert RESOLVE == DESIGNED
+    assert wasm_tools is pinned()
+    assert pinned.cache_info().misses == 1
     exact = len(lines) == 2 and all(line.startswith(STORE) for line in lines)
     assert (store_paths("".join(line + "\n" for line in lines)) is not None) == exact
     every = (
@@ -51,9 +69,13 @@ def test_the_oracles_are_the_pinned_store_paths(wasm_tools: Tools, lines: list[s
     )
     assert all(path.is_absolute() and str(path).startswith(STORE) for path in every)
     assert versions(wasm_tools) == VERSIONS
-
-
-def test_without_nix_resolving_is_an_error() -> None:
+    echo = f"printf '%s\\n' '{wasm_tools.wat2wasm}' '{wasm_tools.wasmtime}'"
+    with mock.patch.object(wasm_oracle, "versions", return_value=seen):
+        if seen == VERSIONS:
+            assert resolve(echo) == wasm_tools
+        else:
+            with pytest.raises(OracleError, match="versions: "):
+                resolve(echo)
     with pytest.raises(OracleError, match="/nonexistent/nix develop"):
         resolve(RESOLVE.replace("nix develop", "/nonexistent/nix develop", 1))
 

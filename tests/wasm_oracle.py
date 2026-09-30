@@ -25,6 +25,7 @@ count modulo 256, is ignored. wasmtime stops at its first failing directive, nam
 `batch.wast:L` for a failed directive and a malformed token alike.
 """
 
+import functools
 import re
 import subprocess
 import tempfile
@@ -108,6 +109,13 @@ def resolve(command: str = RESOLVE) -> Tools:
     if missing or versions(tools) != VERSIONS:
         raise OracleError(f"{command}\nmissing: {missing}\nversions: {versions(tools)}")
     return tools
+
+
+@functools.cache
+def pinned() -> Tools:
+    """The pinned oracles, resolved by RESOLVE at most once per process: the session fixture's
+    value, so a second resolution is a cache hit, never a second `nix develop`."""
+    return resolve()
 
 
 def _run(cwd: str, *argv: str | Path) -> subprocess.CompletedProcess[str]:
