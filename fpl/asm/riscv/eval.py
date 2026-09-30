@@ -3,7 +3,9 @@
 `run(program, machine, base, fuel)` executes the program's instructions from the first, one
 step each, and says how it ended: `Halted` on falling off the end, `Trapped` on ecall or ebreak,
 `Unmodelled` at an instruction whose effect the evaluator does not know, `OutOfFuel` when
-`fuel` steps did not reach an end. It never raises on a program the model can hold.
+`fuel` steps did not reach an end. It never raises on a program the model can hold. The
+machine is the integer registers and a window of memory, the bytes at the address x3 holds
+when the run starts.
 
 Register values are unsigned 64-bit ints, as QEMU reports them. `u64` wraps a Python int
 into that range, `sext` sign-extends its low bits into it, and `signed` reads its low bits as
@@ -25,7 +27,13 @@ index of the instruction they stopped at.
 
 The system instructions follow the QEMU virt EEI in M-mode on one hart: ecall is cause 11
 (environment call from M-mode), ebreak cause 3 (breakpoint), and fence and fence.tso order
-nothing. Loads and stores are not modelled.
+nothing.
+
+Loads and stores reach the window only. An access whose bytes all lie in it reads or writes
+them little-endian, the low bytes of rs2 for a store, sign- or zero-extended by the mnemonic
+for a load (2.6, 4.3). A misaligned access completes like an aligned one, as it does on QEMU
+virt; 2.6 leaves that to the execution environment (hole `misaligned-access`). An access with
+any byte outside the window is Unmodelled: real memory, or a fault, the evaluator does not know.
 """
 
 import operator
@@ -49,8 +57,10 @@ from fpl.asm.riscv.model import (
     OpBare,
     OpBranch,
     OpI,
+    OpLoad,
     OpR,
     OpShift,
+    OpStore,
     OpUpper,
     Program,
     R,
@@ -183,15 +193,34 @@ BRANCHES: dict[OpBranch, Callable[[int, int], bool]] = {
     OpBranch.BGEU: operator.ge,
 }
 
+# Each load's size in bytes, and whether it sign-extends what it reads (2.6, 4.3).
+LOADS: dict[OpLoad, tuple[int, bool]] = {
+    OpLoad.LB: (1, True),
+    OpLoad.LH: (2, True),
+    OpLoad.LW: (4, True),
+    OpLoad.LBU: (1, False),
+    OpLoad.LHU: (2, False),
+    OpLoad.LWU: (4, False),
+    OpLoad.LD: (8, True),
+}
+
+# Each store's size in bytes: how many low bytes of rs2 it writes (2.6, 4.3).
+STORES: dict[OpStore, int] = {OpStore.SB: 1, OpStore.SH: 2, OpStore.SW: 4, OpStore.SD: 8}
+
 # The mcause of each trapping instruction in M-mode (privileged spec, Table 14).
 CAUSES: dict[OpBare, int] = {OpBare.ECALL: 11, OpBare.EBREAK: 3}
 
 
 @dataclass(frozen=True, slots=True)
 class Machine:
-    """The 32 integer registers, x0 first, each in `[0, 2**64)`; x0 is 0."""
+    """The 32 integer registers, x0 first, each in `[0, 2**64)`; x0 is 0; and the window.
+
+    The window is the memory the program may load and store: its first byte is at the address
+    x3 holds when a run starts.
+    """
 
     regs: tuple[int, ...]
+    window: bytes = b""
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,11 +275,13 @@ def alu(op: OpR, a: int, b: int) -> int:
 
 @dataclass(frozen=True, slots=True)
 class Code:
-    """A program's instructions at address `base`, each label's instruction index by name."""
+    """A program's instructions at address `base`, each label's instruction index by name, and
+    the address of the window's first byte."""
 
     instrs: tuple[Instr, ...]
     labels: dict[str, int]
     base: int
+    window: int
 
     def address(self, index: int) -> int:
         """The absolute address of the instruction at `index`."""
@@ -278,10 +309,32 @@ def arithmetic(instr: R | I | Shift | Upper, regs: list[int], address: int) -> i
             assert_never(instr)
 
 
-def system(instr: Fence | Bare, index: int, regs: list[int]) -> int | Trapped:
+def system(instr: Fence | Bare, index: int, regs: list[int], window: bytearray) -> int | Trapped:
     """The trap ecall or ebreak raises; the next index for the fences."""
     if isinstance(instr, Bare) and instr.op in CAUSES:
-        return Trapped(CAUSES[instr.op], index, Machine(tuple(regs)))
+        return Trapped(CAUSES[instr.op], index, Machine(tuple(regs), bytes(window)))
+    return index + 1
+
+
+def size(instr: Load | Store) -> int:
+    """How many bytes `instr` accesses."""
+    return LOADS[instr.op][0] if isinstance(instr, Load) else STORES[instr.op]
+
+
+def access(
+    instr: Load | Store, index: int, regs: list[int], window: bytearray, code: Code
+) -> int | Unmodelled:
+    """Load or store the window's bytes `instr` at `index` addresses: the next index."""
+    width = size(instr)
+    address = u64(regs[instr.rs1] + instr.offset)
+    at = address - code.window
+    if not 0 <= at <= len(window) - width:
+        return Unmodelled(index, f"{instr.op} at {address:#x}: outside the window")
+    if isinstance(instr, Load):
+        value = int.from_bytes(window[at : at + width], "little")
+        write(regs, instr.rd, sext(value, 8 * width) if LOADS[instr.op][1] else value)
+    else:
+        window[at : at + width] = regs[instr.rs2].to_bytes(8, "little")[:width]
     return index + 1
 
 
@@ -319,8 +372,9 @@ def control(
     return target
 
 
-def step(code: Code, index: int, regs: list[int]) -> int | Outcome:
-    """Execute the instruction at `index` on `regs` in place: the next index, or the end."""
+def step(code: Code, index: int, regs: list[int], window: bytearray) -> int | Outcome:
+    """Execute the instruction at `index` on `regs` and `window` in place: the next index, or
+    the end."""
     instr = code.instrs[index]
     match instr:
         case R() | I() | Shift() | Upper():
@@ -329,9 +383,9 @@ def step(code: Code, index: int, regs: list[int]) -> int | Outcome:
         case Branch() | Jal() | Jalr():
             return control(instr, index, regs, code)
         case Load() | Store():
-            return Unmodelled(index, f"{instr.op} accesses memory, which is not modelled")
+            return access(instr, index, regs, window, code)
         case Fence() | Bare():
-            return system(instr, index, regs)
+            return system(instr, index, regs, window)
         case _:
             assert_never(instr)
 
@@ -341,19 +395,21 @@ def step(code: Code, index: int, regs: list[int]) -> int | Outcome:
 def run(program: Program, machine: Machine, base: int, fuel: int) -> Outcome:
     """Run `program` from its first instruction, at address `base`, for at most `fuel` steps.
 
-    The registers change in a list local to the run; `machine` and the outcome are values.
+    The registers and the window change in a list and a bytearray local to the run; `machine`
+    and the outcome are values.
     """
     instrs = tuple(item for item in program if not isinstance(item, Label))
-    code = Code(instrs, targets(program), base)
+    code = Code(instrs, targets(program), base, machine.regs[Reg.X3])
     regs = list(machine.regs)
+    window = bytearray(machine.window)
     index = 0
     for _ in range(fuel):
         if index == len(instrs):
             break
-        after = step(code, index, regs)
+        after = step(code, index, regs, window)
         if not isinstance(after, int):
             return after
         index = after
     if index < len(instrs):
         return OutOfFuel()
-    return Halted(Machine(tuple(regs)))
+    return Halted(Machine(tuple(regs), bytes(window)))

@@ -129,7 +129,7 @@ def test_a_write_to_x0_is_discarded() -> None:
 @pytest.mark.parametrize(("op", "cause"), [(OpBare.ECALL, 11), (OpBare.EBREAK, 3)])
 def test_ecall_and_ebreak_trap_with_their_machine_cause(op: OpBare, cause: int) -> None:
     """The QEMU virt EEI in M-mode: the probe exits 11 for ecall and 3 for ebreak."""
-    start = machine({Reg.X1: 5})
+    start = Machine(machine({Reg.X1: 5}).regs, bytes(range(8)))
     outcome = run((NOP, Bare(op), NOP), start, BASE, 10)
     assert isinstance(outcome, Trapped)
     assert (outcome.cause, outcome.index, outcome.machine) == (cause, 1, start)
@@ -141,17 +141,68 @@ def test_fences_do_nothing_on_one_hart() -> None:
     assert halted(program, start) == start
 
 
-UNMODELLED = (
+WINDOW = 0x8000_1000  # where x3 points: the window's first byte
+SIZES = {"b": 1, "h": 2, "w": 4, "d": 8}  # a load's or store's second letter names its size
+
+
+def size(op: OpLoad | OpStore) -> int:
+    """The bytes `op` accesses, read off its mnemonic."""
+    return SIZES[op[1]]
+
+
+def windowed(window: bytes, values: dict[Reg, int]) -> Machine:
+    """The registers `values` names, x3 pointing at `window`, which the machine holds."""
+    return Machine(machine({Reg.X3: WINDOW, **values}).regs, window)
+
+
+@given(
+    st.sampled_from(OpStore),
+    st.sampled_from(OpLoad),
+    st.binary(min_size=256, max_size=256),
+    between(0, ONES),
+    st.data(),
+)
+def test_stores_and_loads_in_the_window_are_little_endian_at_any_offset(
+    store: OpStore, load: OpLoad, window: bytes, value: int, data: st.DataObject
+) -> None:
+    """A store writes the low bytes of rs2 at any offset in the window, aligned or not; a load
+    reads its bytes back, sign-extended unless its mnemonic ends in `u`."""
+    at = data.draw(between(0, 256 - size(store)))
+    back = data.draw(between(0, 256 - size(load)))
+    program = (Store(store, Reg.X1, Reg.X3, at), Load(load, Reg.X2, Reg.X3, back))
+    after = halted(program, windowed(window, {Reg.X1: value}))
+    expected = bytearray(window)
+    expected[at : at + size(store)] = value.to_bytes(8, "little")[: size(store)]
+    loaded = int.from_bytes(expected[back : back + size(load)], "little")
+    bits = 8 * size(load)
+    if not load.endswith("u") and loaded >> (bits - 1):
+        loaded += ONES + 1 - (1 << bits)
+    assert after.window == bytes(expected)
+    assert after.regs == windowed(window, {Reg.X1: value, Reg.X2: loaded}).regs
+
+
+OUTSIDE = (
+    Load(OpLoad.LB, Reg.X1, Reg.X3, -1),
+    Load(OpLoad.LBU, Reg.X1, Reg.X3, 256),
+    Load(OpLoad.LH, Reg.X1, Reg.X3, 255),
+    Load(OpLoad.LD, Reg.X1, Reg.X3, 249),
+    Store(OpStore.SB, Reg.X1, Reg.X3, -1),
+    Store(OpStore.SW, Reg.X1, Reg.X3, 253),
     Load(OpLoad.LD, Reg.X1, Reg.X2, 0),
-    Store(OpStore.SD, Reg.X1, Reg.X2, 0),
 )
 
 
-@pytest.mark.parametrize("instr", UNMODELLED)
-def test_an_unmodelled_instruction_ends_the_run_naming_itself(instr: Instr) -> None:
-    outcome = run((NOP, instr), machine({}), BASE, 10)
+@pytest.mark.parametrize("instr", OUTSIDE)
+def test_an_access_leaving_the_window_is_unmodelled_naming_itself(instr: Load | Store) -> None:
+    """A byte outside the 256 at x3 is real RAM or a fault: the evaluator does not know which."""
+    outcome = run((NOP, instr), windowed(bytes(256), {}), BASE, 10)
     assert isinstance(outcome, Unmodelled)
     assert (outcome.index, instr.op in outcome.why) == (1, True)
+
+
+def test_without_a_window_every_access_is_unmodelled() -> None:
+    outcome = run((Load(OpLoad.LB, Reg.X1, Reg.X3, 0),), windowed(b"", {}), BASE, 10)
+    assert isinstance(outcome, Unmodelled)
 
 
 def test_fuel_bounds_the_steps() -> None:
