@@ -357,12 +357,6 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Closes by: the types part, inferring a quotation's effect and checking the word against it
 - Evidence: combined-draft.md:134 (if : c t e --, fixed valence); claims D2.4, D2.13; no document gives the outputs of !
 
-## thunk-or-code
-- Depends on it: fpl/eval.py force, choose, commute, repeat, each, scan, fold; features/server/examples/server.fpl:20-21
-- Default in force: one Quotation value; every control word runs the quotation it takes, as a thunk; , and enclose treat it as data; no word inspects code, no word declares which it takes, and a quotation both forced and inspected is not refused
-- Closes by: 07 or the types part, classifying each quotation by its consumer and refusing the server.v5 double use
-- Evidence: combined-draft.md:85, :99, :121; claims D1.7 (trace : code -- code), D1.8 (each over code)
-
 ## truth-values
 - Depends on it: fpl/eval.py choose, tests/test_control.py
 - Default in force: if takes the integer 0 or 1 and refuses anything else with "if takes 0 or 1"; the 0/1 of the array model's comparisons, reused
