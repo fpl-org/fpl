@@ -1,0 +1,35 @@
+name: Codex review
+
+# A second reviewer from outside Anthropic. It proposes; a Claude model signs off on anything
+# it proposes before that lands. Codex reviews a pull request when a linked ChatGPT user
+# mentions `@codex review` on it, and the maintainer's plan pays for it. Its automatic mode
+# covers only pull requests he opens himself, while agent work is opened by the machine
+# account, and reviewing every pull request needs a higher plan. So this posts the mention
+# for him, once per pull request, when there is something to judge: opened as ready,
+# reopened, or taken out of draft. Not on every push; a re-review is one more mention by hand.
+#
+# The token is the maintainer's fine-grained personal access token for this repository
+# alone, Pull requests read/write, stored as the secret CODEX_REVIEW_TOKEN: Codex answers a
+# mention by its author. Pull requests from forks get no secrets, so they are skipped.
+on:
+  pull_request:
+    types: [opened, ready_for_review, reopened]
+
+concurrency:
+  group: codex-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  ask:
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ask Codex for a review
+        env:
+          GH_TOKEN: ${{ secrets.CODEX_REVIEW_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "@codex review"
