@@ -509,10 +509,10 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Depends on it: fpl/log.py (write, keyed), the law write-ahead (tests/test_repl.py)
 - Default in force: os.fsync of each file and its directory; on macOS it does not flush the drive's cache (F_FULLFSYNC), so a power loss can lose an append that was printed
 - Closes by: maintainer, a per-platform coverage policy under which a darwin branch to fcntl.F_FULLFSYNC can be kept at 100%
-- Evidence: fpl/log.py:395, :406; fcntl.F_FULLFSYNC exists on darwin only; quality/coveragerc:10 (fail_under = 100)
+- Evidence: fpl/log.py:370, :406, :417; fcntl.F_FULLFSYNC exists on darwin only; quality/coveragerc:10 (fail_under = 100)
 
 ## repl-transcript
 - Depends on it: fpl/repl.py, fpl/session.py (enter), tests/test_repl.py, tests/test_session.py
 - Default in force: an error in an earlier event is ERROR: @<seq> <l>:<c>; CHANGED <seq> $<id> names an earlier input whose output moved; HEAD <seq> $<id> follows an append on stderr; an input after the first starts at the left margin; an input ends at a blank line or once it is not pending; a first line with : is a command (:show :log :rewind E :canonical :quit); joined outputs differ from the file's only where a run leaves a single empty stack; at a terminal a tab inserts itself (GNU readline; libedit untried)
 - Closes by: design, fixing the transcript's form
-- Evidence: tests/test_session.py:117, :126, :136; tests/test_repl.py:250, :284, :330; fpl/print.py:24-31
+- Evidence: tests/test_session.py:117, :126, :136; tests/test_repl.py:264, :299, :345; fpl/print.py:24-31
