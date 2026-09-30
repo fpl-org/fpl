@@ -3,8 +3,11 @@ fpl.asm.aarch64.alias.x_bfx_preferred__mutmut_2 -- equivalent: 32-bit imms 31 is
 fpl.asm.aarch64.alias.x_bfx_preferred__mutmut_22 -- equivalent: imms == width - 1 is ASR or LSR, tried before SBFX and UBFX
 fpl.asm.aarch64.alias.x_bfx_preferred__mutmut_23 -- equivalent: bitfield() already holds imms below the width
 fpl.asm.aarch64.alias.x_ubfm_rows__mutmut_24 -- equivalent: imms + 1 == immr with immr below the width already puts imms below width - 1
+fpl.asm.aarch64.alias.x_extend_row__mutmut_2 -- equivalent: 32-bit SBFM immr 0 imms 31 is ASR, tried before SXTW
 fpl.asm.aarch64.alias.x_extend_row__mutmut_3 -- equivalent: 32-bit SBFM immr 0 imms 31 is ASR, tried before SXTW
+fpl.asm.aarch64.alias.x_extend_row__mutmut_4 -- equivalent: 64-bit UBFM immr 0 imms 7 is UBFX (BFXPreferred), tried before UXTB
 fpl.asm.aarch64.alias.x_extend_row__mutmut_5 -- equivalent: 64-bit UBFM immr 0 imms 7 is UBFX (BFXPreferred), tried before UXTB
+fpl.asm.aarch64.alias.x_extend_row__mutmut_6 -- equivalent: 64-bit UBFM immr 0 imms 15 is UBFX (BFXPreferred), tried before UXTH
 fpl.asm.aarch64.alias.x_extend_row__mutmut_7 -- equivalent: 64-bit UBFM immr 0 imms 15 is UBFX (BFXPreferred), tried before UXTH
 fpl.asm.aarch64.alias.x_extend_row__mutmut_9 -- equivalent: each extend row's other width is taken by an earlier row (ASR for SXTW, UBFX for UXTB and UXTH)
 fpl.asm.aarch64.alias.x_cond_select_rows__mutmut_15 -- equivalent: zero=None is falsy like False
