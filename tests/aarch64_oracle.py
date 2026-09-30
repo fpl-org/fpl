@@ -21,6 +21,7 @@ said: an oracle that cannot run fails the test, it never skips it. The versions 
 import fcntl
 import json
 import platform
+import re
 import shlex
 import subprocess
 import time
@@ -214,3 +215,25 @@ def disassemble(tools: Tools, source: str, work: Path) -> list[str]:
     dumped = run(tools.objdump, *DUMP, work / "text.o").stdout.decode()
     lines = (line.partition("//")[0].rstrip() for line in dumped.splitlines())
     return [line.lstrip(" ") for line in lines if line.startswith(" ")]
+
+
+# The checker oracle: llvm-mc's exit status and the lines it reports errors on. A fixup or
+# undefined-symbol error comes only once the program parsed; the latter has no line.
+ERROR = re.compile(r"^[^\n:]+:(\d+):\d+: error: ", re.MULTILINE)
+
+
+@dataclass(frozen=True, slots=True)
+class Verdict:
+    """llvm-mc's exit status, the 1-based lines it reported errors on, and all it said."""
+
+    code: int
+    lines: frozenset[int]
+    said: str
+
+
+def verdict(tools: Tools, source: str, work: Path) -> Verdict:
+    """Assemble `source` with the text triple, no linker, and read what llvm-mc refused."""
+    (work / "check.s").write_text(source)
+    done = run(tools.mc, TEXT, "-filetype=obj", "-o", work / "check.o", work / "check.s")
+    said = done.stderr.decode()
+    return Verdict(done.returncode, frozenset(int(n) for n in ERROR.findall(said)), said)

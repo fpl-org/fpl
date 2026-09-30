@@ -19,11 +19,21 @@ from aarch64_oracle import (
     reported,
     resolve,
     toolchain,
+    verdict,
 )
-from aarch64_strategies import instructions, witnesses
+from aarch64_strategies import (
+    Drawn,
+    excluded,
+    far_branches,
+    instructions,
+    invalid_programs,
+    programs,
+    witnesses,
+)
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from fpl.asm.aarch64.check import check
 from fpl.asm.aarch64.model import Program
 from fpl.asm.aarch64.text import print_program
 
@@ -137,3 +147,35 @@ def test_every_alias_row_prints_as_llvm_objdump_prints_it(
     tools = toolchain(tmp_path_factory, worker_id)
     text = print_program(witnesses())
     assert disassemble(tools, text, tmp_path_factory.mktemp("rows")) == text.splitlines()
+
+
+agreeable = st.one_of(invalid_programs(), far_branches()).filter(
+    lambda drawn: not excluded(drawn.program)
+)
+
+
+@settings(backend="hypothesis")
+@given(drawn=agreeable)
+def test_the_checker_and_llvm_mc_refuse_the_same_lines(
+    tmp_path_factory: pytest.TempPathFactory, worker_id: str, drawn: Drawn
+) -> None:
+    """[law: checker-agrees-per-line] For invalid programs without the silent-rewrite sets and
+    the five checker-only cells (out-of-range values outside the sets stay in), the lines
+    llvm-mc reports errors on are the printed lines of the checker's line problems."""
+    tools = toolchain(tmp_path_factory, worker_id)
+    found = verdict(tools, print_program(drawn.program), tmp_path_factory.mktemp("lines"))
+    lines = {p.index + 1 for p in check(drawn.program) if p.index is not None}
+    assert found.lines == lines, found.said
+
+
+@settings(backend="hypothesis")
+@given(drawn=st.one_of(programs().map(lambda p: Drawn(p, None, ())), agreeable))
+def test_the_checker_accepts_exactly_what_llvm_mc_assembles(
+    tmp_path_factory: pytest.TempPathFactory, worker_id: str, drawn: Drawn
+) -> None:
+    """[law: checker-agrees-per-program] For valid and invalid programs without the
+    silent-rewrite sets or the checker-only cells, check(p) == () iff llvm-mc -filetype=obj
+    exits 0 (no linker)."""
+    tools = toolchain(tmp_path_factory, worker_id)
+    found = verdict(tools, print_program(drawn.program), tmp_path_factory.mktemp("program"))
+    assert (check(drawn.program) == ()) == (found.code == 0), found.said

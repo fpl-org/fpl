@@ -27,7 +27,7 @@ from hypothesis import find
 from hypothesis import strategies as st
 
 from fpl.asm.aarch64.alias import BITMASKS, ROWS, fired
-from fpl.asm.aarch64.check import Kind
+from fpl.asm.aarch64.check import NAME, Kind
 from fpl.asm.aarch64.model import (
     AddSubCarry,
     AddSubExtended,
@@ -401,6 +401,45 @@ def rewrites_offset(imm: int, size: int) -> bool:
     return -256 <= imm <= 255 and (imm < 0 or imm % size != 0)
 
 
+def rewritten(program: Program) -> bool:
+    """Whether an item of `program` is in a silent-rewrite set."""
+    return any(
+        (isinstance(item, AddSubImm) and rewrites_imm(item.imm))
+        or (
+            isinstance(item, LoadStore)
+            and isinstance(item.addr, Offset)
+            and rewrites_offset(item.addr.imm, item.op.size)
+        )
+        for item in program
+    )
+
+
+def accepted_cell(i: Pair) -> bool:
+    """Whether `i` is one of the five UNPREDICTABLE pair cells llvm-mc 21.1.8 accepts:
+    rt == rt2 with ldp pre- or post-indexed or ldpsw pre-indexed; rt != rt2 with post-indexed
+    ldpsw and rn == rt or rn == rt2 (rn not sp)."""
+    twice = i.op is not OpPair.STP and i.rt is i.rt2
+    base = i.mode is not Mode.OFFSET and i.rn in (i.rt, i.rt2) and i.rn is not Reg.SP
+    ldp_twice = i.op is OpPair.LDP and i.mode is not Mode.OFFSET
+    ldpsw_twice = i.op is OpPair.LDPSW and i.mode is Mode.PRE
+    ldpsw_base = i.op is OpPair.LDPSW and i.mode is Mode.POST
+    return (twice and not base and (ldp_twice or ldpsw_twice)) or (
+        base and not twice and ldpsw_base
+    )
+
+
+def checker_only(program: Program) -> bool:
+    """Whether an item of `program` is a checker-only cell."""
+    return any(isinstance(item, Pair) and accepted_cell(item) for item in program)
+
+
+def misnamed(program: Program) -> bool:
+    """Whether a label of `program`, defined or referenced, is not `.L`-local: llvm-mc takes
+    any symbol, so LABEL_NAME is not an oracle case."""
+    names = (item if isinstance(item, Label) else getattr(item, "target", None) for item in program)
+    return any(isinstance(n, Label) and NAME.fullmatch(n.name) is None for n in names)
+
+
 def outside(low: int, high: int, edges: list[int]) -> st.SearchStrategy[int]:
     """Integers in [low, high], the named edges often."""
     return st.one_of(st.sampled_from(edges), st.integers(low, high))
@@ -621,3 +660,9 @@ def far_branches(draw: st.DrawFn) -> Drawn:
         program = (label, *nops, branch)
         reach, at = far <= 1 << FAR[cls], len(program) - 1
     return Drawn(program, None if reach else Kind.BRANCH_RANGE, () if reach else (at,))
+
+
+def excluded(program: Program) -> bool:
+    """Whether the agreement laws leave `program` out: a silent rewrite, a checker-only cell,
+    or a label name llvm-mc takes as any symbol."""
+    return rewritten(program) or checker_only(program) or misnamed(program)
