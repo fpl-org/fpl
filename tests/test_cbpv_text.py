@@ -17,6 +17,7 @@ from fpl.cbpv.syntax import (
     Rec,
     Return,
     Second,
+    To,
     Var,
 )
 from fpl.cbpv.text import print as text
@@ -52,3 +53,9 @@ def test_projections_print_their_side() -> None:
     """Fixed, so coverage does not wait on `shapes()` drawing a `fst` or a `snd`."""
     assert text(First(Return(Var("x")))) == "fst (return x)"
     assert text(Second(Return(Var("x")))) == "snd (return x)"
+
+
+def test_sequencing_prints_its_bound_name_and_grade() -> None:
+    """Fixed, so coverage does not wait on `shapes()` drawing a `to`."""
+    printed = text(To(Return(Var("x")), "y", "ω", Return(Var("y"))))
+    assert printed == "(return x) to y :ω.\n(return y)"
