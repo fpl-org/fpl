@@ -389,3 +389,67 @@ def test_a_redefined_typed_clause_keeps_its_path_and_its_history() -> None:
     defines = [s for s in desugar(parse(source)) if isinstance(s, Define)]
     assert [d.word for d in defines] == ["f/1/1", "f/1", "f/1/1"]
     assert run(source + "5 f\nf/1/history\n") == "#new\n⟨ [ drop #int ] ⟩\n"
+
+
+POS = "pos : x -- b\n\tmatch\n\t\t1\t1\n\t\t_\t0\n"
+
+
+@given(st.sampled_from(["1", "2", "“a”", "#s"]), st.sampled_from(["r: pos", "( r: pos )"]))
+def test_a_typed_pattern_matches_as_its_ascription(value: str, written: str) -> None:
+    """[law: typed-pattern] `r: pos` in a match row or a head group is
+    `Guarded(Var("r"), "pos")` and matches exactly as `r ∈ pos` does."""
+    rows = "f : x -- y\n\tmatch\n\t\t{}\tr\n\t\t_\t#no\n"
+    typed = POS + rows.format(written) + f"{value} f\n"
+    ascribed = POS + rows.format("( r ∈ pos )") + f"{value} f\n"
+    assert run(typed) == run(ascribed)
+    define = [s for s in desugar(parse(typed)) if isinstance(s, Define)][-1]
+    match define.code:
+        case (Match(rows=(Row(patterns=(pattern,)), _)),):
+            assert pattern == Guarded(Var("r"), "pos", Span(1, 1))
+        case _:
+            pytest.fail(f"not a two-row match: {define.code}")
+
+
+@given(st.booleans())
+def test_an_empty_group_is_refused(head: bool) -> None:
+    """[law: empty-group] `( )` as a pattern is refused with an error, never a crash in
+    `inverse`, in a match row and in a head."""
+    source = "f : ( ) -- y\n\t1\n" if head else "f : x -- y\n\tmatch\n\t\t( )\t1\n"
+    with pytest.raises(FplError, match=r"^ERROR: 1:1 no evaluator yet$"):
+        run(source)
+
+
+SHAPES = "circle : r -- shape\n\t#circle swap pair\nrect : w h -- shape\n\t#rect swap pair pair\n"
+AREA = "area : ( circle r ) -- n\n\tr dup times\n"
+
+
+@given(st.integers(0, 9))
+def test_a_head_group_binds_its_names_in_the_clause(radius: int) -> None:
+    """[law: head-group] a clause with a group slot `( p )` has as code its own one-row match,
+    so `p`'s names are bound in the body; its dispatcher tests the group with the generated word
+    `f/n/i`, a prime and `k`, 1 where `( p )` matches, else 0, without consuming the value."""
+    assert run(SHAPES + AREA + f"{radius} circle area\n") == f"{radius * radius}\n"
+    defines = desugar(parse(SHAPES + AREA))
+    for shape, fits in ((f"{radius} circle", 1), (f"{radius} | 1 rect", 0)):
+        value = top(SHAPES + shape + "\n")
+        tested = Run((Push(value), Call("area/1/1\N{PRIME}1", Span(1, 1))))
+        assert evaluate((*defines, tested))[-1] == (fits,)
+    with pytest.raises(FplError, match=r"^ERROR: 5:1 no row matches$"):
+        run(SHAPES + AREA + f"{radius} area\n")
+
+
+def test_p7_with_the_circle_clause_alone() -> None:
+    """[law: head-group] P7 with the circle clause alone: `3 circle area` prints 9, `5 area`
+    fails at the dispatcher, the area head; the clause and its test word are not written back."""
+    assert run(SHAPES + AREA + "3 circle area\n") == "9\n"
+    statements = desugar(parse(SHAPES + AREA))
+    words = [s.word for s in statements if isinstance(s, Define)]
+    assert words[2:] == ["area/1/1", "area/1/1\N{PRIME}1", "area/1"]
+    assert resugar(statements) == parse(SHAPES)
+
+
+def test_a_pin_in_a_head_group_is_refused() -> None:
+    """[S37] `$y` inside a head group is refused: the other inputs are bound by fresh names, so
+    the pin could not resolve (hole head-group-pin)."""
+    with pytest.raises(FplError, match=r"^ERROR: 1:1 no evaluator yet$"):
+        run(SHAPES + "area : y  ( circle $y ) -- n\n\tdrop 1\n")

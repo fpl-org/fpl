@@ -490,13 +490,14 @@ def test_a_run_is_placed_at_its_line(head: str, body: str) -> None:
 
 
 def test_a_typed_head_is_read_as_the_slice_reads_it() -> None:
-    """[S49] `∈` on an effect line is refused; a group slot `( p )` is
-    refused; `x: Int` is a value slot of type Int, written back as it is written."""
+    """[S49] `∈` on an effect line is refused; a group slot `( p )` is a clause of its own
+    word; `x: Int` is a value slot of type Int, written back as it is written."""
     with pytest.raises(FplError, match=r"^ERROR: 1:1 no evaluator yet$"):
         desugar(parse("f : x ∈ number -- y\n"))
-    with pytest.raises(FplError) as caught:
-        run("f : ( circle r ) -- y\n")
-    assert str(caught.value) == "ERROR: 1:1 no evaluator yet"
+    circle = "circle : r -- shape\n\t#circle swap pair\n"
+    grouped = desugar(parse(circle + "f : ( circle r ) -- y\n\tr\n"))
+    words = [s.word for s in grouped if isinstance(s, Define)]
+    assert words == ["circle", "f/1/1", "f/1/1\N{PRIME}1", "f/1"]
     typed, *_ = desugar(parse("f : x: Int -- y\n"))
     assert isinstance(typed, Define)
     assert typed.effect == Effect(("x",), ("y",), types=("Int",))

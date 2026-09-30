@@ -67,6 +67,7 @@ from fpl.ast_core import (
 )
 from fpl.ast_surface import Cell, Comment, Enclosure, Frame, Item, Line, Program, Text, Word
 from fpl.errors import FplError, Span
+from fpl.print import render
 
 START = Span(1, 1)
 ARROWS = ("→", "->")
@@ -295,11 +296,11 @@ def typed(items: tuple[Item, ...]) -> list[tuple[str, Slot, Part]]:
     rest = iter(items)
     for item in rest:
         name = plain(item)
-        if name is None:
+        if isinstance(item, Enclosure) and item.pair == "prefix":
+            declared.append(("_", "value", spelt(item)))
+        elif name is None or name == "∈":
             unimplemented()
-        if name == "∈":
-            unimplemented()
-        if len(name) > 1 and name.endswith(":"):
+        elif ascribed(item):
             declared.append((name[:-1], *slot(next(rest, None))))
         else:
             declared.append((name, "value", None))
@@ -318,6 +319,32 @@ def slot(kind: Item | None) -> tuple[Slot, Part]:
     if part is None:
         unimplemented()
     return ("code", None) if part == "Code" else ("value", part)
+
+
+def ascribed(item: Item) -> bool:
+    """A plain `name:`, whose type follows it."""
+    name = plain(item)
+    return name is not None and len(name) > 1 and name.endswith(":")
+
+
+def grouped(part: Part) -> bool:
+    """A slot's type is a group `( p )`, written as the printer writes it."""
+    return part is not None and part.startswith("(")
+
+
+def spelt(item: Item) -> str:
+    """An item as the printer writes it."""
+    line = Line((framed((item,)),), (), START)
+    return render(Program((Line((), (), START), line), START)).strip()
+
+
+def pins(items: list[Item]) -> bool:
+    """Items holding a `$` pin, at any depth."""
+    return any(
+        (isinstance(item, Word) and item.prefix == "$")
+        or (isinstance(item, Enclosure) and pins(contents(item)))
+        for item in items
+    )
 
 
 def keyed(effect: Effect) -> Key:
@@ -425,7 +452,7 @@ class _Desugar:
             head, name = definition(line), directory(line)
             if head is not None:
                 path = (*here, head[0])
-                code = self.body(line.block, len(head[1].ins), path)
+                code = self.code(line, head[1], path)
                 effect = replace(head[1], fails=fallible(code))
                 doc = self.docs.get(line.span.line, "")
                 yield from self.defined(Define("/".join(path), effect, code, doc, line.span), here)
@@ -433,6 +460,28 @@ class _Desugar:
                 yield from self.statements(coded(line.block), (*here, name))
             elif not here:
                 yield Run(self.body((line,), 0, here), line.span)
+
+    def code(self, line: Line, effect: Effect, here: Here) -> tuple[Node, ...]:
+        """A definition's code: its body; with a head group, one row binding a fresh name at
+        every other input and the group's pattern at each group, the other inputs pushed back in
+        order, then the body, which sees the group's names (design 09 §2.4). A `$` pin in a
+        head group is refused (hole head-group-pin)."""
+        groups = iter(i for i in line.frames[0].cells[0].items[2:] if isinstance(i, Enclosure))
+        if not any(map(grouped, effect.types)):
+            return self.body(line.block, len(effect.ins), here)
+        outer, patterns, repush = self.effects, list[Pattern](), list[Node]()
+        for name, part in zip(fresh(effect), effect.types, strict=True):
+            if grouped(part):
+                group = next(groups)
+                if pins(contents(group)):
+                    unimplemented()
+                patterns.append(self.simple(group))
+            else:
+                patterns.append(Var(name))
+                repush.append(Call(name, line.span))
+        body = self.body(line.block, len(repush), here)
+        self.effects = outer
+        return (Match((Row(tuple(patterns), (*repush, *body)),), line.span),)
 
     def defined(self, define: Define, here: Here) -> Iterator[Define]:
         """A definition; of a dispatched word, its clause, and after the first clause of an
@@ -443,6 +492,7 @@ class _Desugar:
         n = len(define.effect.ins)
         clause = replace(define, clause=(n, 1))
         yield clause
+        yield from tests(clause)
         if clause.word not in self.dispatchers:
             self.dispatchers.add(clause.word)
             yield self.dispatcher(clause, here)
@@ -453,12 +503,12 @@ class _Desugar:
         each typed input with its type word, then pushing every input back in order and calling
         the clause; +fail when the row does not catch every value."""
         span, effect = clause.span, clause.effect
-        fresh = [f"{name}{PRIME}{i}" for i, name in enumerate(effect.ins, 1)]
+        names = fresh(effect)
         patterns = tuple(
-            Var(name) if part is None else Guarded(Var(name), self.tested(part, here), span)
-            for name, part in zip(fresh, effect.types, strict=True)
+            Var(name) if part is None else Guarded(Var(name), self.tested(clause, i, here), span)
+            for i, (name, part) in enumerate(zip(names, effect.types, strict=True), 1)
         )
-        body = (*(Call(name, span) for name in fresh), Call(clause.word, span))
+        body = (*(Call(name, span) for name in names), Call(clause.word, span))
         code = (Match((Row(patterns, body),), span),)
         n = len(effect.ins)
         return Define(
@@ -470,8 +520,12 @@ class _Desugar:
             clauses=(clause.word,),
         )
 
-    def tested(self, part: str, here: Here) -> str:
-        """The word a type names from the directory of its definition, on one value."""
+    def tested(self, clause: Define, position: int, here: Here) -> str:
+        """The word testing a clause's typed input: a group's generated word, else the word its
+        type names from the directory of its definition, on one value."""
+        part = clause.effect.types[position - 1]
+        if part is None or grouped(part):
+            return f"{clause.word}{PRIME}{position}"
         return self.catalog.dispatch(self.catalog.resolve(here, (part,)), 1)
 
     def routed(self, nodes: tuple[Node, ...], balance: int) -> tuple[Node, ...]:
@@ -573,14 +627,19 @@ class _Desugar:
         marks = iter(items)
         for item in marks:
             if plain(item) == "∈" and found:
-                test = next(marks, None)
-                if not isinstance(test, Word):
-                    unimplemented()
-                test_word = self.catalog.dispatch(self.call(test).name, 1)
-                found[-1] = Guarded(found[-1], test_word, item.span)
+                found[-1] = self.guarded(found[-1], next(marks, None), item.span)
+            elif isinstance(item, Word) and ascribed(item):
+                name = replace(item, body=(item.body[0][:-1],))
+                found.append(self.guarded(self.simple(name), next(marks, None), item.span))
             else:
                 found.append(self.simple(item))
         return tuple(found)
+
+    def guarded(self, pattern: Pattern, test: Item | None, span: Span) -> Guarded:
+        """A pattern that fits where it matches and its test word leaves 1."""
+        if not isinstance(test, Word):
+            unimplemented()
+        return Guarded(pattern, self.catalog.dispatch(self.call(test).name, 1), span)
 
     def simple(self, item: Item) -> Pattern:
         """_, $x of a bound name, a name it binds, ( constructor patterns ), ( p ∈ test ) or
@@ -611,7 +670,9 @@ class _Desugar:
 
     def inverse(self, items: list[Item]) -> Pattern:
         """( p ∈ test ), or a constructor taking one pattern per input and leaving one value."""
-        if len(items) > 1 and plain(items[1]) == "∈":
+        if not items:
+            unimplemented()
+        if len(items) > 1 and (plain(items[1]) == "∈" or ascribed(items[0])):
             return self.pattern(tuple(items))
         head, *args = items
         if not isinstance(head, Word):
@@ -789,8 +850,36 @@ def resugar(statements: tuple[Statement, ...]) -> Program:
     """Core as source that desugars to the same code: no bar but between two literals, which
     would otherwise strand, no ( ), no block but a definition's one-line body and its docs; a
     dispatcher is generated, never written."""
-    kept = (s for s in statements if not (isinstance(s, Define) and len(s.clause) == 1))
+    kept = (s for s in statements if not generated(s))
     return Program(tuple(line for s in kept for line in (*above(s), written(s))), START)
+
+
+def generated(statement: Statement) -> bool:
+    """A dispatcher, a group's test word or a clause with a group: made from a head, never
+    written back (hole resugar-match)."""
+    if not isinstance(statement, Define):
+        return False
+    made = len(statement.clause) == 1 or PRIME in statement.name
+    return made or any(map(grouped, statement.effect.types))
+
+
+def fresh(effect: Effect) -> list[str]:
+    """A fresh name per input: its slot's name, a prime and its position (design 09 §2.4)."""
+    return [f"{name}{PRIME}{i}" for i, name in enumerate(effect.ins, 1)]
+
+
+def tests(clause: Define) -> Iterator[Define]:
+    """For each group of a clause, the word x -- b leaving 1 where the group matches, else 0,
+    named by the clause's word, a prime and the group's position."""
+    for position, part in enumerate(clause.effect.types, 1):
+        match clause.code:
+            case (Match(rows=(row,)),) if grouped(part):
+                fits = Row((row.patterns[position - 1],), (Push(1),))
+                code = Match((fits, Row((Wild(),), (Push(0),))), clause.span)
+                name = f"{clause.word}{PRIME}{position}"
+                yield Define(name, Effect(("x",), ("b",)), (code,), span=clause.span)
+            case _:
+                pass
 
 
 def listing(stacks: tuple[tuple[Value, ...], ...]) -> Program:
