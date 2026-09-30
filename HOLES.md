@@ -22,7 +22,7 @@
 - Depends on it: tests/test_aarch64_via_run.py (RUN settings)
 - Default in force: every run batch is a freshly linked, ad-hoc signed Mach-O whose first execution costs 126-300 ms on macOS; run laws draw 4 examples at the quick profile, and checked-programs-run and evaluator-agrees-with-run share one batch per example
 - Closes by: PSJ, either accepting the cost, or granting the terminal Developer Tools permission (a system security setting, his to change), or a persistent runner that maps code with MAP_JIT (not a linked executable, so it would change the oracle)
-- Evidence: design.md section 7, probe: ten fresh links 126-300 ms, the same binary rerun 2 ms
+- Evidence: design.md section 7, probe: ten fresh links 126-300 ms, the same binary rerun 2 ms; at 0b8f17c under load average 31-34 the register run batch took 1.17 s and window-agrees 0.94 s at 4 examples
 
 ## alias-divergence
 - Depends on it: fpl/asm/aarch64/alias.py (the rows with spec_differs: BITFIELD's bfi, LOGICAL_IMM's mov), tests/test_aarch64_via_llvm.py (test_every_alias_row_prints_as_llvm_objdump_prints_it)
@@ -52,10 +52,16 @@
 - Depends on it: tests/test_aarch64_via_run.py (RUN), tests/test_aarch64_via_llvm.py
 - Default in force: the run laws use RUN = settings(backend="hypothesis", deadline=None, max_examples 4/20/4 for quick/harden/symbolic), and checked-programs-run and evaluator-agrees-with-run assert on one shared batch of one to eight blocks per example (blocks(k=8)); the llvm oracle tests carry backend="hypothesis" only and run at the profile's 100/2000/50, not the design's 10/50/10
 - Closes by: PSJ, accepting, or asking for a harness-level oracle profile in quality/noslop_pytest.py
-- Evidence: design.md section 7 (Budgets); measured on this Mac: the run law, quick 4 examples 1.2 s, harden 20 examples 20.2 s under load average 27
+- Evidence: design.md section 7 (Budgets); measured on this Mac: the run law, quick 4 examples 1.2 s, harden 20 examples 20.2 s under load average 27; at 0b8f17c (ORACLE 10/50/10) full serial pytest 54.6 s, oracle calls 24.2 s of it (toolchain() 13.8 s, the rest 10.3 s), make check 109 s, load average 28-34 on 8 cores: over the 6 s budget, not idle
 
 ## misaligned-access
 - Depends on it: fpl/asm/aarch64/eval.py (inside, transfer), tests/aarch64_strategies.py (memory_code), tests/test_aarch64_via_run.py (test_memory_blocks_leave_the_window_the_evaluator_leaves, test_memory_blocks_reach_misaligned_accesses)
 - Default in force: a misaligned access inside the window completes, little-endian, as it does natively on Apple silicon at EL0; the evaluator checks only that every byte is inside the window, never the alignment
 - Closes by: E or H0, when the target's memory model is written down
 - Evidence: B2.8.2; design.md section 5 and probe 9 (stur/ldur at +1, stp/ldp at +3, ldrsh at +17 on the stack, exit 0); native: window-agrees green in make check at 265ad6d on this Mac, over memory_code blocks whose unscaled accesses sit at any byte offset and whose x27 writebacks move by single bytes (test_memory_blocks_reach_misaligned_accesses shows the draws reach them); qemu-aarch64: not yet run, pending the first CI run of the draft PR on ubuntu-latest (hole elf-route-unrun)
+
+## mutants-in-import-time-tables
+- Depends on it: fpl/asm/aarch64/alias.py (the alias rows and encodings built at import), mutants.allow, the ready-green law
+- Default in force: 410 of 3282 fpl mutants live (1815 s wall) after scripts/mutants at 2d53cb7 (about 300 in alias.py table builders: decode_bitmask 52, same_row 42, extend_row 41, add_sub_row 39, set_row 33); none named in mutants.allow; make ready is red on the mutants lane
+- Closes by: PSJ, choosing between building the tables per call (so mutmut's forked runs see the mutant), `# pragma: no mutate -- why` on table construction, or naming them in mutants.allow
+- Evidence: mutants/mutmut-stats.json maps x_decode_bitmask and x_same_row to one test each; the tables are module constants (alias.py COND_SELECT), built in mutmut's parent before it forks a run per mutant, so the mutant never executes
