@@ -25,7 +25,7 @@ the implemented set is refused before evaluation (hole unimplemented-words).
 
 from collections import ChainMap
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from functools import partial
 from itertools import groupby
@@ -345,7 +345,7 @@ class _Desugar:
             if head is not None:
                 path = (*here, head[0])
                 code = self.body(line.block, len(head[1].ins), path)
-                effect = Effect(head[1].ins, head[1].outs, fallible(code), slots=head[1].slots)
+                effect = replace(head[1], fails=fallible(code))
                 yield Define("/".join(path), effect, code, self.docs.get(line.span.line, ""))
             elif name is not None:
                 yield from self.statements(coded(line.block), (*here, name))
