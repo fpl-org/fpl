@@ -5,11 +5,12 @@ of ill-typed ones, one mutation per `TypeErrorKind`."""
 from collections.abc import Callable, Hashable
 from dataclasses import dataclass, replace
 from functools import cache
+from typing import Any
 
 from hypothesis import strategies as st
 
 from fpl.cbpv.check import TypeErrorKind
-from fpl.cbpv.sig import FirstOrder, Iterating, Panic, Signature
+from fpl.cbpv.sig import Call, Done, FirstOrder, Iterating, Panic, Signature, Step
 from fpl.cbpv.syntax import (
     KNOWN,
     Absurd,
@@ -201,19 +202,35 @@ def admits(p: Prim) -> bool:
     return scheme is not None and _instance(p.type, scheme) and p.eff == _latent(p.type)
 
 
+def times_start(args: tuple[Any, ...], _at: Position | None) -> Step | Panic:
+    """`times_k k f` runs `f` k times from 0, each run on the last one's result: f^k(0)."""
+    count, body = args
+    k = count.value if isinstance(count, Const) else None
+    if type(k) is not int:
+        return Panic("times_k takes a count")
+    return times_resume((body, k), Const(0, INT))
+
+
+def times_resume(state: Any, result: Any) -> Step | Panic:
+    """With `n` runs left, run the body on `result`, or return it when none is left."""
+    body, n = state
+    return Done(result) if n <= 0 else Call(body, (result,), (body, n - 1))
+
+
 SIGMA_TEST = Signature(
     bases=frozenset({"Int", "Log"}),
     constants={
         "add": arithmetic(lambda a, b: a + b),
         "sub": arithmetic(lambda a, b: a - b),
         "div": arithmetic(lambda a, b: a // b if b else None),
-        "times_k": Iterating(2),
+        "times_k": Iterating(2, times_start, times_resume),
     },
     admits=admits,
     caps={"Log": {"emit": (INT, INT)}},
     fail_payload=INT,
 )
 FIRST_ORDER = ("add", "sub", "div")
+PANICS = frozenset({"arithmetic on a non-number", "division by zero", "times_k takes a count"})
 
 
 def base_value(t: VType) -> st.SearchStrategy[Hashable]:
