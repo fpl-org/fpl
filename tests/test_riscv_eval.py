@@ -1,5 +1,8 @@
 """The reference evaluator in process: each table row by a hand-derived golden, the run loop."""
 
+import math
+from fractions import Fraction
+
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
@@ -242,3 +245,96 @@ def test_jalr_to_no_instruction_of_the_program_is_unmodelled(target: int) -> Non
 def test_a_jump_to_an_undefined_label_is_unmodelled(jump: Jal | Branch) -> None:
     outcome = run((NOP, jump), machine({}), BASE, 10)
     assert outcome == Unmodelled(1, ".Lend is not defined")
+
+
+DIVISIONS = (OpR.DIV, OpR.DIVU, OpR.REM, OpR.REMU, OpR.DIVW, OpR.DIVUW, OpR.REMW, OpR.REMUW)
+EDGES = (0, 1, ONES, 1 << 63, (1 << 63) - 1, 1 << 31, (1 << 32) - 1, 0xFFFF_FFFF_8000_0000)
+operands = st.one_of(st.sampled_from(EDGES), between(0, ONES))
+
+
+def as_int(value: int, width: int, *, signed: bool) -> int:
+    """The low `width` bits of `value`, read signed or unsigned."""
+    low = value % (1 << width)
+    return low - (1 << width) if signed and low >> (width - 1) else low
+
+
+def register(value: int, width: int) -> int:
+    """A `width`-bit result as the register holds it: sign-extended to 64 bits."""
+    return as_int(value, width, signed=True) % (1 << 64)
+
+
+@given(st.sampled_from(DIVISIONS), operands, operands)
+def test_division_follows_table_11(op: OpR, a: int, b: int) -> None:
+    """[law: division-table-11] At divisor zero the quotient is all ones and the remainder the
+    dividend; at signed overflow the quotient is the dividend and the remainder 0; elsewhere the
+    quotient is the exact one truncated toward zero, and the remainder what it leaves. The W
+    forms read the low 32 bits and sign-extend the 32-bit result."""
+    width = 32 if op.endswith("w") else 64
+    signed = not op.removesuffix("w").endswith("u")
+    x, y = as_int(a, width, signed=signed), as_int(b, width, signed=signed)
+    if y == 0:
+        quotient, rest = -1, x
+    elif signed and (x, y) == (-(1 << (width - 1)), -1):
+        quotient, rest = x, 0
+    else:
+        quotient = math.trunc(Fraction(x, y))
+        rest = x - y * quotient
+    expected = quotient if op.startswith("div") else rest
+    assert x3(r(op), a, b) == register(expected, width)
+
+
+@pytest.mark.parametrize(
+    ("op", "a", "b", "expected"),
+    [
+        (OpR.DIV, 5, 0, ONES),
+        (OpR.DIVU, 5, 0, ONES),
+        (OpR.REM, 5, 0, 5),
+        (OpR.REMU, ONES, 0, ONES),
+        (OpR.DIV, 1 << 63, ONES, 1 << 63),
+        (OpR.REM, 1 << 63, ONES, 0),
+        (OpR.DIVW, 5, 0, ONES),
+        (OpR.DIVUW, 5, 0, ONES),
+        (OpR.REMW, 5, 0, 5),
+        (OpR.REMUW, 0x8000_0005, 0, 0xFFFF_FFFF_8000_0005),
+        (OpR.DIVW, 0x8000_0000, ONES, 0xFFFF_FFFF_8000_0000),
+        (OpR.REMW, 0x8000_0000, ONES, 0),
+    ],
+)
+def test_table_11_row_by_row(op: OpR, a: int, b: int, expected: int) -> None:
+    assert x3(r(op), a, b) == expected
+
+
+def x3_only(ops: tuple[OpR, ...] | tuple[OpShift, ...]) -> st.SearchStrategy[Instr]:
+    """An instruction of `ops` from x1 (and x2) to x3."""
+    op = st.sampled_from(ops)
+    if isinstance(ops[0], OpR):
+        return st.builds(R, op, st.just(Reg.X3), st.just(Reg.X1), st.just(Reg.X2))
+    return st.builds(Shift, op, st.just(Reg.X3), st.just(Reg.X1), between(0, 31))
+
+
+W_SHIFTS = (OpR.SLLW, OpR.SRLW, OpR.SRAW)
+WORDS = st.one_of(
+    x3_only(tuple(op for op in OpR if op.endswith("w"))),
+    x3_only((OpShift.SLLIW, OpShift.SRLIW, OpShift.SRAIW)),
+    st.builds(I, st.just(OpI.ADDIW), st.just(Reg.X3), st.just(Reg.X1), between(-2048, 2047)),
+    st.builds(Upper, st.sampled_from(OpUpper), st.just(Reg.X3), between(0, (1 << 20) - 1)),
+)
+
+
+def is_word(value: int) -> bool:
+    """Bits 63 to 31 are equal: `value` is its low 32 bits sign-extended."""
+    return value >> 31 in (0, (1 << 33) - 1)
+
+
+@given(WORDS, operands, operands, st.integers(1, (1 << 59) - 1))
+def test_w_forms_sign_extend_32_bits(instr: Instr, a: int, b: int, high: int) -> None:
+    """[law: w-ops-sign-extend] Every W form's result is its low 32 bits sign-extended; so is
+    lui's, and auipc's offset from its own address, whose low 32 bits are the immediate's; the
+    register W shifts read only the low 5 bits of the amount."""
+    result = x3(instr, a, b)
+    if isinstance(instr, Upper):
+        result = (result - BASE) % (1 << 64) if instr.op is OpUpper.AUIPC else result
+        assert result % (1 << 32) == (instr.imm << 12) % (1 << 32)
+    assert is_word(result)
+    if isinstance(instr, R) and instr.op in W_SHIFTS:
+        assert x3(instr, a, b ^ (high << 5)) == result
