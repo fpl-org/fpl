@@ -1,6 +1,10 @@
 """Pass 1 keeps what the run lines reach, resolved as the walker resolves it, and refuses what
 A cannot lower by name."""
 
+from collections.abc import Iterator
+from dataclasses import fields, is_dataclass
+from typing import cast
+
 from hypothesis import given
 from lower_diff import evaluated, walker_output
 from lower_strategies import straight
@@ -16,6 +20,7 @@ from fpl.ast_core import (
     Push,
     Row,
     Run,
+    Statement,
     Var,
     Wild,
 )
@@ -27,12 +32,48 @@ from fpl.parse import parse
 AT = Span(1, 3)
 
 
+def called(tree: object) -> Iterator[str]:
+    """Every name a `Call` anywhere in `tree` spells, through every field of every node and
+    value: an oracle apart from select's own walk, exact where no binder shares a word's name."""
+    if isinstance(tree, Call):
+        yield tree.name
+    if is_dataclass(tree):
+        for f in fields(tree):
+            yield from called(getattr(tree, f.name))
+    elif isinstance(tree, tuple):
+        for item in cast(tuple[object, ...], tree):
+            yield from called(item)
+
+
+def reached(statements: tuple[Statement, ...]) -> dict[str, Define]:
+    """The last definition of each word the run lines reach, a query reaching its word."""
+    last = {s.name: s for s in statements if isinstance(s, Define)}
+    todo = [n for s in statements if isinstance(s, Run) for n in called(s)]
+    seen: dict[str, Define] = {}
+    while todo:
+        name = todo.pop().removesuffix("/doc").removesuffix("/effect")
+        if name in last and name not in seen:
+            seen[name] = last[name]
+            todo.extend(called(last[name].code))
+    return seen
+
+
 @given(straight())
 def test_select_keeps_output(source: str) -> None:
     """[law: select-keeps-output] For every program `straight()` draws, pass 1's output is in
-    Core_A, and `fpl.eval.evaluate` on it renders as on the whole program."""
-    selected = select(desugar(parse(source)))
+    Core_A, and `fpl.eval.evaluate` on it renders as on the whole program. Core_A is judged by
+    an independent oracle: exactly the reached definitions, each after the words it calls, and
+    every run line in order."""
+    statements = desugar(parse(source))
+    selected = select(statements)
     assert isinstance(selected, CoreA)
+    defines = [s for s in selected.statements if isinstance(s, Define)]
+    assert {d.name: d for d in defines} == reached(statements)
+    for index, define in enumerate(defines):
+        earlier = {d.name for d in defines[:index]}
+        assert set(reached((*defines, Run(define.code)))) - {define.name} <= earlier
+    runs = [s for s in statements if isinstance(s, Run)]
+    assert [s for s in selected.statements if isinstance(s, Run)] == runs
     assert in_core_a(selected.statements)
     assert evaluated(selected.statements) == walker_output(source)
 
