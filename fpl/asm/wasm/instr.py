@@ -283,12 +283,15 @@ class ReturnCallIndirect:
     type: TypeUse
 
 
-@icontract.invariant(memarg_in_range)
+@icontract.invariant(memarg_in_range, check_on=icontract.InvariantCheckEvent.SETATTR)
 @dataclass(frozen=True)
 class MemArg:
     """2.4.5, a memory access's static offset and alignment exponent (the hint is 2**align bytes).
 
-    No `slots`: icontract's invariant does not compose with a slotted dataclass.
+    No `slots`: icontract's invariant does not compose with a slotted dataclass. The invariant
+    is checked at construction and on `__setattr__`, not on every call: the class is frozen, so
+    no method can break it, and a check on `__ne__` sent CrossHair into unbounded recursion
+    through icontract's in-progress set.
     """
 
     align: int
