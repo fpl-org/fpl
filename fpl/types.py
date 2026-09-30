@@ -130,9 +130,9 @@ def elaborate(statements: tuple[Statement, ...]) -> tuple[dict[str, Arrow], tupl
     arrows = dict(ARROWS)
     defines = [s for s in statements if isinstance(s, Define)]
     for d in defines:
-        arrows[d.name] = declared(d)
-        arrows.update({f"{d.name}/{query}": Arrow((), (Kind.VALUE,)) for query in QUERIES})
-    last = {d.name: d for d in defines}
+        arrows[d.word] = declared(d)
+        arrows.update({f"{d.word}/{query}": Arrow((), (Kind.VALUE,)) for query in QUERIES})
+    last = {d.word: d for d in defines}
     goals: list[Goal] = []
     for s in statements:
         with suppress(UntypedError):
@@ -147,8 +147,8 @@ def checked(
     if isinstance(statement, Run):
         return after(Typing((), {}, {}), statement.code, arrows).goals
     arrow, goals = inferred(statement, arrows)
-    if last[statement.name] is statement:
-        arrows[statement.name] = arrow
+    if last[statement.word] is statement:
+        arrows[statement.word] = arrow
     return goals
 
 
@@ -169,7 +169,7 @@ def inferred(define: Define, arrows: Mapping[str, Arrow]) -> tuple[Arrow, tuple[
         return declared(define), ()
     if len(end.stack) != promised:
         message = f"leaves {len(end.stack)} values, its effect line {promised}"
-        raise FplError(define.span, f"{define.name} {message}")
+        raise FplError(define.span, f"{define.word} {message}")
     return Arrow(resolved(start.stack, end), resolved(end.stack, end)), end.goals
 
 
