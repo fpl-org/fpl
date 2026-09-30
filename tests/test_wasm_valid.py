@@ -123,6 +123,7 @@ SITES: list[tuple[Module, Invalid | None]] = [
     ),
     (replace(func_of(("i64",), GlobalGet(0)), imports=(IMPORTED,)), Invalid("mismatch", (0,))),
     (replace(func_of(("i64",), MemorySize()), mems=MEMORY), Invalid("mismatch", (0,))),
+    (func_of(("i32",), MemorySize()), Invalid("memory", (0, 0))),
     (replace(func_of((), ZERO, GlobalSet(0)), imports=(FIXED,)), Invalid("immutable", (0, 1))),
     (func_of((), ZERO, GlobalSet(0)), Invalid("global", (0, 1))),
     (func_of((), GlobalGet(0), Drop()), Invalid("global", (0, 0))),
