@@ -14,6 +14,7 @@ from riscv_oracle import (
     NAMES,
     VERSIONS,
     ToolchainError,
+    Translation,
     assemble,
     disassemble,
     link,
@@ -25,6 +26,8 @@ from riscv_oracle import (
 )
 from riscv_strategies import (
     FAR,
+    JAL_REACH,
+    NOP,
     Invalid,
     far_jumps,
     forward_branching,
@@ -40,11 +43,15 @@ from fpl.asm.riscv.model import (
     Branch,
     Fence,
     I,
+    Instr,
     Jal,
     Jalr,
     Label,
     Load,
     OpBranch,
+    OpI,
+    OpShift,
+    OpUpper,
     Program,
     R,
     Reg,
@@ -57,7 +64,13 @@ from fpl.asm.riscv.text import print_program
 GOOD = [f"/nix/store/0000-tool/bin/{name}" for name in NAMES]
 # Lines a resolution may print that are not the answer: the shell hook's banner, a tool found
 # outside the store, blank lines, and the right paths out of place.
-NOISE = [*GOOD, "==> wiring the git hooks", f"/usr/bin/{NAMES[0]}", "", "/nix/store/x/bin/cc"]
+NOISE = [
+    *GOOD,
+    "==> wiring the git hooks",
+    f"/usr/bin/{NAMES[0]}",
+    "",
+    "/nix/store/x/bin/cc",
+]
 
 
 @given(st.sampled_from(NAMES))
@@ -85,15 +98,58 @@ def test_one_store_path_per_tool_in_order_is_the_answer() -> None:
     }
 
 
-@given(st.lists(st.one_of(st.sampled_from(NOISE), st.text(max_size=12)), max_size=6))
-def test_anything_else_is_an_error_that_shows_stdout_and_stderr(lines: list[str]) -> None:
-    assume(lines != GOOD)
+def assert_refused(lines: list[str]) -> None:
+    """`lines` on stdout are not the answer: the error shows them and what was said on stderr."""
     stdout = "".join(f"{line}\n" for line in lines)
     done = subprocess.CompletedProcess(["bash"], 0, stdout, "said on stderr")
     with pytest.raises(ToolchainError) as error:
         parse_paths("cmd", done)
     assert stdout in str(error.value)
     assert "said on stderr" in str(error.value)
+
+
+@given(st.lists(st.one_of(st.sampled_from(NOISE), st.text(max_size=12)), max_size=6))
+def test_anything_else_is_an_error_that_shows_stdout_and_stderr(
+    lines: list[str],
+) -> None:
+    assume(lines != GOOD)
+    assert_refused(lines)
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        *([*GOOD[:i], f"/usr/bin/{name}", *GOOD[i + 1 :]] for i, name in enumerate(NAMES)),
+        [*GOOD, GOOD[0]],
+        GOOD[:-1],
+        ["==> wiring the git hooks", *GOOD],
+    ],
+)
+def test_a_path_off_the_store_a_line_too_many_or_too_few_or_a_banner_is_an_error(
+    lines: list[str],
+) -> None:
+    assert_refused(lines)
+
+
+def fake_nix(folder: Path, banner_to: str) -> str:
+    """A `nix` that prints the hook banner to `banner_to` (a shell redirection), then GOOD."""
+    nix = folder / "nix"
+    paths = " ".join(GOOD)
+    nix.write_text(
+        f"#!/bin/sh\necho '==> wiring the git hooks' {banner_to}\nprintf '%s\\n' {paths}\n"
+    )
+    nix.chmod(0o755)
+    return str(nix)
+
+
+def test_resolve_reads_the_paths_from_stdout_and_ignores_stderr(tmp_path: Path) -> None:
+    tools = resolve(nix=fake_nix(tmp_path, ">&2"))
+    assert tools.by_name() == {n: Path(p) for n, p in zip(NAMES, GOOD, strict=True)}
+
+
+def test_resolve_refuses_a_banner_on_stdout_showing_it(tmp_path: Path) -> None:
+    with pytest.raises(ToolchainError, match="==> wiring the git hooks"):
+        resolve(nix=fake_nix(tmp_path, ""))
 
 
 def test_no_nix_is_an_error_naming_the_command_not_a_skip() -> None:
@@ -178,7 +234,14 @@ def test_each_branch_and_jal_lands_on_its_label(program: Program) -> None:
 ERROR = re.compile(r"prog\.s:(\d+):\d+: error:")
 # The problems llvm-mc reports at the line of the item they are about.
 LINE_KINDS = frozenset(
-    {Kind.IMM12, Kind.SHAMT6, Kind.SHAMT5, Kind.IMM20, Kind.DUPLICATE_LABEL, Kind.JAL_RANGE}
+    {
+        Kind.IMM12,
+        Kind.SHAMT6,
+        Kind.SHAMT5,
+        Kind.IMM20,
+        Kind.DUPLICATE_LABEL,
+        Kind.JAL_RANGE,
+    }
 )
 # Item i of a program printed after `HEAD` is line i + 1 + HEAD_LINES of the source.
 HEAD_LINES = HEAD.count("\n")
@@ -193,10 +256,41 @@ def test_llvm_mc_refuses_the_lines_the_checker_names(case: Invalid) -> None:
     `SHAMT5`, `IMM20`, `DUPLICATE_LABEL`, `JAL_RANGE`). An undefined label is a whole-program
     error in both (`<unknown>:0`), so it names no line on either side.
     """
-    translation = translate(toolchain(), HEAD + print_program(case.program))
+    assert_lines_agree(case.program)
+
+
+def assert_lines_agree(program: Program) -> Translation:
+    """The lines llvm-mc refuses in `program`, printed after `_start`, are the checker's."""
+    translation = translate(toolchain(), HEAD + print_program(program))
     refused = {int(n) - HEAD_LINES - 1 for n in ERROR.findall(translation.mc.stderr)}
-    named = {problem.index for problem in check(case.program) if problem.kind in LINE_KINDS}
+    named = {problem.index for problem in check(program) if problem.kind in LINE_KINDS}
     assert refused == named, translation.mc.stderr
+    return translation
+
+
+def one(*instrs: Instr) -> list[Program]:
+    """Each instruction as a program of its own."""
+    return [(instr,) for instr in instrs]
+
+
+# The last value in range and the first past it for each ranged operand, a second definition,
+# and the four jal reaches: the edges the generators draw only now and then.
+EDGES: list[Program] = [
+    *one(*(I(OpI.ADDI, Reg.X1, Reg.X2, imm) for imm in (2047, 2048, -2048, -2049))),
+    *one(*(Shift(OpShift.SLLI, Reg.X1, Reg.X2, n) for n in (63, 64, -1))),
+    *one(*(Shift(OpShift.SLLIW, Reg.X1, Reg.X2, n) for n in (31, 32))),
+    *one(*(Upper(OpUpper.LUI, Reg.X1, imm) for imm in ((1 << 20) - 1, 1 << 20, 0, -1))),
+    (Label(".Ldup"), NOP, Label(".Ldup")),
+    *(padded(Jal(Reg.X1, FAR), offset) for offset in JAL_REACH),
+]
+
+
+@pytest.mark.parametrize("program", EDGES)
+def test_the_checker_and_llvm_mc_agree_at_each_edge(program: Program) -> None:
+    """The regression at the edges, line by line and program by program: 2047 and 2048 for an
+    imm12, 63 and 64 for a shamt6, 1048572 and 1048576 for a jal forward, and so on."""
+    translation = assert_lines_agree(program)
+    assert (check(program) == ()) == translation.accepted, translation
 
 
 @given(
@@ -262,7 +356,9 @@ def assert_relaxed_exactly_out_of_reach(program: Program) -> None:
 
 
 @given(far_jumps())
-def test_a_branch_out_of_reach_is_refused_by_the_checker_not_by_llvm_mc(program: Program) -> None:
+def test_a_branch_out_of_reach_is_refused_by_the_checker_not_by_llvm_mc(
+    program: Program,
+) -> None:
     """[law: no-silent-relaxation] llvm-mc relaxes a far branch; the checker refuses it.
 
     For the branches of `far_jumps()`: past the reach (4096 forward, -4100 backward, the
