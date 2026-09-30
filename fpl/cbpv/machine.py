@@ -28,6 +28,7 @@ from collections.abc import Callable, Generator, Hashable, Iterator
 from dataclasses import dataclass, fields, is_dataclass, replace
 from typing import Any
 
+from fpl.cbpv.check import KArg, KFrame, KFst, KLoop, KSnd, KTo
 from fpl.cbpv.sig import Done, FirstOrder, Iterating, Panic, Signature, Step
 from fpl.cbpv.syntax import (
     Absurd,
@@ -39,6 +40,7 @@ from fpl.cbpv.syntax import (
     Fail,
     First,
     Force,
+    Grade,
     Inl,
     Inr,
     Label,
@@ -112,9 +114,10 @@ class Arg:
 
 @dataclass(frozen=True, slots=True)
 class Then:
-    """`(to x. N) :: K`, with the environment `N` runs in."""
+    """`(to x. N) :: K`, with `x`'s grade and the environment `N` runs in."""
 
     name: str
+    grade: Grade
     body: Comp
     env: Env
 
@@ -263,6 +266,26 @@ def run(
     return tuple(_finish(_drive(start, _Run(sig, handler, []), fuel)) for start in _starts(program))
 
 
+def states(
+    program: Program, sig: Signature, *, fuel: int | None = None, handler: Handler
+) -> Iterator[tuple[int, State]]:
+    """Each state `run` passes through, terminal ones included, with its run's index."""
+    for i, start in enumerate(_starts(program)):
+        for state in _drive(start, _Run(sig, handler, []), fuel):
+            yield i, state
+
+
+def as_term(state: State) -> tuple[Comp, tuple[KFrame, ...]]:
+    """`state` as the statement's configuration `⟨M, K⟩` (stack top first): environments
+    substituted, closures read back to thunks; a loop frame keeps only its constant."""
+    frames: list[KFrame] = []
+    stack = state.stack
+    while stack is not None:
+        frame, stack = stack
+        frames.append(_AS_TERM[type(frame)](frame))
+    return _close(state.focus, state.env, frozenset()), tuple(frames)
+
+
 def _starts(program: Program) -> Iterator[State]:
     env: Env = None
     for name, value in program.defs:
@@ -389,7 +412,7 @@ def _rule_lam(m: Lam, s: State, _r: _Run) -> Next:
 
 
 def _rule_to(m: To, s: State, _r: _Run) -> Next:
-    return State(m.bound, s.env, (Then(m.name, m.body, s.env), s.stack))
+    return State(m.bound, s.env, (Then(m.name, m.grade, m.body, s.env), s.stack))
 
 
 def _rule_return(m: Return, s: State, r: _Run) -> Next:
@@ -560,3 +583,12 @@ def _close(x: Any, env: Env, bound: frozenset[str]) -> Any:
             for f in fields(x)
         },
     )
+
+
+_AS_TERM: dict[type, Callable[[Any], KFrame]] = {
+    Arg: lambda f: KArg(readback(f.value)),
+    Then: lambda f: KTo(f.name, f.grade, _close(f.body, f.env, frozenset({f.name}))),
+    Fst: lambda _f: KFst(),
+    Snd: lambda _f: KSnd(),
+    Loop: lambda f: KLoop(f.prim),
+}

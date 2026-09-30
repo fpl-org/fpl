@@ -22,7 +22,19 @@ from hypothesis import given, seed
 from hypothesis import strategies as st
 from test_cbpv_syntax import parts
 
-from fpl.cbpv.check import Bottom, TypeError_, TypeErrorKind, check, fits
+from fpl.cbpv.check import (
+    Bottom,
+    KArg,
+    KFst,
+    KLoop,
+    KSnd,
+    KTo,
+    TypeError_,
+    TypeErrorKind,
+    check,
+    check_config,
+    fits,
+)
 from fpl.cbpv.syntax import (
     Absurd,
     App,
@@ -217,3 +229,16 @@ def test_catalogue_entry_alone(kind: TypeErrorKind, m: Comp) -> None:
     error = run(m)
     assert error is not None
     assert error.kind == kind
+
+
+def test_config_types_each_frame() -> None:
+    """A stack `K : B ⇒ C`: an argument, a `to`, a projection and a loop frame in turn."""
+    both = Both(Return(ONE), Lam("n", INT, 1, Return(Var("n"))))
+    stack = (KSnd(), KArg(ONE), KTo("m", 1, Return(Var("m"))), KLoop(TIMES))
+    assert check_config(both, stack, SIGMA_TEST) == (F(INT), frozenset())
+
+
+def test_config_refuses_a_frame_that_does_not_fit() -> None:
+    refused = check_config(Return(ONE), (KFst(),), SIGMA_TEST)
+    assert isinstance(refused, TypeError_)
+    assert (refused.kind, refused.where) == (TypeErrorKind.NOT_WITH, (1,))

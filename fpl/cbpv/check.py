@@ -14,6 +14,11 @@ instance by the signature (prim-instances). Of the grades only 0 is enforced (gr
 fits every value type, so a `to` after `fail` binds a variable of type `0`. With
 `loops=True`, every `rec` body leads with a label, and so does every thunk an iterating
 constant receives in its application spine, which must be a thunk literal.
+
+`check_config(focus, stack, sig)` types a machine configuration `⟨M, K⟩` read back to terms
+(design section 4): the closed focus by the rules above, then each frame, top first, as a
+stack `K : B ⇒ C`; it returns the configuration's type and effect, or the first `TypeError_`,
+whose `where` starts with 0 for the focus and with `i` for the `i`th frame.
 """
 
 from __future__ import annotations
@@ -295,7 +300,12 @@ def _judge_return(m: Return, env: _Env) -> Judged:
 
 
 def _judge_to(m: To, env: _Env) -> Judged:
-    bound, first = _comp(m.bound, env.at(0))
+    return _then(_comp(m.bound, env.at(0)), m, env)
+
+
+def _then(judged: Judged, m: To | KTo, env: _Env) -> Judged:
+    """`M to x. N`, or a `to` frame, after an `M` of the type and effect `judged`."""
+    bound, first = judged
     if not isinstance(bound, F | Bottom):
         env.at(0).refuse(TypeErrorKind.NOT_RETURNER, f"`to` after {bound!r}")
     returned = bound.value if isinstance(bound, F) else Zero()
@@ -316,8 +326,12 @@ def _judge_lam(m: Lam, env: _Env) -> Judged:
 
 
 def _judge_app(m: App, env: _Env) -> Judged:
-    fun, eff = _comp(m.fun, env.at(1))
-    arg = _value(m.arg, env.at(0))
+    return _applied(_comp(m.fun, env.at(1)), _value(m.arg, env.at(0)), env)
+
+
+def _applied(judged: Judged, arg: VType, env: _Env) -> Judged:
+    """An argument of type `arg` pushed onto a computation of the type and effect `judged`."""
+    fun, eff = judged
     if isinstance(fun, Bottom):
         return fun, eff
     if not isinstance(fun, Arrow):
@@ -358,20 +372,32 @@ def _judge_both(m: Both, env: _Env) -> Judged:
 
 
 def _project(m: First | Second, env: _Env) -> tuple[With | Bottom, Effects]:
-    both, eff = _comp(m.comp, env.at(0))
+    return _projected(_comp(m.comp, env.at(0)), env)
+
+
+def _projected(judged: Judged, env: _Env) -> tuple[With | Bottom, Effects]:
+    both, eff = judged
     if not isinstance(both, With | Bottom):
         env.refuse(TypeErrorKind.NOT_WITH, f"a projection of {both!r}")
     return both, eff
 
 
-def _judge_first(m: First, env: _Env) -> Judged:
-    both, eff = _project(m, env)
+def _left(projected: tuple[With | Bottom, Effects]) -> Judged:
+    both, eff = projected
     return (both if isinstance(both, Bottom) else both.left), eff
 
 
-def _judge_second(m: Second, env: _Env) -> Judged:
-    both, eff = _project(m, env)
+def _right(projected: tuple[With | Bottom, Effects]) -> Judged:
+    both, eff = projected
     return (both if isinstance(both, Bottom) else both.right), eff
+
+
+def _judge_first(m: First, env: _Env) -> Judged:
+    return _left(_project(m, env))
+
+
+def _judge_second(m: Second, env: _Env) -> Judged:
+    return _right(_project(m, env))
 
 
 def _judge_rec(m: Rec, env: _Env) -> Judged:
@@ -438,6 +464,77 @@ _COMPS: dict[type, Callable[[Any, _Env], Judged]] = {
     Fail: _judge_fail,
     Label: _judge_label,
     Prim: _judge_prim,
+}
+
+
+# Machine configurations: the statement's stack, typed `K : B ⇒ C`.
+
+
+@dataclass(frozen=True, slots=True)
+class KArg:
+    """`V :: K`."""
+
+    value: Value
+
+
+@dataclass(frozen=True, slots=True)
+class KTo:
+    """`(to x. N) :: K`, with `x`'s grade."""
+
+    name: str
+    grade: Grade
+    body: Comp
+
+
+@dataclass(frozen=True, slots=True)
+class KFst:
+    """`fst :: K`."""
+
+
+@dataclass(frozen=True, slots=True)
+class KSnd:
+    """`snd :: K`."""
+
+
+@dataclass(frozen=True, slots=True)
+class KLoop:
+    """`loop(p, s) :: K`, typed by `p`'s instance alone: it takes what `p`'s thunk argument
+    returns and gives `p`'s result, with `p`'s effect."""
+
+    prim: Prim
+
+
+type KFrame = KArg | KTo | KFst | KSnd | KLoop
+
+
+def check_config(focus: Comp, stack: tuple[KFrame, ...], sig: Signature) -> Judged | TypeError_:
+    """The type and effect of the closed configuration `⟨focus, stack⟩` (stack top first)."""
+    try:
+        judged = _comp(focus, _Env(sig, {}, (0,)))
+        for i, frame in enumerate(stack, 1):
+            judged = _FRAMES[type(frame)](frame, judged, _Env(sig, {}, (i,)))
+    except _RefusedError as refused:
+        return refused.error
+    return judged
+
+
+def _loop_frame(frame: KLoop, judged: Judged, env: _Env) -> Judged:
+    body = next(p.comp for p in _params(frame.prim.type) if isinstance(p, U))
+    env.fit(judged[0], _result(body))
+    return _result(frame.prim.type), judged[1] | frame.prim.eff
+
+
+def _result(t: CType) -> CType:
+    """What a computation of type `t` is once it has popped all its arguments."""
+    return _result(t.res) if isinstance(t, Arrow) else t
+
+
+_FRAMES: dict[type, Callable[[Any, Judged, _Env], Judged]] = {
+    KArg: lambda f, judged, env: _applied(judged, _value(f.value, env.at(0)), env),
+    KTo: lambda f, judged, env: _then(judged, f, env),
+    KFst: lambda _f, judged, env: _left(_projected(judged, env)),
+    KSnd: lambda _f, judged, env: _right(_projected(judged, env)),
+    KLoop: _loop_frame,
 }
 
 

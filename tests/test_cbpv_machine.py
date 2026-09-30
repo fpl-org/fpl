@@ -25,6 +25,7 @@ from cbpv_strategies import (
 from hypothesis import given
 from hypothesis import strategies as st
 
+from fpl.cbpv.check import TypeError_, check_config, fits
 from fpl.cbpv.machine import (
     End,
     Event,
@@ -38,9 +39,11 @@ from fpl.cbpv.machine import (
     Run_,
     Stuck,
     Unsaturated,
+    as_term,
     readback,
     replay,
     run,
+    states,
 )
 from fpl.cbpv.syntax import (
     Absurd,
@@ -48,7 +51,9 @@ from fpl.cbpv.syntax import (
     Arrow,
     Comp,
     Const,
+    CType,
     Dyn,
+    Effects,
     F,
     Fail,
     Force,
@@ -152,6 +157,26 @@ def test_fuel_monotone(program: Program, data: st.DataObject) -> None:
         (short,) = run(single, SIGMA_TEST, fuel=less, handler=counter())
         ran_out = (short.end, short.steps) == (OutOfFuel(), less)
         assert short == free if less == free.steps else ran_out
+
+
+@pytest.mark.obligation("preservation: a step keeps the type of a Dyn-free program")
+@given(programs(SIGMA_TEST, dyn=False))
+def test_preservation(program: Program) -> None:
+    """[law: preservation] For every program `programs(Σ_test, dyn=False)` draws, every state the
+    machine passes through reads back (`as_term`) to a configuration `check_config` types at
+    the run's type and effect, and a `Returned` value has the run's value type."""
+    typed: dict[int, tuple[CType, Effects]] = {}
+    for i, state in states(program, SIGMA_TEST, handler=counter()):
+        judged = check_config(*as_term(state), SIGMA_TEST)
+        assert not isinstance(judged, TypeError_), (judged, as_term(state))
+        want = typed.setdefault(i, judged)
+        assert fits(judged[0], want[0]) is None
+        assert judged[1] <= want[1]
+    for i, r in enumerate(run(program, SIGMA_TEST, handler=counter())):
+        if isinstance(r.end, Returned):
+            returned = check_config(Return(readback(r.end.value)), (), SIGMA_TEST)
+            assert not isinstance(returned, TypeError_)
+            assert fits(returned[0], typed[i][0]) is None
 
 
 def _altered(log: tuple[Event, ...], i: int) -> tuple[Event, ...]:
