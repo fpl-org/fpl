@@ -106,10 +106,18 @@ def metered(run: Run, words: Words, fuel: int | None) -> tuple[Value, ...]:
 
 
 def effect_line(define: Define) -> Listed:
-    """ins -- outs, then +fail if the word may fail."""
+    """ins -- outs, a typed input as its two strings `x:` and its type, then +fail if the word
+    may fail (hole effect-query)."""
     effect = define.effect
     fails = ("+fail",) if effect.fails else ()
-    return Listed((*effect.ins, "--", *effect.outs, *fails))
+    typed = zip(effect.ins, effect.types, strict=True)
+    ins = (text for name, part in typed for text in slotted(name, part))
+    return Listed((*ins, "--", *effect.outs, *fails))
+
+
+def slotted(name: str, part: str | None) -> tuple[str, ...]:
+    """An input as its effect line writes it: the name, or `name:` and its type."""
+    return (name,) if part is None else (name + ":", part)
 
 
 def final(state: State) -> tuple[Value, ...]:

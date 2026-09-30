@@ -25,7 +25,7 @@ the implemented set is refused before evaluation (hole unimplemented-words).
 
 from collections import ChainMap
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from functools import partial
 from itertools import groupby
@@ -72,6 +72,8 @@ DOC = Effect((), ("d",))
 QUERIES = {"history": HISTORY, "doc": DOC, "effect": Effect((), ("e",))}
 
 type Here = tuple[str, ...]
+type Part = str | None
+type Key = tuple[Part, ...]
 
 
 def unimplemented() -> NoReturn:
@@ -107,6 +109,7 @@ class Catalog:
 
     logs: dict[Here, list[str | Mount]]
     effects: dict[str, Effect]
+    keys: dict[str, dict[int, Key]] = field(default_factory=dict[str, dict[int, Key]])
 
     def enter(self, lines: tuple[Line, ...], here: Here) -> None:
         """Log the definitions, subdirectories and mounts of one directory's lines."""
@@ -116,6 +119,7 @@ class Catalog:
             if head is not None:
                 log.append(head[0])
                 path = "/".join((*here, head[0]))
+                self.keyed(path, head[1])
                 self.effects[path] = head[1]
                 self.effects |= {f"{path}/{query}": e for query, e in QUERIES.items()}
                 self.logs.setdefault((*here, head[0]), []).extend(QUERIES)
@@ -124,6 +128,13 @@ class Catalog:
                 self.enter(coded(line.block), (*here, name))
             elif here:
                 log.append(Mount(mount(line)))
+
+    def keyed(self, path: str, effect: Effect) -> None:
+        """Note a definition's key; a second key of one arity is refused until clauses of one
+        arity are ordered (hole unimplemented-words), a same key shadows as before."""
+        key = keyed(effect)
+        if self.keys.setdefault(path, {}).setdefault(len(key), key) != key:
+            unimplemented()
 
     def directory(self, here: Here, name: str) -> Here:
         """The directory a name reaches from here outward; none is refused."""
@@ -216,34 +227,48 @@ def effect_line(items: tuple[Item, ...]) -> tuple[str, Effect]:
     if name is None or "--" not in names:
         unimplemented()
     cut = names.index("--")
-    slots: tuple[Slot, ...] = tuple(pair[1] for pair in declared[:cut])
-    return name, Effect(tuple(names[:cut]), tuple(names[cut + 1 :]), slots=slots)
+    slots: tuple[Slot, ...] = tuple(kind for _, kind, _ in declared[:cut])
+    types = tuple(part for _, _, part in declared[:cut])
+    return name, Effect(tuple(names[:cut]), tuple(names[cut + 1 :]), slots=slots, types=types)
 
 
-def typed(items: tuple[Item, ...]) -> list[tuple[str, Slot]]:
-    """Each plain name with its slot: `name: Type` has the slot its type makes, a bare name is
-    an untyped value (hole bare-slot-names)."""
-    declared: list[tuple[str, Slot]] = []
+def typed(items: tuple[Item, ...]) -> list[tuple[str, Slot, Part]]:
+    """Each plain name with its slot and type: `name: Type` has the slot its type makes, a bare
+    name is an untyped value (hole bare-slot-names); `∈` is refused."""
+    declared: list[tuple[str, Slot, Part]] = []
     rest = iter(items)
     for item in rest:
         name = plain(item)
         if name is None:
             unimplemented()
+        if name == "∈":
+            unimplemented()
         if len(name) > 1 and name.endswith(":"):
-            declared.append((name[:-1], slot(next(rest, None))))
+            declared.append((name[:-1], *slot(next(rest, None))))
         else:
-            declared.append((name, "value"))
+            declared.append((name, "value", None))
     return declared
 
 
-def slot(kind: Item | None) -> Slot:
-    """The slot a type makes (S49 rule 5): [ ] a thunk, Code code, any other a value; a `name:`
-    with no type after it is refused."""
+def slot(kind: Item | None) -> tuple[Slot, Part]:
+    """The slot a type makes (S49 rule 5), and its type: [ ] a thunk, Code code, both untyped; a
+    name a value of that type (a word x -- b). A `name:` with no type after it is refused, and
+    so is a compound type (hole compound-type)."""
     if kind is None or plain(kind) == "--":
         unimplemented()
     if isinstance(kind, Enclosure) and kind.pair == "quotation":
-        return "thunk"
-    return "code" if plain(kind) == "Code" else "value"
+        return "thunk", None
+    part = plain(kind)
+    if part is None:
+        unimplemented()
+    return ("code", None) if part == "Code" else ("value", part)
+
+
+def keyed(effect: Effect) -> Key:
+    """A definition's key: per input its type, a thunk or code slot its kind (hole
+    clause-identity)."""
+    pairs = zip(effect.slots, effect.types, strict=True)
+    return tuple(part if kind == "value" else kind for kind, part in pairs)
 
 
 def plain(item: Item) -> str | None:
@@ -658,8 +683,8 @@ def written(statement: Statement) -> Line:
         case Define():
             effect = statement.effect
             fails = ("+fail",) if effect.fails else ()
-            ins = zip(effect.ins, effect.slots, strict=True)
-            taken = (item for name, kind in ins for item in declaration(name, kind))
+            ins = zip(effect.ins, effect.slots, effect.types, strict=True)
+            taken = (item for name, kind, part in ins for item in declaration(name, kind, part))
             head = (named(statement.name), named(":"), *taken, named("--"))
             body = (Line(sugared(statement.code), (), START),) if statement.code else ()
             outs = (*effect.outs, *fails)
@@ -722,10 +747,12 @@ def framed(items: tuple[Item, ...]) -> Frame:
     return Frame((Cell(items, START),) if items else (), START)
 
 
-def declaration(name: str, kind: Slot) -> tuple[Item, ...]:
-    """An input as written: a value bare, a thunk `name: []`, code `name: Code`. The type a
-    thunk was declared with is not kept (hole thunk-type-dropped)."""
+def declaration(name: str, kind: Slot, part: Part) -> tuple[Item, ...]:
+    """An input as written: a value bare or `name: Type`, a thunk `name: []`, code `name: Code`.
+    The type a thunk was declared with is not kept (hole thunk-type-dropped)."""
     match kind:
+        case "value" if part is not None:
+            return (named(name + ":"), named(part))
         case "value":
             return (named(name),)
         case "thunk":
