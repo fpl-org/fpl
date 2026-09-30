@@ -15,9 +15,11 @@ stack of entries, an IR value with its type, and an environment from binder name
 - A word is `thunk (λtop. … λdeepest. body)`, every binder of grade ω; a run line is its code
   over an empty static stack, returning what is left.
 
-Refused, by precondition: a match, a control word, a hole (`?`, `_`), a word calling itself or
-in a component of more than one word. Those lower in later passes (holes static-stack,
-effect-mismatch).
+- `_` (a hole 07 inferred as nothing) lowers to nothing; `?` is `prim ?` of no arguments, which
+  panics "unfilled goal" at its span through the walker's own function.
+
+Refused, by precondition: a match, a control word, a word calling itself or in a component of
+more than one word. Those lower in later passes (holes static-stack, effect-mismatch).
 """
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -50,14 +52,14 @@ from fpl.eval import CONTROLS, effect_line
 from fpl.eval import held as substituted
 from fpl.lower.select import CoreA
 from fpl.lower.walker import SORTS, held, instance, keyed, paired, typed
-from fpl.types import ARROWS, HOLES, Input
+from fpl.types import ARROWS, Input
 
 type Entry = tuple[IRValue, VType]
 type Env = Mapping[str, Entry]
 type Extra = tuple[tuple[str, FirstOrder], ...]
 
 PROBE = Symbol("probe")  # stands in for a binder while looking for its mentions
-OFF = frozenset(CONTROLS) | frozenset(HOLES)
+OFF = frozenset(CONTROLS)
 
 
 def _flat(code: tuple[Node, ...]) -> Iterator[Node]:
@@ -179,7 +181,11 @@ def _call(low: _Lowering, node: Call, env: Env) -> None:
         n, outs = low.words[node.name]
         low.apply(Force(Var(node.name)), low.taken(n), outs)
     else:
-        _builtin(low, node)
+        _CALLS.get(node.name, _builtin)(low, node)
+
+
+def _at(node: Call) -> Position:
+    return Position(node.span.line, node.span.col)
 
 
 def _builtin(low: _Lowering, node: Call) -> None:
@@ -187,9 +193,19 @@ def _builtin(low: _Lowering, node: Call) -> None:
     arrow = ARROWS[node.name]
     args = low.taken(len(arrow.ins))
     outs = [args[s.index][1] if isinstance(s, Input) else SORTS[s] for s in arrow.outs]
-    at = Position(node.span.line, node.span.col)
     ins = [t for _, t in reversed(args)]
-    low.apply(Prim(node.name, instance(ins, outs), frozenset(), at), args, outs)
+    low.apply(Prim(node.name, instance(ins, outs), frozenset(), _at(node)), args, outs)
+
+
+def _inferred(_low: _Lowering, _node: Call) -> None:
+    """`_` runs as nothing: 07 refuses one it cannot infer as nothing before the walker runs."""
+
+
+def _goal(low: _Lowering, node: Call) -> None:
+    low.apply(Prim(node.name, instance([], []), frozenset(), _at(node)), [], [])
+
+
+_CALLS: dict[str, Callable[[_Lowering, Call], None]] = {"_": _inferred, "?": _goal}
 
 
 def _bind(low: _Lowering, node: Bind, env: Env) -> None:

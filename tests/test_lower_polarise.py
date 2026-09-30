@@ -69,6 +69,8 @@ PROGRAMS = {
     "binders": (Run((Push(1), Push(2), bind("a", bind("b", QUOTED, *calls("b", "a"))))),),
     "shadow": (Run((Push(1), bind("a", Push(2), bind("a", Push(Quotation(calls("a"))))))),),
     "dict": (Run((Push(3), bind("a", DICT))),),
+    "infer": (Run((Push(1), Push(2), *calls("_", "+"))), Run(calls("_"))),
+    "goal": (Run((Push(1), *calls("?", "dup"))),),
     "words": (
         word("f", 1, 2, Push(1), *calls("+", "dup")),
         word("g", 0, 0),
