@@ -1,11 +1,14 @@
 """Pass 2 on straight-line code: the compiled program prints what the walker prints."""
 
+from collections.abc import Mapping
+from dataclasses import fields, is_dataclass
+
 import icontract
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 from lower_diff import cbpv_output, walker_output
-from lower_strategies import START, controlled, recursive, source_of, straight
+from lower_strategies import START, broad_match, controlled, recursive, source_of, straight
 
 from fpl.ast_core import (
     Bind,
@@ -13,10 +16,12 @@ from fpl.ast_core import (
     Define,
     Effect,
     Equal,
+    Guarded,
     Inverse,
     Keyed,
     Listed,
     Match,
+    Node,
     Push,
     Quotation,
     Row,
@@ -24,9 +29,10 @@ from fpl.ast_core import (
     Wild,
 )
 from fpl.cbpv.check import check
+from fpl.cbpv.syntax import Comp, Effects, Fail, First, Force, Prim, Rec, Second, Thunk, Var
 from fpl.desugar import desugar
 from fpl.errors import FplError
-from fpl.eval import evaluate, substitute
+from fpl.eval import effect_line, evaluate, substitute
 from fpl.lower.polarise import PROBE, Lowered, polarise
 from fpl.lower.select import CoreA, RefusalKind, Refused, select
 from fpl.lower.walker import signature
@@ -76,6 +82,75 @@ def test_lower_agrees_recursive(source: str) -> None:
     and `cbpv_output` equals `walker_output`, error lines included."""
     accepted(source)
     assert cbpv_output(source) == walker_output(source)
+
+
+def ir_effect(node: object, known: Mapping[str, Effects]) -> Effects:
+    """What running `node` may do, read off the IR apart from the lowering's own bookkeeping:
+    every `fail`, every `rec`'s and constant's declared effect, and a `force` of an earlier
+    definition its effect, over every subterm."""
+    match node:
+        case Fail():
+            own: Effects = frozenset({"fail"})
+        case Rec(eff=eff) | Prim(eff=eff):
+            own = eff
+        case Force(value=Var(name=name)) if name in known:
+            own = known[name]
+        case _:
+            own = frozenset()
+    parts = [getattr(node, f.name) for f in fields(node)] if is_dataclass(node) else []
+    return own.union(*(ir_effect(part, known) for part in parts))
+
+
+def called(code: tuple[Node, ...]) -> set[str]:
+    """The words a word's code calls, through match rows and their guards."""
+    names: set[str] = set()
+    for node in code:
+        if isinstance(node, Call):
+            names.add(node.name)
+        elif isinstance(node, Match):
+            for row in node.rows:
+                names |= called(row.body)
+                names |= {p.test for p in row.patterns if isinstance(p, Guarded)}
+    return names
+
+
+def looped(comp: Comp, defs: Mapping[str, Thunk]) -> Rec | None:
+    """The `rec` a definition's body is, or projects out of a `force` of."""
+    match comp:
+        case Rec():
+            return comp
+        case First(comp=inner) | Second(comp=inner):
+            return looped(inner, defs)
+        case Force(value=Var(name=name)):
+            return looped(defs[name].body, defs)
+        case _:
+            return None
+
+
+@given(recursive())
+def test_effect_line_sound(source: str) -> None:
+    """[law: effect-line-sound] For every program `recursive()` draws: every lowered word whose
+    walker effect line has `+fail` has `fail` in its IR effect; every word in a recursive
+    component is lowered to a `Rec` (or a projection of one) with `div`; no word outside a
+    recursive component and not reaching one has `div`."""
+    core = lowered(source)
+    program = accepted(source)[0]
+    defs = {name: value for name, value in program.defs if isinstance(value, Thunk)}
+    known: dict[str, Effects] = {}
+    for name, value in program.defs:
+        known[name] = ir_effect(value, known)
+    defines = {s.name: s for s in core.statements if isinstance(s, Define)}
+    looping: set[str] = set()
+    for component in core.components:
+        calls_of = set[str]().union(*(called(defines[n].code) for n in component))
+        own = len(component) > 1 or bool(calls_of & set(component))
+        if own or calls_of & looping:
+            looping |= set(component)
+        for name in component:
+            rec = looped(defs[name].body, defs)
+            assert not own or (rec is not None and "div" in rec.eff)
+            assert name in looping or "div" not in known[name]
+            assert "+fail" not in effect_line(defines[name]).items or "fail" in known[name]
 
 
 @given(controlled(), st.integers(0, 3))
@@ -247,9 +322,57 @@ def test_no_row_matching_fails_with_the_walkers_error() -> None:
     assert cbpv_output(MATCHING[0]) == "ERROR: 2:2 no row matches" == walker_output(MATCHING[0])
 
 
-def test_a_word_calling_itself_violates_lowerable() -> None:
-    with pytest.raises(icontract.ViolationError):
-        polarise(lowered("f : n -- r\n\tmatch\n\t\t0\t0\n\t\tn\tn 1 - f\n3 f\n"))
+COUNTDOWN = "f : n -- r\n\tmatch\n\t\t0\t0\n\t\tn\tn 1 - f 1 +\n3 f\n0 f\n"
+EVEN_ODD = (
+    "even : n -- b\n\tmatch\n\t\t0\t1\n\t\tn\tn 1 - odd\n"
+    "odd : n -- b\n\tmatch\n\t\t0\t0\n\t\tn\tn 1 - even\n"
+    "use : n -- b\n\tmatch\n\t\tn\tn even\n"
+    "3 even\n2 even\n3 odd\n2 use\n"
+)
+# A word reaching itself through a quotation, a group of three, and a thunk left by a
+# recursive word, boxed on the way out.
+RECURRING = (
+    COUNTDOWN,
+    EVEN_ODD,
+    "f : n -- r\n\tmatch\n\t\t0\t0\n\t\tn\tn 1 - [ f ] ! 1 +\n2 f\n",
+    "a : n -- r\n\tmatch\n\t\t0\t0\n\t\tn\tn 1 - b\n"
+    "b : n -- r\n\tmatch\n\t\t0\t1\n\t\tn\tn 1 - c\n"
+    "c : n -- r\n\tmatch\n\t\t0\t2\n\t\tn\tn 1 - a\n4 a\n5 b\n",
+    "f : n -- r q\n\tmatch\n\t\t0\t0\n\t\tn\tn 1 - f drop\n\t[ 7 ]\n2 f\n",
+)
+
+
+@pytest.mark.parametrize("source", RECURRING)
+def test_each_recursion_agrees(source: str) -> None:
+    accepted(source)
+    assert cbpv_output(source) == walker_output(source)
+
+
+def test_a_countdown_and_an_even_odd_pair_run_as_the_walker() -> None:
+    assert cbpv_output(COUNTDOWN) == "3\n0\n" == walker_output(COUNTDOWN)
+    assert cbpv_output(EVEN_ODD) == "0\n1\n1\n1\n" == walker_output(EVEN_ODD)
+
+
+@given(broad_match())
+def test_refusal_named_match(source: str) -> None:
+    """[law: refusal-named-match] On every program `broad_match()` draws (each draw holds an
+    inverse pattern or rows that leave different shapes), the lowering either refuses with a
+    `RefusalKind` and a span inside the source, or its output equals the walker's; it never
+    raises."""
+    output = cbpv_output(source)
+    if isinstance(output, Refused):
+        lines = source.splitlines()
+        assert isinstance(output.kind, RefusalKind)
+        assert 1 <= output.at.line <= len(lines)
+        assert 1 <= output.at.col <= len(lines[output.at.line - 1])
+    else:
+        assert output == walker_output(source)
+
+
+def test_an_inverse_pattern_is_refused_where_it_is_written() -> None:
+    refused = cbpv_output("k : v -- r\n\tmatch\n\t\t( cons x xs )\tx\n\t\t_\t0\n⟨ 1 ⟩ k\n")
+    assert isinstance(refused, Refused)
+    assert (refused.kind, refused.at.line) == (RefusalKind.INVERSE_PATTERN, 3)
 
 
 def refusal(core: CoreA) -> RefusalKind:
@@ -285,3 +408,9 @@ def test_core_a_match_off_its_rules_is_refused() -> None:
     ):
         core = CoreA((word("f", 2, 1, code), Run((Push(1), Push(2), *calls("f")))), (("f",),))
         assert refusal(core) == kind
+
+
+def test_a_recursive_body_off_its_outputs_is_refused() -> None:
+    """07 refuses such a body; a `rec` at `Dyn` outputs cannot return it."""
+    core = CoreA((word("f", 1, 1, *calls("f", "dup")), Run((Push(1), *calls("f")))), (("f",),))
+    assert refusal(core) == RefusalKind.EFFECT_MISMATCH

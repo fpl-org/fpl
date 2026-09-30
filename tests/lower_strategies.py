@@ -299,16 +299,25 @@ def _counted(draw: Draw, name: str, callees: tuple[str, ...], guard: bool) -> li
     return [f"{name} : a n -- r", "\tmatch", *(f"\t\t{a}\t{n}\t{b}" for a, n, b in rows)]
 
 
+# Who calls whom: `h` calls `f`, and `f` calls nobody, itself, or `h` (a mutual pair).
+CALLEES = (
+    (("f", ()), ("h", ("f",))),
+    (("f", ("f",)), ("h", ("f", "h"))),
+    (("f", ("h",)), ("h", ("f",))),
+)
+
+
 @st.composite
 def recursive(draw: Draw) -> str:
     """Programs as source, written here since `resugar` refuses a match: words over a value and a
-    counter, each a match whose first row takes the counter at 0 (design section 7), `h` calling
-    `f` on the counter less one, a guard word `g` or none, and run lines on counters 0 to 3.
+    counter, each a match whose first row takes the counter at 0 (design section 7), calling
+    words on the counter less one, so every call chain ends: `h` calls `f`, and `f` calls
+    nobody, itself, or `h`; a guard word `g` or none, and run lines on counters 0 to 3.
     Nothing a refusal kind names is drawn: no inverse pattern, and every row leaves one number
     or datum."""
     guard = draw(st.booleans())
     lines = _guard(draw) if guard else []
-    for name, callees in (("f", ()), ("h", ("f",))):
+    for name, callees in draw(st.sampled_from(CALLEES)):
         lines += _counted(draw, name, callees, guard)
     for _ in range(draw(st.integers(1, 2))):
         word = draw(st.sampled_from(("f", "h")))
@@ -316,3 +325,19 @@ def recursive(draw: Draw) -> str:
     source = "\n".join(lines) + "\n"
     elaborate(desugar(parse(source)))
     return source
+
+
+# A row refused next to `_ digit`: an inverse pattern, a symbol against a number, two values
+# against one.
+OFF_ROWS = (("( cons x xs )", "x"), ("0", "#z"), ("0", "1 2"))
+
+
+@st.composite
+def broad_match(draw: Draw) -> str:
+    """Programs as `recursive` draws them, after a word `k : v -- r` whose match holds an inverse
+    pattern or rows leaving different base types or counts (design section 7), which a last run
+    line calls on a list, a number or a symbol."""
+    pattern, body = draw(st.sampled_from(OFF_ROWS))
+    k = ["k : v -- r", "\tmatch", f"\t\t{pattern}\t{body}", f"\t\t_\t{draw(COUNTS)}"]
+    arg = draw(st.sampled_from(("⟨ 1 2 ⟩", "0", "#z")))
+    return "\n".join(k) + "\n" + draw(recursive()) + f"{arg} k\n"

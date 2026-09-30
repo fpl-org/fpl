@@ -14,6 +14,11 @@ stack of entries, an IR value with its type, and an environment from binder name
   program's own `keyed` constant over its entries, each lowered on a fresh static stack.
 - A word is `thunk (λtop. … λdeepest. body)`, every binder of grade ω; a run line is its code
   over an empty static stack, returning what is left.
+- A recursive component (a word calling itself, or pass 1's component of several) is one `rec`
+  at `Dyn` inputs and outputs (its outputs boxed), with `div` and what its bodies may do: a
+  single word `f` is `thunk (rec f. M)`; a group is `thunk (rec fg. ⟨M_f, ⟨M_g, …⟩⟩)` under a
+  name no word can spell, then `f = thunk (fst (force fg))` and so on. Inside, a call of a
+  member is its projection of `force` of the `rec`'s name; after it, `force f` (design 6.3).
 
 - `_` (a hole 07 inferred as nothing) lowers to nothing; `?` is `prim ?` of no arguments, which
   panics "unfilled goal" at its span through the walker's own function.
@@ -34,22 +39,22 @@ stack of entries, an IR value with its type, and an environment from binder name
   it), chosen by `pm`; without a catch-all the last row falls into `fail` with the walker's
   `no row matches` at the match. Each row's body runs on a fresh static stack (the surface
   gives a row body no values below the match) and the bodies' entries are joined by one `to`.
-- A thunk's effect is over-approximated from its code: `fail` for a match without a catch-all
-  row, and the effect of each word it calls.
+- A thunk's or a word's effect is over-approximated from its code: `fail` for a match without
+  a catch-all row, and the effect of each word it calls, so `div` and `fail` reach callers.
 
 Refused, returned: `QUOTATION_UNKNOWN` for `!` or `swap-args` on walker data (a `Dyn` name),
 `EFFECT_MISMATCH` for a thunk run in place outside a quotation (or in a wrapper, a row body or a
 guard) on fewer entries than it takes, and for a guard leaving other than one entry;
 `STEP_ARITY` for a wrapper whose fresh stack is left with other than one entry;
 `BRANCHES_DISAGREE` for rows leaving different counts, or entries at types with no common fit
-(two base types, or two thunk types); `INVERSE_PATTERN` for a pattern pass 1 refuses.
-Refused, by precondition: `if` and `repeat`, a word calling itself or in a component of more
-than one word. Those lower in later passes (holes static-stack, effect-mismatch).
+(two base types, or two thunk types); `INVERSE_PATTERN` for a pattern pass 1 refuses;
+`EFFECT_MISMATCH` for a recursive word whose body leaves other than its declared outputs.
+Refused, by precondition: `if` and `repeat`, which lower in a later pass (hole static-stack).
 """
 
 from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import count
 
 import icontract
@@ -76,6 +81,7 @@ from fpl.cbpv.sig import FirstOrder
 from fpl.cbpv.syntax import (
     App,
     Base,
+    Both,
     Case,
     Comp,
     Const,
@@ -83,6 +89,7 @@ from fpl.cbpv.syntax import (
     Eff,
     Effects,
     Fail,
+    First,
     Force,
     Inl,
     Lam,
@@ -90,7 +97,9 @@ from fpl.cbpv.syntax import (
     Position,
     Prim,
     Program,
+    Rec,
     Return,
+    Second,
     SplitPair,
     Thunk,
     To,
@@ -98,6 +107,7 @@ from fpl.cbpv.syntax import (
     Unit,
     Var,
     VType,
+    With,
 )
 from fpl.cbpv.syntax import Value as IRValue
 from fpl.errors import FplError, Span
@@ -127,6 +137,7 @@ type Lowered = tuple[Program, Extra, tuple[Origin, ...]]
 type Let = Callable[[Comp], Comp]
 type Test = Comp | None
 
+DIV: Effects = frozenset({"div"})
 ONE: Entry = (Const(1, Base("Num")), Base("Num"))
 FALSE = Inl(Unit(), One())  # `truth`'s side for 0, and `eq`'s for different values
 PROBE = Symbol("probe")  # stands in for a binder while looking for its mentions
@@ -176,15 +187,36 @@ def _catches(row: Row) -> bool:
     return all(isinstance(pattern, Wild | Named) for pattern in row.patterns)
 
 
-def _off(node: Node, own: str) -> bool:
-    return isinstance(node, Call) and node.name in OFF | {own}
-
-
 def lowerable(core: CoreA) -> bool:
-    """No `if` or `repeat`, no word calling itself, one word per component."""
-    owned = ((s.name if isinstance(s, Define) else "", s.code) for s in core.statements)
-    plain = not any(_off(node, own) for own, code in owned for node in _flat(code))
-    return plain and all(len(c) == 1 for c in core.components)
+    """No `if` or `repeat`."""
+    code = (node for s in core.statements for node in _flat(s.code))
+    return not any(isinstance(node, Call) and node.name in OFF for node in code)
+
+
+def _calls_itself(define: Define) -> bool:
+    return any(isinstance(n, Call) and n.name == define.name for n in _flat(define.code))
+
+
+def _nested[T](parts: Sequence[T], pair: Callable[[T, T], T]) -> T:
+    """`parts` right-nested by `pair`; one part is itself."""
+    whole = parts[-1]
+    for part in reversed(parts[:-1]):
+        whole = pair(part, whole)
+    return whole
+
+
+def _projections(whole: Comp, n: int) -> list[Comp]:
+    """The `n` components of a right-nested `&`, `whole`; one component is `whole` itself."""
+    if n == 1:
+        return [whole]
+    return [First(whole), *_projections(Second(whole), n - 1)]
+
+
+def _lams(names: Sequence[str], comp: Comp) -> Comp:
+    """`λtop. … λdeepest. comp` over `Dyn` inputs, `names` the top first."""
+    for x in reversed(names):
+        comp = Lam(x, Dyn(), "ω", comp)
+    return comp
 
 
 def _closed(lets: Sequence[Let], comp: Comp) -> Comp:
@@ -203,8 +235,10 @@ def _applied(head: Comp, values: Sequence[IRValue]) -> Comp:
 
 @dataclass(frozen=True)
 class _Word:
-    """A word lowered so far: the values it takes, the types of those it leaves, its effect."""
+    """A word lowered so far: how a call reaches it, the values it takes, the types of those it
+    leaves, its effect."""
 
+    head: Comp
     ins: int
     outs: tuple[VType, ...]
     eff: Effects
@@ -274,17 +308,64 @@ class _Lowering:
         comp = _closed(self.lets, Return(paired([v for v, _ in self.stack])))
         return comp, tuple(t for _, t in self.stack)
 
-    def word(self, define: Define) -> Thunk:
-        """`thunk (λtop. … λdeepest. body)`; its inputs are walker data (`Dyn`)."""
+    def defs(self, core: CoreA) -> list[tuple[str, IRValue]]:
+        """Each component's definitions, in pass 1's order."""
+        defines = {s.name: s for s in core.statements if isinstance(s, Define)}
+        defs: list[tuple[str, IRValue]] = []
+        for component in core.components:
+            group = [defines[name] for name in component]
+            if len(group) == 1 and not _calls_itself(group[0]):
+                defs.append((group[0].name, self.word(group[0])))
+            else:
+                defs.extend(self.rec(group))
+        return defs
+
+    def entered(self, define: Define) -> list[str]:
+        """The word's input names on the static stack, the top first; its queries answered."""
         names = [self.name() for _ in define.effect.ins]
         self.stack = [(Var(x), Dyn()) for x in reversed(names)]
-        comp, outs = self.body(define.code)
-        for x in reversed(names):
-            comp = Lam(x, Dyn(), "ω", comp)
-        self.words[define.name] = _Word(len(names), outs, self.effects(define.code))
         self.queries[f"{define.name}/doc"] = Const(define.doc, typed(define.doc))
         self.queries[f"{define.name}/effect"] = Const(effect_line(define), Dyn())
-        return Thunk(comp)
+        return names
+
+    def word(self, define: Define) -> Thunk:
+        """`thunk (λtop. … λdeepest. body)`; its inputs are walker data (`Dyn`)."""
+        names = self.entered(define)
+        comp, outs = self.body(define.code)
+        head = Force(Var(define.name))
+        self.words[define.name] = _Word(head, len(names), outs, self.effects(define.code))
+        return Thunk(_lams(names, comp))
+
+    def rec(self, group: Sequence[Define]) -> list[tuple[str, IRValue]]:
+        """The component as one `rec` at `Dyn` inputs and outputs, with `div`; a group of several
+        under a fresh name, then each word its projection."""
+        rec = group[0].name if len(group) == 1 else self.name()
+        eff = DIV.union(*(self.effects(d.code) for d in group))
+        types = [instance([Dyn()] * len(d.effect.ins), [Dyn()] * len(d.effect.outs)) for d in group]
+        heads = _projections(Force(Var(rec)), len(group))
+        for d, head, t in zip(group, heads, types, strict=True):
+            self.words[d.name] = _Word(head, len(d.effect.ins), results(t), eff)
+        body = _nested([self.boxed_word(d) for d in group], Both)
+        whole = Rec(rec, "ω", _nested(types, With), eff, body)
+        defs: list[tuple[str, IRValue]] = [(rec, Thunk(whole))]
+        if len(group) == 1:
+            return defs
+        for d, head in zip(group, heads, strict=True):
+            self.words[d.name] = replace(self.words[d.name], head=Force(Var(d.name)))
+            defs.append((d.name, Thunk(head)))
+        return defs
+
+    def boxed_word(self, define: Define) -> Comp:
+        """`λtop. … λdeepest. body`, returning its declared outputs boxed as walker data; a body
+        leaving another count is `EFFECT_MISMATCH` at its effect line."""
+        names = self.entered(define)
+        self.lets = []
+        self.code(define.code, {})
+        if len(self.stack) != len(define.effect.outs):
+            left = f"{define.name} leaves {len(self.stack)} values"
+            raise _RefusalError(Refused(RefusalKind.EFFECT_MISMATCH, define.span, left))
+        values = [self.boxed(entry) for entry in self.stack]
+        return _lams(names, _closed(self.lets, Return(paired(values))))
 
     def quotation(self, value: Quotation, env: Env) -> Entry:
         """`Thunk(λin₁. … λinₙ. body, origin)`, its inputs grown on demand, `in₁` the top."""
@@ -292,8 +373,7 @@ class _Lowering:
         with self.aside([], grown):
             self.code(value.code, env)
             comp, outs = self.returned()
-        for x in reversed(grown):
-            comp = Lam(x, Dyn(), "ω", comp)
+        comp = _lams(grown, comp)
         names = tuple((x, v) for x, (v, _) in env.items())
         self.origins.append(Origin(value.code, names, len(grown), len(outs)))
         thunk = Thunk(comp, len(self.origins) - 1)
@@ -353,9 +433,7 @@ class _Lowering:
                 left = f"{node.name} step leaves {len(self.stack)} values"
                 raise _RefusalError(Refused(RefusalKind.STEP_ARITY, node.span, left))
             comp = _closed(self.lets, Return(self.boxed(self.stack[0])))
-        for x in reversed(names):
-            comp = Lam(x, Dyn(), "ω", comp)
-        return Thunk(comp)
+        return Thunk(_lams(names, comp))
 
     def split(self, value: IRValue, outs: Sequence[VType]) -> None:
         """A right-nested pair of `outs` onto the static stack, one entry each."""
@@ -435,7 +513,7 @@ def _call(low: _Lowering, node: Call, env: Env) -> None:
         low.stack.append((query, query.type))
     elif node.name in low.words:
         word = low.words[node.name]
-        low.apply(Force(Var(node.name)), low.taken(word.ins, node.span), word.outs)
+        low.apply(word.head, low.taken(word.ins, node.span), word.outs)
     else:
         _CALLS.get(node.name, _builtin)(low, node)
 
@@ -650,7 +728,7 @@ def polarise(core: CoreA) -> Lowered | Refused:
     low = _Lowering()
     low.extra.append(("box", box(low.origins)))
     try:
-        defs = tuple((s.name, low.word(s)) for s in core.statements if isinstance(s, Define))
+        defs = tuple(low.defs(core))
         runs: list[Comp] = []
         for statement in core.statements:
             if not isinstance(statement, Define):
