@@ -28,3 +28,15 @@
 - Default in force: no per-test settings; oracle tests run at the harness profile's example counts (quick 100), because the house rule forbids max_examples or a per-test @settings count in a test; measured at quick, print-is-disassembly takes 5.4 s and control-targets-agree 5.2 s, already past the 6 s oracle-budget for all oracle laws
 - Closes by: PSJ, sanctioning the design's ORACLE override (backend="hypothesis", max_examples 10/50/10), or adding a harness-level oracle profile in quality/noslop_pytest.py
 - Evidence: design section 7 "Budgets" (ORACLE settings, "PSJ's to veto (question 1)") and section 8 oracle-settings; implementer rule "Never put max_examples or a per-test @settings count in a test"; pytest --durations on b62fb41
+
+## traps-are-root-panics
+- Depends on it: fpl/asm/riscv/eval.py (Trapped), tests/test_riscv_eval.py; later tests/riscv_virt.py (trap handler) and tests/test_riscv_via_qemu.py (traps-agree)
+- Default in force: a trap is observed, not handled: ecall ends the run as Trapped(11, index, machine) and ebreak as Trapped(3, ...), the M-mode causes on QEMU virt; the frame is to report (mcause, mepc) and resume at the next block; no IR construct handles a trap; FPL's Fail never lowers to a trap; RV64IM has no GC types or exceptions, so the GC-and-exceptions hole of track B has no instruction to exclude here
+- Closes by: PSJ confirming row 81 (3) and row 43 for RISC-V; H2's handler set replaces the frame's handler
+- Evidence: design section 5 (System) and section 8; row 81 (3) "Wasm traps ... correspond to a root panic (row 43)"; probe: ecall exit 11, ebreak 3, illegal 2, load from 0x4 exit 5
+
+## jalr-misaligned-target
+- Depends on it: fpl/asm/riscv/eval.py (indirect), tests/test_riscv_eval.py (jalr to BASE + 2)
+- Default in force: a jalr target inside the program but not 4-aligned ends the run as Unmodelled, the mechanism the design gives a target outside [base, base + 4n); without C, hardware raises instruction-address-misaligned (cause 0) instead
+- Closes by: the design, choosing Trapped(0, index) with a QEMU probe in traps-agree, or keeping Unmodelled
+- Evidence: design section 5 names only targets outside [base, base + 4n); spec 20250508 2.5.1 (jalr), fpl/asm/riscv/eval.py indirect()
