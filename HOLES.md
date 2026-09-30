@@ -25,9 +25,15 @@
 
 ## oracle-settings
 - Depends on it: tests/test_riscv_via_llvm.py, tests/test_riscv_via_qemu.py, the law oracle-budget
-- Default in force: no per-test settings; oracle tests run at the harness profile's example counts (quick 100), because the house rule forbids max_examples or a per-test @settings count in a test; measured at quick, print-is-disassembly takes 5.4 s and control-targets-agree 5.2 s, already past the 6 s oracle-budget for all oracle laws
-- Closes by: PSJ, sanctioning the design's ORACLE override (backend="hypothesis", max_examples 10/50/10), or adding a harness-level oracle profile in quality/noslop_pytest.py
-- Evidence: design section 7 "Budgets" (ORACLE settings, "PSJ's to veto (question 1)") and section 8 oracle-settings; implementer rule "Never put max_examples or a per-test @settings count in a test"; pytest --durations on b62fb41
+- Default in force: no per-test settings; oracle tests run at the harness profile's example counts (quick 100), because the house rule forbids max_examples or a per-test @settings count in a test; measured at quick with pytest --durations on fc3b95e, warm: checked-programs-halt 11.4 s and evaluator-agrees-with-qemu 11.1 s (100 batches of up to 20 blocks of up to 20 instructions each), print-is-disassembly 4.8 s, control-targets-agree 5.1 s, checker-agrees-per-program 4.8 s, no-silent-relaxation 5.3 s, checker-agrees-per-line 2.0 s, virt-smoke 1.0 s: 45.8 s for the two oracle files, against the 6 s oracle-budget; make check took 67 s wall on the tree of fc3b95e
+- Closes by: PSJ, sanctioning the design's ORACLE override (backend="hypothesis", max_examples 10/50/10), or adding a harness-level oracle profile in quality/noslop_pytest.py; at 10 examples the two QEMU laws would cost about 1.1 s each
+- Evidence: design section 7 "Budgets" (ORACLE settings, "PSJ's to veto (question 1)") and section 8 oracle-settings; implementer rule "Never put max_examples or a per-test @settings count in a test"; pytest --durations on b62fb41 and fc3b95e
+
+## harness-registers
+- Depends on it: tests/riscv_strategies.py (FRAME_FORMS, forms), tests/riscv_virt.py (batch), tests/test_riscv_via_qemu.py
+- Default in force: blocks run in the QEMU virt frame neither read nor write x3 (the window, unit 6) or x4 (the frame's record): FRAME_FORMS draws every register operand from the other 30, while FORMS, for the llvm oracles, draws all 32; the checker does not know this; the reports compare x1..x31 but x4, and x3 is loaded and saved like any other register until unit 6 points it at the window
+- Closes by: M's register roles and H0's calling convention (C3a), which name reserved registers; the design, confirming that reads are excluded too (it says "excluding x3 and x4 when writable": QEMU's x4 is the record's address, so a block reading it would diverge from the evaluator's)
+- Evidence: design section 6 regs(writable=True) and section 8 harness-registers; prompt "registers the frame reserves (x3, x4)"; tests/riscv_virt.py batch
 
 ## traps-are-root-panics
 - Depends on it: fpl/asm/riscv/eval.py (Trapped), tests/test_riscv_eval.py; later tests/riscv_virt.py (trap handler) and tests/test_riscv_via_qemu.py (traps-agree)
