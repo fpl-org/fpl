@@ -46,12 +46,15 @@ def cbpv_output(source: str) -> str | Refused:
     core = select(statements)
     if isinstance(core, Refused):
         return core
-    program, extra = polarise(core)
+    lowered = polarise(core)
+    if isinstance(lowered, Refused):
+        return lowered
+    program, extra, origins = lowered
     stacks: list[tuple[Value, ...]] = []
     for r in run(program, signature(extra), fuel=10_000 + 100 * len(source), handler=no_handler):
         assert not isinstance(r.end, OutOfFuel), source
         if isinstance(r.end, Panicked):
             return error_line(r.end)
         assert isinstance(r.end, Returned), r.end
-        stacks.append(stack(r.end.value))
+        stacks.append(stack(r.end.value, origins))
     return render(listing(tuple(stacks)))

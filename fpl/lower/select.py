@@ -48,6 +48,8 @@ class RefusalKind(StrEnum):
 
     LEVEL_ONE = "level-one"
     BINDER_CAPTURES = "binder-captures"
+    QUOTATION_UNKNOWN = "quotation-unknown"
+    EFFECT_MISMATCH = "effect-mismatch"
 
 
 @dataclass(frozen=True)

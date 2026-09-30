@@ -3,13 +3,16 @@
 import icontract
 import pytest
 from hypothesis import given
+from hypothesis import strategies as st
 from lower_diff import cbpv_output, walker_output
-from lower_strategies import START, source_of, straight
+from lower_strategies import START, controlled, source_of, straight
 
 from fpl.ast_core import Bind, Call, Define, Effect, Keyed, Listed, Push, Quotation, Run
 from fpl.cbpv.check import check
 from fpl.desugar import desugar
-from fpl.lower.polarise import polarise
+from fpl.errors import FplError
+from fpl.eval import evaluate, substitute
+from fpl.lower.polarise import PROBE, Lowered, polarise
 from fpl.lower.select import CoreA, RefusalKind, Refused, select
 from fpl.lower.walker import signature
 from fpl.parse import parse
@@ -21,15 +24,56 @@ def lowered(source: str) -> CoreA:
     return core
 
 
+def accepted(source: str) -> Lowered:
+    """Pass 2's output for `source`, which it must lower and the checker accept."""
+    result = polarise(lowered(source))
+    assert not isinstance(result, Refused), result
+    program, extra, _ = result
+    assert check(program, signature(extra), loops=False) is None
+    return result
+
+
 @pytest.mark.obligation("the interpreter and the compiled program print the same")
 @given(straight())
 def test_lower_agrees_straight(source: str) -> None:
     """[law: lower-agrees-straight] For every program `straight()` draws, pass 2's output
     passes `check(loops=False)`, and `cbpv_output` equals `walker_output`: the same printed
     stacks, or the same error line."""
-    program, extra = polarise(lowered(source))
-    assert check(program, signature(extra), loops=False) is None
+    accepted(source)
     assert cbpv_output(source) == walker_output(source)
+
+
+@pytest.mark.obligation("the interpreter and the compiled program print the same")
+@given(controlled())
+def test_lower_agrees_controlled(source: str) -> None:
+    """[law: lower-agrees-controlled] For every program `controlled()` draws (each draw holds a
+    literal quotation or a control word), pass 2's output passes `check(loops=False)`, and
+    `cbpv_output` equals `walker_output`, error lines included."""
+    accepted(source)
+    assert cbpv_output(source) == walker_output(source)
+
+
+@given(controlled(), st.integers(0, 3))
+def test_arity_exact(source: str, k: int) -> None:
+    """[law: arity-exact] For every literal quotation in a program `controlled()` draws that
+    pass 2 accepts, run in place by the walker (`!`) on a stack k values deeper than its input
+    count, the walker leaves those k values untouched below exactly the output count pass 2
+    computed. A quotation naming a binder is run as the walker holds it once the binder is
+    gone, so only closed ones are run; a run the walker refuses has no stack to judge."""
+    words = tuple(s for s in desugar(parse(source)) if isinstance(s, Define))
+    for origin in accepted(source)[2]:
+        if any(substitute(origin.code, x, PROBE) != origin.code for x, _ in origin.names):
+            continue
+        below = tuple(Push(n) for n in range(k + origin.ins))
+        try:
+            (after,) = evaluate((*words, Run((*below, Push(Quotation(origin.code)), BANG))))
+        except FplError:
+            continue
+        assert after[:k] == tuple(range(k))
+        assert len(after) == k + origin.outs
+
+
+BANG = Call("!", START)
 
 
 def test_held_prints_through_a() -> None:
@@ -44,7 +88,47 @@ def test_binder_named_as_a_word_is_refused() -> None:
 
 def test_control_word_violates_straight_line() -> None:
     with pytest.raises(icontract.ViolationError):
-        polarise(lowered("1 [ dup ] !"))
+        polarise(lowered("1 [ 2 ] [ 3 ] if"))
+
+
+def test_in_place_below_the_stack_is_an_effect_mismatch() -> None:
+    refused = polarise(lowered("[ + ] !"))
+    assert isinstance(refused, Refused)
+    assert refused.kind == RefusalKind.EFFECT_MISMATCH
+
+
+def test_forcing_walker_data_is_a_quotation_unknown() -> None:
+    source = source_of((word("g", 1, 0, BANG), Run((Push(1), Call("g", START)))))
+    refused = cbpv_output(source)
+    assert isinstance(refused, Refused)
+    assert refused.kind == RefusalKind.QUOTATION_UNKNOWN
+
+
+# Quotations: boxed into `+`, run in place, read back as sections and closures, passed to
+# words, pairs and dicts, and the walker's own error for an operand that is no quotation.
+QUOTING = (
+    "[ 1 ] 2 +",
+    "1 | 2 [ + ] !",
+    "1 [ drop ] !",
+    "1 | 2 [ - ] swap-args",
+    "1 2 3 +",
+    "5 →x [ x 1 + ]",
+    "[ 2 ] →q [ q ! ] !",
+    "[ 2 ] →q ⟨ [ q ] ⟩",
+    "[ [ 1 ] ] ! !",
+    "[ dup ] →d 3 d !",
+    "[ 1 ] dup pair",
+    "1 !",
+    "1 | 2 | 3 swap-args",
+    "f : i -- o\n[ 1 ] f\n",
+    "[ 1 ] →a { k a }\n",
+)
+
+
+@pytest.mark.parametrize("source", QUOTING)
+def test_each_quotation_agrees(source: str) -> None:
+    accepted(source)
+    assert cbpv_output(source) == walker_output(source)
 
 
 def word(name: str, ins: int, outs: int, *code: Push | Call | Bind | Keyed) -> Define:
@@ -82,6 +166,5 @@ PROGRAMS = {
 @pytest.mark.parametrize("name", sorted(PROGRAMS))
 def test_each_construct_agrees(name: str) -> None:
     source = source_of(PROGRAMS[name])
-    program, extra = polarise(lowered(source))
-    assert check(program, signature(extra), loops=False) is None
+    accepted(source)
     assert cbpv_output(source) == walker_output(source)

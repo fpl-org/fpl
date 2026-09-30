@@ -1,9 +1,11 @@
 """Walker values and walker programs for the lowering's properties (design section 7)."""
 
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from decimal import Decimal
 from functools import partial
 
+from hypothesis import assume
 from hypothesis import strategies as st
 
 from fpl.ast_core import (
@@ -67,8 +69,18 @@ digits = st.one_of(
 )
 plain = st.one_of(digits, st.text("xyz", min_size=1, max_size=2))
 type Draw = st.DrawFn
-type Stack = tuple[Sort, ...]
-type Env = Mapping[str, Sort]
+
+
+@dataclass(frozen=True)
+class Quoted:
+    """A literal quotation on the drawn stack: the values its body takes and what it leaves."""
+
+    ins: int
+    outs: "tuple[Sort | Quoted, ...]"
+
+
+type Stack = tuple[Sort | Quoted, ...]
+type Env = Mapping[str, Sort | Quoted]
 type Moved = tuple[tuple[Node, ...], Stack]
 
 
@@ -92,8 +104,8 @@ def _fits(arrow: Arrow, stack: Stack) -> bool:
     return cut >= 0 and not any(need == Kind.NUMBER and have in wrong for need, have in met)
 
 
-def _applied(arrow: Arrow, stack: Stack) -> Stack:
-    cut = len(stack) - len(arrow.ins)
+def _applied(arrow: Arrow | Quoted, stack: Stack) -> Stack:
+    cut = len(stack) - (arrow.ins if isinstance(arrow, Quoted) else len(arrow.ins))
     outs = (stack[cut + s.index] if isinstance(s, Input) else s for s in arrow.outs)
     return (*stack[:cut], *outs)
 
@@ -104,7 +116,14 @@ def _push(draw: Draw, stack: Stack, env: Env) -> Moved:
 
 
 def _call(name: str, arrow: Arrow, _draw: Draw, stack: Stack, _env: Env) -> Moved:
-    return (Call(name, START),), _applied(arrow, stack)
+    """A builtin or word: a quotation it passes through comes back as walker data (boxed)."""
+    after = _applied(arrow, stack)
+    cut = len(stack) - len(arrow.ins)
+    return (Call(name, START),), (*after[:cut], *(_data(s) for s in after[cut:]))
+
+
+def _data(s: Sort | Quoted) -> Sort:
+    return Kind.VALUE if isinstance(s, Quoted) else s
 
 
 def _binder(name: str, _draw: Draw, stack: Stack, env: Env) -> Moved:
@@ -118,10 +137,33 @@ def _keyed(draw: Draw, stack: Stack, env: Env) -> Moved:
     return (Keyed(tuple((k, draw(node)) for k in keys), START),), (*stack, Kind.VALUE)
 
 
+def _quote(arrows: Mapping[str, Arrow], draw: Draw, stack: Stack, env: Env) -> Moved:
+    """A literal quotation whose body takes up to two inputs and may name the binders in scope."""
+    n = draw(st.integers(0, 2))
+    code, left = _code(draw, arrows, tuple(map(Input, range(n))), env, draw(st.integers(0, 3)))
+    return (Push(Quotation(code)),), (*stack, Quoted(n, left))
+
+
+def _bang(draw: Draw, stack: Stack, _env: Env) -> Moved:
+    """The quotation on top run in place: `!`, or `swap-args` on the two values below it."""
+    quoted = stack[-1]
+    assert isinstance(quoted, Quoted)
+    below = stack[:-1]
+    if len(below) >= max(quoted.ins, 2) and draw(st.booleans()):
+        return (Call("swap-args", START),), _applied(quoted, (*below[:-2], below[-1], below[-2]))
+    return (Call("!", START),), _applied(quoted, below)
+
+
 def _moves(arrows: Mapping[str, Arrow], stack: Stack, env: Env) -> list[Callable[..., Moved]]:
-    """Every step the code may take next without an elaboration error."""
+    """Every step the code may take next without an elaboration error; quotations only where
+    `arrows` offers `!`."""
     moves: list[Callable[..., Moved]] = [_push, _keyed, *(partial(_binder, n) for n in env)]
-    moves += [partial(_call, n, a) for n, a in arrows.items() if _fits(a, stack)]
+    moves += [partial(_call, n, a) for n, a in arrows.items() if n != "!" and _fits(a, stack)]
+    if "!" in arrows:
+        moves.append(partial(_quote, arrows))
+        top = stack[-1] if stack else None
+        if isinstance(top, Quoted) and len(stack) > top.ins:
+            moves.append(_bang)
     return moves
 
 
@@ -170,4 +212,30 @@ def straight(draw: Draw) -> str:
         arrows |= {k: known[k] for k in (name, f"{name}/doc", f"{name}/effect")}
     for _ in range(draw(st.integers(1, 3))):
         statements.append(Run(_code(draw, arrows, (), {}, draw(st.integers(1, 5)))[0]))
+    return source_of(tuple(statements))
+
+
+@st.composite
+def controlled(draw: Draw) -> str:
+    """Programs as `straight` draws them, whose run lines also push literal quotations (their
+    bodies naming binders in scope) and run them in place with `!` and `swap-args` on stacks
+    deep enough; every draw's first line opens with a quotation (design section 7). Nothing a
+    refusal kind names is drawn: no quotation reaches `!` as walker data or underflows."""
+    # "!" is no arrow of 07's: its key only switches the quotation moves on in `_moves`
+    arrows = {n: ARROWS[n] for n in FIRST_ORDER} | {"!": ARROWS["drop"]}
+    words = {n: ARROWS[n] for n in FIRST_ORDER}
+    statements: list[Statement] = []
+    for name in WORDS[: draw(st.integers(0, 2))]:
+        statements.append(_define(draw, name, words))
+        known = elaborate(tuple(statements))[0]
+        added = {k: known[k] for k in (name, f"{name}/doc", f"{name}/effect")}
+        arrows |= added
+        words |= added
+    first, stack = _quote(arrows, draw, (), {})
+    rest = _code(draw, arrows, stack, {}, draw(st.integers(0, 4)))[0]
+    statements.append(Run((*first, *rest)))
+    for _ in range(draw(st.integers(0, 2))):
+        statements.append(Run(_code(draw, arrows, (), {}, draw(st.integers(1, 5)))[0]))
+    # resugar writes a quotation body such as `0 | 0` as a frame that parses otherwise
+    assume(desugar(parse(render(resugar(tuple(statements))))) == tuple(statements))
     return source_of(tuple(statements))

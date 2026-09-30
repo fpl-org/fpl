@@ -8,13 +8,27 @@ from lower_strategies import walker_values
 
 from fpl.ast_core import EFFECTS, Call, Dict, Listed, Push, Quotation, Value
 from fpl.cbpv.check import check
-from fpl.cbpv.machine import Panicked, Returned, Val, run
+from fpl.cbpv.machine import Closure, Panicked, Returned, Val, run
 from fpl.cbpv.sig import FirstOrder
-from fpl.cbpv.syntax import App, Base, Comp, Const, Dyn, Position, Prim, Program, Unit
+from fpl.cbpv.syntax import (
+    App,
+    Base,
+    Comp,
+    Const,
+    Dyn,
+    Position,
+    Prim,
+    Program,
+    Return,
+    Thunk,
+    Unit,
+    Var,
+)
 from fpl.errors import FplError, Span
 from fpl.eval import BUILTINS
 from fpl.lower.walker import (
     CONSTANTS,
+    Origin,
     error_line,
     held,
     instance,
@@ -101,3 +115,19 @@ def test_readback_refuses_what_is_not_walker_data() -> None:
         readback(Unit())
     with pytest.raises(TypeError):
         readback(Const((1, 2), Dyn()))
+
+
+def test_readback_fills_a_closure_from_its_environment() -> None:
+    """A captured name is looked up past inner bindings; a captured thunk literal reads back as
+    its own origin's quotation."""
+    at = Span(1, 1)
+    outer = Origin(
+        (Call("a", at), Call("b", at), Call("c", at)),
+        (("a", Var("x")), ("b", Thunk(Return(Unit()), 1)), ("c", Const(3, NUM))),
+        0,
+        3,
+    )
+    inner = Origin((Push(1),), (), 0, 1)
+    env = ("y", Const(9, NUM), ("x", Const(7, NUM), None))
+    got = readback(Closure(Return(Unit()), env, 0), (outer, inner))
+    assert got == Quotation((Push(7), Push(Quotation((Push(1),))), Push(3)))
