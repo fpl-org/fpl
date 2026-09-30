@@ -153,7 +153,16 @@ class Match:
     span: Span = field(compare=False)
 
 
-type Node = Push | Call | Bind | Keyed | Match
+@dataclass(frozen=True)
+class Refuse:
+    """An error where it runs, never +fail: a call two crossing clauses both fit (design 09
+    §3.4)."""
+
+    message: str
+    span: Span = field(compare=False)
+
+
+type Node = Push | Call | Bind | Keyed | Match | Refuse
 
 
 @dataclass(frozen=True)
