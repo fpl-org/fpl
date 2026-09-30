@@ -414,9 +414,9 @@ def test_a_typed_head_is_read_as_the_slice_reads_it() -> None:
     assert resugar((typed,)) == parse("f : x: Int -- y\n")
 
 
-def test_a_second_key_of_one_arity_is_refused_until_clauses_are_ordered() -> None:
-    """[S49] Two definitions of one word taking as many inputs of different slots or types have
-    no order yet, and are refused; a same key shadows as before."""
-    with pytest.raises(FplError, match=r"^ERROR: 1:1 no evaluator yet$"):
+def test_a_slot_kind_disagreeing_within_an_arity_is_refused() -> None:
+    """[S49] Two definitions of one word taking as many inputs must agree on their slot kinds,
+    else the later is refused at its head; a same key shadows as before."""
+    with pytest.raises(FplError, match=r"^ERROR: 3:1 f/1/2 takes a thunk at 1, f/1/1 a value$"):
         run("f : x -- y\n\t1\nf : t: [ ] -- y\n\t2\n")
     assert run("f : x -- y\n\tdrop 1\nf : x -- y\n\tdrop 2\n5 f\n") == "2\n"

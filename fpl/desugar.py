@@ -22,8 +22,9 @@ A line with no code, a comment's or the empty first line, is no statement and no
 comment is not carried into the core, but for a word's docs (fpl/trivia.py). Anything outside
 the implemented set is refused before evaluation (hole unimplemented-words).
 A word with two or more keys, or one with a typed input, is dispatched (design 09 §1.1): its
-clause of arity n is f/n/1, and f/n its dispatcher, one row guarding each typed input with its
-type word and calling the clause; a call takes the arity group its balance picks.
+i-th key of arity n is the clause f/n/i, and f/n its dispatcher, one row per clause guarding
+each typed input with its type word and calling the clause, the most typed inputs first and the
+newest first among as many; a call takes the arity group its balance picks.
 """
 
 from collections import ChainMap
@@ -31,7 +32,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from functools import partial
-from itertools import groupby
+from itertools import combinations, groupby
 from typing import NoReturn, assert_never
 
 from fpl import trivia
@@ -75,10 +76,12 @@ HISTORY = Effect((), ("h",))
 DOC = Effect((), ("d",))
 QUERIES = {"history": HISTORY, "doc": DOC, "effect": Effect((), ("e",))}
 PRIME = "\N{PRIME}"
+TYPES = frozenset(("Int", "Decimal", "Text", "Symbol"))
 
 type Here = tuple[str, ...]
 type Part = str | None
 type Key = tuple[Part, ...]
+type Head = tuple[Effect, Span]
 
 
 def unimplemented() -> NoReturn:
@@ -117,7 +120,7 @@ class Catalog:
 
     logs: dict[Here, list[str | Mount]]
     effects: dict[str, Effect]
-    heads: dict[str, dict[Key, Effect]] = field(default_factory=dict[str, dict[Key, Effect]])
+    heads: dict[str, dict[Key, Head]] = field(default_factory=dict[str, dict[Key, Head]])
     groups: dict[str, tuple[int, ...]] = field(default_factory=dict[str, tuple[int, ...]])
     aliases: dict[str, str] = field(default_factory=dict[str, str])
     refused: dict[str, str] = field(default_factory=dict[str, str])
@@ -129,7 +132,7 @@ class Catalog:
             head, name = definition(line), directory(line)
             if head is not None:
                 log.append(head[0])
-                self.keyed("/".join((*here, head[0])), head[1])
+                self.keyed("/".join((*here, head[0])), head[1], line.span)
                 self.queried((*here, head[0]), head[1], [])
             elif name is not None:
                 log.append(name)
@@ -137,14 +140,17 @@ class Catalog:
             elif here:
                 log.append(Mount(mount(line)))
 
-    def keyed(self, path: str, effect: Effect) -> None:
-        """Note a definition's head by its key; a second key of one arity is refused until
-        clauses of one arity are ordered (hole unimplemented-words), a same key shadows as
-        before and keeps its place."""
+    def keyed(self, path: str, effect: Effect, span: Span) -> None:
+        """Note a definition's head by its key, a same key shadowing in its place; it must take
+        the slot kinds and leave the values of every other key of its arity, else it is refused
+        at its head (design 09 §2.3)."""
         heads, key = self.heads.setdefault(path, {}), keyed(effect)
-        if key not in heads and any(len(other) == len(key) for other in heads):
-            unimplemented()
-        heads[key] = effect
+        group = [other for other in heads if len(other) == len(key)]
+        at = group.index(key) + 1 if key in group else len(group) + 1
+        for i, other in enumerate(group, 1):
+            if other != key:
+                agree(f"{path}/{len(key)}", (at, effect, span), (i, heads[other][0]))
+        heads[key] = (effect, span)
 
     def queried(self, here: Here, effect: Effect, entries: list[str]) -> None:
         """A word at here, its effect and its queries, its log holding entries before them."""
@@ -155,33 +161,53 @@ class Catalog:
 
     def settle(self) -> None:
         """Dispatch each word with two or more keys, or one with a typed input."""
+        builtins = TYPES - {path.rsplit("/", 1)[-1] for path in self.heads}
         for path, heads in self.heads.items():
-            typed = any(part is not None for effect in heads.values() for part in effect.types)
-            if len(heads) > 1 or typed:
-                self.dispatched(path, {len(key): effect for key, effect in heads.items()})
+            if len(heads) > 1 or any(typings(effect) for effect, _ in heads.values()):
+                self.dispatched(path, builtins)
 
-    def dispatched(self, path: str, groups: dict[int, Effect]) -> None:
-        """A word's arity groups f/n, each with its clause f/n/1; the doc and history of f/n are
-        its clause's; f's queries are those of its only group, refused naming its groups when
-        it has more."""
+    def clauses(self, path: str, n: int) -> list[Head]:
+        """A word's clauses of arity n, by path ordinal."""
+        return [head for key, head in self.heads[path].items() if len(key) == n]
+
+    def ordinal(self, path: str, effect: Effect) -> int:
+        """The ordinal of a clause's key among its arity's."""
+        key = keyed(effect)
+        return [k for k in self.heads[path] if len(k) == len(key)].index(key) + 1
+
+    def dispatched(self, path: str, builtins: frozenset[str]) -> None:
+        """A word's arity groups f/n, each with its clauses f/n/i, of which two whose typed
+        inputs cross are refused (hole unimplemented-words) unless builtins make them disjoint;
+        f/n's doc and history are its clause's when it has one, refused naming its clauses
+        otherwise; f's queries are those of its only group, refused naming its groups when it
+        has more."""
         here = tuple(path.split("/"))
+        groups = {len(key): self.clauses(path, len(key)) for key in self.heads[path]}
         self.groups[path] = tuple(sorted(groups))
-        self.effects[path] = groups[self.groups[path][0]]
-        for n, effect in groups.items():
+        for n, clauses in groups.items():
+            crossed(clauses, builtins)
             self.logs[here].append(str(n))
-            self.queried((*here, str(n)), effect, ["1"])
-            self.queried((*here, str(n), "1"), effect, [])
-            self.aliases |= {f"{path}/{n}/{q}": f"{path}/{n}/1/{q}" for q in ("history", "doc")}
-        if len(groups) == 1:
-            (n,) = groups
-            self.aliases |= {
-                f"{path}/{q}": self.aliases.get(f"{path}/{n}/{q}", f"{path}/{n}/{q}")
-                for q in QUERIES
-            }
-        else:
-            names = " ".join(f"{path}/{n}" for n in self.groups[path])
-            message = "names more than one group:"
-            self.refused |= {f"{path}/{q}": f"{path}/{q} {message} {names}" for q in QUERIES}
+            ordinals = [str(i) for i in range(1, len(clauses) + 1)]
+            self.queried((*here, str(n)), shared([effect for effect, _ in clauses]), ordinals)
+            for i, (clause, _) in zip(ordinals, clauses, strict=True):
+                self.queried((*here, str(n), i), clause, [])
+            self.answered(f"{path}/{n}", [f"{path}/{n}/{i}" for i in ordinals], "clause")
+        self.effects[path] = self.effects[f"{path}/{self.groups[path][0]}"]
+        self.answered(path, [f"{path}/{n}" for n in self.groups[path]], "group")
+
+    def answered(self, path: str, parts: list[str], kind: str) -> None:
+        """path's doc and history, and at a word its effect, answer as at its one part; with
+        more they are refused naming them."""
+        queries = ("history", "doc") if kind == "clause" else tuple(QUERIES)
+        for query in queries:
+            asked = f"{path}/{query}"
+            if len(parts) > 1:
+                self.refused[asked] = f"{asked} names more than one {kind}: {' '.join(parts)}"
+                continue
+            answer = f"{parts[0]}/{query}"
+            self.aliases[asked] = self.aliases.get(answer, answer)
+            if answer in self.refused:
+                self.refused[asked] = self.refused[answer].replace(answer, asked, 1)
 
     def dispatch(self, path: str, balance: int) -> str:
         """The arity group a call on balance values takes: the largest arity it saturates, else
@@ -353,6 +379,45 @@ def keyed(effect: Effect) -> Key:
     return tuple(part if kind == "value" else kind for kind, part in pairs)
 
 
+def agree(group: str, later: tuple[int, Effect, Span], earlier: tuple[int, Effect]) -> None:
+    """Two clauses of one arity group take the same slot kinds and leave as many values, else
+    the later is refused at its head."""
+    at, effect, span = later
+    i, other = earlier
+    for position, (kind, before) in enumerate(zip(effect.slots, other.slots, strict=True), 1):
+        if kind != before:
+            message = f"{group}/{at} takes a {kind} at {position}, {group}/{i} a {before}"
+            raise FplError(span, message)
+    if len(effect.outs) != len(other.outs):
+        message = f"{group}/{at} leaves {len(effect.outs)}, {group}/{i} {len(other.outs)}"
+        raise FplError(span, message)
+
+
+def typings(effect: Effect) -> frozenset[int]:
+    """The typed inputs of a clause, by position."""
+    return frozenset(i for i, part in enumerate(effect.types) if part is not None)
+
+
+def crossed(clauses: list[Head], builtins: frozenset[str]) -> None:
+    """Refuse two clauses each typed where the other is not, unless disjoint: two different
+    builtins at one position (hole unimplemented-words)."""
+    for (a, _), (b, _) in combinations(clauses, 2):
+        ordered = typings(a) <= typings(b) or typings(b) <= typings(a)
+        pairs = zip(a.types, b.types, strict=True)
+        if not ordered and not any(x != y and {x, y} <= builtins for x, y in pairs):
+            unimplemented()
+
+
+def shared(clauses: list[Effect]) -> Effect:
+    """A dispatcher's effect: its first clause's, keeping a type only where all agree."""
+    first = clauses[0]
+    types = tuple(
+        part if all(c.types[i] == part for c in clauses) else None
+        for i, part in enumerate(first.types)
+    )
+    return replace(first, types=types)
+
+
 def plain(item: Item) -> str | None:
     """A name with no sigil or modifier, or None."""
     if isinstance(item, Word) and item.kind == "name" and not (item.prefix or item.mods):
@@ -485,42 +550,41 @@ class _Desugar:
             yield define
             return
         n = len(define.effect.ins)
-        clause = replace(define, clause=(n, 1))
+        clause = replace(define, clause=(n, self.catalog.ordinal(define.name, define.effect)))
         yield clause
         yield from tests(clause)
-        if clause.word not in self.dispatchers:
-            self.dispatchers.add(clause.word)
-            yield self.dispatcher(clause, here)
+        group = f"{define.name}/{n}"
+        if group not in self.dispatchers:
+            self.dispatchers.add(group)
+            yield self.dispatcher(define.name, n, clause.span, here)
 
-    def dispatcher(self, clause: Define, here: Here) -> Define:
-        """The dispatcher of a clause: one row binding at each input a fresh name, its slot's
-        name, a prime and its position, guarding
-        each typed input with its type word, then pushing every input back in order and calling
-        the clause; +fail when the row does not catch every value."""
-        span, effect = clause.span, clause.effect
-        names = fresh(effect)
+    def dispatcher(self, name: str, n: int, span: Span, here: Here) -> Define:
+        """The dispatcher of an arity group: a row per clause, the most typed inputs first and
+        the newest first among as many; +fail when no row catches every value."""
+        clauses = [effect for effect, _ in self.catalog.clauses(name, n)]
+        words = tuple(f"{name}/{n}/{i}" for i in range(1, len(clauses) + 1))
+        rows = [self.guarding(word, c, span, here) for word, c in zip(words, clauses, strict=True)]
+        ranked = sorted(range(len(rows)), key=lambda i: (-len(typings(clauses[i])), -i))
+        code = (Match(tuple(rows[i] for i in ranked), span),)
+        effect = replace(self.catalog.effects[f"{name}/{n}"], fails=fallible(code))
+        return Define(name, effect, code, span=span, clause=(n,), clauses=words)
+
+    def guarding(self, word: str, effect: Effect, span: Span, here: Here) -> Row:
+        """A clause's dispatcher row: at each input a fresh name, its slot's name, a prime and
+        its position, guarding each typed input with its test, then every input pushed back in
+        order and the clause called."""
+        names, test = fresh(effect), partial(self.tested, word)
         patterns = tuple(
-            Var(name) if part is None else Guarded(Var(name), self.tested(clause, i, here), span)
+            Var(name) if part is None else Guarded(Var(name), test(part, i, here), span)
             for i, (name, part) in enumerate(zip(names, effect.types, strict=True), 1)
         )
-        body = (*(Call(name, span) for name in names), Call(clause.word, span))
-        code = (Match((Row(patterns, body),), span),)
-        n = len(effect.ins)
-        return Define(
-            clause.name,
-            replace(effect, fails=fallible(code)),
-            code,
-            span=span,
-            clause=(n,),
-            clauses=(clause.word,),
-        )
+        return Row(patterns, (*(Call(name, span) for name in names), Call(word, span)))
 
-    def tested(self, clause: Define, position: int, here: Here) -> str:
+    def tested(self, word: str, part: str, position: int, here: Here) -> str:
         """The word testing a clause's typed input: a group's generated word, else the word its
         type names from the directory of its definition, on one value."""
-        part = clause.effect.types[position - 1]
-        if part is None or grouped(part):
-            return f"{clause.word}{PRIME}{position}"
+        if grouped(part):
+            return f"{word}{PRIME}{position}"
         return self.catalog.dispatch(self.catalog.resolve(here, (part,)), 1)
 
     def routed(self, nodes: tuple[Node, ...], balance: int) -> tuple[Node, ...]:
