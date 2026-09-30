@@ -342,8 +342,11 @@ def _externs(context: Context) -> list[tuple[ExternKind, int]]:
 def _exports(draw: st.DrawFn, context: Context) -> tuple[Export, ...]:
     """Exports of entities of `context`, under distinct names (3.5.13)."""
     externs = _externs(context)
-    targets = draw(st.lists(st.sampled_from(externs), max_size=3)) if externs else []
-    unique = draw(st.lists(names, min_size=len(targets), max_size=len(targets), unique=True))
+    if not externs:
+        return ()
+    # Names first, with no count to reach: a unique list that must reach one can give up.
+    unique = draw(st.lists(names, max_size=3, unique=True))
+    targets = draw(st.lists(st.sampled_from(externs), min_size=len(unique), max_size=len(unique)))
     return tuple(
         Export(name, kind, index) for name, (kind, index) in zip(unique, targets, strict=True)
     )
