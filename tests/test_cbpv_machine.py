@@ -313,3 +313,31 @@ def test_replay_diverges_past_the_log() -> None:
         run(Program((), (op,)), SIGMA_TEST, handler=replay(()))
     diverged = caught.value
     assert (diverged.index, diverged.expected, diverged.got) == (0, None, ("emit", op.cap, ONE))
+
+
+def test_replay_diverges_on_an_altered_result() -> None:
+    """The second `emit` takes the first one's result: with that result altered in the log, the
+    replay asks the second with the altered argument and diverges at operation 1."""
+    cap = Const(HANDLE, LOG)
+    program = Program((), (To(Op("emit", cap, ONE), "r", 1, Op("emit", cap, Var("r"))),))
+    (ran,) = run(program, SIGMA_TEST, handler=counter())
+    altered = _altered(ran.trace, 0)
+    with pytest.raises(ReplayDiverged) as caught:
+        run(program, SIGMA_TEST, handler=replay(altered))
+    diverged = caught.value
+    assert (diverged.index, diverged.expected) == (1, ran.trace[1])
+    assert diverged.got == ("emit", cap, Const(-1, INT))
+
+
+def test_replay_diverges_on_an_altered_request() -> None:
+    """A logged operation whose argument differs from the one asked stops the replay there."""
+    cap = Const(HANDLE, LOG)
+    program = Program((), (Op("emit", cap, ONE),))
+    (ran,) = run(program, SIGMA_TEST, handler=counter())
+    event = ran.trace[0]
+    assert isinstance(event, OpEvent)
+    asked = replace(event, arg=Const(9, INT))
+    with pytest.raises(ReplayDiverged) as caught:
+        run(program, SIGMA_TEST, handler=replay((asked,)))
+    diverged = caught.value
+    assert (diverged.index, diverged.expected, diverged.got) == (0, asked, ("emit", cap, ONE))
