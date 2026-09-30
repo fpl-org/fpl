@@ -23,7 +23,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from functools import cache, partial
 
-from aarch64_frame import OBSERVED, Block
+from aarch64_frame import MIDDLE, OBSERVED, Block
 from hypothesis import find
 from hypothesis import strategies as st
 
@@ -96,6 +96,7 @@ from fpl.asm.aarch64.model import (
 TOP = (1 << 64) - 1
 EDGES = [0, 1, 0x7FFF_FFFF, 0x8000_0000, 0xFFFF_FFFF, 1 << 32, (1 << 63) - 1, 1 << 63, TOP]
 GENERAL = [reg for reg in Reg if reg not in (Reg.X18, Reg.X29, Reg.SP, Reg.ZR)]
+OPTIONS = [Extend.UXTW, Extend.UXTX, Extend.SXTW, Extend.SXTX]  # a register offset's
 widths = st.sampled_from(Width)
 conds = st.sampled_from(Cond)
 FLAGS = (OpAddSub.ADDS, OpAddSub.SUBS)
@@ -234,7 +235,7 @@ def load_store(draw: st.DrawFn) -> LoadStore:
     if kind == "offset":
         return LoadStore(op, rt, Offset(rn, op.size * draw(st.integers(0, 4095))))
     if kind == "register":
-        option = draw(st.sampled_from([Extend.UXTW, Extend.UXTX, Extend.SXTW, Extend.SXTX]))
+        option = draw(st.sampled_from(OPTIONS))
         return LoadStore(op, rt, RegOffset(rn, draw(regs("zr")), option, draw(st.booleans())))
     base = draw(regs("sp").filter(lambda reg: reg is not rt))
     index = PreIndex if kind == "pre" else PostIndex
@@ -372,6 +373,123 @@ def block(draw: st.DrawFn) -> Block:
 def blocks(k: int = 8) -> st.SearchStrategy[list[Block]]:
     """A batch of one to `k` blocks for one run."""
     return st.lists(block(), min_size=1, max_size=k)
+
+
+WINDOW = 256
+LAST = WINDOW - 16  # the x27 cursor stays at or below it, so any access at it fits
+UNBASED = [reg for reg in GENERAL if reg not in (Reg.X27, Reg.X28)]
+
+
+@dataclass(frozen=True, slots=True)
+class Room:
+    """What a memory access may use: transfer registers, the index register (holding
+    [0, 31]) and x27's offset into the window, in [0, LAST]."""
+
+    rts: st.SearchStrategy[Reg]
+    index: Reg
+    cursor: int
+
+
+type Access = tuple[Instr, int]  # an access and x27's offset after it
+
+
+@st.composite
+def moved(draw: st.DrawFn, cursor: int, size: int) -> int:
+    """A new x27 offset in [0, LAST], a multiple of `size` away from `cursor`."""
+    return cursor + size * draw(st.integers(-(cursor // size), (LAST - cursor) // size))
+
+
+@st.composite
+def offset_access(draw: st.DrawFn, room: Room) -> Access:
+    """An unsigned (scaled) offset from x28, or from x27 at its cursor."""
+    op, from27 = draw(st.sampled_from(OpLoadStore)), draw(st.booleans())
+    start = room.cursor if from27 else 0
+    units = draw(st.integers(0, (WINDOW - op.size - start) // op.size))
+    base = Reg.X27 if from27 else Reg.X28
+    return LoadStore(op, draw(room.rts), Offset(base, op.size * units)), room.cursor
+
+
+@st.composite
+def register_access(draw: st.DrawFn, room: Room) -> Access:
+    """x28 plus the index register by any option, scaled or not: at most 31 * 8 bytes in."""
+    op, option = draw(st.sampled_from(OpLoadStore)), draw(st.sampled_from(OPTIONS))
+    addr = RegOffset(Reg.X28, room.index, option, draw(st.booleans()))
+    return LoadStore(op, draw(room.rts), addr), room.cursor
+
+
+@st.composite
+def indexed_access(draw: st.DrawFn, room: Room) -> Access:
+    """A pre- or post-index access through x27, which moves to a new offset in [0, LAST]."""
+    op, pre = draw(st.sampled_from(OpLoadStore)), draw(st.booleans())
+    after = draw(moved(room.cursor, 1))
+    addr = (
+        PreIndex(Reg.X27, after - room.cursor) if pre else PostIndex(Reg.X27, after - room.cursor)
+    )
+    return LoadStore(op, draw(room.rts), addr), after
+
+
+@st.composite
+def unscaled_access(draw: st.DrawFn, room: Room) -> Access:
+    """LDUR or STUR from x28 or x27 at any byte offset that fits: the misaligned accesses."""
+    op, from27 = draw(st.sampled_from(OpLoadStoreUnscaled)), draw(st.booleans())
+    start = room.cursor if from27 else 0
+    simm9 = draw(st.integers(-start, WINDOW - op.size - start))
+    base = Reg.X27 if from27 else Reg.X28
+    return LoadStoreUnscaled(op, draw(room.rts), base, simm9), room.cursor
+
+
+@st.composite
+def pair_access(draw: st.DrawFn, room: Room) -> Access:
+    """STP, LDP or LDPSW: at an offset from x28 or x27, or pre- or post-indexed through x27;
+    a load never into one register twice."""
+    op, mode = draw(st.sampled_from(OpPair)), draw(st.sampled_from(Mode))
+    width = Width.W64 if op is OpPair.LDPSW else draw(widths)
+    size = 4 if op is OpPair.LDPSW else width // 8
+    rt = draw(room.rts)
+    rt2 = draw(room.rts.filter(lambda reg: op is OpPair.STP or reg is not rt))
+    if mode is not Mode.OFFSET:
+        after = draw(moved(room.cursor, size))
+        return Pair(op, width, rt, rt2, Reg.X27, after - room.cursor, mode), after
+    from27 = draw(st.booleans())
+    start = room.cursor if from27 else 0
+    units = draw(st.integers(-(start // size), (WINDOW - 2 * size - start) // size))
+    base = Reg.X27 if from27 else Reg.X28
+    return Pair(op, width, rt, rt2, base, size * units, mode), room.cursor
+
+
+ACCESSES = [offset_access, register_access, indexed_access, unscaled_access, pair_access]
+
+
+@st.composite
+def memory_code(draw: st.DrawFn, index: Reg, n: int = 12) -> list[Instr]:
+    """Up to `n` loads, stores and pairs inside the 256-byte window at x28: x28 is never
+    written, x27 starts at window + 128 and is the only writeback base, `index` holds [0, 31]
+    and is the only register offset; aligned or not. Transfer registers are neither of them
+    nor `index` (hole harness-registers), the zero register included."""
+    rts = st.sampled_from([*(reg for reg in UNBASED if reg is not index), Reg.ZR])
+    cursor, code = MIDDLE, list[Instr]()
+    for _ in range(draw(st.integers(0, n))):
+        kind = draw(st.sampled_from(ACCESSES))
+        instr, cursor = draw(kind(Room(rts, index, cursor)))
+        code.append(instr)
+    return code
+
+
+@st.composite
+def memory_block(draw: st.DrawFn) -> Block:
+    """A block with a window: 256 drawn bytes, the observed registers drawn but x27 and x28
+    zero (the frame points them at the window) and the index register in [0, 31]."""
+    index = draw(st.sampled_from(UNBASED))
+    drawn = dict(zip(OBSERVED, draw(st.lists(u64s(), min_size=29, max_size=29)), strict=True))
+    drawn |= {Reg.X27: 0, Reg.X28: 0, index: draw(st.integers(0, 31))}
+    regs = tuple(drawn.get(reg, 0) for reg in range(31))
+    window = draw(st.binary(min_size=WINDOW, max_size=WINDOW))
+    return Block(regs, draw(nzcvs()), tuple(draw(memory_code(index))), window)
+
+
+def memory_blocks(k: int = 8) -> st.SearchStrategy[list[Block]]:
+    """A batch of one to `k` memory blocks for one run."""
+    return st.lists(memory_block(), min_size=1, max_size=k)
 
 
 def programs() -> st.SearchStrategy[Program]:

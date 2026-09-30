@@ -3,15 +3,23 @@
 import os
 
 import pytest
-from aarch64_frame import OBSERVED, RECORD, Block, frame, records
+from aarch64_frame import MIDDLE, OBSERVED, RECORD, Block, frame, records
 from aarch64_oracle import assemble, execute, link, toolchain
-from aarch64_strategies import blocks
-from hypothesis import given, settings
+from aarch64_strategies import WINDOW, blocks, memory_block, memory_blocks
+from hypothesis import find, given, settings
 from hypothesis import strategies as st
 
 from fpl.asm.aarch64.check import check
 from fpl.asm.aarch64.eval import Halted, Machine, run
-from fpl.asm.aarch64.model import MoveWide, MulAdd, OpMoveWide, OpMulAdd, Reg, Width
+from fpl.asm.aarch64.model import (
+    LoadStoreUnscaled,
+    MoveWide,
+    MulAdd,
+    OpMoveWide,
+    OpMulAdd,
+    Reg,
+    Width,
+)
 from fpl.asm.aarch64.text import print_program
 
 SMOKE = (
@@ -77,3 +85,45 @@ def test_checked_blocks_run_as_the_evaluator_runs_them(
         assert isinstance(outcome, Halted), (record.index, outcome)
         observed = {reg: outcome.machine.regs[reg] for reg in OBSERVED}
         assert (observed, outcome.machine.nzcv) == (record.regs, record.nzcv), record.index
+
+
+@RUN
+@given(batch=memory_blocks())
+def test_memory_blocks_leave_the_window_the_evaluator_leaves(
+    tmp_path_factory: pytest.TempPathFactory, worker_id: str, batch: list[Block]
+) -> None:
+    """[law: window-agrees] For a batch of checked memory_code blocks, each with a 256-byte
+    window on the stack (x28 its base, x27 at window + 128), `run` from the record's base,
+    x28 and x27 returns Halted(m) with m.regs at the 29 observed registers, m.nzcv and all
+    256 bytes of m.window equal to the record, misaligned accesses included."""
+    tools = toolchain(tmp_path_factory, worker_id)
+    assert [check(block.program) for block in batch] == [()] * len(batch)
+    work = tmp_path_factory.mktemp("memory")
+    built = assemble(tools, frame(tools.system, batch), work)
+    assert built.returncode == 0, built.stderr.decode()
+    linked = link(tools, work)
+    assert linked.returncode == 0, linked.stderr.decode()
+    found = records(execute(tools, work), len(batch), WINDOW)
+    for block, record in zip(batch, found, strict=True):
+        regs = list(block.regs)
+        regs[Reg.X28], regs[Reg.X27] = record.regs[Reg.X28], record.regs[Reg.X28] + MIDDLE
+        start = Machine(tuple(regs), block.nzcv, record.base, block.window)
+        outcome = run(block.program, start, len(block.program) + 1)
+        assert isinstance(outcome, Halted), (record.index, outcome)
+        observed = {reg: outcome.machine.regs[reg] for reg in OBSERVED}
+        after = (observed, outcome.machine.nzcv, outcome.machine.window)
+        assert after == (record.regs, record.nzcv, record.window), record.index
+
+
+def misaligned(block: Block) -> bool:
+    """Whether the block has an unscaled access off its size's alignment from x28 (the
+    window is 16-byte aligned on the stack)."""
+    return any(
+        isinstance(i, LoadStoreUnscaled) and i.rn is Reg.X28 and i.simm9 % i.op.size
+        for i in block.program
+    )
+
+
+def test_memory_blocks_reach_misaligned_accesses() -> None:
+    """window-agrees covers misaligned accesses: memory_block draws them."""
+    assert misaligned(find(memory_block(), misaligned))
