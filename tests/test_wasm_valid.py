@@ -15,6 +15,7 @@ from fpl.asm.wasm.instr import (
     Br,
     BrIf,
     BrTable,
+    Call,
     CallIndirect,
     Const,
     Drop,
@@ -130,6 +131,7 @@ SITES: list[tuple[Module, Invalid | None]] = [
     (func_of((), LocalGet(0), Drop()), Invalid("local", (0, 0))),
     (func_of((), ZERO, LocalSet(0)), Invalid("local", (0, 1))),
     (func_of((), ZERO, LocalTee(0), Drop()), Invalid("local", (0, 1))),
+    (func_of((), Call(1)), Invalid("func", (0, 0))),
     (func_of((), ReturnCall(1)), Invalid("func", (0, 0))),
     (
         Module(
@@ -157,6 +159,7 @@ SITES: list[tuple[Module, Invalid | None]] = [
     (replace(ONE, elems=(Elem(0, (ZERO,), (0,)),)), Invalid("table", (0,))),
     (replace(ONE, tables=TABLES, elems=(Elem(0, (ZERO,), (1,)),)), Invalid("func", (0,))),
     (replace(ONE, tables=TABLES, elems=(Elem(0, (WIDE,), (0,)),)), Invalid("mismatch", (0,))),
+    (replace(ONE, imports=(FIXED,), tables=TABLES, elems=(Elem(0, (GlobalGet(0),), (0,)),)), None),
     (replace(ONE, exports=(Export("f", "func", 1),)), Invalid("func", (0,))),
     (
         replace(ONE, exports=(Export("f", "func", 0), Export("f", "func", 0))),
