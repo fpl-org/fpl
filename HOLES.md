@@ -41,3 +41,15 @@
 - Default in force: forms that read or write sp are checked by the text and checker laws only; the evaluator has no sp and returns Unmodelled for any instruction with sp in a register slot (found by check.slots), and no run observes sp
 - Closes by: E or H0, when a frame gives blocks a stack of their own
 - Evidence: design.md sections 5 and 8; fpl/asm/aarch64/eval.py:657; probe: the frame's sp is ASLR'd per run, and blocks must not move it (records are sp-relative)
+
+## harness-registers
+- Depends on it: tests/aarch64_strategies.py (GENERAL, regs, block), tests/aarch64_frame.py (OBSERVED, setup)
+- Default in force: generated code never reads or writes x18, x29 or sp, and memory blocks will also keep off x27 and x28; the frame sets and stores only the other 29 registers, and a Block holds 0 for x18 and x29, which no block reads; the checker does not know this
+- Closes by: M's register roles and H0's calling convention (C3a), which name reserved registers per target
+- Evidence: design.md sections 6 and 8; Apple, "Writing ARM64 code for Apple platforms": "The platforms reserve register x18. Don't use this register." and "The frame pointer register (x29) must always address a valid frame record."
+
+## oracle-settings
+- Depends on it: tests/test_aarch64_via_run.py (RUN), tests/test_aarch64_via_llvm.py
+- Default in force: the run laws use RUN = settings(backend="hypothesis", deadline=None, max_examples 4/20/4 for quick/harden/symbolic), and checked-programs-run and evaluator-agrees-with-run assert on one shared batch of one to eight blocks per example (blocks(k=8)); the llvm oracle tests carry backend="hypothesis" only and run at the profile's 100/2000/50, not the design's 10/50/10
+- Closes by: PSJ, accepting, or asking for a harness-level oracle profile in quality/noslop_pytest.py
+- Evidence: design.md section 7 (Budgets); measured on this Mac: the run law, quick 4 examples 1.2 s, harden 20 examples 20.2 s under load average 27
