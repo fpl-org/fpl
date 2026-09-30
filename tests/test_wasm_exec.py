@@ -327,6 +327,40 @@ CASES: list[tuple[str, Module, Outcome]] = [
         ),
         Values((100,)),
     ),
+    (
+        "br_if out of two blocks",
+        main((Block(None, (Block(None, (i32(1), BrIf(1))), i32(5), Return())), i32(6))),
+        Values((6,)),
+    ),
+    (
+        "br out of three blocks",
+        main((
+            Block(None, (Block(None, (Block(None, (Br(2),)), i32(4), Return())), i32(5), Return())),
+            i32(6),
+        )),
+        Values((6,)),
+    ),
+    (
+        "a loop's parameter is its branch's operand, not the value before it",
+        main(
+            (
+                i32(3), LocalSet(0), i32(100), i32(3),
+                Loop(TypeUse(1), (
+                    LocalGet(0), i32(1), Binop("i32", "sub"), LocalTee(0), LocalGet(0), BrIf(0),
+                    Drop(),
+                )),
+                Binop("i32", "add"),
+            ),
+            types=(I32, UNARY),
+        ),
+        Values((101,)),
+    ),
+    ("a local starts at zero", main((LocalGet(0),)), Values((0,))),
+    (
+        "a data segment overwrites memory and keeps its size",
+        replace(main((MemorySize(),), mems=ONE_PAGE), datas=(Data((i32(0),), b"\x07"),)),
+        Values((1,)),
+    ),
 ]  # fmt: skip
 
 

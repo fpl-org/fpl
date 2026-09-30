@@ -123,6 +123,9 @@ SITES: list[tuple[Module, Invalid | None]] = [
     (replace(func_of(("i64",), MemorySize()), mems=MEMORY), Invalid("mismatch", (0,))),
     (replace(func_of((), ZERO, GlobalSet(0)), imports=(FIXED,)), Invalid("immutable", (0, 1))),
     (func_of((), ZERO, GlobalSet(0)), Invalid("global", (0, 1))),
+    (func_of((), GlobalGet(0), Drop()), Invalid("global", (0, 0))),
+    (func_of((), ZERO, CallIndirect(0, TypeUse(0))), Invalid("table", (0, 1))),
+    (replace(func_of((), ZERO, Block(TypeUse(1), ()), Drop()), types=(EMPTY, UNARY)), None),
     (func_of((), LocalGet(0), Drop()), Invalid("local", (0, 0))),
     (func_of((), ZERO, LocalSet(0)), Invalid("local", (0, 1))),
     (func_of((), ZERO, LocalTee(0), Drop()), Invalid("local", (0, 1))),
@@ -156,7 +159,7 @@ SITES: list[tuple[Module, Invalid | None]] = [
 ]
 """One fixed case per refusal site whose kind and place no property pins: memory accesses,
 the index spaces, `leftover`, `br-table-arity`, a typed `if`, an error in an `else` arm, and
-the data, element, export and start fields."""
+the data, element, export and start fields, and a block that takes a parameter."""
 
 
 def test_the_checker_decides_the_fixed_cases_as_the_spec_does() -> None:
