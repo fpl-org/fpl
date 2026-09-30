@@ -6,7 +6,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 from lower_strategies import walker_values
 
-from fpl.ast_core import EFFECTS, Call, Dict, Listed, Push, Quotation, Value
+from fpl.ast_core import EFFECTS, Call, Dict, Equal, Listed, Push, Quotation, Value
 from fpl.cbpv.check import check
 from fpl.cbpv.machine import Closure, Panicked, Returned, Val, run
 from fpl.cbpv.sig import FirstOrder
@@ -16,6 +16,7 @@ from fpl.cbpv.syntax import (
     Comp,
     Const,
     Dyn,
+    Inr,
     Position,
     Prim,
     Program,
@@ -25,9 +26,10 @@ from fpl.cbpv.syntax import (
     Var,
 )
 from fpl.errors import FplError, Span
-from fpl.eval import BUILTINS
+from fpl.eval import BUILTINS, matched
 from fpl.lower.walker import (
     CONSTANTS,
+    EQ,
     Origin,
     error_line,
     held,
@@ -131,3 +133,11 @@ def test_readback_fills_a_closure_from_its_environment() -> None:
     env = ("y", Const(9, NUM), ("x", Const(7, NUM), None))
     got = readback(Closure(Return(Unit()), env, 0), (outer, inner))
     assert got == Quotation((Push(7), Push(Quotation((Push(1),))), Push(3)))
+
+
+@given(walker_values(), walker_values(), st.booleans())
+def test_eq_is_the_walkers_literal_pattern(a: Value, b: Value, same: bool) -> None:
+    """`eq` is `inr` exactly where the walker's literal pattern for `a` matches `b`."""
+    b = a if same else b
+    got = EQ.apply((a, b), None)
+    assert isinstance(got, Inr) == (matched(Equal(Push(a)), b, {}) is not None)

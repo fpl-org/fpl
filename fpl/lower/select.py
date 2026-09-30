@@ -9,7 +9,8 @@ in the order of the call graph's strongly connected components, the ones a compo
 first. A reachable `f/doc` or `f/effect` keeps `f`.
 
 Refused, as a `Refused` value and never an exception: code as data (`,`, a `code` slot,
-`name/history`: `LEVEL_ONE`, hole level-one), and a binder whose name some reachable call
+`name/history`: `LEVEL_ONE`, hole level-one), a pattern running a constructor backwards
+(`INVERSE_PATTERN`, hole inverse-patterns), and a binder whose name some reachable call
 outside its scope resolves to a word or builtin (`BINDER_CAPTURES`, hole binder-captures): the
 walker substitutes into quotation values a binder put into its scope, A resolves lexically.
 """
@@ -51,6 +52,8 @@ class RefusalKind(StrEnum):
     QUOTATION_UNKNOWN = "quotation-unknown"
     EFFECT_MISMATCH = "effect-mismatch"
     STEP_ARITY = "step-stack"
+    BRANCHES_DISAGREE = "typed-fragment"
+    INVERSE_PATTERN = "inverse-patterns"
 
 
 @dataclass(frozen=True)
@@ -77,11 +80,13 @@ type Graph = Mapping[str, tuple[str, ...]]
 @dataclass
 class _Walk:
     """The calls met so far, each with what it resolves to (None: a binder, "": a builtin or
-    control word, else the word or query called), and the binders met."""
+    control word, else the word or query called), the binders met, and where each inverse
+    pattern met is written."""
 
     words: Mapping[str, tuple[str, str]]
     calls: list[tuple[Call, str | None]] = field(default_factory=list[tuple[Call, str | None]])
     binders: list[tuple[str, Span]] = field(default_factory=list[tuple[str, Span]])
+    inverses: list[Span] = field(default_factory=list[Span])
 
     def code(self, code: tuple[Node, ...], env: Env) -> None:
         for node in code:
@@ -123,8 +128,8 @@ def _match(walk: _Walk, node: Match, env: Env) -> None:
     for row in node.rows:
         bound = frozenset[str]().union(*map(names, row.patterns))
         walk.binders.extend((name, node.span) for name in sorted(bound))
-        for pattern in row.patterns:
-            _PATTERNS[type(pattern)](walk, pattern, env)
+        for pattern in row.patterns:  # a `$x` pins a name the row binds before it
+            _PATTERNS[type(pattern)](walk, pattern, env | bound)
         walk.code(row.body, env | bound)
 
 
@@ -137,10 +142,8 @@ def _guarded(walk: _Walk, pattern: Guarded, env: Env) -> None:
     _call(walk, Call(pattern.test, pattern.span), frozenset())
 
 
-def _inverse(walk: _Walk, pattern: Inverse, env: Env) -> None:
-    for arg in pattern.args:
-        _PATTERNS[type(arg)](walk, arg, env)
-    _call(walk, Call(pattern.name, pattern.span), frozenset())
+def _inverse(walk: _Walk, pattern: Inverse, _env: Env) -> None:
+    walk.inverses.append(pattern.span)
 
 
 def _nothing(_walk: _Walk, _pattern: Wild | Var, _env: Env) -> None:
@@ -178,8 +181,13 @@ def select(statements: tuple[Statement, ...]) -> CoreA | Refused:
     walk = _Walk(callables(defines))
     walk.code(sum((run.code for run in runs), ()), frozenset())
     graph = _called(walk, defines)
-    refused = _level_one(walk, list(map(defines.__getitem__, sorted(graph))))
-    return refused or _captures(walk) or _ordered(defines, graph, runs)
+    refused = _refusal(walk, list(map(defines.__getitem__, sorted(graph))))
+    return refused or _ordered(defines, graph, runs)
+
+
+def _refusal(walk: _Walk, reached: list[Define]) -> Refused | None:
+    """Pass 1's first refusal: code as data, then an inverse pattern, then a capture."""
+    return _level_one(walk, reached) or _inverted(walk) or _captures(walk)
 
 
 def _ordered(defines: Mapping[str, Define], graph: Graph, runs: tuple[Run, ...]) -> CoreA:
@@ -210,6 +218,13 @@ def _level_one(walk: _Walk, reached: list[Define]) -> Refused | None:
     for define in reached:
         if "code" in define.effect.slots:
             return Refused(RefusalKind.LEVEL_ONE, define.span, f"{define.name} takes code")
+    return None
+
+
+def _inverted(walk: _Walk) -> Refused | None:
+    """The first pattern that runs a constructor backwards (hole inverse-patterns)."""
+    if walk.inverses:
+        return Refused(RefusalKind.INVERSE_PATTERN, walk.inverses[0], "a constructor run backwards")
     return None
 
 

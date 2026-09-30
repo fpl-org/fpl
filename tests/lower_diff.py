@@ -1,7 +1,7 @@
 """The differential harness: a program's output through the walker and through A (design 8)."""
 
 from fpl.ast_core import Statement, Value
-from fpl.cbpv.machine import OutOfFuel, Panicked, Returned, Val, run
+from fpl.cbpv.machine import Failed, OutOfFuel, Panicked, Returned, Val, run
 from fpl.desugar import desugar, listing
 from fpl.driver import run as walk
 from fpl.errors import FplError
@@ -53,7 +53,7 @@ def cbpv_output(source: str) -> str | Refused:
     stacks: list[tuple[Value, ...]] = []
     for r in run(program, signature(extra), fuel=10_000 + 100 * len(source), handler=no_handler):
         assert not isinstance(r.end, OutOfFuel), source
-        if isinstance(r.end, Panicked):
+        if isinstance(r.end, Panicked | Failed):
             return error_line(r.end)
         assert isinstance(r.end, Returned), r.end
         stacks.append(stack(r.end.value, origins))

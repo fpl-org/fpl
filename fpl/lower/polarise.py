@@ -26,30 +26,67 @@ stack of entries, an IR value with its type, and an environment from binder name
   `t` in place, returning the one entry left, boxed.
 - Box rule: a thunk entry reaching a constant's, a word's or a thunk's input is first
   passed through `prim box`, so the input receives walker data.
+- A match takes as many entries as a row has patterns and tries its rows in order (design
+  6.3.1), up to the first that catches every value: each row's test is its patterns' left to
+  right (`_` and a name test nothing, a name binds its entry for the patterns after it and the
+  body, a literal or `$x` is `prim eq`, a guard is its word on a fresh static stack of the entry,
+  compared with 1 through `eq`, run even when the pattern it guards failed, as the walker runs
+  it), chosen by `pm`; without a catch-all the last row falls into `fail` with the walker's
+  `no row matches` at the match. Each row's body runs on a fresh static stack (the surface
+  gives a row body no values below the match) and the bodies' entries are joined by one `to`.
+- A thunk's effect is over-approximated from its code: `fail` for a match without a catch-all
+  row, and the effect of each word it calls.
 
 Refused, returned: `QUOTATION_UNKNOWN` for `!` or `swap-args` on walker data (a `Dyn` name),
-`EFFECT_MISMATCH` for a thunk run in place outside a quotation (or in a wrapper) on fewer entries
-than it takes, `STEP_ARITY` for a wrapper whose fresh stack is left with other than one entry.
-Refused, by precondition: a match, `if` and `repeat`, a word calling itself or in a
-component of more than one word. Those lower in later passes (holes static-stack,
-effect-mismatch).
+`EFFECT_MISMATCH` for a thunk run in place outside a quotation (or in a wrapper, a row body or a
+guard) on fewer entries than it takes, and for a guard leaving other than one entry;
+`STEP_ARITY` for a wrapper whose fresh stack is left with other than one entry;
+`BRANCHES_DISAGREE` for rows leaving different counts, or entries at types with no common fit
+(two base types, or two thunk types); `INVERSE_PATTERN` for a pattern pass 1 refuses.
+Refused, by precondition: `if` and `repeat`, a word calling itself or in a component of more
+than one word. Those lower in later passes (holes static-stack, effect-mismatch).
 """
 
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from itertools import count
 
 import icontract
 
-from fpl.ast_core import Bind, Call, Define, Keyed, Match, Node, Push, Quotation, Symbol
+from fpl.ast_core import (
+    Bind,
+    Call,
+    Define,
+    Equal,
+    Guarded,
+    Inverse,
+    Keyed,
+    Match,
+    Node,
+    Pattern,
+    Push,
+    Quotation,
+    Row,
+    Symbol,
+    Wild,
+)
+from fpl.ast_core import Var as Named
 from fpl.cbpv.sig import FirstOrder
 from fpl.cbpv.syntax import (
     App,
+    Base,
+    Case,
     Comp,
     Const,
     Dyn,
+    Eff,
+    Effects,
+    Fail,
     Force,
+    Inl,
     Lam,
+    One,
     Position,
     Prim,
     Program,
@@ -58,15 +95,17 @@ from fpl.cbpv.syntax import (
     Thunk,
     To,
     U,
+    Unit,
     Var,
     VType,
 )
 from fpl.cbpv.syntax import Value as IRValue
-from fpl.errors import Span
+from fpl.errors import FplError, Span
 from fpl.eval import CONTROLS, effect_line
 from fpl.eval import held as substituted
 from fpl.lower.select import CoreA, RefusalKind, Refused
 from fpl.lower.walker import (
+    SAME,
     SORTS,
     Origin,
     box,
@@ -85,7 +124,11 @@ type Entry = tuple[IRValue, VType]
 type Env = Mapping[str, Entry]
 type Extra = tuple[tuple[str, FirstOrder], ...]
 type Lowered = tuple[Program, Extra, tuple[Origin, ...]]
+type Let = Callable[[Comp], Comp]
+type Test = Comp | None
 
+ONE: Entry = (Const(1, Base("Num")), Base("Num"))
+FALSE = Inl(Unit(), One())  # `truth`'s side for 0, and `eq`'s for different values
 PROBE = Symbol("probe")  # stands in for a binder while looking for its mentions
 OFF = frozenset(CONTROLS) - {"!", "swap-args", "each", "scan", "fold"}
 
@@ -108,18 +151,73 @@ def _flat(code: tuple[Node, ...]) -> Iterator[Node]:
             yield from _flat(node.body)
         elif isinstance(node, Keyed):
             yield from _flat(tuple(n for _, n in node.entries))
+        elif isinstance(node, Match):
+            yield from _rows(node)
+
+
+def _rows(node: Match) -> Iterator[Node]:
+    """Every node of a match's patterns' tests and rows' bodies."""
+    for row in node.rows:
+        yield from _flat((*_tested(row.patterns), *row.body))
+
+
+def _tested(patterns: Sequence[Pattern]) -> Iterator[Node]:
+    """The code a row's patterns run: a literal's or `$x`'s push, a guard's word."""
+    for pattern in patterns:
+        if isinstance(pattern, Equal):
+            yield pattern.node
+        elif isinstance(pattern, Guarded):
+            yield from _tested((pattern.pattern,))
+            yield Call(pattern.test, pattern.span)
+
+
+def _catches(row: Row) -> bool:
+    """Every pattern of the row is `_` or a name, as the walker's `catches` reads it."""
+    return all(isinstance(pattern, Wild | Named) for pattern in row.patterns)
 
 
 def _off(node: Node, own: str) -> bool:
-    return isinstance(node, Match) or (isinstance(node, Call) and node.name in OFF | {own})
+    return isinstance(node, Call) and node.name in OFF | {own}
 
 
-def straight_line(core: CoreA) -> bool:
-    """No match, no `if` or `repeat`, no word calling itself, one word per
-    component."""
+def lowerable(core: CoreA) -> bool:
+    """No `if` or `repeat`, no word calling itself, one word per component."""
     owned = ((s.name if isinstance(s, Define) else "", s.code) for s in core.statements)
     plain = not any(_off(node, own) for own, code in owned for node in _flat(code))
     return plain and all(len(c) == 1 for c in core.components)
+
+
+def _closed(lets: Sequence[Let], comp: Comp) -> Comp:
+    """`comp` under the pending bindings, the first outermost."""
+    for let in reversed(lets):
+        comp = let(comp)
+    return comp
+
+
+def _applied(head: Comp, values: Sequence[IRValue]) -> Comp:
+    """`head` applied to `values`, pushed the deepest first."""
+    for value in reversed(values):
+        head = App(value, head)
+    return head
+
+
+@dataclass(frozen=True)
+class _Word:
+    """A word lowered so far: the values it takes, the types of those it leaves, its effect."""
+
+    ins: int
+    outs: tuple[VType, ...]
+    eff: Effects
+
+
+@dataclass(frozen=True)
+class _Arm:
+    """A match row lowered: its test (None for a row catching every value), and its body's
+    pending bindings and the entries it leaves."""
+
+    test: Test
+    lets: tuple[Let, ...]
+    stack: tuple[Entry, ...]
 
 
 @dataclass
@@ -128,13 +226,11 @@ class _Lowering:
     own constants, the literal quotations' origins, and the static stack, pending bindings and
     grown inputs (outside a quotation none may grow) of the code being lowered."""
 
-    words: dict[str, tuple[int, tuple[VType, ...]]] = field(
-        default_factory=dict[str, tuple[int, tuple[VType, ...]]]
-    )
+    words: dict[str, _Word] = field(default_factory=dict[str, _Word])
     queries: dict[str, Const] = field(default_factory=dict[str, Const])
     extra: list[tuple[str, FirstOrder]] = field(default_factory=list[tuple[str, FirstOrder]])
     stack: list[Entry] = field(default_factory=list[Entry])
-    lets: list[Callable[[Comp], Comp]] = field(default_factory=list[Callable[[Comp], Comp]])
+    lets: list[Let] = field(default_factory=list[Let])
     fresh: Iterator[int] = field(default_factory=count)
     origins: list[Origin] = field(default_factory=list[Origin])
     grown: list[str] | None = None
@@ -147,6 +243,27 @@ class _Lowering:
         for node in code:
             _NODES[type(node)](self, node, env)
 
+    @contextmanager
+    def aside(self, stack: list[Entry], grown: list[str] | None = None) -> Generator[None]:
+        """Lower on `stack` with no pending bindings, then go back to the code being lowered."""
+        saved = self.stack, self.lets, self.grown
+        self.stack, self.lets, self.grown = stack, [], grown
+        try:
+            yield
+        finally:
+            self.stack, self.lets, self.grown = saved
+
+    def effects(self, code: tuple[Node, ...]) -> Effects:
+        """What running `code` may do besides return: `fail` for a match without a catch-all
+        row, and the effect of every word it calls."""
+        eff: set[Eff] = set()
+        for node in _flat(code):
+            if isinstance(node, Match) and not any(map(_catches, node.rows)):
+                eff.add("fail")
+            elif isinstance(node, Call) and node.name in self.words:
+                eff |= self.words[node.name].eff
+        return frozenset(eff)
+
     def body(self, code: tuple[Node, ...]) -> tuple[Comp, tuple[VType, ...]]:
         """`code` over the static stack, returning the entries it leaves, and their types."""
         self.lets = []
@@ -154,9 +271,7 @@ class _Lowering:
         return self.returned()
 
     def returned(self) -> tuple[Comp, tuple[VType, ...]]:
-        comp: Comp = Return(paired([v for v, _ in self.stack]))
-        for let in reversed(self.lets):
-            comp = let(comp)
+        comp = _closed(self.lets, Return(paired([v for v, _ in self.stack])))
         return comp, tuple(t for _, t in self.stack)
 
     def word(self, define: Define) -> Thunk:
@@ -166,25 +281,23 @@ class _Lowering:
         comp, outs = self.body(define.code)
         for x in reversed(names):
             comp = Lam(x, Dyn(), "ω", comp)
-        self.words[define.name] = (len(names), outs)
+        self.words[define.name] = _Word(len(names), outs, self.effects(define.code))
         self.queries[f"{define.name}/doc"] = Const(define.doc, typed(define.doc))
         self.queries[f"{define.name}/effect"] = Const(effect_line(define), Dyn())
         return Thunk(comp)
 
     def quotation(self, value: Quotation, env: Env) -> Entry:
         """`Thunk(λin₁. … λinₙ. body, origin)`, its inputs grown on demand, `in₁` the top."""
-        saved = self.stack, self.lets, self.grown
-        self.stack, self.lets, self.grown = [], [], []
-        self.code(value.code, env)
-        comp, outs = self.returned()
-        grown = self.grown
+        grown: list[str] = []
+        with self.aside([], grown):
+            self.code(value.code, env)
+            comp, outs = self.returned()
         for x in reversed(grown):
             comp = Lam(x, Dyn(), "ω", comp)
-        self.stack, self.lets, self.grown = saved
         names = tuple((x, v) for x, (v, _) in env.items())
         self.origins.append(Origin(value.code, names, len(grown), len(outs)))
         thunk = Thunk(comp, len(self.origins) - 1)
-        return thunk, U(instance([Dyn()] * len(grown), outs), frozenset())
+        return thunk, U(instance([Dyn()] * len(grown), outs), self.effects(value.code))
 
     def taken(self, n: int, at: Span) -> list[Entry]:
         """The top `n` entries, the deepest first, popped; inside a quotation the missing ones
@@ -209,9 +322,7 @@ class _Lowering:
 
     def call(self, head: Comp, values: Sequence[IRValue], outs: Sequence[VType]) -> None:
         """`head` applied to `values`, pushed the deepest first, its result split into `outs`."""
-        comp = head
-        for value in reversed(values):
-            comp = App(value, comp)
+        comp = _applied(head, values)
         result = self.name()
         self.lets.append(lambda rest: To(comp, result, "ω", rest))
         self.split(Var(result), outs)
@@ -235,19 +346,15 @@ class _Lowering:
     def wrapper(self, t: Entry, fresh: int, node: Call) -> Thunk:
         """`thunk (λx. … body)` over a fresh static stack of `fresh` names, `x` the top: `t` in
         place, returning the one entry it leaves, boxed; any other count is `STEP_ARITY`."""
-        saved = self.stack, self.lets, self.grown
         names = [self.name() for _ in range(fresh)]
-        self.stack, self.lets, self.grown = [(Var(x), Dyn()) for x in reversed(names)], [], None
-        self.in_place(t, node)
-        if len(self.stack) != 1:
-            left = f"{node.name} step leaves {len(self.stack)} values"
-            raise _RefusalError(Refused(RefusalKind.STEP_ARITY, node.span, left))
-        comp: Comp = Return(self.boxed(self.stack[0]))
-        for let in reversed(self.lets):
-            comp = let(comp)
+        with self.aside([(Var(x), Dyn()) for x in reversed(names)]):
+            self.in_place(t, node)
+            if len(self.stack) != 1:
+                left = f"{node.name} step leaves {len(self.stack)} values"
+                raise _RefusalError(Refused(RefusalKind.STEP_ARITY, node.span, left))
+            comp = _closed(self.lets, Return(self.boxed(self.stack[0])))
         for x in reversed(names):
             comp = Lam(x, Dyn(), "ω", comp)
-        self.stack, self.lets, self.grown = saved
         return Thunk(comp)
 
     def split(self, value: IRValue, outs: Sequence[VType]) -> None:
@@ -266,6 +373,45 @@ class _Lowering:
         self.extra.append((name, fo))
         ins = [Dyn() if isinstance(t, U) else t for _, t in reversed(args)]
         self.apply(Prim(name, instance(ins, [Dyn()]), frozenset(), None), args, [Dyn()])
+
+    def arm(self, row: Row, taken: Sequence[Entry], env: Env) -> _Arm:
+        """The row's test over the taken entries, the first pattern's the deepest, then its body
+        on a fresh static stack with the names its patterns bind."""
+        scope = dict(env)
+        tests = [
+            _PATTERNS[type(pattern)](self, pattern, entry, scope)
+            for pattern, entry in zip(row.patterns, taken, strict=True)
+        ]
+        with self.aside([]):
+            self.code(row.body, scope)
+            return _Arm(
+                self.both([t for t in tests if t is not None]), (*self.lets,), (*self.stack,)
+            )
+
+    def both(self, tests: Sequence[Comp]) -> Test:
+        """The tests in turn, the first `inl` (false) ending them; None for no test."""
+        if not tests:
+            return None
+        comp = tests[-1]
+        for test in reversed(tests[:-1]):
+            comp = self.chosen(test, Return(FALSE), comp)
+        return comp
+
+    def chosen(self, test: Comp, no: Comp, yes: Comp) -> Comp:
+        """`test to b. pm b as {inl. no | inr. yes}`."""
+        b = self.name()
+        return To(test, b, "ω", Case(Var(b), self.name(), "ω", no, self.name(), "ω", yes))
+
+    def same(self, start: list[Entry], code: tuple[Node, ...], env: Env, other: Entry) -> Comp:
+        """`code` over the fresh static stack `start`, which must leave one entry, then `eq` of
+        it and `other`: `inr` where the walker's `pattern.node == Push(value)` holds."""
+        with self.aside(start):
+            self.code(code, env)
+            if len(self.stack) != 1:
+                left = f"a pattern test leaves {len(self.stack)} values"
+                raise _RefusalError(Refused(RefusalKind.EFFECT_MISMATCH, _spanned(code), left))
+            args = [self.boxed(other), self.boxed(self.stack[0])]
+            return _closed(self.lets, _applied(SAME, args))
 
 
 def _push(low: _Lowering, node: Push, env: Env) -> None:
@@ -288,8 +434,8 @@ def _call(low: _Lowering, node: Call, env: Env) -> None:
         query = low.queries[node.name]
         low.stack.append((query, query.type))
     elif node.name in low.words:
-        n, outs = low.words[node.name]
-        low.apply(Force(Var(node.name)), low.taken(n, node.span), outs)
+        word = low.words[node.name]
+        low.apply(Force(Var(node.name)), low.taken(word.ins, node.span), word.outs)
     else:
         _CALLS.get(node.name, _builtin)(low, node)
 
@@ -326,8 +472,9 @@ def _iterated(low: _Lowering, node: Call, args: list[Entry]) -> None:
     xs, t = args
     fresh = 1 if node.name == "each" else 2
     wrapper = low.wrapper(t, fresh, node)
-    shape = U(instance([Dyn()] * fresh, [Dyn()]), frozenset())
-    prim = Prim(node.name, instance([shape, Dyn()], [Dyn()]), frozenset(), _at(node))
+    eff = t[1].eff if isinstance(t[1], U) else frozenset[Eff]()
+    shape = U(instance([Dyn()] * fresh, [Dyn()]), eff)
+    prim = Prim(node.name, instance([shape, Dyn()], [Dyn()]), eff, _at(node))
     low.call(prim, [low.boxed(xs), wrapper], [Dyn()])
 
 
@@ -391,15 +538,112 @@ def _keyed(low: _Lowering, node: Keyed, env: Env) -> None:
     low.constant("dict", keyed([k for k, _ in node.entries]), values)
 
 
+def _spanned(code: tuple[Node, ...]) -> Span:
+    """Where a pattern's test is written: its guard's call (the one test that may refuse)."""
+    (node,) = code
+    assert isinstance(node, Call), node
+    return node.span
+
+
+def _wild(_low: _Lowering, _pattern: Wild, _entry: Entry, _scope: dict[str, Entry]) -> Test:
+    return None
+
+
+def _named(_low: _Lowering, pattern: Named, entry: Entry, scope: dict[str, Entry]) -> Test:
+    """The name stands for the entry in the patterns after it and in the body, innermost."""
+    scope.pop(pattern.name, None)
+    scope[pattern.name] = entry
+    return None
+
+
+def _equal(low: _Lowering, pattern: Equal, entry: Entry, scope: dict[str, Entry]) -> Test:
+    return low.same([], (pattern.node,), scope, entry)
+
+
+def _guarded(low: _Lowering, pattern: Guarded, entry: Entry, scope: dict[str, Entry]) -> Test:
+    """The guarded pattern's test, then the guard's word on the entry alone, compared with 1;
+    the guard runs even when the pattern failed, as in the walker's `matched`."""
+    inner = _PATTERNS[type(pattern.pattern)](low, pattern.pattern, entry, scope)
+    guard = low.same([entry], (Call(pattern.test, pattern.span),), {}, ONE)
+    if inner is None:
+        return guard
+    passed, held = low.name(), low.name()
+    pick = Case(Var(passed), low.name(), "ω", Return(FALSE), low.name(), "ω", Return(Var(held)))
+    return To(inner, passed, "ω", To(guard, held, "ω", pick))
+
+
+def _inverse(_low: _Lowering, pattern: Inverse, _entry: Entry, _scope: dict[str, Entry]) -> Test:
+    raise _RefusalError(Refused(RefusalKind.INVERSE_PATTERN, pattern.span, "refused by pass 1"))
+
+
+_PATTERNS: dict[type, Callable[..., Test]] = {
+    Wild: _wild,
+    Named: _named,
+    Equal: _equal,
+    Guarded: _guarded,
+    Inverse: _inverse,
+}
+
+
+def _match(low: _Lowering, node: Match, env: Env) -> None:
+    """The rows tried in order up to the first catching every value, the last falling into
+    `fail` without one; what the chosen row leaves is bound by one `to` and split."""
+    taken = low.taken(len(node.rows[0].patterns), node.span)
+    arms: list[_Arm] = []
+    for row in node.rows:
+        arms.append(low.arm(row, taken, env))
+        if arms[-1].test is None:
+            break
+    types = _joined(arms, node.span)
+    last = arms[-1]
+    comp: Comp = Fail(Const(FplError(node.span, "no row matches"), Dyn()))
+    if last.test is None:
+        comp = _body(arms.pop())
+    for arm in reversed(arms):
+        assert arm.test is not None
+        comp = low.chosen(arm.test, comp, _body(arm))
+    result = low.name()
+    low.lets.append(lambda rest: To(comp, result, "ω", rest))
+    low.split(Var(result), types)
+
+
+def _body(arm: _Arm) -> Comp:
+    return _closed(arm.lets, Return(paired([v for v, _ in arm.stack])))
+
+
+def _joined(arms: Sequence[_Arm], at: Span) -> list[VType]:
+    """The types of the entries every row leaves: one type, or base types and `Dyn` with at most
+    one base among them, as `Dyn`; refused where the rows leave different counts or no such type
+    exists, which the checker's `pm` would not join."""
+    counts = {len(arm.stack) for arm in arms}
+    if len(counts) != 1:
+        raise _RefusalError(
+            Refused(RefusalKind.BRANCHES_DISAGREE, at, f"rows leave {sorted(counts)} values")
+        )
+    return [_fit(column, at) for column in zip(*(arm.stack for arm in arms), strict=True)]
+
+
+def _fit(column: Sequence[Entry], at: Span) -> VType:
+    """The one type of the entries the rows leave in one place, `Dyn` for base types and `Dyn`
+    with at most one base among them; refused otherwise."""
+    kinds = {t for _, t in column}
+    if len(kinds) == 1:
+        return kinds.pop()
+    if all(isinstance(t, Base | Dyn) for t in kinds) and len(kinds - {Dyn()}) <= 1:
+        return Dyn()
+    raise _RefusalError(Refused(RefusalKind.BRANCHES_DISAGREE, at, f"rows leave {kinds}"))
+
+
 _NODES: dict[type, Callable[..., None]] = {
     Push: _push,
     Call: _call,
     Bind: _bind,
     Keyed: _keyed,
+    Match: _match,
 }
 
 
-@icontract.require(straight_line)
+@icontract.require(lowerable)
 def polarise(core: CoreA) -> Lowered | Refused:
     """The cbpv⁻ program for Core_A, the constants of its own it uses (for `walker.signature`)
     and its literal quotations' origins (for `walker.readback`); or the first refusal."""

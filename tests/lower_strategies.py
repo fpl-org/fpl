@@ -31,6 +31,8 @@ from fpl.parse import parse
 from fpl.print import render
 from fpl.types import ARROWS, Arrow, Input, Kind, Sort, elaborate, sort
 
+COUNTS = st.integers(0, 3)
+
 NAMES = st.sampled_from(("a", "b", "k", "dup", "x"))
 atoms: st.SearchStrategy[int | Decimal | str] = st.one_of(
     st.integers(-5, 5),
@@ -259,3 +261,58 @@ def controlled(draw: Draw) -> str:
     # resugar writes a quotation body such as `0 | 0` as a frame that parses otherwise
     assume(desugar(parse(render(resugar(tuple(statements))))) == tuple(statements))
     return source_of(tuple(statements))
+
+
+def _guard(draw: Draw) -> list[str]:
+    """`g : v -- b`, 1 for one digit and 0 for another or for anything else, as a match."""
+    other = draw(st.sampled_from(("_", str(draw(COUNTS)))))
+    return ["g : v -- b", "\tmatch", f"\t\t{draw(COUNTS)}\t1", f"\t\t{other}\t0"]
+
+
+def _cells(draw: Draw, guard: bool) -> tuple[str, str, tuple[str, ...]]:
+    """A row's cells over `a n`, the counter `n` the top, and the names they bind."""
+    left = draw(st.sampled_from(("_", "x")))
+    rights = ["1", "2", "n", *(["n ∈ g"] if guard else []), *(["$x"] if left == "x" else [])]
+    right = draw(st.sampled_from(rights))
+    return left, right, (*(["x"] if left == "x" else []), *(["n"] if right[0] == "n" else []))
+
+
+def _body(draw: Draw, bound: tuple[str, ...], callees: tuple[str, ...]) -> str:
+    """A row body leaving one number or datum: a digit, a bound name, or a callee on the counter
+    less one (the only calls, so every call chain counts down to the row for 0)."""
+    bodies = [str(draw(COUNTS)), *bound]
+    if bound == ("x", "n"):
+        bodies += [f"x n 1 - {c}{end}" for c in callees for end in ("", " 1 +")]
+    return draw(st.sampled_from(bodies))
+
+
+def _counted(draw: Draw, name: str, callees: tuple[str, ...], guard: bool) -> list[str]:
+    """`name : a n -- r`, a match over `a n` whose first row takes the counter at 0, then rows of
+    literals, names, `$x` and guards, and a catch-all row or none."""
+    first = draw(st.sampled_from(("_", "x")))
+    rows = [(first, "0", _body(draw, ("x",) if first == "x" else (), ()))]
+    for _ in range(draw(st.integers(0, 2))):
+        left, right, bound = _cells(draw, guard)
+        rows.append((left, right, _body(draw, bound, callees)))
+    if draw(st.booleans()):
+        rows.append(("x", "n", _body(draw, ("x", "n"), callees)))
+    return [f"{name} : a n -- r", "\tmatch", *(f"\t\t{a}\t{n}\t{b}" for a, n, b in rows)]
+
+
+@st.composite
+def recursive(draw: Draw) -> str:
+    """Programs as source, written here since `resugar` refuses a match: words over a value and a
+    counter, each a match whose first row takes the counter at 0 (design section 7), `h` calling
+    `f` on the counter less one, a guard word `g` or none, and run lines on counters 0 to 3.
+    Nothing a refusal kind names is drawn: no inverse pattern, and every row leaves one number
+    or datum."""
+    guard = draw(st.booleans())
+    lines = _guard(draw) if guard else []
+    for name, callees in (("f", ()), ("h", ("f",))):
+        lines += _counted(draw, name, callees, guard)
+    for _ in range(draw(st.integers(1, 2))):
+        word = draw(st.sampled_from(("f", "h")))
+        lines.append(f"{draw(COUNTS)} | {draw(COUNTS)} {word}")
+    source = "\n".join(lines) + "\n"
+    elaborate(desugar(parse(source)))
+    return source

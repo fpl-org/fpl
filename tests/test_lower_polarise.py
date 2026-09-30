@@ -5,9 +5,24 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 from lower_diff import cbpv_output, walker_output
-from lower_strategies import START, controlled, source_of, straight
+from lower_strategies import START, controlled, recursive, source_of, straight
 
-from fpl.ast_core import Bind, Call, Define, Effect, Keyed, Listed, Push, Quotation, Run
+from fpl.ast_core import (
+    Bind,
+    Call,
+    Define,
+    Effect,
+    Equal,
+    Inverse,
+    Keyed,
+    Listed,
+    Match,
+    Push,
+    Quotation,
+    Row,
+    Run,
+    Wild,
+)
 from fpl.cbpv.check import check
 from fpl.desugar import desugar
 from fpl.errors import FplError
@@ -49,6 +64,16 @@ def test_lower_agrees_controlled(source: str) -> None:
     """[law: lower-agrees-controlled] For every program `controlled()` draws (each draw holds a
     literal quotation or a control word), pass 2's output passes `check(loops=False)`, and
     `cbpv_output` equals `walker_output`, error lines included."""
+    accepted(source)
+    assert cbpv_output(source) == walker_output(source)
+
+
+@pytest.mark.obligation("the interpreter and the compiled program print the same")
+@given(recursive())
+def test_lower_agrees_recursive(source: str) -> None:
+    """[law: lower-agrees-recursive] For every program `recursive()` draws (each draw holds a
+    match; recursion terminates by construction), pass 2's output passes `check(loops=False)`,
+    and `cbpv_output` equals `walker_output`, error lines included."""
     accepted(source)
     assert cbpv_output(source) == walker_output(source)
 
@@ -156,7 +181,7 @@ def test_each_quotation_agrees(source: str) -> None:
     assert cbpv_output(source) == walker_output(source)
 
 
-def word(name: str, ins: int, outs: int, *code: Push | Call | Bind | Keyed) -> Define:
+def word(name: str, ins: int, outs: int, *code: Push | Call | Bind | Keyed | Match) -> Define:
     effect = Effect(tuple(f"i{k}" for k in range(ins)), tuple(f"o{k}" for k in range(outs)))
     return Define(name, effect, code)
 
@@ -193,3 +218,70 @@ def test_each_construct_agrees(name: str) -> None:
     source = source_of(PROGRAMS[name])
     accepted(source)
     assert cbpv_output(source) == walker_output(source)
+
+
+GUARD = "g : v -- b\n\tmatch\n\t\t2\t1\n\t\t_\t0\n"
+# Matches: no row at the root, literals equal as the walker's (1 and 1.0), names, $x, guards
+# (the guard run although its pattern failed, and failing inside), a fail through `each`.
+MATCHING = (
+    "f : x -- y\n\tmatch\n\t\t0\t1\n5 f\n",
+    "f : x -- y\n\tmatch\n\t\t0\t1\n\t\t_\t8\n0 f\n3 f\n",
+    "f : x -- y\n\tmatch\n\t\t1.0\t7\n\t\t_\t8\n1 f\n",
+    "f : x -- y\n\tmatch\n\t\tx\tx 1 +\n4 f\n",
+    "f : a n -- r\n\tmatch\n\t\t1\t2\t5\n\t\t_\t_\t6\n1 | 2 f\n1 | 3 f\n2 | 2 f\n",
+    f"{GUARD}f : a n -- r\n\tmatch\n\t\t_\t0\t7\n\t\tx\t$x\tx\n\t\t_\tn ∈ g\tn\n"
+    "\t\tx\tn\t9\n3 | 3 f\n5 | 2 f\n1 | 3 f\n",
+    f"{GUARD}f : v -- r\n\tmatch\n\t\t0 ∈ g\t1\n\t\t_\t2\n0 f\n2 f\n",
+    "g : v -- b\n\tmatch\n\t\t2\t1\nf : v -- r\n\tmatch\n\t\tn ∈ g\t1\n\t\t_\t0\n2 f\n3 f\n",
+    "f : x -- y\n\tmatch\n\t\t0\t1\n⟨ 0 5 ⟩ [ f ] each\n",
+)
+
+
+@pytest.mark.parametrize("source", MATCHING)
+def test_each_match_agrees(source: str) -> None:
+    accepted(source)
+    assert cbpv_output(source) == walker_output(source)
+
+
+def test_no_row_matching_fails_with_the_walkers_error() -> None:
+    assert cbpv_output(MATCHING[0]) == "ERROR: 2:2 no row matches" == walker_output(MATCHING[0])
+
+
+def test_a_word_calling_itself_violates_lowerable() -> None:
+    with pytest.raises(icontract.ViolationError):
+        polarise(lowered("f : n -- r\n\tmatch\n\t\t0\t0\n\t\tn\tn 1 - f\n3 f\n"))
+
+
+def refusal(core: CoreA) -> RefusalKind:
+    refused = polarise(core)
+    assert isinstance(refused, Refused)
+    return refused.kind
+
+
+ZERO = Equal(Push(0))
+
+
+@pytest.mark.parametrize(
+    ("source", "kind"),
+    [
+        ("f : x -- y\n\tmatch\n\t\t0\t1\n\t\t_\t#z\n0 f\n", RefusalKind.BRANCHES_DISAGREE),
+        ("f : x -- y\n\tmatch\n\t\tx ∈ dup\t1\n\t\t_\t0\n0 f\n", RefusalKind.EFFECT_MISMATCH),
+    ],
+)
+def test_a_match_off_one_shape_is_refused(source: str, kind: RefusalKind) -> None:
+    assert refusal(lowered(source)) == kind
+
+
+def test_core_a_match_off_its_rules_is_refused() -> None:
+    """Rows no surface program writes: leaving different counts, reaching below the match, and
+    an inverse pattern pass 1 would have refused."""
+    uneven = Match((Row((ZERO,), (Push(1), Push(2))), Row((Wild(),), (Push(3),))), START)
+    below = Match((Row((Wild(),), calls("+")),), START)
+    inverse = Match((Row((Inverse("pair", (Wild(),), START),), ()),), START)
+    for code, kind in (
+        (uneven, RefusalKind.BRANCHES_DISAGREE),
+        (below, RefusalKind.EFFECT_MISMATCH),
+        (inverse, RefusalKind.INVERSE_PATTERN),
+    ):
+        core = CoreA((word("f", 2, 1, code), Run((Push(1), Push(2), *calls("f")))), (("f",),))
+        assert refusal(core) == kind

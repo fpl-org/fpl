@@ -19,6 +19,10 @@ and fold over nothing panics through `fpl.eval.fold`'s own check. `each` calls t
 one item; `scan` and `fold` seed with the first item and call it on the next item (the top)
 over the result so far (hole iteration-constants).
 
+`eq` is the walker's test for a literal or `$x` pattern, `pattern.node == Push(value)` (so `1`
+and `1.0` are equal, as there): `inr` when it holds, `inl` when not, the sides `truth` gives 1 and
+0. A match's `fail` carries the walker's own `no row matches` error, which is its error line.
+
 `box(origins)` turns a closure into the walker quotation it stands for, where a thunk meets a
 position that takes walker data; `control(w)` is the walker's control word `w` for an operand
 statically not a quotation, which the walker refuses before it runs any code.
@@ -33,11 +37,12 @@ from collections.abc import Callable, Hashable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from functools import partial
+from typing import cast
 
 import icontract
 
-from fpl.ast_core import EFFECTS, Dict, Listed, Node, Quotation, Strand, Symbol, Value
-from fpl.cbpv.machine import Closure, Env, Panicked, Val, VPair
+from fpl.ast_core import EFFECTS, Dict, Listed, Node, Push, Quotation, Strand, Symbol, Value
+from fpl.cbpv.machine import Closure, Env, Failed, Panicked, Val, VPair
 from fpl.cbpv.sig import Call, Done, FirstOrder, Iterating, Panic, Signature, Step
 from fpl.cbpv.syntax import (
     Arrow,
@@ -46,11 +51,14 @@ from fpl.cbpv.syntax import (
     CType,
     Dyn,
     F,
+    Inl,
+    Inr,
     One,
     Pair,
     Position,
     Prim,
     Prod,
+    Sum,
     Thunk,
     U,
     Unit,
@@ -151,6 +159,15 @@ CONSTANTS: dict[str, FirstOrder] = {
     for name, fn in BUILTINS.items()
     if name not in UNLOWERED
 }
+
+
+def _same(args: tuple[Hashable, ...], _at: Position | None) -> IRValue:
+    left, right = (Push(cast(Value, a)) for a in args)
+    return Inr(Unit(), One()) if left == right else Inl(Unit(), One())
+
+
+EQ = FirstOrder(2, _same)
+SAME = Prim("eq", instance([Dyn(), Dyn()], [Sum(One(), One())]), frozenset(), None)
 
 
 def distinct(names: Sequence[str]) -> bool:
@@ -283,7 +300,12 @@ def signature(extra: Iterable[tuple[str, FirstOrder]] = ()) -> Signature:
     """Σ_walker with a program's own `held` and `keyed` constants: an instance is admitted when
     its constant is known, takes as many values as it declares, and every input is walker data
     (but `box`'s thunk and an iterating constant's wrapper)."""
-    constants: dict[str, FirstOrder | Iterating] = {**CONSTANTS, **ITERATING, **dict(extra)}
+    constants: dict[str, FirstOrder | Iterating] = {
+        **CONSTANTS,
+        "eq": EQ,
+        **ITERATING,
+        **dict(extra),
+    }
 
     def admits(p: Prim) -> bool:
         ins = inputs(p.type)
@@ -334,6 +356,8 @@ def stack(value: Val, origins: Sequence[Origin] = ()) -> tuple[Value, ...]:
     return () if isinstance(value, Unit) else (readback(value, origins),)
 
 
-def error_line(end: Panicked) -> str:
-    """The line the walker prints for the error a constant panicked with."""
-    return str(end.payload)
+def error_line(end: Panicked | Failed) -> str:
+    """The line the walker prints for a run's error: the one a constant panicked with, or the
+    `no row matches` a match's `fail` carries to the root (hole fail-payload)."""
+    payload = end.payload
+    return str(payload.value if isinstance(payload, Const) else payload)

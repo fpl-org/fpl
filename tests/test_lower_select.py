@@ -123,7 +123,7 @@ def test_only_the_last_reached_definition_is_kept_in_component_order() -> None:
 def test_match_rows_bind_and_their_tests_are_calls() -> None:
     rows = (
         Row((Var("n"), Equal(Push(0))), (Call("n", AT),)),
-        Row((Guarded(Wild(), "t", AT), Inverse("pair", (Var("x"), Wild()), AT)), ()),
+        Row((Guarded(Wild(), "t", AT), Var("x")), ()),
     )
     t = Define("t", Effect(("v",), ("v",)), ())
     got = select((t, Run((Push(1), Push(2), Match(rows, AT)))))
@@ -131,3 +131,15 @@ def test_match_rows_bind_and_their_tests_are_calls() -> None:
     assert got.components == (("t",),)
     captured = Run((Push(1), Match((Row((Var("dup"),), ()),), AT), Push(2), Call("dup", AT)))
     assert refused((captured,))[:2] == (RefusalKind.BINDER_CAPTURES, AT)
+
+
+def test_an_inverse_pattern_is_refused_where_it_is_written() -> None:
+    source = "s : xs -- n\n\tmatch\n\t\t⟨⟩\t0\n\t\t( cons x xs )\t1\n⟨ 1 ⟩ s\n"
+    assert select(desugar(parse(source))) == Refused(
+        RefusalKind.INVERSE_PATTERN, Span(4, 5), "a constructor run backwards"
+    )
+    inverse = Row((Inverse("pair", (Var("x"), Wild()), AT),), ())
+    assert refused((Run((Push(1), Match((inverse,), AT))),))[:2] == (
+        RefusalKind.INVERSE_PATTERN,
+        AT,
+    )
