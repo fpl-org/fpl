@@ -3,12 +3,13 @@
 import math
 from fractions import Fraction
 
+import icontract
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 from riscv_strategies import STRAIGHT, between, forward_branching, instructions
 
-from fpl.asm.riscv.eval import Halted, Machine, OutOfFuel, Trapped, Unmodelled, run
+from fpl.asm.riscv.eval import Halted, Machine, OutOfFuel, Trapped, Unmodelled, alu, run, sext
 from fpl.asm.riscv.model import (
     Access,
     Bare,
@@ -172,14 +173,6 @@ def test_straight_line_code_halts_in_range_with_x0_zero(body: list[Instr], start
     assert all(0 <= value < 1 << 64 for value in outcome.machine.regs)
 
 
-@given(forward_branching(20), registers)
-def test_forward_branching_code_halts_within_one_step_per_instruction(
-    program: Program, start: Machine
-) -> None:
-    outcome = run(program, start, BASE, sum(not isinstance(item, Label) for item in program))
-    assert isinstance(outcome, Halted)
-
-
 def addi(rd: Reg, rs1: Reg, imm: int) -> I:
     return I(OpI.ADDI, rd, rs1, imm)
 
@@ -338,3 +331,23 @@ def test_w_forms_sign_extend_32_bits(instr: Instr, a: int, b: int, high: int) ->
     assert is_word(result)
     if isinstance(instr, R) and instr.op in W_SHIFTS:
         assert x3(instr, a, b ^ (high << 5)) == result
+
+
+@given(forward_branching(20), registers, st.sampled_from(OpR), operands, operands)
+def test_the_evaluator_keeps_its_contracts(
+    program: Program, start: Machine, op: OpR, a: int, b: int
+) -> None:
+    """[law: evaluator-contracts] A forward-branching program halts within one step per
+    instruction, every register in range and x0 zero; every ALU row, and `sext` at every width
+    of the operands' difference, give values in `[0, 2**64)`. icontract checks on every call."""
+    outcome = run(program, start, BASE, sum(not isinstance(item, Label) for item in program))
+    assert isinstance(outcome, Halted)
+    assert outcome.machine.regs[0] == 0
+    assert all(0 <= reg <= ONES for reg in (*outcome.machine.regs, alu(op, a, b)))
+    assert all(0 <= sext(a - b, bits) <= ONES for bits in (8, 12, 16, 32, 64))
+
+
+@pytest.mark.parametrize("regs", [(1,) + (0,) * 31, (0,) * 31, (0, -1) + (0,) * 30])
+def test_run_refuses_a_machine_that_is_not_well_formed(regs: tuple[int, ...]) -> None:
+    with pytest.raises(icontract.ViolationError):
+        run((NOP,), Machine(regs), BASE, 1)

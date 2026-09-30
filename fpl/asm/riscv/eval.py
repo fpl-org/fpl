@@ -12,6 +12,10 @@ the op enums, one row per mnemonic. The W forms compute on the low 32 bits and s
 the 32-bit result (4.2.1, 4.2.2), as do `lui` and `auipc` for their 32-bit immediate (4.2.1).
 Division by zero and signed overflow follow Table 11 and never trap (12.2).
 
+Contracts, checked by icontract on every call and by CrossHair in `make harden`: `sext` and
+`alu`, the one door to the table, return register values given register values; `run` takes
+a well-formed machine and never leaves anything but 0 in x0.
+
 The pc is an instruction index: labels take no space, every instruction is 4 bytes. `base`
 is the absolute address of instruction 0, which `auipc` adds and the links of `jal` and
 `jalr` hold. A branch or `jal` goes to its label's first definition; a `jalr` goes to the
@@ -28,6 +32,8 @@ import operator
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import assert_never
+
+import icontract
 
 from fpl.asm.riscv.check import targets
 from fpl.asm.riscv.model import (
@@ -58,6 +64,21 @@ LOW64 = (1 << 64) - 1
 LOW32 = (1 << 32) - 1
 
 
+def in_range(result: int) -> bool:
+    """`result` is a register value: in `[0, 2**64)`."""
+    return 0 <= result <= LOW64
+
+
+def both_in_range(a: int, b: int) -> bool:
+    """Both operands are register values."""
+    return in_range(a) and in_range(b)
+
+
+def a_width(bits: int) -> bool:
+    """`bits` is a width with a sign bit."""
+    return bits >= 1
+
+
 def u64(value: int) -> int:
     """`value` modulo 2**64: the register value with the same low 64 bits."""
     return value & LOW64
@@ -69,6 +90,8 @@ def signed(value: int, bits: int) -> int:
     return low - (1 << bits) if low >> (bits - 1) else low
 
 
+@icontract.require(a_width)
+@icontract.ensure(in_range)
 def sext(value: int, bits: int) -> int:
     """The low `bits` bits of `value` sign-extended to a 64-bit register value."""
     return u64(signed(value, bits))
@@ -203,6 +226,24 @@ class OutOfFuel:
 type Outcome = Halted | Trapped | Unmodelled | OutOfFuel
 
 
+def well_formed(machine: Machine) -> bool:
+    """32 registers, each in range, x0 zero."""
+    regs = machine.regs
+    return len(regs) == len(Reg) and regs[0] == 0 and all(map(in_range, regs))
+
+
+def x0_zero(result: Outcome) -> bool:
+    """The machine the run ends with, when it has one, holds 0 in x0."""
+    return not isinstance(result, Halted | Trapped) or result.machine.regs[0] == 0
+
+
+@icontract.require(both_in_range)
+@icontract.ensure(in_range)
+def alu(op: OpR, a: int, b: int) -> int:
+    """The row of `op` on two register values: a register value."""
+    return ALU[op](a, b)
+
+
 @dataclass(frozen=True, slots=True)
 class Code:
     """A program's instructions at address `base`, each label's instruction index by name."""
@@ -226,11 +267,11 @@ def arithmetic(instr: R | I | Shift | Upper, regs: list[int], address: int) -> i
     """The value `instr` computes for rd from `regs`, at `address`."""
     match instr:
         case R():
-            return ALU[instr.op](regs[instr.rs1], regs[instr.rs2])
+            return alu(instr.op, regs[instr.rs1], regs[instr.rs2])
         case I():
-            return ALU[IMMEDIATE[instr.op]](regs[instr.rs1], u64(instr.imm))
+            return alu(IMMEDIATE[instr.op], regs[instr.rs1], u64(instr.imm))
         case Shift():
-            return ALU[SHIFTS[instr.op]](regs[instr.rs1], u64(instr.shamt))
+            return alu(SHIFTS[instr.op], regs[instr.rs1], u64(instr.shamt))
         case Upper():
             return UPPER[instr.op](instr.imm, address)
         case _:
@@ -295,6 +336,8 @@ def step(code: Code, index: int, regs: list[int]) -> int | Outcome:
             assert_never(instr)
 
 
+@icontract.require(well_formed)
+@icontract.ensure(x0_zero)
 def run(program: Program, machine: Machine, base: int, fuel: int) -> Outcome:
     """Run `program` from its first instruction, at address `base`, for at most `fuel` steps.
 
