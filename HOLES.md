@@ -579,3 +579,9 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Closes by: restacking onto 08 (fuel per run line, "out of fuel"), mapping OutOfFuel to that line with a shared step measure, or keeping the two measures apart (rows 36, 60)
 - Evidence: agent/claude/stack/walker/08-repl fpl/eval.py Meter
 
+
+## static-stack
+- Depends on it: fpl/lower/polarise.py, fpl/cbpv/machine.py Arg frames
+- Default in force: pass 2 keeps the walker's data stack as static names (a static stack of entries in the environment); a call pushes only its inputs as argument frames above a to frame, and results come back as a tuple split into names; so the data stack is not the CK stack's argument frames between calls
+- Closes by: incipit, saying whether "The data stack is the CK stack's argument frames" describes the lowering (then the statement wants a stack-passing lowering) or only a call's inputs (then it is amended)
+- Evidence: statement, "Words" paragraph; design section 6.3
