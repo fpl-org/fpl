@@ -62,7 +62,7 @@ def test_a_module_holds_at_most_one_memory_counting_imports(defined: int, import
     if defined + imported <= 1:
         assert (Module(imports=imports, mems=mems).mems, len(imports)) == (mems, imported)
     else:
-        with pytest.raises(ValueError, match="at most one memory"):
+        with pytest.raises(ValueError, match=r"^a module holds at most one memory"):
             Module(imports=imports, mems=mems)
 
 

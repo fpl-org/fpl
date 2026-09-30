@@ -23,7 +23,15 @@ from fpl.asm.wasm.instr import (
 )
 from fpl.asm.wasm.instr import Testop as _Testop  # pytest would collect a Test* name
 from fpl.asm.wasm.module import Export, Func, Module
-from fpl.asm.wasm.numerics import BINOPS, CVTOPS, RELOPS, TESTOPS, UNOPS, Trap
+from fpl.asm.wasm.numerics import (
+    BINOPS,
+    CVTOPS,
+    RELOPS,
+    TESTOPS,
+    UNOPS,
+    Trap,
+    _extend,  # pyright: ignore[reportPrivateUsage] -- UNOPS calls it at import only
+)
 from fpl.asm.wasm.text import print_module
 from fpl.asm.wasm.types import WIDTH, FuncType, NumType
 
@@ -54,6 +62,13 @@ def test_the_one_signed_quotient_past_the_range_traps_and_its_remainder_is_zero(
     low, minus_one = 1 << (n - 1), (1 << n) - 1
     assert BINOPS["div_s"](n, low, minus_one) == Trap("integer overflow")
     assert BINOPS["rem_s"](n, low, minus_one) == 0
+
+
+def test_extend_reads_the_low_bits_as_signed() -> None:
+    """UNOPS calls `_extend` at import, where mutmut's trampoline cannot switch its mutants on;
+    this calls it at run time, and the oracle properties pin the operators it builds."""
+    assert _extend(8)(32, 0x180) == 0xFFFF_FF80
+    assert _extend(16)(64, 0x1_7FFF) == 0x7FFF
 
 
 def test_signed_division_rounds_toward_zero_and_the_remainder_takes_the_dividend_sign() -> None:

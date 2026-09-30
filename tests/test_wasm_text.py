@@ -167,6 +167,19 @@ def test_every_construct_prints_to_wat_that_wabt_assembles_and_validates(wasm_to
     assert done.returncode == 0, f"{text}\n{done.stderr}"
 
 
+def test_a_memarg_prints_its_offset_and_alignment_only_when_they_are_not_the_default() -> None:
+    loads = {
+        "i32.load": Load("i32", MemArg(2, 0), None),
+        "i32.load align=2": Load("i32", MemArg(1, 0), None),
+        "i32.load offset=4": Load("i32", MemArg(2, 4), None),
+        "i64.load8_u": Load("i64", MemArg(0, 0), (8, "u")),
+        "i64.load16_s offset=1 align=1": Load("i64", MemArg(0, 1), (16, "s")),
+    }
+    for text, load in loads.items():
+        module = Module(types=(FuncType((), ()),), funcs=(Func(0, (), (ZERO, load, Drop())),))
+        assert text in [line.strip() for line in print_module(module).splitlines()], text
+
+
 def test_the_forms_wabt_cannot_meet_in_one_module_print_exactly() -> None:
     """An imported memory (a module holds one), an untyped block, a typed select of no types."""
     body = (Block("i64", ()), Select(()))

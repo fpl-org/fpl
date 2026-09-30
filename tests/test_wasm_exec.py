@@ -1,6 +1,8 @@
 """The evaluator of 4.6-4.7: soundness over the valid modules, and the branches no generator
 reaches, pinned by fixed modules."""
 
+from dataclasses import replace
+
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
@@ -139,6 +141,13 @@ def started(module: Module) -> Instance:
     return instance
 
 
+def switch(index: int) -> tuple[Instr, ...]:
+    """`br_table` at `index` from inside two i32 blocks: label 0 (listed) leaves the outer block
+    with 5, the default (label 0 of the inner block) adds 10 after it."""
+    inner = Block("i32", (i32(5), i32(index), BrTable((1,), 0)))
+    return (Block("i32", (inner, i32(10), Binop("i32", "add"))),)
+
+
 AT0 = MemArg(0, 0)
 DIVIDE = Trap("integer divide by zero")
 OOB = Trap("out of bounds memory access")
@@ -224,6 +233,100 @@ CASES: list[tuple[str, Module, Outcome]] = [
         Values((5,)),
     ),
     ("a zero divisor", main((i32(1), i32(0), Binop("i32", "div_u"))), DIVIDE),
+    (
+        "load of the last four bytes",
+        main((i32(65532), Load("i32", AT0, None)), mems=ONE_PAGE),
+        Values((0,)),
+    ),
+    (
+        "a data segment loads little-endian",
+        replace(
+            main((i32(0), Load("i32", AT0, None)), mems=ONE_PAGE),
+            datas=(Data((i32(0),), b"\x01\x02\x03\x04"),),
+        ),
+        Values((0x04030201,)),
+    ),
+    (
+        "a store writes little-endian",
+        main(
+            (i32(0), i32(0x01020304), Store("i32", AT0, None), i32(0), Load("i32", AT0, (8, "u"))),
+            mems=ONE_PAGE,
+        ),
+        Values((4,)),
+    ),
+    (
+        "narrow unsigned load of a store",
+        main(
+            (i32(0), i32(0xFF), Store("i32", AT0, 8), i32(0), Load("i32", AT0, (8, "u"))),
+            mems=ONE_PAGE,
+        ),
+        Values((0xFF,)),
+    ),
+    (
+        "a narrow store keeps the low byte",
+        main(
+            (i32(0), i32(0x1FF), Store("i32", AT0, 8), i32(0), Load("i32", AT0, None)),
+            mems=ONE_PAGE,
+        ),
+        Values((0xFF,)),
+    ),
+    (
+        "a store keeps the memory's size",
+        main((i32(0), i32(7), Store("i32", AT0, None), MemorySize()), mems=ONE_PAGE),
+        Values((1,)),
+    ),
+    ("signed less-than", main((i32(2**32 - 1), i32(0), Relop("i32", "lt_s"))), Values((1,))),
+    ("select on a true condition", main((i32(1), i32(2), i32(1), Select(None))), Values((1,))),
+    ("br_table to a listed label", main(switch(0)), Values((5,))),
+    ("br_table to the default", main(switch(1)), Values((15,))),
+    ("br_table past its labels", main(switch(7)), Values((15,))),
+    (
+        "a branch out of two blocks",
+        main((Block("i32", (Block(None, (i32(5), Br(1))), i32(6))),)),
+        Values((5,)),
+    ),
+    (
+        "a branch carries its block's one result",
+        main((i32(1), Block("i32", (i32(2), i32(7), Br(0))), Binop("i32", "add"))),
+        Values((8,)),
+    ),
+    (
+        "a branch out of an empty block carries nothing",
+        main((i32(1), Block(None, (i32(5), Br(0))))),
+        Values((1,)),
+    ),
+    (
+        "a branch out of a block with a parameter",
+        main(
+            (i32(1), i32(2), Block(TypeUse(1), (i32(7), Br(0))), Binop("i32", "add")),
+            types=(I32, UNARY),
+        ),
+        Values((8,)),
+    ),
+    (
+        "a branch out of an if with a parameter",
+        main(
+            (
+                i32(1), i32(2), i32(1),
+                If(TypeUse(1), (i32(7), Br(0)), (Drop(), i32(9))),
+                Binop("i32", "add"),
+            ),
+            types=(I32, UNARY),
+        ),
+        Values((8,)),
+    ),
+    (
+        "a loop with a parameter counts down",
+        main(
+            (
+                i32(100), i32(3),
+                Loop(TypeUse(1), (i32(1), Binop("i32", "sub"), LocalTee(0), LocalGet(0), BrIf(0))),
+                Binop("i32", "add"),
+            ),
+            types=(I32, UNARY),
+        ),
+        Values((100,)),
+    ),
 ]  # fmt: skip
 
 
@@ -251,7 +354,27 @@ def test_unbounded_recursion_is_exhausted() -> None:
 
 
 def test_a_run_past_its_budget_is_out_of_steps() -> None:
-    assert invoke(started(main((i32(1), i32(2), Drop()))), 0, (), 2) == OutOfSteps()
+    """Each instruction costs one step: five of them fit a budget of five, not of three."""
+    body = (i32(1), i32(2), Drop(), i32(3), Drop())
+    assert invoke(started(main(body)), 0, (), 5) == Values((1,))
+    assert invoke(started(main(body)), 0, (), 3) == OutOfSteps()
+
+
+def test_a_returned_call_no_longer_counts_toward_the_depth() -> None:
+    """Each level of the recursion first calls a leaf that returns, then recurses: only the
+    recursion counts, so it ends in `Exhausted` past `DEPTH` levels and returns below them.
+
+    No block wraps the call (HOLES.md python-stack-bound); `br_if 0` ends the recursion.
+    """
+    recurse = (
+        Call(2), LocalGet(0), _Testop("i32", "eqz"), BrIf(0),
+        LocalGet(0), i32(1), Binop("i32", "sub"), Call(1),
+    )  # fmt: skip
+    funcs = (Func(1, (), recurse), Func(2, (), ()))
+    types = (I32, FuncType(("i32",), ()), FuncType((), ()))
+    for levels, outcome in ((DEPTH - 4, Values((0,))), (DEPTH, Exhausted())):
+        module = main((i32(levels), Call(1), i32(0)), types=types, funcs=funcs)
+        assert invoke(started(module), 0, (), 10**5) == outcome, levels
 
 
 def test_a_trap_keeps_the_globals_written_before_it() -> None:
@@ -281,5 +404,5 @@ def test_an_element_segment_past_the_table_traps_at_instantiation() -> None:
     ],
 )
 def test_a_module_with_imports_or_a_start_is_refused(module: Module) -> None:
-    with pytest.raises(ValueError, match="closed"):
+    with pytest.raises(ValueError, match=r"^the evaluator runs closed modules only"):
         instantiate(module)

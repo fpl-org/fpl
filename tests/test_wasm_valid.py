@@ -1,6 +1,7 @@
 """The checker of fpl.asm.wasm: the stack-polymorphic cases, the valid strategy, the invalid
 catalogue, and agreement with wabt and wasmtime."""
 
+from dataclasses import replace
 from typing import get_args
 
 from hypothesis import given
@@ -11,19 +12,40 @@ from wasm_strategies import CATALOGUE, invalid_modules, valid_modules
 from fpl.asm.wasm.instr import (
     Binop,
     Block,
+    Br,
     BrTable,
     CallIndirect,
     Const,
     Drop,
     GlobalGet,
+    GlobalSet,
+    If,
     Instr,
+    Load,
+    LocalGet,
+    LocalSet,
+    LocalTee,
     MemArg,
+    MemorySize,
+    Nop,
+    ReturnCall,
     ReturnCallIndirect,
     Select,
     Store,
     Unreachable,
 )
-from fpl.asm.wasm.module import Func, Global, GlobalImport, Import, Mem, Module, Table
+from fpl.asm.wasm.module import (
+    Data,
+    Elem,
+    Export,
+    Func,
+    Global,
+    GlobalImport,
+    Import,
+    Mem,
+    Module,
+    Table,
+)
 from fpl.asm.wasm.text import print_module
 from fpl.asm.wasm.types import FuncType, GlobalType, Limits, MemType, TableType, TypeUse, ValType
 from fpl.asm.wasm.valid import Invalid, InvalidKind, check
@@ -84,9 +106,61 @@ SPEC_ONLY: list[tuple[Module, Invalid | None]] = [
 """Fixed cases where wabt 1.0.41 leaves Release 3.0 (HOLES.md oracle-feature-set), or whose
 numbers do not print as a table's u32 limits."""
 
+EMPTY = FuncType((), ())
+UNARY = FuncType(("i32",), ("i32",))
+ONE = Module(types=(EMPTY,), funcs=(Func(0, (), ()),))
+MEMORY = (Mem(MemType(Limits(1, None))),)
+TABLES = (Table(TableType(Limits(1, None))),)
+FIXED = Import("a", "b", GlobalImport(GlobalType(False, "i32")))
+
+SITES: list[tuple[Module, Invalid | None]] = [
+    (func_of((), ZERO, Load("i32", MemArg(2, 0), None), Drop()), Invalid("memory", (0, 1))),
+    (
+        replace(func_of((), ZERO, Load("i64", MemArg(1, 0), (8, "u")), Drop()), mems=MEMORY),
+        Invalid("align", (0, 1)),
+    ),
+    (replace(func_of(("i64",), GlobalGet(0)), imports=(IMPORTED,)), Invalid("mismatch", (0,))),
+    (replace(func_of(("i64",), MemorySize()), mems=MEMORY), Invalid("mismatch", (0,))),
+    (replace(func_of((), ZERO, GlobalSet(0)), imports=(FIXED,)), Invalid("immutable", (0, 1))),
+    (func_of((), ZERO, GlobalSet(0)), Invalid("global", (0, 1))),
+    (func_of((), LocalGet(0), Drop()), Invalid("local", (0, 0))),
+    (func_of((), ZERO, LocalSet(0)), Invalid("local", (0, 1))),
+    (func_of((), ZERO, LocalTee(0), Drop()), Invalid("local", (0, 1))),
+    (func_of((), ReturnCall(1)), Invalid("func", (0, 0))),
+    (
+        replace(func_of((), ZERO, CallIndirect(0, TypeUse(1))), tables=TABLES),
+        Invalid("type", (0, 1)),
+    ),
+    (func_of((), Br(1)), Invalid("label", (0, 0))),
+    (func_of((), ZERO), Invalid("leftover", (0,))),
+    (
+        func_of((), Block("i32", (Block(None, (ZERO, ZERO, BrTable((1,), 0))), ZERO)), Drop()),
+        Invalid("br-table-arity", (0, 0, 0, 2)),
+    ),
+    (func_of((), ZERO, If(None, (Nop(),), (Nop(), Drop()))), Invalid("underflow", (0, 1, 2))),
+    (replace(func_of((), ZERO, ZERO, If(TypeUse(1), (), ()), Drop()), types=(EMPTY, UNARY)), None),
+    (Module(globals=(Global(I32, (LocalGet(0),)),)), Invalid("const", (0, 0))),
+    (Module(datas=(Data((ZERO,), b""),)), Invalid("memory", (0,))),
+    (Module(mems=MEMORY, datas=(Data((WIDE,), b""),)), Invalid("mismatch", (0,))),
+    (Module(imports=(FIXED,), mems=MEMORY, datas=(Data((GlobalGet(0),), b""),)), None),
+    (replace(ONE, elems=(Elem(0, (ZERO,), (0,)),)), Invalid("table", (0,))),
+    (replace(ONE, tables=TABLES, elems=(Elem(0, (ZERO,), (1,)),)), Invalid("func", (0,))),
+    (replace(ONE, tables=TABLES, elems=(Elem(0, (WIDE,), (0,)),)), Invalid("mismatch", (0,))),
+    (replace(ONE, exports=(Export("f", "func", 1),)), Invalid("func", (0,))),
+    (
+        replace(ONE, exports=(Export("f", "func", 0), Export("f", "func", 0))),
+        Invalid("export-name", (1,)),
+    ),
+    (replace(ONE, start=1), Invalid("func", ())),
+    (Module(types=(EMPTY,), funcs=(Func(1, (), ()),)), Invalid("type", (0,))),
+]
+"""One fixed case per refusal site whose kind and place no property pins: memory accesses,
+the index spaces, `leftover`, `br-table-arity`, a typed `if`, an error in an `else` arm, and
+the data, element, export and start fields."""
+
 
 def test_the_checker_decides_the_fixed_cases_as_the_spec_does() -> None:
-    for module, verdict in AGREED + SPEC_ONLY:
+    for module, verdict in AGREED + SPEC_ONLY + SITES:
         assert check(module) == verdict, print_module(module)
 
 
