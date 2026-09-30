@@ -56,6 +56,9 @@ def test_a_scan_then_a_fold_counts_the_leading_run() -> None:
         ("⟨⟩ [+] scan\n", "⟨⟩\n"),
         ("⟨ [1] [2] ⟩ [,] fold\n", "[ 1 | 2 ]\n"),
         ("1 2 [+] fold\n", "3\n"),
+        ("!\n\t3 dup times\n", "9\n"),
+        ("swap-args\n\t5\n\t2\n\t-\n", "-3\n"),
+        ("f : xs -- ys\n\teach\n\t\t2 times\n1 2 3 f\n", "2 4 6\n"),
     ],
 )
 def test_control_words_run_the_quotations_they_take(source: str, printed: str) -> None:
@@ -63,7 +66,8 @@ def test_control_words_run_the_quotations_they_take(source: str, printed: str) -
     branches (combined draft row 14: if : c t e --); swap-args runs q on the two values below
     it swapped; repeat runs q n times, its block giving q (draft1 shortest-paths, draft2 take);
     each maps, scan and fold thread a state, each step on a fresh stack, a strand staying one
-    while every result is a number or a string."""
+    while every result is a number or a string; a child giving the quotation fills a thunk slot,
+    so it is pushed, not run (S49 rule 5)."""
     assert run(source) == printed
 
 
