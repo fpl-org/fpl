@@ -2,7 +2,8 @@
 
 import platform
 import subprocess
-from functools import cache
+from dataclasses import replace
+from functools import cache, partial
 from pathlib import Path
 
 import pytest
@@ -23,18 +24,31 @@ from aarch64_oracle import (
 )
 from aarch64_strategies import (
     Drawn,
+    add_sub_imm,
     excluded,
     far_branches,
     instructions,
     invalid_programs,
+    load_store,
     programs,
+    rewrites_offset,
     witnesses,
 )
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
-from fpl.asm.aarch64.check import check
-from fpl.asm.aarch64.model import Program
+from fpl.asm.aarch64.check import Kind, check
+from fpl.asm.aarch64.model import (
+    AddSubImm,
+    Instr,
+    LoadStore,
+    Offset,
+    OpAddSub,
+    OpLoadStore,
+    Program,
+    Reg,
+    Width,
+)
 from fpl.asm.aarch64.text import print_program
 
 DARWIN = (
@@ -179,3 +193,67 @@ def test_the_checker_accepts_exactly_what_llvm_mc_assembles(
     tools = toolchain(tmp_path_factory, worker_id)
     found = verdict(tools, print_program(drawn.program), tmp_path_factory.mktemp("program"))
     assert (check(drawn.program) == ()) == (found.code == 0), found.said
+
+
+@st.composite
+def rewrites(draw: st.DrawFn) -> Instr:
+    """An instruction in exactly the silent-rewrite sets of design section 4."""
+    if draw(st.booleans()):
+        imms = st.one_of(
+            st.integers(1, 4095).map(lambda k: 4096 * k),
+            st.integers(-4095, -1),
+            st.integers(1, 4095).map(lambda k: -4096 * k),
+        )
+        return replace(draw(add_sub_imm("sp")), imm=draw(imms), lsl12=False)
+    i = draw(load_store().filter(lambda i: isinstance(i.addr, Offset)))
+    imm = draw(st.integers(-256, 255).filter(partial(rewrites_offset, size=i.op.size)))
+    return LoadStore(i.op, i.rt, Offset(i.addr.rn, imm))
+
+
+def add(imm: int) -> AddSubImm:
+    """`add x1, x2, #imm`."""
+    return AddSubImm(OpAddSub.ADD, Width.W64, Reg.X1, Reg.X2, imm, lsl12=False)
+
+
+def ldr(op: OpLoadStore, imm: int) -> LoadStore:
+    """`op x1, [x2, #imm]` (w1 for the byte loads)."""
+    return LoadStore(op, Reg.X1, Offset(Reg.X2, imm))
+
+
+@settings(backend="hypothesis")
+@example(instr=add(4096))
+@example(instr=add(-1))
+@example(instr=ldr(OpLoadStore.LDR_X, 3))
+@example(instr=ldr(OpLoadStore.LDR_X, -8))
+@given(instr=rewrites())
+def test_llvm_mc_rewrites_what_the_checker_refuses(
+    tmp_path_factory: pytest.TempPathFactory, worker_id: str, instr: Instr
+) -> None:
+    """[law: no-silent-rewrite] For AddSubImm with imm = 4096 k (1 <= k <= 4095), imm in
+    [-4095, -1] or imm = -4096 k, and unsigned offsets in [-256, 255] negative or not a
+    multiple of the size, check reports IMM12 or OFFSET, llvm-mc exits 0, and the disassembly
+    differs from the printed line."""
+    assert {p.kind for p in check((instr,))} & {Kind.IMM12, Kind.OFFSET}
+    tools = toolchain(tmp_path_factory, worker_id)
+    text = print_program((instr,))
+    assert disassemble(tools, text, tmp_path_factory.mktemp("rewrite")) != text.splitlines()
+
+
+@pytest.mark.parametrize(
+    ("instr", "refused"),
+    [
+        (add(4097), True),
+        (ldr(OpLoadStore.LDR_X, 257), True),
+        (ldr(OpLoadStore.LDRB, 4096), True),
+        (add(4095), False),
+        (ldr(OpLoadStore.LDR_X, 8 * 4095), False),
+        (ldr(OpLoadStore.LDRB, 4095), False),
+    ],
+)
+def test_past_the_rewrite_sets_both_refuse_and_at_the_boundaries_neither(
+    tmp_path_factory: pytest.TempPathFactory, worker_id: str, instr: Instr, refused: bool
+) -> None:
+    tools = toolchain(tmp_path_factory, worker_id)
+    found = verdict(tools, print_program((instr,)), tmp_path_factory.mktemp("edge"))
+    assert found.lines == ({1} if refused else set()), found.said
+    assert (check((instr,)) != ()) == refused
