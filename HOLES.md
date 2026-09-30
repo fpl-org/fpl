@@ -259,7 +259,7 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Depends on it: claim D3.4
 - Default in force: each effect line is kept as declared data (fpl/ast_core.py Effect, on Define; EFFECTS for builtins); the query words/*/effect is not implemented
 - Closes by: the part that implements directories and paths
-- Evidence: claim D3.4 (features/draft3/examples/draft3.fpl)
+- Evidence: claim D3.4 (features/draft3/examples/paths.fpl)
 
 ## stack-claims-deferred
 - Depends on it: claims D1.6, D1.9, D1.10, D2.8, D2.9, D2.10, D2.14, D2.15, D2.16 (part 02-stack)
