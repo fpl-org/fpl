@@ -1,7 +1,7 @@
 """Oracle tests on the machine itself: natively on Darwin, under qemu-aarch64 on Linux."""
 
 import pytest
-from aarch64_frame import RECORD, frame, records
+from aarch64_frame import RECORD, Block, frame, records
 from aarch64_oracle import assemble, execute, link, toolchain
 from hypothesis import given
 from hypothesis import strategies as st
@@ -26,7 +26,7 @@ def test_native_smoke(
     text = print_program(block)
     assert text == "\tmov\tx0, #6\n\tmov\tx1, #7\n\tmul\tx0, x0, x1\n"
     work = tmp_path_factory.mktemp("smoke")
-    built = assemble(tools, frame(tools.system, [text]), work)
+    built = assemble(tools, frame(tools.system, [Block((0,) * 31, 0, block)]), work)
     assert built.returncode == 0, built.stderr.decode()
     linked = link(tools, work)
     assert linked.returncode == 0, linked.stderr.decode()
@@ -35,4 +35,4 @@ def test_native_smoke(
     assert len(done.stdout) == RECORD
     (record,) = records(done, 1)
     assert (record.regs[0], record.regs[1], record.index) == (42, 7, 0)
-    assert record.nzcv == 0  # the frame clears NZCV and neither mov nor mul sets it
+    assert record.nzcv == 0  # the frame sets NZCV to 0 and neither mov nor mul sets it
