@@ -222,3 +222,68 @@ def test_labels() -> None:
         (None, Kind.UNDEFINED_LABEL),
     ]
     assert check(program)[-1] == Problem(None, Kind.UNDEFINED_LABEL, "bad")
+    assert [p.detail for p in check(program)] == [
+        ".L0",
+        "L1",
+        "#64 is not in [0, 63]",
+        "bad",
+        ".Lnowhere",
+        "bad",
+    ]
+
+
+m = model
+FAR = (m.TestBranch(OpTestBranch.TBZ, X1, 0, Label(".Lfar")), *[m.Nop()] * 8192, Label(".Lfar"))
+
+
+@pytest.mark.parametrize(
+    ("program", "found"),
+    [
+        ((m.AddSubImm(OpAddSub.ADD, W64, X1, X2, 4096, lsl12=False),), "#4096 is not in [0, 4095]"),
+        ((m.AddSubExtended(OpAddSub.ADD, W64, X1, X2, X3, Extend.UXTB, 5),), "#5 is not in [0, 4]"),
+        ((m.AddSubShifted(OpAddSub.ADD, W32, X1, X2, X3, Shift.ASR, 32),), "asr #32 at 32 bits"),
+        ((m.LogicalShifted(OpLogical.ORR, W64, X1, X2, X3, Shift.ROR, 64),), "#64 at 64 bits"),
+        (
+            (m.LogicalImm(OpLogicalImm.AND, W32, X1, X2, 0xFFFFFFFF),),
+            "0xffffffff is no logical immediate at 32 bits",
+        ),
+        ((m.MoveWide(OpMoveWide.MOVZ, W32, X1, 1, 2),), "#1, hw 2 at 32 bits"),
+        ((m.Bitfield(OpBitfield.UBFM, W32, X1, X2, 32, 0),), "#32, #0 at 32 bits"),
+        ((m.Extract(W32, X1, X2, X3, 32),), "#32 at 32 bits"),
+        (
+            (m.TestBranch(OpTestBranch.TBZ, X1, 64, Label(".L0")), Label(".L0")),
+            "#64 is not in [0, 63]",
+        ),
+        (
+            (m.CondCompareReg(OpCondCompare.CCMP, W64, X1, X2, 16, Cond.EQ),),
+            "nzcv #16 is not in [0, 15]",
+        ),
+        (
+            (m.CondCompareImm(OpCondCompare.CCMN, W64, X1, 32, 0, Cond.EQ),),
+            "#32, #0 out of [0, 31], [0, 15]",
+        ),
+        ((m.DataProc1(OpDataProc1.REV32, W32, X1, X2),), "rev32 is 64-bit only"),
+        ((m.DataProc1(OpDataProc1.REV, W32, X1, SP),), "rn is sp"),
+        ((load(Offset(X2, 4)),), "#4 is not 8 times [0, 4095]"),
+        ((load(PreIndex(X2, 256)),), "#256 is not in [-256, 255]"),
+        ((load(PreIndex(X2, 255)),), None),
+        ((load(PreIndex(X1, 8)),), "writeback base is rt"),
+        ((load(m.RegOffset(X2, X3, Extend.UXTB, s=False)),), "uxtb is no index option"),
+        (
+            (m.LoadStoreUnscaled(m.OpLoadStoreUnscaled.STUR_X, X1, X2, -257),),
+            "#-257 is not in [-256, 255]",
+        ),
+        ((m.LoadStoreUnscaled(m.OpLoadStoreUnscaled.STUR_X, X1, X2, -256),), None),
+        ((m.Pair(m.OpPair.LDPSW, W32, X1, X2, X3, 0, m.Mode.OFFSET),), "ldpsw is 64-bit"),
+        ((m.Pair(m.OpPair.LDP, W64, X1, X2, X3, -65 * 8, m.Mode.OFFSET),), "#-520 is not imm7"),
+        ((m.Pair(m.OpPair.LDP, W64, X1, X2, X3, -64 * 8, m.Mode.OFFSET),), None),
+        ((m.Pair(m.OpPair.LDP, W64, X1, X1, X3, 0, m.Mode.OFFSET),), "writeback base or rt2 is rt"),
+        ((Label("L1"),), "L1"),
+        ((Label(".L1"), Label(".L1")), ".L1"),
+        (FAR, "32772 bytes"),
+    ],
+)
+def test_each_problem_says_what_it_found(program: Program, found: str | None) -> None:
+    """The detail a problem carries names the field's value against its range (or the label,
+    or the offset), one problem per program here; an in-range boundary value has none."""
+    assert [p.detail for p in check(program)] == ([] if found is None else [found])
