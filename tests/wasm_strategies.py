@@ -9,6 +9,12 @@ The valid strategy (`valid_modules`) is typed by construction (design section 7)
 module's context first (types with deliberate duplicates, imports unless `closed`, globals, at
 most one memory, tables, function signatures), then each body against it, so every module it
 draws is one every validator must accept.
+
+The invalid strategy (`invalid_modules`) applies one mutation of `CATALOGUE`, one per
+`InvalidKind`, to a drawn valid module. Most open one function's body with a probe block typed
+[] -> [] that breaks exactly one rule; the rest append one bad module field. A valid body stays
+valid behind such a block, and appended fields shift no index, so the mutation's error is the
+only one, and a mutation applies to every module: none needs `assume`.
 """
 
 import contextlib
@@ -88,6 +94,7 @@ from fpl.asm.wasm.types import (
     TypeUse,
     ValType,
 )
+from fpl.asm.wasm.valid import InvalidKind
 
 numtypes = st.sampled_from(get_args(NumType))
 valtypes = st.lists(numtypes, max_size=3).map(tuple)
@@ -794,3 +801,140 @@ def valid_modules(draw: st.DrawFn, closed: bool = False) -> Module:
         start=None if closed else draw(_start(context)),
         exports=draw(_exports(context)),
     )
+
+
+ProbeBuilder = Callable[[Module, Func], tuple[Module, tuple[Instr, ...]]]
+Mutation = Callable[[st.DrawFn, Module], Module]
+
+
+def _probing(build: ProbeBuilder) -> Mutation:
+    """The mutation opening one drawn function's body with `block probe end`, where `build`
+    gives the probe and the module it needs; a module with no function first gets
+    `func (type 0) unreachable`, valid at any type."""
+
+    def mutate(draw: st.DrawFn, module: Module) -> Module:
+        if not module.funcs:
+            module = replace(module, funcs=(Func(0, (), (Unreachable(),)),))
+        k = draw(st.integers(0, len(module.funcs) - 1))
+        func = module.funcs[k]
+        module, probe = build(module, func)
+        opened = replace(func, body=(Block(None, probe), *func.body))
+        return replace(module, funcs=(*module.funcs[:k], opened, *module.funcs[k + 1 :]))
+
+    return mutate
+
+
+def _fixed(probe: tuple[Instr, ...]) -> Mutation:
+    """The mutation opening a body with `probe`, which needs nothing of the module."""
+    return _probing(lambda module, _func: (module, probe))
+
+
+def _with_func(module: Module, results: Stack) -> tuple[Module, int]:
+    """`module` with a function of a new type [] -> results appended, its body `unreachable`,
+    and that function's index."""
+    index = len(context_of(module).funcs)
+    types = (*module.types, FuncType((), results))
+    func = Func(len(module.types), (), (Unreachable(),))
+    return replace(module, types=types, funcs=(*module.funcs, func)), index
+
+
+def _bad_local(module: Module, func: Func) -> tuple[Module, tuple[Instr, ...]]:
+    count = len(module.types[func.type].params) + len(func.locals)
+    return module, (LocalGet(count), Drop())
+
+
+def _bad_global(module: Module, _func: Func) -> tuple[Module, tuple[Instr, ...]]:
+    return module, (GlobalGet(len(context_of(module).globals)), Drop())
+
+
+def _bad_func(module: Module, _func: Func) -> tuple[Module, tuple[Instr, ...]]:
+    return module, (Call(len(context_of(module).funcs)),)
+
+
+def _bad_table(module: Module, _func: Func) -> tuple[Module, tuple[Instr, ...]]:
+    return module, (Const("i32", 0), CallIndirect(context_of(module).tables, TypeUse(0)))
+
+
+def _no_memory(module: Module, _func: Func) -> tuple[Module, tuple[Instr, ...]]:
+    """The module without its memory, defined or imported, and a probe that needs one."""
+    imports = tuple(i for i in module.imports if not isinstance(i.desc, MemImport))
+    return replace(module, imports=imports, mems=()), (MemorySize(), Drop())
+
+
+def _immutable(module: Module, _func: Func) -> tuple[Module, tuple[Instr, ...]]:
+    """An immutable global appended, and a probe setting it."""
+    index = len(context_of(module).globals)
+    fixed = Global(GlobalType(False, "i32"), (Const("i32", 0),))
+    return replace(module, globals=(*module.globals, fixed)), (Const("i32", 0), GlobalSet(index))
+
+
+def _overaligned(module: Module, _func: Func) -> tuple[Module, tuple[Instr, ...]]:
+    """A memory if there is none, and an i32.load aligned to 2**3 bytes, past its natural 2**2."""
+    memory = () if context_of(module).memory else (Mem(MemType(Limits(1, None))),)
+    load = Load("i32", MemArg(3, 0), None)
+    return replace(module, mems=(*module.mems, *memory)), (Const("i32", 0), load, Drop())
+
+
+def _tail_result(module: Module, func: Func) -> tuple[Module, tuple[Instr, ...]]:
+    """A callee returning one value more than `func`, and a probe tail-calling it."""
+    module, callee = _with_func(module, (*module.types[func.type].results, "i32"))
+    return module, (ReturnCall(callee),)
+
+
+def _bad_type(_draw: st.DrawFn, module: Module) -> Module:
+    """A function of a type index one past the types appended: wabt 1.0.41 accepts a block type
+    index out of range (HOLES.md oracle-feature-set), so the catalogue raises a function's."""
+    return replace(module, funcs=(*module.funcs, Func(len(module.types), (), ())))
+
+
+def _not_constant(_draw: st.DrawFn, module: Module) -> Module:
+    fixed = Global(GlobalType(False, "i32"), (LocalGet(0),))
+    return replace(module, globals=(*module.globals, fixed))
+
+
+def _bad_start(_draw: st.DrawFn, module: Module) -> Module:
+    module, index = _with_func(module, ("i32",))
+    return replace(module, start=index)
+
+
+def _twice_exported(draw: st.DrawFn, module: Module) -> Module:
+    module, index = _with_func(module, ())
+    twice = (Export(draw(names), "func", index),) * 2
+    return replace(module, exports=(*module.exports, *twice))
+
+
+def _bad_limits(_draw: st.DrawFn, module: Module) -> Module:
+    return replace(module, tables=(*module.tables, Table(TableType(Limits(1, 0)))))
+
+
+_ARITIES = (Block("i32", (Const("i32", 0), Const("i32", 0), BrTable((0,), 1))), Drop())
+"""A br_table to its own block (one result) and, by default, the probe block (none)."""
+
+CATALOGUE: dict[InvalidKind, Mutation] = {
+    "mismatch": _fixed((Const("i64", 0), Unop("i32", "clz"), Drop())),
+    "underflow": _fixed((Drop(),)),
+    "leftover": _fixed((Const("i32", 0),)),
+    "label": _fixed((Br(2),)),
+    "br-table-arity": _fixed(_ARITIES),
+    "local": _probing(_bad_local),
+    "global": _probing(_bad_global),
+    "func": _probing(_bad_func),
+    "type": _bad_type,
+    "table": _probing(_bad_table),
+    "memory": _probing(_no_memory),
+    "immutable": _probing(_immutable),
+    "align": _probing(_overaligned),
+    "tail-result": _probing(_tail_result),
+    "const": _not_constant,
+    "start": _bad_start,
+    "export-name": _twice_exported,
+    "limits": _bad_limits,
+}
+"""The mutation of each invalid kind: it turns any valid module into one of exactly that kind."""
+
+
+@st.composite
+def invalid_modules(draw: st.DrawFn) -> tuple[InvalidKind, Module]:
+    """A drawn kind, and a drawn valid module that kind's mutation made invalid."""
+    kind: InvalidKind = draw(st.sampled_from(get_args(InvalidKind)))
+    return kind, CATALOGUE[kind](draw, draw(st.booleans().flatmap(valid_modules)))
