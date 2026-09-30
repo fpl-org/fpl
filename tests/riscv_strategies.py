@@ -14,6 +14,7 @@ from collections import defaultdict
 from dataclasses import dataclass, replace
 
 from hypothesis import strategies as st
+from riscv_virt import Block
 
 from fpl.asm.riscv.check import Kind
 from fpl.asm.riscv.model import (
@@ -56,31 +57,46 @@ imm12 = between(-2048, 2047)
 labels = st.from_regex(r"\.L[A-Za-z0-9_]+", fullmatch=True).map(Label)
 
 
-def shift(op: OpShift) -> st.SearchStrategy[Shift]:
-    """`op` with an amount of 5 bits for the W forms, 6 bits otherwise."""
-    return st.builds(Shift, st.just(op), regs, regs, between(0, 31 if op.endswith("w") else 63))
+# One strategy per instruction class.
+type Table = dict[type[Instr], st.SearchStrategy[Instr]]
 
 
-FORMS: dict[type[Instr], st.SearchStrategy[Instr]] = {
-    R: st.builds(R, st.sampled_from(OpR), regs, regs, regs),
-    I: st.builds(I, st.sampled_from(OpI), regs, regs, imm12),
-    Shift: st.sampled_from(OpShift).flatmap(shift),
-    Upper: st.builds(Upper, st.sampled_from(OpUpper), regs, between(0, (1 << 20) - 1)),
-    Load: st.builds(Load, st.sampled_from(OpLoad), regs, regs, imm12),
-    Store: st.builds(Store, st.sampled_from(OpStore), regs, regs, imm12),
-    Branch: st.builds(Branch, st.sampled_from(OpBranch), regs, regs, labels),
-    Jal: st.builds(Jal, regs, labels),
-    Jalr: st.builds(Jalr, regs, regs, imm12),
-    Fence: st.builds(
-        Fence, st.builds(Access, st.integers(0, 15)), st.builds(Access, st.integers(0, 15))
-    ),
-    Bare: st.builds(Bare, st.sampled_from(OpBare)),
-}
+def forms(regs: st.SearchStrategy[Reg]) -> Table:
+    """One strategy per class, every register operand drawn from `regs`.
+
+    A shift amount has 5 bits for the W forms, 6 bits otherwise.
+    """
+
+    def shift(op: OpShift) -> st.SearchStrategy[Shift]:
+        high = 31 if op.endswith("w") else 63
+        return st.builds(Shift, st.just(op), regs, regs, between(0, high))
+
+    return {
+        R: st.builds(R, st.sampled_from(OpR), regs, regs, regs),
+        I: st.builds(I, st.sampled_from(OpI), regs, regs, imm12),
+        Shift: st.sampled_from(OpShift).flatmap(shift),
+        Upper: st.builds(Upper, st.sampled_from(OpUpper), regs, between(0, (1 << 20) - 1)),
+        Load: st.builds(Load, st.sampled_from(OpLoad), regs, regs, imm12),
+        Store: st.builds(Store, st.sampled_from(OpStore), regs, regs, imm12),
+        Branch: st.builds(Branch, st.sampled_from(OpBranch), regs, regs, labels),
+        Jal: st.builds(Jal, regs, labels),
+        Jalr: st.builds(Jalr, regs, regs, imm12),
+        Fence: st.builds(
+            Fence, st.builds(Access, st.integers(0, 15)), st.builds(Access, st.integers(0, 15))
+        ),
+        Bare: st.builds(Bare, st.sampled_from(OpBare)),
+    }
 
 
-def instructions(*forms: type[Instr]) -> st.SearchStrategy[Instr]:
-    """One valid instruction of one of `forms`, every class when none is named."""
-    return st.one_of(*(FORMS[form] for form in forms or CLASSES))
+FORMS = forms(regs)
+# The registers a block run in the QEMU virt frame may name: not x3 (the window, unit 6) and
+# not x4 (the frame's record), neither read nor written (hole `harness-registers`).
+FRAME_FORMS = forms(st.sampled_from(tuple(reg for reg in Reg if reg not in {Reg.X3, Reg.X4})))
+
+
+def instructions(*classes: type[Instr], table: Table = FORMS) -> st.SearchStrategy[Instr]:
+    """One valid instruction of one of `classes` from `table`, every class when none is named."""
+    return st.one_of(*(table[form] for form in classes or CLASSES))
 
 
 # The forms that fall through to the next instruction and touch no memory.
@@ -88,14 +104,14 @@ STRAIGHT: tuple[type[Instr], ...] = (R, I, Shift, Upper, Fence)
 
 
 @st.composite
-def forward_branching(draw: st.DrawFn, n: int) -> Program:
+def forward_branching(draw: st.DrawFn, n: int, table: Table = FORMS) -> Program:
     """One to `n` instructions, straight-line or `Branch`/`Jal`, each jump to a later label.
 
     The jump at instruction index i targets its own label `.L<i>`, defined before a drawn
     instruction index in `(i, count]` (`count` puts it after the last instruction), so labels
     are unique in the block and every run moves forward and falls off the end.
     """
-    body = draw(st.lists(instructions(*STRAIGHT, Branch, Jal), min_size=1, max_size=n))
+    body = draw(st.lists(instructions(*STRAIGHT, Branch, Jal, table=table), min_size=1, max_size=n))
     defined: defaultdict[int, list[Item]] = defaultdict(list)
     for index, instr in enumerate(body):
         if isinstance(instr, Branch | Jal):
@@ -223,3 +239,14 @@ def far_jumps() -> st.SearchStrategy[Program]:
     return st.sampled_from(REACH).flatmap(
         lambda reach: JUMPS[reach[0]].map(lambda jump: padded(jump, reach[1]))
     )
+
+
+# The register values the spec's edges are made of, drawn on purpose besides uniform ones.
+EDGES = (0, 1, 2, (1 << 64) - 1, 1 << 63, (1 << 63) - 1, 1 << 31, (1 << 31) - 1, (1 << 32) - 1)
+u64s = st.one_of(st.sampled_from((*EDGES, 0xFFFF_FFFF_8000_0000)), between(0, (1 << 64) - 1))
+
+
+def blocks(k: int, programs: st.SearchStrategy[Program]) -> st.SearchStrategy[list[Block]]:
+    """One to `k` blocks for one boot, each a program of `programs` and 31 values for x1..x31."""
+    values = st.lists(u64s, min_size=31, max_size=31).map(tuple)
+    return st.lists(st.builds(Block, values, programs), min_size=1, max_size=k)
