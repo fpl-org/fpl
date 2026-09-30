@@ -35,3 +35,9 @@
 - Default in force: the printed form is llvm-objdump 21.1.8's default disassembly (aliases, --no-print-imm-hex) of -triple=aarch64-linux-gnu objects, and it must assemble with llvm-mc 21.1.8 to the same bytes
 - Closes by: PSJ or palimpsest, adopting the Arm ARM's assembler syntax (C1.2) with GNU as as a second oracle
 - Evidence: C1.4; design.md section 3; probe: 159 forms over all 105 pages, default text reassembled to identical bytes, -M no-aliases changed 8
+
+## sp-unobserved
+- Depends on it: fpl/asm/aarch64/eval.py (step), tests/test_aarch64_eval.py (test_unmodelled), tests/aarch64_strategies.py (straight_line, forward_branching never draw sp)
+- Default in force: forms that read or write sp are checked by the text and checker laws only; the evaluator has no sp and returns Unmodelled for any instruction with sp in a register slot (found by check.slots), and no run observes sp
+- Closes by: E or H0, when a frame gives blocks a stack of their own
+- Evidence: design.md sections 5 and 8; fpl/asm/aarch64/eval.py:657; probe: the frame's sp is ASLR'd per run, and blocks must not move it (records are sp-relative)
