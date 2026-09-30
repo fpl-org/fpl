@@ -186,13 +186,30 @@ class Effect:
 @dataclass(frozen=True)
 class Define:
     """name : ins -- outs, the code of the block under it, its docstring ("" for none), and where
-    its effect line is."""
+    its effect line is; and the clause it is of a dispatched word: () for a word not
+    dispatched, (n,) for the dispatcher of its arity-n clauses, whose words `clauses` lists in
+    written order, and (n, i) for its i-th clause of arity n."""
 
     name: str
     effect: Effect
     code: tuple[Node, ...]
     doc: str = ""
     span: Span = field(compare=False, default=Span(1, 1))
+    clause: tuple[int, ...] = ()
+    clauses: tuple[str, ...] = ()
+
+    @property
+    def word(self) -> str:
+        """What calls it and what its queries hang under: the name, then the clause."""
+        return "/".join((self.name, *map(str, self.clause)))
+
+    @property
+    def paths(self) -> tuple[str, ...]:
+        """The name, then each longer prefix of the word, the word last."""
+        return tuple(
+            "/".join((self.name, *map(str, self.clause[:end])))
+            for end in range(len(self.clause) + 1)
+        )
 
 
 @dataclass(frozen=True)
