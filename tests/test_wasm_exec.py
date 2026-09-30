@@ -240,12 +240,14 @@ def test_a_tail_call_loop_runs_past_the_depth_limit() -> None:
     assert invoke(instance, 0, (10 * DEPTH,), 10**5) == Values((9,))
 
 
-def test_unbounded_recursion_in_nested_blocks_is_exhausted() -> None:
-    body: tuple[Instr, ...] = (Call(0),)
-    for _ in range(4):
-        body = (Block(None, body),)
-    instance = started(main((*body, i32(0))))
-    assert invoke(instance, 0, (), 10**6) == Exhausted()
+def test_unbounded_recursion_is_exhausted() -> None:
+    """A function that calls itself with no fuel guard stops at `DEPTH` active calls.
+
+    No block wraps the call: each one costs Python frames per call, and under mutmut's
+    trampoline one block already needs about 1000 of them at `DEPTH` (HOLES.md
+    python-stack-bound).
+    """
+    assert invoke(started(main((Call(0),))), 0, (), 10**6) == Exhausted()
 
 
 def test_a_run_past_its_budget_is_out_of_steps() -> None:
