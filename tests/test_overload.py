@@ -14,15 +14,19 @@ from fpl.ast_core import (
     Call,
     Define,
     Effect,
+    Equal,
     Guarded,
+    Inverse,
     Listed,
     Match,
     Node,
+    Pattern,
     Push,
     Quotation,
     Refuse,
     Row,
     Run,
+    Statement,
     Strand,
     Value,
     Var,
@@ -33,7 +37,18 @@ from fpl.driver import checked, run
 from fpl.errors import FailError, FplError, Span
 from fpl.eval import BUILTINS, effect_line, evaluate
 from fpl.parse import parse
-from fpl.types import Arrow, Kind, elaborate, reported
+from fpl.types import (
+    Arrow,
+    Dispatch,
+    Kind,
+    Typing,
+    Verdict,
+    chosen,
+    elaborate,
+    reported,
+    sort,
+    verdict,
+)
 
 TYPES = ("Int", "Decimal", "Text", "Symbol")
 ATOMS = [
@@ -896,12 +911,169 @@ def goal(source: str) -> str:
     return reported(met).split(" ? : ")[1]
 
 
-PINNED = [(FG, "“a” f ?"), (FG, "5 f ?"), (FG, "5 g ?"), (TEXT_FIRST, "“a” f ?")]
+LONE_INT = "f : x: Int -- y\n\t1 +\n"
+WITNESS = (
+    "p : x -- b\n\tdrop 1\nq : x -- b\n\tdrop 1\n"
+    "f : x: p  y  z: p -- o\n\tdrop drop drop 1\n"
+    "f : x: q  y: q  z -- o\n\tdrop drop drop “b”\n"
+    "f : x  y: Symbol  z: Symbol -- o\n\tdrop drop drop #c\n"
+)
+ONE_SYMBOL = ONE + "f : x: one -- y\n\t1 +\nf : x: Symbol -- y\n\tdrop #s\n"
+RESOLVED = [
+    (FG, "“a” f ?", "symbol --"),
+    (FG, "5 f ?", "number --"),
+    (FG, "5 g ?", "value --"),
+    (TEXT_FIRST, "“a” f ?", "value --"),
+    (TEXT_FIRST, "5 f ?", "number --"),
+    (WITNESS, "1 | #s | #s f ?", "value --"),
+    (LONE_INT + G, "5 g ?", "number --"),
+    (ONE_SYMBOL, "1 f ?", "number --"),
+    (ONE_SYMBOL, "“a” f ?", "value --"),
+]
 
 
-@given(st.sampled_from(PINNED))
-def test_a_dispatch_leaves_what_all_its_rows_agree_on(case: tuple[str, str]) -> None:
-    """Pinned before types resolves a dispatch: every row is joined, so a call whose clauses
-    leave different sorts leaves a value of no known sort."""
+@given(st.sampled_from(RESOLVED))
+def test_types_resolves_a_dispatch_where_one_clause_row_survives(
+    case: tuple[str, str, str],
+) -> None:
+    """[law: static-verdict] types prunes the rows in order, dropping sure misses and stopping
+    after the first sure fit, and resolves a call to a clause's arrow only when exactly one
+    row survives, it is real and no argument is an `Input`; a surviving synthetic row, an
+    `Input` argument and a maybe row whose clause refuses the sorts keep the dispatcher's. A
+    guarded row is never a sure fit, so TEXT_FIRST's `“a” f` keeps its catch-all row too."""
+    clauses, line, arrow = case
+    assert goal(clauses + line + "\n") == arrow
+
+
+@given(
+    st.sampled_from([(LONE_INT + G, "“a” g"), (FG, "#s f"), (FG, "#s g"), (ONE_SYMBOL, "“a” f")])
+)
+def test_a_call_types_leaves_unresolved_fails_at_run_time(case: tuple[str, str]) -> None:
+    """[law: static-verdict] a sure miss, an `Input` argument and a maybe row whose clause
+    refuses the sorts are never refused statically: the call is `no row matches` at run time."""
     clauses, line = case
-    assert goal(clauses + line + "\n") == "value --"
+    with pytest.raises(FailError, match=r"^ERROR: \d+:1 no row matches$"):
+        run(clauses + line + "\n")
+
+
+def test_the_witness_refuses_at_run_time() -> None:
+    """[law: static-verdict] the §3.6 witness's synthetic rows survive before its sure fit, so
+    the call is left to the dispatcher, which refuses it."""
+    with pytest.raises(FplError, match=r"ambiguous call to f: f/3/1 and f/3/2 both fit$"):
+        run(WITNESS + "1 | #s | #s f\n")
+
+
+@given(st.booleans())
+def test_a_redefined_type_word_gets_no_static_verdict(redefined: bool) -> None:
+    """[law: shadowed-verdict] a type word the program redefines gets no static verdict: its
+    rows are maybe, so `5 f` over an `Int` and a `Text` clause stays with the dispatcher."""
+    text = "Text : x -- b\n\tdrop 1\n" if redefined else ""
+    source = text + "f : x: Int -- y\n\tdrop #i\nf : x: Text -- y\n\tdrop “t”\n5 f ?\n"
+    assert goal(source) == ("value --" if redefined else "symbol --")
+
+
+CELLS = (Var("x"), Wild(), Equal(Push(1)), Inverse("pair", (Var("a"), Var("b")), Span(1, 1)))
+
+
+@given(st.sampled_from(CELLS), st.sampled_from([*TYPES, "one"]), st.sampled_from(list(Kind)))
+def test_a_guarded_row_is_never_a_sure_fit(inner: Pattern, test: str, have: Kind) -> None:
+    """[law: static-verdict] a row whose cell is a guard or an ascription, `( p ∈ w )` or
+    `x: w`, is never a sure fit, whatever its pattern, its word and the value's sort: at most
+    maybe, so pruning never stops at it and the rows after it stay (TEXT_FIRST's `“a” f`)."""
+    arrows = elaborate(desugar(parse(ONE)))[0]
+    row = Row((Guarded(inner, test, Span(1, 1)),), ())
+    assert verdict(row, (have,), arrows) is not Verdict.YES
+
+
+@given(st.sampled_from(CELLS[2:]), st.sampled_from(list(Kind)))
+def test_a_literal_or_a_constructor_only_may_fit(cell: Pattern, have: Kind) -> None:
+    """[law: static-verdict] types compares no values, so a literal or a constructor cell
+    neither surely fits nor surely misses a value of any sort."""
+    assert verdict(Row((cell,), ()), (have,), {}) is Verdict.MAYBE
+
+
+SORTED = {"1": Kind.NUMBER, "“a”": Kind.TEXT, "#s": Kind.SYMBOL}
+LEAVES = (Kind.NUMBER, Kind.TEXT, Kind.SYMBOL)
+AGREEING = st.integers(1, 2).flatmap(
+    lambda n: st.tuples(
+        st.lists(
+            st.tuples(*[st.sampled_from([None, "Int", "Text", "one"])] * n),
+            min_size=1,
+            max_size=3,
+            unique=True,
+        ),
+        st.tuples(*[st.sampled_from(list(SORTED))] * n),
+    )
+)
+
+
+def leaving(kind: Kind, n: int) -> str:
+    """A clause body over n inputs leaving one value of the kind; a number is its top input
+    plus one, which constrains that input."""
+    if kind is Kind.NUMBER:
+        return "1 +" + " swap drop" * (n - 1)
+    return " ".join(["drop"] * n + ["“b”" if kind is Kind.TEXT else "#c"])
+
+
+@given(AGREEING, st.booleans())
+def test_static_and_dynamic_dispatch_agree(
+    choice: tuple[list[Key], tuple[str, ...]], wrapped: bool
+) -> None:
+    """[law: static-dynamic] whenever types resolves a call to a clause, the run takes that
+    clause, or fails with `no row matches` only when that clause's row was a maybe; it never
+    takes another clause and never refuses; a wrapper's call on its own input is never
+    refused statically."""
+    keys, values = choice
+    names = "ab"[: len(values)]
+    clauses = ONE
+    for key, kind in zip(keys, LEAVES, strict=False):
+        head = "  ".join(f"{v}: {p}" if p else v for v, p in zip(names, key, strict=True))
+        clauses += f"f : {head} -- y\n\t{leaving(kind, len(values))}\n"
+    wrapper = f"w : {' '.join(names)} -- y\n\tf\n"
+    line = " | ".join(values) + (" w\n" if wrapped else " f\n")
+    if refused(keys):
+        with pytest.raises(FplError, match=" is ambiguous with "):
+            desugar(parse(clauses))
+        return
+    statements = desugar(parse(clauses + wrapper + line))
+    arrows = elaborate(statements[:-1])[0]
+    dispatch = arrows.get(f"f/{len(values)}")
+    if not isinstance(dispatch, Dispatch):
+        return
+    if wrapped:
+        elaborate(statements)
+        return
+    sorts = tuple(SORTED[v] for v in values)
+    got = chosen(Typing(sorts, {}, {}), dispatch, arrows)
+    taken = [(row, row.body[-1]) for row in dispatch.rows if clause_arrow(row, arrows) is got]
+    if not taken:
+        return
+    ((row, clause),) = taken
+    assert isinstance(clause, Call)
+    ordinal = int(clause.name.rsplit("/", 1)[1])
+    result = outcome(statements)
+    match result:
+        case FailError():
+            assert verdict(row, sorts, arrows) is Verdict.MAYBE
+        case FplError():
+            assert result.span.line == 4 + 2 * ordinal
+        case _:
+            assert sort(result) is LEAVES[ordinal - 1]
+
+
+def clause_arrow(row: Row, arrows: dict[str, Arrow]) -> Arrow | None:
+    """The arrow of the clause a dispatcher row calls; none for a refusing row."""
+    match row.body[-1]:
+        case Call(name=name):
+            return arrows[name]
+        case _:
+            return None
+
+
+def outcome(statements: tuple[Statement, ...]) -> Value | FplError:
+    """What the one run line leaves on top, or the error it raises."""
+    try:
+        (stack,) = evaluate(statements, None)
+    except FplError as error:
+        return error
+    return stack[-1]
