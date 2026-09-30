@@ -11,6 +11,7 @@ import pytest
 from aarch64_oracle import (
     LLVM,
     NAMES,
+    ORACLE,
     QEMU,
     SDK,
     ToolchainError,
@@ -39,7 +40,7 @@ from aarch64_strategies import (
     rewrites_offset,
     witnesses,
 )
-from hypothesis import example, given, settings
+from hypothesis import example, given
 from hypothesis import strategies as st
 
 from fpl.asm.aarch64.check import Kind, check
@@ -149,7 +150,7 @@ def test_no_nix_is_an_error_showing_the_command(tmp_path: Path) -> None:
     assert f"{missing} develop" in str(refused.value)
 
 
-@settings(backend="hypothesis")
+@ORACLE
 @given(program=st.lists(instructions(), min_size=1, max_size=48).map(tuple))
 def test_printed_text_is_what_llvm_objdump_prints(
     tmp_path_factory: pytest.TempPathFactory, worker_id: str, program: Program
@@ -176,7 +177,7 @@ agreeable = st.one_of(invalid_programs(), far_branches()).filter(
 )
 
 
-@settings(backend="hypothesis")
+@ORACLE
 @given(drawn=agreeable)
 def test_the_checker_and_llvm_mc_refuse_the_same_lines(
     tmp_path_factory: pytest.TempPathFactory, worker_id: str, drawn: Drawn
@@ -190,7 +191,7 @@ def test_the_checker_and_llvm_mc_refuse_the_same_lines(
     assert found.lines == lines, found.said
 
 
-@settings(backend="hypothesis")
+@ORACLE
 @given(drawn=st.one_of(programs().map(lambda p: Drawn(p, None, ())), agreeable))
 def test_the_checker_accepts_exactly_what_llvm_mc_assembles(
     tmp_path_factory: pytest.TempPathFactory, worker_id: str, drawn: Drawn
@@ -228,7 +229,7 @@ def ldr(op: OpLoadStore, imm: int) -> LoadStore:
     return LoadStore(op, Reg.X1, Offset(Reg.X2, imm))
 
 
-@settings(backend="hypothesis")
+@ORACLE
 @example(instr=add(4096))
 @example(instr=add(-1))
 @example(instr=ldr(OpLoadStore.LDR_X, 3))
@@ -280,7 +281,7 @@ def refusal(cell: tuple[OpPair, Width, object, str]) -> str:
     return "writeback base is also a " + ("source" if op is OpPair.STP else "destination")
 
 
-@settings(backend="hypothesis")
+@ORACLE
 @given(pairs=st.tuples(*(pair_cell(*cell) for cell in CELLS)))
 def test_unpredictable_pairs_are_refused_by_the_checker_and_by_llvm_mc_but_five(
     tmp_path_factory: pytest.TempPathFactory, worker_id: str, pairs: tuple[Pair, ...]
@@ -323,7 +324,7 @@ def targeted(program: Program) -> list[str]:
 SYMBOLIC = re.compile(r" <\.text(\+0x[0-9a-f]+)?>$")
 
 
-@settings(backend="hypothesis")
+@ORACLE
 @given(program=forward_branching())
 def test_branch_and_adr_targets_are_the_label_addresses(
     tmp_path_factory: pytest.TempPathFactory, worker_id: str, program: Program

@@ -20,6 +20,7 @@ said: an oracle that cannot run fails the test, it never skips it. The versions 
 
 import fcntl
 import json
+import os
 import platform
 import re
 import shlex
@@ -30,8 +31,20 @@ from functools import cache
 from pathlib import Path
 
 import pytest
+from hypothesis import settings
 
 HERE = Path(__file__).parent
+
+# Each example spawns llvm-mc and llvm-objdump, and each run example links and executes, so the
+# oracle laws draw the design's counts, not the profile's (hole oracle-settings): make check
+# runs them serially under coverage, and the profile's 100 would cost ten times the budget.
+PROFILE = os.environ.get("HYPOTHESIS_PROFILE", "quick")
+ORACLE = settings(
+    backend="hypothesis",
+    deadline=None,
+    max_examples={"quick": 10, "harden": 50, "symbolic": 10}[PROFILE],
+)
+RUN = settings(ORACLE, max_examples={"quick": 4, "harden": 20, "symbolic": 4}[PROFILE])
 RESOLVE = '{nix} develop "$(git rev-parse --show-toplevel)#aarch64" -c bash -c {ask}'
 ASK = {
     "Darwin": 'command -v llvm-mc llvm-objdump ld64.lld; printf "%s\\n" "$SDKROOT"',

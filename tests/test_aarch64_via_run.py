@@ -1,12 +1,10 @@
 """Oracle tests on the machine itself: natively on Darwin, under qemu-aarch64 on Linux."""
 
-import os
-
 import pytest
 from aarch64_frame import MIDDLE, OBSERVED, RECORD, Block, frame, records
-from aarch64_oracle import assemble, execute, link, toolchain
+from aarch64_oracle import RUN, assemble, execute, link, toolchain
 from aarch64_strategies import WINDOW, blocks, memory_block, memory_blocks
-from hypothesis import find, given, settings
+from hypothesis import find, given
 from hypothesis import strategies as st
 
 from fpl.asm.aarch64.check import check
@@ -49,16 +47,6 @@ def test_native_smoke(
     (record,) = records(done, 1)
     assert (record.regs[0], record.regs[1], record.index) == (42, 7, 0)
     assert record.nzcv == 0  # the frame sets NZCV to 0 and neither mov nor mul sets it
-
-
-# Each example links and runs a fresh executable, 0.3 s on a Mac (hole first-exec-cost), so the
-# run laws draw fewer examples than the profile's count and share one batch (oracle-settings).
-PROFILE = os.environ.get("HYPOTHESIS_PROFILE", "quick")
-RUN = settings(
-    backend="hypothesis",
-    deadline=None,
-    max_examples={"quick": 4, "harden": 20, "symbolic": 4}[PROFILE],
-)
 
 
 @RUN
