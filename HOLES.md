@@ -558,3 +558,24 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Default in force: a constant outside its domain panics, not on the effect line: the FplError the walker function raises (arithmetic on a non-number, cons takes a list, unfilled goal, …) is the Panic payload, and the run ends with the walker's own error line
 - Closes by: palimpsest, saying whether these are root panics (row 43) or become impossible once typed-fragment closes
 - Evidence: design section 9 "panics"; row 43; row 81 (3); fpl/eval.py error sites
+
+## level-one
+- Depends on it: fpl/lower/select.py; RefusalKind.LEVEL_ONE
+- Default in force: , (code slots), any code slot and name/history are refused when a run line reaches them; unreachable definitions are dropped, not refused
+- Closes by: staging (B6), when level-1 code runs away before A; on the default tier level 1 is empty (row 38)
+- Evidence: row 81 (4) "A has no Code type"; fpl/ast_core.py EFFECTS ","
+
+
+## binder-captures
+- Depends on it: fpl/lower/select.py; RefusalKind.BINDER_CAPTURES
+- Default in force: a reachable binder (Bind, or a name a match row binds) whose name a reachable call outside its scope resolves to a word, query, builtin or control word is refused; A resolves names lexically, the walker substitutes into quotation values a binder put into the scope
+- Closes by: the walker's name rules settling (lexical capture, or renaming at substitution), then the refusal goes
+- Evidence: fpl/eval.py step, substitute, held (eval.py:92-130, 326); probe "[ dup ] →x 2 →dup x !" prints 2 on 7f14a36
+
+
+## fuel-outcome
+- Depends on it: tests/lower_diff.py, fpl/cbpv/machine.py OutOfFuel
+- Default in force: the walker at the base has no fuel, so an out-of-fuel outcome is never compared; generated walker programs terminate by construction and OutOfFuel fails the test
+- Closes by: restacking onto 08 (fuel per run line, "out of fuel"), mapping OutOfFuel to that line with a shared step measure, or keeping the two measures apart (rows 36, 60)
+- Evidence: agent/claude/stack/walker/08-repl fpl/eval.py Meter
+
