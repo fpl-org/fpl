@@ -64,9 +64,14 @@ def test_the_one_signed_quotient_past_the_range_traps_and_its_remainder_is_zero(
     assert BINOPS["rem_s"](n, low, minus_one) == 0
 
 
-@pytest.mark.parametrize(("op", "result"), [("rotl", 1), ("rotr", 0x40000000)])
+@pytest.mark.parametrize(("op", "result"), [("rotl", 3), ("rotr", 0xC0000000)])
 def test_a_rotation_carries_the_bit_it_shifts_out(op: IBinop, result: int) -> None:
-    assert BINOPS[op](32, 0x80000000, 1) == result
+    assert BINOPS[op](32, 0x80000001, 1) == result
+
+
+@pytest.mark.parametrize(("op", "result"), [("div_u", 3), ("rem_u", 1)])
+def test_an_unsigned_division_by_a_nonzero_divisor_does_not_trap(op: IBinop, result: int) -> None:
+    assert BINOPS[op](32, 7, 2) == result
 
 
 def test_extend_reads_the_low_bits_as_signed() -> None:

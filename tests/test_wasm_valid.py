@@ -132,6 +132,13 @@ SITES: list[tuple[Module, Invalid | None]] = [
     (func_of((), ZERO, LocalTee(0), Drop()), Invalid("local", (0, 1))),
     (func_of((), ReturnCall(1)), Invalid("func", (0, 0))),
     (
+        Module(
+            types=(FuncType((), ("i32",)), EMPTY),
+            funcs=(Func(0, (), (ReturnCall(1),)), Func(1, (), ())),
+        ),
+        Invalid("tail-result", (0, 0)),
+    ),
+    (
         replace(func_of((), ZERO, CallIndirect(0, TypeUse(1))), tables=TABLES),
         Invalid("type", (0, 1)),
     ),
