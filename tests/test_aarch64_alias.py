@@ -43,6 +43,8 @@ from fpl.asm.aarch64.model import (
     Width,
 )
 
+# Empties the alias caches before the test, so the test builds the rows itself.
+fresh = pytest.mark.usefixtures(fresh_tables.__name__)
 regs = st.sampled_from(Reg)
 widths = st.sampled_from(Width)
 # One past each end of the encodable ranges, so the out-of-range side is drawn too.
@@ -53,6 +55,7 @@ move_wides = st.builds(
 mul_adds = st.builds(MulAdd, st.just(OpMulAdd.MADD), widths, regs, regs, regs, regs)
 
 
+@fresh
 @given(move_wides)
 def test_mov_is_preferred_exactly_when_movz_moves_a_nonzero_chunk_or_zero(i: MoveWide) -> None:
     """MOVZ page: MOV (wide immediate) when !(IsZero(imm16) && hw != '00'), fields in range;
@@ -69,6 +72,7 @@ def test_mov_is_preferred_exactly_when_movz_moves_a_nonzero_chunk_or_zero(i: Mov
         assert (mnemonic, operands) == (i.op.value, i.operands())
 
 
+@fresh
 @given(mul_adds)
 def test_mul_is_preferred_exactly_when_madd_accumulates_zero(i: MulAdd) -> None:
     """MADD page: MUL when Ra == '11111'; it prints the three other registers."""
@@ -78,6 +82,7 @@ def test_mul_is_preferred_exactly_when_madd_accumulates_zero(i: MulAdd) -> None:
     assert operands == ", ".join(names[:3] if mnemonic == "mul" else names)
 
 
+@fresh
 @pytest.mark.parametrize(
     ("instr", "text"),
     [
@@ -289,15 +294,13 @@ def agreed(row: Row[Any] | None) -> tuple[str, str] | None:
     return None if row is None or row.spec_differs else key(row)
 
 
-pytestmark = pytest.mark.usefixtures(fresh_tables.__name__)
-
-
 @pytest.fixture(scope="module")
 def reached() -> list[Instr]:
     """witnesses(), found before the property runs: `find` may not nest in a @given."""
     return [w for w in witnesses() if not isinstance(w, Label)]
 
 
+@fresh
 @given(i=st.one_of(*(BY_CLASS[cls] for cls in rows.__wrapped__())))
 def test_each_alias_row_fires_exactly_when_its_spec_condition_holds(
     reached: list[Instr], i: Instr
@@ -317,6 +320,7 @@ def test_each_alias_row_fires_exactly_when_its_spec_condition_holds(
     }
 
 
+@fresh
 @pytest.mark.parametrize(
     ("width", "count", "known"),
     [

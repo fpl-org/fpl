@@ -60,9 +60,11 @@ items = st.one_of(
 )
 
 
-pytestmark = pytest.mark.usefixtures(fresh_tables.__name__)
+# Empties the alias caches before the test, so the test builds the rows itself.
+fresh = pytest.mark.usefixtures(fresh_tables.__name__)
 
 
+@fresh
 @given(st.lists(items).map(tuple))
 def test_one_line_per_item(program: tuple[Label | MoveWide | MulAdd, ...]) -> None:
     """Each item is one newline-terminated line: `name:` or `\\tmnemonic\\toperands`."""
@@ -75,6 +77,7 @@ def test_one_line_per_item(program: tuple[Label | MoveWide | MulAdd, ...]) -> No
         assert got == want
 
 
+@fresh
 def test_the_smoke_block_prints_as_llvm_objdump_does() -> None:
     block = (
         MoveWide(OpMoveWide.MOVZ, Width.W64, Reg.X0, 6, 0),
@@ -114,6 +117,7 @@ PINNED: Program = (
 )
 
 
+@fresh
 @example(PINNED)
 @given(programs())
 def test_parse_after_print_is_the_identity(program: Program) -> None:
@@ -122,12 +126,14 @@ def test_parse_after_print_is_the_identity(program: Program) -> None:
     assert parse_program(print_program(program)) == program
 
 
+@fresh
 def test_every_row_and_base_form_reads_back() -> None:
     """Each alias row's witness and each class's base form parse back from their lines."""
     drawn = witnesses() + bases()
     assert parse_program(print_program(drawn)) == drawn
 
 
+@fresh
 @pytest.mark.parametrize(
     "line",
     [
@@ -150,6 +156,7 @@ def test_a_line_not_in_canonical_form_is_refused_with_its_number(line: str) -> N
     assert str(refused.value) == f"line 3: not an instruction in canonical form: {line!r}"
 
 
+@fresh
 @pytest.mark.parametrize(
     ("line", "instr"),
     [
@@ -170,6 +177,7 @@ def test_base_forms_with_out_of_range_fields_are_read(line: str, instr: Instr) -
 X0, X1, X2, X3, SP = Reg.X0, Reg.X1, Reg.X2, Reg.X3, Reg.SP
 
 
+@fresh
 @pytest.mark.parametrize(
     ("instr", "line"),
     [
