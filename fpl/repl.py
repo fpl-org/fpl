@@ -3,7 +3,7 @@ rewind, the log listed, or the program at an event shown; with none of these, in
 after another, each as its own -e. Without --session the log is empty and held in memory, so
 one input runs as its file does. An append is checked against --head and made durable under
 the session's lock before anything is printed. Exit 0 ok, 1 the input failed, 2 argv not taken
-or a refusal, with nothing written."""
+or a refusal, a path the system refuses included, with nothing written but a lock."""
 
 import importlib
 import itertools
@@ -365,7 +365,8 @@ def main(
     env: Mapping[str, str] = os.environ,
 ) -> int:
     """Carry out argv; the output, or one ERROR line, to stdout; goals, the caret under an
-    error, inputs changed and the new head to stderr, all after any append is durable."""
+    error, inputs changed and the new head to stderr, all after any append is durable. An
+    OSError is a refusal: its line names the path the system refused."""
     try:
         call = _call(argv)
         if call.action == "loop":
@@ -374,7 +375,7 @@ def main(
     except UsageError:
         stderr.write(USAGE + "\n")
         return 2
-    except RefusedError as error:
+    except (RefusedError, OSError) as error:
         stdout.write(f"ERROR: {error}\n")
         return 2
     _told(said, stdout, stderr)
