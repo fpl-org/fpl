@@ -15,7 +15,7 @@ import contextlib
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from itertools import product
-from typing import Any, get_args
+from typing import Any, assert_never, get_args
 
 from hypothesis import strategies as st
 
@@ -78,6 +78,7 @@ from fpl.asm.wasm.module import (
 )
 from fpl.asm.wasm.types import (
     WIDTH,
+    BlockType,
     FuncType,
     GlobalType,
     Limits,
@@ -85,6 +86,7 @@ from fpl.asm.wasm.types import (
     NumType,
     TableType,
     TypeUse,
+    ValType,
 )
 
 numtypes = st.sampled_from(get_args(NumType))
@@ -354,10 +356,364 @@ def _start(draw: st.DrawFn, context: Context) -> int | None:
     return draw(st.none() | st.sampled_from(starts)) if starts else None
 
 
-def bodies(context: Context, func: Func) -> st.SearchStrategy[tuple[Instr, ...]]:
-    """A body for `func` in `context`, producing exactly its results."""
-    results = context.types[func.type].results
-    return st.tuples(*map(consts, results))
+Stack = tuple[ValType, ...]
+DEPTH = 4
+LENGTH = 24
+"""A body nests blocks at most DEPTH deep and draws at most LENGTH instructions (design 7)."""
+
+
+@dataclass
+class Budget:
+    """The instructions a body may still draw, shared by its nested sequences."""
+
+    left: int
+
+
+@dataclass(frozen=True)
+class Frame:
+    """Where code is drawn (3.1.1's C for one function): the module's context, the locals
+    (params first), the function's results, and the label types, innermost first."""
+
+    context: Context
+    locals: Stack
+    results: Stack
+    labels: tuple[Stack, ...]
+    budget: Budget
+
+    def enter(self, label: Stack) -> "Frame":
+        """The frame inside a block whose label has type `label`."""
+        return replace(self, labels=(label, *self.labels))
+
+
+@dataclass(frozen=True)
+class Step:
+    """A drawn instruction and its effect: it pops `pops` operands and pushes `pushes`; after one
+    that `ends` (an unconditional transfer) the stack is polymorphic and the sequence stops."""
+
+    instr: Instr
+    pops: int
+    pushes: Stack
+    ends: bool = False
+
+
+Move = Callable[[st.DrawFn], Step]
+Entry = Callable[[Frame, Stack], Move | None]
+"""An instruction class's entry: given the frame and the operand stack, None if no instruction
+of the class fits, else the move that draws one that does."""
+
+
+def _suffix(stack: Stack, types: Stack) -> bool:
+    """Whether `types` are the top of `stack`, the last on top."""
+    return len(stack) >= len(types) and stack[len(stack) - len(types) :] == types
+
+
+def _close(draw: st.DrawFn, stack: Stack, results: Stack) -> list[Instr]:
+    """Instructions turning `stack` into exactly `results`: drop down to the longest common
+    prefix, then push a constant of each missing type."""
+    keep = 0
+    while keep < min(len(stack), len(results)) and stack[keep] == results[keep]:
+        keep += 1
+    return [*(Drop() for _ in stack[keep:]), *(draw(consts(t)) for t in results[keep:])]
+
+
+def _sequence(draw: st.DrawFn, frame: Frame, stack: Stack, results: Stack) -> tuple[Instr, ...]:
+    """A sequence typed `stack -> results` in `frame`: drawn steps, each fitting the stack it
+    meets, then the instructions that close it, unless a step transferred control."""
+    body: list[Instr] = []
+    for _ in range(draw(st.integers(0, 8))):
+        if frame.budget.left == 0:
+            break
+        frame.budget.left -= 1
+        moves = [move for entry in TYPED.values() if (move := entry(frame, stack)) is not None]
+        step = draw(st.sampled_from(moves))(draw)
+        body.append(step.instr)
+        if step.ends:
+            return tuple(body)
+        stack = stack[: len(stack) - step.pops] + step.pushes
+    return (*body, *_close(draw, stack, results))
+
+
+@st.composite
+def bodies(draw: st.DrawFn, context: Context, func: Func) -> tuple[Instr, ...]:
+    """A body for `func` in `context`, typed by construction to produce exactly its results."""
+    signature = context.types[func.type]
+    locals_ = (*signature.params, *func.locals)
+    results = signature.results
+    frame = Frame(context, locals_, results, (results,), Budget(LENGTH))
+    return _sequence(draw, frame, (), results)
+
+
+def _step(step: Step) -> Move:
+    """The move that draws nothing and takes `step`."""
+    return lambda _draw: step
+
+
+Numeric = Unop | Binop | Testop | Relop
+
+
+def _numeric(pool: tuple[Numeric, ...], arity: int, result: NumType | None) -> Entry:
+    """The entry of a numeric class over `pool`: `arity` operands of one type t on top, pushing
+    `result`, or t when None."""
+
+    def entry(_frame: Frame, stack: Stack) -> Move | None:
+        top = set(stack[len(stack) - arity :])
+        if len(stack) < arity or len(top) != 1:
+            return None
+        (t,) = top
+        choices = [instr for instr in pool if instr.type == t]
+        return lambda draw: Step(draw(st.sampled_from(choices)), arity, (result or t,))
+
+    return entry
+
+
+def _cvtop(_frame: Frame, stack: Stack) -> Move | None:
+    """A conversion from the type on top."""
+    choices = [c for c in CVTOPS if stack[-1:] == (c.source,)]
+    if not choices:
+        return None
+    return lambda draw: _converted(draw(st.sampled_from(choices)))
+
+
+def _converted(c: Cvtop) -> Step:
+    return Step(c, 1, (c.to,))
+
+
+def _nop(_frame: Frame, _stack: Stack) -> Move:
+    return _step(Step(Nop(), 0, ()))
+
+
+def _unreachable(_frame: Frame, _stack: Stack) -> Move:
+    return _step(Step(Unreachable(), 0, (), ends=True))
+
+
+def _drop(_frame: Frame, stack: Stack) -> Move | None:
+    return _step(Step(Drop(), 1, ())) if stack else None
+
+
+def _select(_frame: Frame, stack: Stack) -> Move | None:
+    """`select`, plain or typed with exactly one type, over two operands of one type."""
+    if len(stack) < 3 or stack[-1] != "i32" or stack[-2] != stack[-3]:
+        return None
+    t = stack[-2]
+    return lambda draw: Step(Select(draw(st.sampled_from([None, (t,)]))), 3, (t,))
+
+
+def _indexed(indices: list[int], step: Callable[[int], Step]) -> Move | None:
+    """The move that draws one of `indices` and takes its step; None if there are none."""
+    if not indices:
+        return None
+    return lambda draw: step(draw(st.sampled_from(indices)))
+
+
+def _local_get(frame: Frame, _stack: Stack) -> Move | None:
+    return _indexed(
+        list(range(len(frame.locals))), lambda x: Step(LocalGet(x), 0, (frame.locals[x],))
+    )
+
+
+def _local_set(frame: Frame, stack: Stack) -> Move | None:
+    fits = [x for x, t in enumerate(frame.locals) if stack[-1:] == (t,)]
+    return _indexed(fits, lambda x: Step(LocalSet(x), 1, ()))
+
+
+def _local_tee(frame: Frame, stack: Stack) -> Move | None:
+    fits = [x for x, t in enumerate(frame.locals) if stack[-1:] == (t,)]
+    return _indexed(fits, lambda x: Step(LocalTee(x), 1, (frame.locals[x],)))
+
+
+def _global_get(frame: Frame, _stack: Stack) -> Move | None:
+    globals_ = frame.context.globals
+    return _indexed(
+        list(range(len(globals_))), lambda x: Step(GlobalGet(x), 0, (globals_[x].type,))
+    )
+
+
+def _global_set(frame: Frame, stack: Stack) -> Move | None:
+    fits = [x for x, g in enumerate(frame.context.globals) if g.mutable and stack[-1:] == (g.type,)]
+    return _indexed(fits, lambda x: Step(GlobalSet(x), 1, ()))
+
+
+def _signature(context: Context, bt: BlockType) -> tuple[Stack, Stack]:
+    """The params and results of a block type (3.2.8)."""
+    match bt:
+        case None:
+            return (), ()
+        case str():
+            return (), (bt,)
+        case TypeUse(index):
+            return context.types[index].params, context.types[index].results
+        case _:
+            assert_never(bt)
+
+
+def _open(draw: st.DrawFn, frame: Frame, stack: Stack) -> tuple[BlockType, Stack, Stack]:
+    """A block type whose params are the top of `stack`, with its params and results."""
+    uses = [TypeUse(i) for i, t in enumerate(frame.context.types) if _suffix(stack, t.params)]
+    bt: BlockType = draw(st.sampled_from([None, *NUMTYPES, *uses]))
+    return (bt, *_signature(frame.context, bt))
+
+
+def _block(frame: Frame, stack: Stack) -> Move | None:
+    """`block`, its label typed by its results."""
+    if len(frame.labels) > DEPTH:
+        return None
+
+    def move(draw: st.DrawFn) -> Step:
+        bt, params, results = _open(draw, frame, stack)
+        body = _sequence(draw, frame.enter(results), params, results)
+        return Step(Block(bt, body), len(params), results)
+
+    return move
+
+
+def _loop(frame: Frame, stack: Stack) -> Move | None:
+    """`loop`, its label typed by its params."""
+    if len(frame.labels) > DEPTH:
+        return None
+
+    def move(draw: st.DrawFn) -> Step:
+        bt, params, results = _open(draw, frame, stack)
+        body = _sequence(draw, frame.enter(params), params, results)
+        return Step(Loop(bt, body), len(params), results)
+
+    return move
+
+
+def _if(frame: Frame, stack: Stack) -> Move | None:
+    """`if` over an i32 on top of its params, both arms typed params -> results."""
+    if len(frame.labels) > DEPTH or stack[-1:] != ("i32",):
+        return None
+
+    def move(draw: st.DrawFn) -> Step:
+        bt, params, results = _open(draw, frame, stack[:-1])
+        then = _sequence(draw, frame.enter(results), params, results)
+        else_ = _sequence(draw, frame.enter(results), params, results)
+        return Step(If(bt, then, else_), len(params) + 1, results)
+
+    return move
+
+
+def _br(frame: Frame, stack: Stack) -> Move | None:
+    fits = [d for d, label in enumerate(frame.labels) if _suffix(stack, label)]
+    return _indexed(fits, lambda d: Step(Br(d), 0, (), ends=True))
+
+
+def _br_if(frame: Frame, stack: Stack) -> Move | None:
+    below = stack[:-1]
+    labels = frame.labels
+    fits = [d for d, label in enumerate(labels) if stack[-1:] == ("i32",) and _suffix(below, label)]
+    return _indexed(fits, lambda d: Step(BrIf(d), len(labels[d]) + 1, labels[d]))
+
+
+def _br_table(frame: Frame, stack: Stack) -> Move | None:
+    """`br_table` to a default label whose type is on the stack, and others of the same type."""
+    labels = frame.labels
+    below = stack[:-1]
+    fits = [d for d, label in enumerate(labels) if stack[-1:] == ("i32",) and _suffix(below, label)]
+
+    def step(draw: st.DrawFn, default: int) -> Step:
+        same = [d for d, label in enumerate(labels) if label == labels[default]]
+        targets = draw(st.lists(st.sampled_from(same), max_size=3))
+        return Step(BrTable(tuple(targets), default), 0, (), ends=True)
+
+    return _indexed_draw(fits, step)
+
+
+def _indexed_draw(indices: list[int], step: Callable[[st.DrawFn, int], Step]) -> Move | None:
+    """As `_indexed`, for a step that draws more after its index."""
+    if not indices:
+        return None
+    return lambda draw: step(draw, draw(st.sampled_from(indices)))
+
+
+def _return(frame: Frame, stack: Stack) -> Move | None:
+    return _step(Step(Return(), 0, (), ends=True)) if _suffix(stack, frame.results) else None
+
+
+def _call(frame: Frame, stack: Stack) -> Move | None:
+    funcs = frame.context.funcs
+    fits = [x for x, f in enumerate(funcs) if _suffix(stack, f.params)]
+    return _indexed(fits, lambda x: Step(Call(x), len(funcs[x].params), funcs[x].results))
+
+
+def _return_call(frame: Frame, stack: Stack) -> Move | None:
+    """`return_call` of a function whose results are the caller's (3.4.2)."""
+    funcs = frame.context.funcs
+    fits = [
+        x for x, f in enumerate(funcs) if f.results == frame.results and _suffix(stack, f.params)
+    ]
+    return _indexed(fits, lambda x: Step(ReturnCall(x), 0, (), ends=True))
+
+
+def _indirect_types(frame: Frame, stack: Stack, tail: bool) -> list[int]:
+    """The type indices an indirect call can use over an i32 on `stack`, in a module with a
+    table; for a tail call, only those whose results are the caller's."""
+    if not frame.context.tables or stack[-1:] != ("i32",):
+        return []
+    return [
+        y
+        for y, t in enumerate(frame.context.types)
+        if _suffix(stack[:-1], t.params) and (not tail or t.results == frame.results)
+    ]
+
+
+def _call_indirect(frame: Frame, stack: Stack) -> Move | None:
+    types = frame.context.types
+    tables = st.integers(0, frame.context.tables - 1)
+
+    def step(draw: st.DrawFn, y: int) -> Step:
+        call = CallIndirect(draw(tables), TypeUse(y))
+        return Step(call, len(types[y].params) + 1, types[y].results)
+
+    return _indexed_draw(_indirect_types(frame, stack, tail=False), step)
+
+
+def _return_call_indirect(frame: Frame, stack: Stack) -> Move | None:
+    tables = st.integers(0, frame.context.tables - 1)
+
+    def step(draw: st.DrawFn, y: int) -> Step:
+        return Step(ReturnCallIndirect(draw(tables), TypeUse(y)), 0, (), ends=True)
+
+    return _indexed_draw(_indirect_types(frame, stack, tail=True), step)
+
+
+def _const(_frame: Frame, _stack: Stack) -> Move:
+    def move(draw: st.DrawFn) -> Step:
+        c = draw(numtypes.flatmap(consts))
+        return Step(c, 0, (c.type,))
+
+    return move
+
+
+TYPED: dict[type[Instr], Entry] = {
+    Const: _const,
+    Unop: _numeric(UNOPS, 1, None),
+    Binop: _numeric(BINOPS, 2, None),
+    Testop: _numeric(TESTOPS, 1, "i32"),
+    Relop: _numeric(RELOPS, 2, "i32"),
+    Cvtop: _cvtop,
+    Nop: _nop,
+    Unreachable: _unreachable,
+    Drop: _drop,
+    Select: _select,
+    LocalGet: _local_get,
+    LocalSet: _local_set,
+    LocalTee: _local_tee,
+    GlobalGet: _global_get,
+    GlobalSet: _global_set,
+    Block: _block,
+    Loop: _loop,
+    If: _if,
+    Br: _br,
+    BrIf: _br_if,
+    BrTable: _br_table,
+    Return: _return,
+    Call: _call,
+    CallIndirect: _call_indirect,
+    ReturnCall: _return_call,
+    ReturnCallIndirect: _return_call_indirect,
+}
+"""The typed entry of each instruction class: what of it fits a given operand stack."""
 
 
 @st.composite
