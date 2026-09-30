@@ -358,3 +358,13 @@ def test_operand_forms_print_as_llvm_objdump_does(instr: Instr, line: str) -> No
     """A zero offset, a scaled uxtx index, the extend next to sp, ret's default register,
     a long multiply's w sources and tbz's register width at the edges of each width."""
     assert print_program((instr,)) == line + "\n"
+
+
+@fresh
+def test_mov_from_sp_reads_as_add_not_as_orr() -> None:
+    """`mov x1, sp` reads as ADD (immediate) from sp. ORR (shifted register) cannot name sp,
+    but an ORR whose rm is SP reprints as the same line, so the round trip alone cannot tell
+    the ADD row's builder swapping its registers from the right one."""
+    assert parse_program("\tmov\tx1, sp\n") == (
+        AddSubImm(OpAddSub.ADD, Width.W64, X1, SP, 0, False),
+    )
