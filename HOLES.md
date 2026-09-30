@@ -25,3 +25,15 @@ Undecided choices of the wasm-ir track, each with the default in force until som
 - Default in force: the evaluator stops at a call depth of 64 active calls with Exhausted, never compared with an engine; tail calls loop in the call driver and never count; generated runnable programs cannot reach it (fuel), and the type-soundness property keeps its step budget below 64 so no run can
 - Closes by: palimpsest, saying whether stack exhaustion is a root panic like a trap (row 43) or something the lowering must rule out
 - Evidence: design section 6 and section 9 exhaustion-outcome; spec 3.0 7.3.3 (the number of frames is an implementation limit); row 81 (1) names stack exhaustion among the sources of nondeterminism
+
+## bulk-memory
+- Depends on it: fpl/asm/wasm/instr.py (no memory.fill, memory.copy, memory.init or data.drop), fpl/asm/wasm/module.py (Data and Elem are active only)
+- Default in force: excluded: memory.fill, memory.copy, memory.init, data.drop, and passive and declarative segments are outside the subset; the checker, printer and evaluator have no case for them
+- Closes by: the D track, if stackify or the bump heap wants memory.fill or memory.copy; a model addition with its checker rule, printer line and evaluator case
+- Evidence: design section 9 bulk-memory; spec 3.0 2.4.5, 2.5.8, 2.5.9; prompt B's subset does not list them
+
+## python-stack-bound
+- Depends on it: fpl/asm/wasm/exec.py (DEPTH, the big-step evaluator), tests/test_wasm_exec.py (the exhaustion test recurses with no block), the laws type-soundness and evaluator-agrees under mutmut
+- Default in force: DEPTH stays 64 active calls, but each block around a call adds Python frames, so DEPTH does not always fire before Python's recursion limit of 1000; the fixed exhaustion test recurses with no block, and generated runnable programs stay within fuel 32 and block depth 4
+- Closes by: Manicule on the design side, choosing a lower DEPTH, a DEPTH that counts block nesting, or the iterative evaluator that design section 11 names as the fallback; then the exhaustion test may nest blocks again
+- Evidence: design section 6 ("set at a call depth of 64 so that it always fires before Python's own recursion limit") and section 11; measured in unit 7 by raising sys.setrecursionlimit until a self-call wrapped in n blocks reaches Exhausted: natively n=0 200, n=1 350, n=2 500, n=4 750 frames; in mutmut's mutants/ copy (trampoline) n=0 600, n=1 1000, n=2 1400, n=4 2150, so the old 4-block test failed mutmut's clean run with RecursionError
