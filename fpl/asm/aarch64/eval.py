@@ -12,9 +12,14 @@ link of `bl` and `blr`, and register targets are addresses; a label is the index
 instruction after it. A `br`, `blr` or `ret` to `base + 4i` with i in [0, n] continues at i,
 and index n, past the last instruction, is falling off the end: `Halted`.
 
+Memory is the window: `len(window)` bytes at the address in x28, read at each access. Every
+addressing mode of LoadStore, LoadStoreUnscaled and Pair is evaluated, writeback included; an
+access reads or writes little-endian bytes, and a misaligned one completes (hole
+misaligned-access), as it does natively on Apple silicon at EL0.
+
 Refused, as `Unmodelled(index, why)` at the instruction's index: a form that reads or writes
-sp (the machine has none, hole sp-unobserved), a memory access (the machine has no window, so
-every access falls outside it), and a register target anywhere else. `fuel` bounds the steps
+sp (the machine has none, hole sp-unobserved), an access with any byte outside the window,
+and a register target anywhere else. `fuel` bounds the steps
 executed; a program still running when it is spent is `OutOfFuel`.
 """
 
@@ -22,12 +27,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from functools import partial
 from operator import add, invert, neg, sub
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, assert_never
 
 import icontract
 
 from fpl.asm.aarch64.check import addresses, check, slots
 from fpl.asm.aarch64.model import (
+    Addr,
     AddSubCarry,
     AddSubExtended,
     AddSubImm,
@@ -52,11 +58,13 @@ from fpl.asm.aarch64.model import (
     LoadStoreUnscaled,
     LogicalImm,
     LogicalShifted,
+    Mode,
     MoveWide,
     MulAdd,
     MulHigh,
     MulLong,
     Nop,
+    Offset,
     OpAddSub,
     OpAddSubCarry,
     OpBitfield,
@@ -67,15 +75,21 @@ from fpl.asm.aarch64.model import (
     OpCondSelect,
     OpDataProc1,
     OpDataProc2,
+    OpLoadStore,
+    OpLoadStoreUnscaled,
     OpLogical,
     OpMoveWide,
     OpMulAdd,
     OpMulHigh,
     OpMulLong,
+    OpPair,
     OpTestBranch,
     Pair,
+    PostIndex,
+    PreIndex,
     Program,
     Reg,
+    RegOffset,
     Shift,
     TestBranch,
     Width,
@@ -87,11 +101,13 @@ REGISTERS = 31  # x0..x30; register 31 is sp or the zero register, neither a mac
 @dataclass(frozen=True, slots=True)
 class Machine:
     """x0..x30 as values in [0, 2**64); NZCV as four bits, N the highest (C5.2.11); `base`,
-    the absolute address of instruction 0 (from the run's record)."""
+    the absolute address of instruction 0 (from the run's record); `window`, the memory: its
+    bytes at the address in x28, none by default, so every access falls outside it."""
 
     regs: tuple[int, ...]
     nzcv: int
     base: int
+    window: bytes = b""
 
 
 @dataclass(frozen=True, slots=True)
@@ -634,9 +650,142 @@ def branch_reg(i: BranchReg, machine: Machine, place: Place) -> Stepped:
     return (link(machine, place) if i.op is OpBranchReg.BLR else machine), index
 
 
-def memory(_: LoadStore | LoadStoreUnscaled | Pair, __: Machine, ___: Place) -> Stepped:
-    """Loads and stores: the machine has no window, so every access falls outside it."""
-    return "memory access outside the window"
+OUTSIDE = "memory access outside the window"
+STORE, LOAD, SIGNED = "store", "load", "signed"
+
+# What each single-register op transfers: a store, a load, or a sign-extending load.
+TRANSFERS: dict[OpLoadStore | OpLoadStoreUnscaled, str] = {
+    OpLoadStore.STRB: STORE,
+    OpLoadStore.LDRB: LOAD,
+    OpLoadStore.LDRSB_W: SIGNED,
+    OpLoadStore.LDRSB_X: SIGNED,
+    OpLoadStore.STRH: STORE,
+    OpLoadStore.LDRH: LOAD,
+    OpLoadStore.LDRSH_W: SIGNED,
+    OpLoadStore.LDRSH_X: SIGNED,
+    OpLoadStore.STR_W: STORE,
+    OpLoadStore.STR_X: STORE,
+    OpLoadStore.LDR_W: LOAD,
+    OpLoadStore.LDR_X: LOAD,
+    OpLoadStore.LDRSW: SIGNED,
+    OpLoadStoreUnscaled.STURB: STORE,
+    OpLoadStoreUnscaled.STURH: STORE,
+    OpLoadStoreUnscaled.STUR_W: STORE,
+    OpLoadStoreUnscaled.STUR_X: STORE,
+    OpLoadStoreUnscaled.LDURB: LOAD,
+    OpLoadStoreUnscaled.LDURH: LOAD,
+    OpLoadStoreUnscaled.LDURSB_W: SIGNED,
+    OpLoadStoreUnscaled.LDURSB_X: SIGNED,
+    OpLoadStoreUnscaled.LDURSH_W: SIGNED,
+    OpLoadStoreUnscaled.LDURSH_X: SIGNED,
+    OpLoadStoreUnscaled.LDUR_W: LOAD,
+    OpLoadStoreUnscaled.LDUR_X: LOAD,
+    OpLoadStoreUnscaled.LDURSW: SIGNED,
+}
+PAIRED: dict[OpPair, str] = {OpPair.STP: STORE, OpPair.LDP: LOAD, OpPair.LDPSW: SIGNED}
+MODES: dict[Mode, Callable[[Reg, int], Addr]] = {
+    Mode.OFFSET: Offset,
+    Mode.PRE: PreIndex,
+    Mode.POST: PostIndex,
+}
+
+
+class Transfer(NamedTuple):
+    """One register's transfer: its kind (STORE, LOAD, SIGNED), the bytes, the register width."""
+
+    kind: str
+    size: int
+    width: Width
+
+
+def displaced(machine: Machine, rn: Reg, by: int) -> int:
+    """Xn + by, modulo 2**64."""
+    return (read(machine, rn, Width.W64) + by) & mask(64)
+
+
+def effective(machine: Machine, addr: Addr, size: int) -> tuple[int, int | None]:
+    """The address accessed and the base written back (None without writeback): an offset
+    or pre-index accesses Xn + imm, a post-index Xn; a register offset adds Rm by ExtendReg,
+    shifted log2(size) when S is set."""
+    match addr:
+        case Offset(rn=rn, imm=imm):
+            return displaced(machine, rn, imm), None
+        case PreIndex(rn=rn, imm=imm):
+            moved = displaced(machine, rn, imm)
+            return moved, moved
+        case PostIndex(rn=rn, imm=imm):
+            return read(machine, rn, Width.W64), displaced(machine, rn, imm)
+        case RegOffset(rn=rn, rm=rm, option=option, s=s):
+            amount = size.bit_length() - 1 if s else 0
+            index = extend(read(machine, rm, Width.W64), option, amount, Width.W64)
+            return displaced(machine, rn, index), None
+        case _:
+            assert_never(addr)
+
+
+def inside(machine: Machine, address: int, count: int) -> int | None:
+    """The window offset of the `count` bytes at `address`, or None when any is outside."""
+    at = address - read(machine, Reg.X28, Width.W64)
+    return at if 0 <= at <= len(machine.window) - count else None
+
+
+def transfer(machine: Machine, how: Transfer, rt: Reg, at: int) -> Machine:
+    """Rt's low `size` bytes stored at window offset `at`, or loaded from there, zero- or
+    sign-extended, and written at the width; little-endian either way."""
+    if how.kind == STORE:
+        data = (read(machine, rt, how.width) & mask(8 * how.size)).to_bytes(how.size, "little")
+        return replace(machine, window=machine.window[:at] + data + machine.window[at + how.size :])
+    value = int.from_bytes(machine.window[at : at + how.size], "little")
+    return put(
+        machine,
+        rt,
+        sign(value, 8 * how.size) if how.kind == SIGNED else value,
+        how.width,
+    )
+
+
+def written_back(machine: Machine, rn: Reg, base: int | None) -> Machine:
+    """Xn = the new base after a pre- or post-index access; unchanged without writeback."""
+    return machine if base is None else put(machine, rn, base, Width.W64)
+
+
+def single(
+    machine: Machine, op: OpLoadStore | OpLoadStoreUnscaled, rt: Reg, address: int
+) -> Machine | None:
+    """One register transferred by `op` at `address`, or None outside the window."""
+    at = inside(machine, address, op.size)
+    return (
+        None
+        if at is None
+        else transfer(machine, Transfer(TRANSFERS[op], op.size, op.width), rt, at)
+    )
+
+
+def load_store(i: LoadStore, machine: Machine, place: Place) -> Stepped:
+    """LDR, STR and their B, H, SB, SH, SW forms, every addressing mode, writeback after the
+    access (C6.2.216 and the other LoadStore pages)."""
+    address, base = effective(machine, i.addr, i.op.size)
+    after = single(machine, i.op, i.rt, address)
+    return OUTSIDE if after is None else (written_back(after, i.addr.rn, base), place.index + 1)
+
+
+def unscaled(i: LoadStoreUnscaled, machine: Machine, place: Place) -> Stepped:
+    """LDUR, STUR and their forms (C6.2.259-.264, .446-.448): Xn + simm9."""
+    after = single(machine, i.op, i.rt, displaced(machine, i.rn, i.simm9))
+    return OUTSIDE if after is None else (after, place.index + 1)
+
+
+def pair(i: Pair, machine: Machine, place: Place) -> Stepped:
+    """STP, LDP, LDPSW (C6.2.414, .214, .215): Rt at the address, Rt2 at the next `size`
+    bytes, in each mode; LDPSW sign-extends its words to 64 bits."""
+    size = 4 if i.op is OpPair.LDPSW else i.width // 8
+    address, base = effective(machine, MODES[i.mode](i.rn, i.imm), size)
+    at = inside(machine, address, 2 * size)
+    if at is None:
+        return OUTSIDE
+    how = Transfer(PAIRED[i.op], size, i.width)
+    after = transfer(transfer(machine, how, i.rt, at), how, i.rt2, at + size)
+    return written_back(after, i.rn, base), place.index + 1
 
 
 CONTROL: dict[type, Callable[[Any, Machine, Place], Stepped]] = {
@@ -646,9 +795,9 @@ CONTROL: dict[type, Callable[[Any, Machine, Place], Stepped]] = {
     TestBranch: bit_branch,
     Adr: adr,
     BranchReg: branch_reg,
-    LoadStore: memory,
-    LoadStoreUnscaled: memory,
-    Pair: memory,
+    LoadStore: load_store,
+    LoadStoreUnscaled: unscaled,
+    Pair: pair,
 }
 
 

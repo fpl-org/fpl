@@ -3,6 +3,7 @@ against goldens worked from the C6.2 pseudocode, flags against an independent co
 exact integers, division and zero extension pinned, and the evaluator's contracts."""
 
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from fractions import Fraction
 
 import icontract
@@ -423,3 +424,130 @@ def test_contracts_are_on() -> None:
     """run refuses a machine without 31 registers: the precondition is checked."""
     with pytest.raises(icontract.ViolationError):
         run((), Machine((0,), 0, BASE), 1)
+
+
+WIN = 0x4000_0000  # the window's address, in x28
+WINDOW = bytes(range(256))
+X27, X28 = model.Reg.X27, model.Reg.X28
+LS, LSU, PAIR = model.OpLoadStore, model.OpLoadStoreUnscaled, model.OpPair
+
+
+def windowed(window: bytes = WINDOW, **regs: int) -> Machine:
+    """A machine at BASE whose window is `window` at WIN, x27 at its middle unless `regs`
+    names it, and `regs`."""
+    return replace(machine(**({"x28": WIN, "x27": WIN + 128} | regs)), window=window)
+
+
+def patched(at: int, data: bytes) -> bytes:
+    """WINDOW with `data` written at `at`."""
+    return WINDOW[:at] + data + WINDOW[at + len(data) :]
+
+
+def word(first: int) -> int:
+    """The little-endian eight bytes of WINDOW from `first`."""
+    return int.from_bytes(WINDOW[first : first + 8], "little")
+
+
+MEMORY = [
+    (
+        [model.LoadStore(LS.STR_X, X1, model.Offset(X28, 8))],
+        windowed(x1=0x1122_3344_5566_7788),
+        windowed(patched(8, bytes.fromhex("8877665544332211")), x1=0x1122_3344_5566_7788),
+    ),
+    (
+        [model.LoadStore(LS.LDRSB_W, X1, model.Offset(X28, 0x80))],
+        windowed(x1=TOP),
+        windowed(x1=0xFFFF_FF80),
+    ),
+    (
+        [model.LoadStore(LS.LDRSB_X, X1, model.Offset(X28, 0x7F))],
+        windowed(),
+        windowed(x1=0x7F),
+    ),
+    (
+        [model.LoadStoreUnscaled(LSU.LDURSH_X, X1, X28, 0x81)],
+        windowed(),
+        windowed(x1=0xFFFF_FFFF_FFFF_8281),
+    ),
+    (
+        [model.LoadStore(LS.LDRSW, X1, model.Offset(X28, 0xFC))],
+        windowed(),
+        windowed(x1=0xFFFF_FFFF_FFFE_FDFC),
+    ),
+    (
+        [model.LoadStore(LS.LDR_W, X1, model.PreIndex(X27, -3))],
+        windowed(x1=TOP),
+        windowed(x1=0x807F_7E7D, x27=WIN + 125),
+    ),
+    (
+        [model.LoadStore(LS.LDRH, X1, model.PostIndex(X27, 5))],
+        windowed(),
+        windowed(x1=0x8180, x27=WIN + 133),
+    ),
+    (
+        [model.LoadStore(LS.LDRB, X1, model.RegOffset(X27, X2, model.Extend.SXTW, False))],
+        windowed(x2=0x1234_5678_FFFF_FFF0),
+        windowed(x1=0x70, x2=0x1234_5678_FFFF_FFF0),
+    ),
+    (
+        [model.LoadStore(LS.LDR_X, X1, model.RegOffset(X28, X2, model.Extend.UXTX, True))],
+        windowed(x2=3),
+        windowed(x1=word(24), x2=3),
+    ),
+    (
+        [model.LoadStore(LS.STRH, X1, model.Offset(X28, 2))],
+        windowed(x1=0xABCD_1234),
+        windowed(patched(2, b"\x34\x12"), x1=0xABCD_1234),
+    ),
+    (
+        [model.LoadStoreUnscaled(LSU.STURB, ZR, X27, -1)],
+        windowed(),
+        windowed(patched(127, b"\x00")),
+    ),
+    (
+        [model.Pair(PAIR.STP, model.Width.W32, X1, X2, X27, -8, model.Mode.PRE)],
+        windowed(x1=0x1111_1111_A1A2_A3A4, x2=0xB1B2_B3B4),
+        windowed(
+            patched(120, bytes.fromhex("a4a3a2a1b4b3b2b1")),
+            x1=0x1111_1111_A1A2_A3A4,
+            x2=0xB1B2_B3B4,
+            x27=WIN + 120,
+        ),
+    ),
+    (
+        [model.Pair(PAIR.LDPSW, W64, X1, X2, X28, 0xF8, model.Mode.OFFSET)],
+        windowed(),
+        windowed(x1=0xFFFF_FFFF_FBFA_F9F8, x2=0xFFFF_FFFF_FFFE_FDFC),
+    ),
+    (
+        [model.Pair(PAIR.LDP, W64, X1, X2, X27, 16, model.Mode.POST)],
+        windowed(x27=WIN + 3),
+        windowed(x1=word(3), x2=word(11), x27=WIN + 19),
+    ),
+    (
+        [model.Pair(PAIR.LDP, model.Width.W32, X1, X2, X28, 4, model.Mode.OFFSET)],
+        windowed(x1=TOP, x2=TOP),
+        windowed(x1=0x0706_0504, x2=0x0B0A_0908),
+    ),
+]
+
+
+@pytest.mark.parametrize(("program", "start", "end"), MEMORY)
+def test_memory(program: list[Item], start: Machine, end: Machine) -> None:
+    """Every addressing mode of the three classes, writeback included, little-endian, the
+    signed loads extended to their width and a W load zero-extended; misaligned accesses
+    (+1 of a halfword, +3 of a pair) complete."""
+    assert run(tuple(program), start, 4) == Halted(end)
+
+
+@pytest.mark.parametrize(
+    "program",
+    [
+        [model.LoadStoreUnscaled(LSU.LDUR_X, X1, X28, 252)],
+        [model.Pair(PAIR.LDP, W64, X1, X2, X28, 248, model.Mode.OFFSET)],
+        [model.LoadStore(LS.LDRB, X1, model.PreIndex(X27, -129))],
+    ],
+)
+def test_memory_outside(program: list[Item]) -> None:
+    """An access with a byte past either end of the window is Unmodelled at its index."""
+    assert run(tuple(program), windowed(), 4) == Unmodelled(0, "memory access outside the window")
