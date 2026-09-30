@@ -1,0 +1,84 @@
+"""Not a test: the fixed frame a block runs in, in two flavours, and its record decoder.
+
+The frame follows Apple's "Writing ARM64 code for Apple platforms" on both routes: x18 is
+never touched, x29 stays a valid frame record, sp moves only by 256 and stays 16-byte aligned.
+Per block i it pushes a 256-byte record, stores the block's base address (`adr`) at 240, clears
+NZCV, runs the block, then stores x0-x17, x19-x28 and x30 at `8 * j` (j = 0..28), NZCV at 232
+and i at 248. After the last block it writes every record to stdout, last block first, and
+exits 0: on Darwin (`_main`, Mach-O) through libSystem's `_write` and `_exit`, since raw
+syscalls are not a stable ABI there; on Linux (`_start`, static ELF) by `svc #0` (write 64,
+exit 93). The records sit on the stack, sp-relative, so no line needs a relocation and one
+text serves both formats. No comments: Mach-O starts them with `;`, ELF with `//`.
+
+It uses `mrs`/`msr nzcv`, `svc` and a platform ABI, all outside the IR's subset, so it lives
+here (hole `frame-home`).
+"""
+
+import struct
+import subprocess
+from collections.abc import Sequence
+from dataclasses import dataclass
+
+RECORD = 256
+OBSERVED = (*range(18), *range(19, 29), 30)  # the registers stored, slot j at byte 8 * j
+NZCV, BASE, INDEX = 232, 240, 248
+ENTRY = {"Darwin": "_main", "Linux": "_start"}
+WRITE_AND_EXIT = {
+    "Darwin": "\tbl\t_write\n\tmov\tx0, #0\n\tbl\t_exit\n",
+    "Linux": "\tmov\tx8, #64\n\tsvc\t#0\n\tmov\tx0, #0\n\tmov\tx8, #93\n\tsvc\t#0\n",
+}
+
+
+class RunError(Exception):
+    """The run did not exit 0 with one well-formed record per block."""
+
+
+@dataclass(frozen=True, slots=True)
+class Record:
+    """What one block left behind: the observed registers by number, NZCV (bits 31..28 of
+    the `mrs` value), the block's base address, and the block's index."""
+
+    regs: dict[int, int]
+    nzcv: int
+    base: int
+    index: int
+
+
+def block(index: int, text: str) -> str:
+    """Block `index` inside its record: push, base, flags, the block, then the stores."""
+    label = f".Lb{index}"
+    stores = "".join(f"\tstr\tx{reg}, [sp, #{8 * j}]\n" for j, reg in enumerate(OBSERVED))
+    return (
+        f"\tsub\tsp, sp, #{RECORD}\n\tadr\tx0, {label}\n\tstr\tx0, [sp, #{BASE}]\n"
+        f"\tmsr\tnzcv, xzr\n{label}:\n{text}{stores}"
+        f"\tmrs\tx0, nzcv\n\tstr\tx0, [sp, #{NZCV}]\n"
+        f"\tmov\tx0, #{index}\n\tstr\tx0, [sp, #{INDEX}]\n"
+    )
+
+
+def frame(system: str, blocks: Sequence[str]) -> str:
+    """The whole program for `system`'s route, the printed `blocks` run in order."""
+    entry = ENTRY[system]
+    size = RECORD * len(blocks)
+    return (
+        f"\t.text\n\t.globl\t{entry}\n\t.p2align\t2\n{entry}:\n"
+        "\tstp\tx29, x30, [sp, #-16]!\n\tmov\tx29, sp\n"
+        + "".join(block(index, text) for index, text in enumerate(blocks))
+        + f"\tmov\tx0, #1\n\tmov\tx1, sp\n\tmov\tx2, #{size}\n"
+        + WRITE_AND_EXIT[system]
+    )
+
+
+def records(done: subprocess.CompletedProcess[bytes], count: int) -> tuple[Record, ...]:
+    """The `count` records the run wrote, first block first, or a `RunError` showing it."""
+    shown = f"exit {done.returncode}, stderr {done.stderr!r}, stdout {done.stdout.hex()}"
+    if done.returncode != 0 or len(done.stdout) != RECORD * count:
+        raise RunError(f"expected exit 0 and {count} records of {RECORD} bytes: {shown}")
+    found: list[Record] = []
+    for index in range(count):
+        at = RECORD * (count - 1 - index)
+        words = struct.unpack_from("<32Q", done.stdout, at)
+        found.append(Record(dict(zip(OBSERVED, words, strict=False)), *words[29:32]))
+        if found[-1].index != index:
+            raise RunError(f"record {index} has index {found[-1].index}: {shown}")
+    return tuple(found)

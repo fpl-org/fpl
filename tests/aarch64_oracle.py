@@ -160,3 +160,39 @@ def resolved(shared: Path | None) -> Tools:
         tools = checked(resolve(platform.system()))
         found.write_text(dump(tools))
         return tools
+
+
+# The run route, per platform: the object format the block is assembled for, and how the
+# linked program is started. Darwin runs a Mach-O natively (arm64 macOS runs no static
+# executables, so it links libSystem; the linker's default ad-hoc signature stays on, since an
+# unsigned binary is killed); Linux runs a static ELF under qemu-aarch64.
+TRIPLE = {"Darwin": "-triple=arm64-apple-macos14.0", "Linux": "-triple=aarch64-linux-gnu"}
+TIMEOUT = 10  # seconds; a run that outlasts it is a hang, reported as a failure
+
+
+def run(*argv: str | Path) -> subprocess.CompletedProcess[bytes]:
+    """Run a tool or a program to completion within `TIMEOUT`, output captured, unchecked."""
+    return subprocess.run(argv, capture_output=True, check=False, timeout=TIMEOUT)
+
+
+def assemble(tools: Tools, source: str, work: Path) -> subprocess.CompletedProcess[bytes]:
+    """Assemble `source` for the route's object format into `work/prog.o`."""
+    (work / "prog.s").write_text(source)
+    files = ("-o", work / "prog.o", work / "prog.s")
+    return run(tools.mc, TRIPLE[tools.system], "-filetype=obj", *files)
+
+
+def link(tools: Tools, work: Path) -> subprocess.CompletedProcess[bytes]:
+    """Link `work/prog.o` into the executable `work/prog`, as the route links it."""
+    out = ("-o", work / "prog", work / "prog.o")
+    if tools.system == "Linux":
+        return run(tools.linker, "-static", "-e", "_start", *out)
+    sdk = ("-platform_version", "macos", "14.0", SDK, "-syslibroot", tools.host, "-lSystem")
+    return run(tools.linker, "-arch", "arm64", *sdk, *out)
+
+
+def execute(tools: Tools, work: Path) -> subprocess.CompletedProcess[bytes]:
+    """Run `work/prog`: natively on Darwin, under qemu-aarch64 on Linux."""
+    if tools.system == "Linux":
+        return run(tools.host, work / "prog")
+    return run(work / "prog")
