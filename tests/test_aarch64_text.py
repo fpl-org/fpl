@@ -9,6 +9,8 @@ from fpl.asm.aarch64 import model
 from fpl.asm.aarch64.alias import preferred
 from fpl.asm.aarch64.model import (
     AddSubExtended,
+    AddSubImm,
+    AddSubShifted,
     Adr,
     Bitfield,
     Branch,
@@ -46,6 +48,7 @@ from fpl.asm.aarch64.model import (
     Program,
     Reg,
     RegOffset,
+    Shift,
     Width,
 )
 from fpl.asm.aarch64.text import ParseError, parse_program, print_program
@@ -156,6 +159,118 @@ def test_a_line_not_in_canonical_form_is_refused_with_its_number(line: str) -> N
     assert str(refused.value) == f"line 3: not an instruction in canonical form: {line!r}"
 
 
+# Lines llvm-objdump 21.1.8 prints (checked through aarch64_oracle.disassemble): each alias row
+# at both widths where it fires at both, its registers distinct where the row lets them be, and
+# the edges of the rows' conditions and of the operand forms.
+DISASSEMBLED = (
+    "\tmov\tw1, #0",
+    "\tmov\tx1, #0",
+    "\tmov\tw1, #-1",
+    "\tmov\tx1, #-1",
+    "\tmov\tw1, #65537",
+    "\ttst\tw1, #0x1",
+    "\ttst\tx1, #0x1",
+    "\tmov\tw1, wsp",
+    "\tmov\tx1, sp",
+    "\tcmn\tw1, #0",
+    "\tcmn\tx1, #0",
+    "\tcmp\tw1, #0",
+    "\tcmp\tx1, #0",
+    "\tmov\tw1, w2",
+    "\tmov\tx1, x2",
+    "\tmvn\tw1, w2",
+    "\tmvn\tx1, x2",
+    "\ttst\tw1, w2",
+    "\ttst\tx1, x2",
+    "\tcmn\tw1, w2, uxtb",
+    "\tcmn\tx1, w2, uxtb",
+    "\tcmp\tw1, w2, uxtb",
+    "\tcmp\tx1, w2, uxtb",
+    "\tcmn\tw1, w2",
+    "\tcmn\tx1, x2",
+    "\tcmp\tw1, w2",
+    "\tcmp\tx1, x2",
+    "\tneg\tw1, w2",
+    "\tneg\tx1, x2",
+    "\tnegs\tw1, w2",
+    "\tnegs\tx1, x2",
+    "\tngc\tw1, w2",
+    "\tngc\tx1, x2",
+    "\tngcs\tw1, w2",
+    "\tngcs\tx1, x2",
+    "\tasr\tw1, w2, #0",
+    "\tsbfiz\tw1, w2, #25, #1",
+    "\tsbfiz\tx1, x2, #57, #1",
+    "\tsbfx\tw1, w2, #0, #1",
+    "\tsbfx\tx1, x2, #0, #1",
+    "\tsxtb\tw1, w2",
+    "\tsxtb\tx1, w2",
+    "\tsxth\tw1, w2",
+    "\tsxth\tx1, w2",
+    "\tsxtw\tx1, w2",
+    "\tbfi\tw1, w2, #25, #1",
+    "\tbfi\tx1, x2, #57, #1",
+    "\tbfi\tw1, wzr, #25, #1",
+    "\tbfi\tx1, xzr, #57, #1",
+    "\tbfxil\tw1, w2, #0, #1",
+    "\tbfxil\tx1, x2, #0, #1",
+    "\tlsl\tw1, w2, #31",
+    "\tlsl\tx1, x2, #63",
+    "\tlsr\tw1, w2, #0",
+    "\tubfiz\tw1, w2, #25, #1",
+    "\tubfiz\tx1, x2, #57, #1",
+    "\tubfx\tw1, w2, #0, #1",
+    "\tubfx\tx1, x2, #0, #1",
+    "\tuxtb\tw1, w2",
+    "\tuxth\tw1, w2",
+    "\tror\tw1, wzr, #0",
+    "\tror\tx1, xzr, #0",
+    "\tlsl\tw1, w2, w3",
+    "\tlsl\tx1, x2, x3",
+    "\tlsr\tw1, w2, w3",
+    "\tlsr\tx1, x2, x3",
+    "\tasr\tw1, w2, w3",
+    "\tasr\tx1, x2, x3",
+    "\tror\tw1, w2, w3",
+    "\tror\tx1, x2, x3",
+    "\tmul\tw1, w2, w3",
+    "\tmul\tx1, x2, x3",
+    "\tmneg\tw1, w2, w3",
+    "\tmneg\tx1, x2, x3",
+    "\tsmull\tx1, w2, w3",
+    "\tsmnegl\tx1, w2, w3",
+    "\tumull\tx1, w2, w3",
+    "\tumnegl\tx1, w2, w3",
+    "\tcset\tw1, ne",
+    "\tcset\tx1, ne",
+    "\tcinc\tw1, w0, ne",
+    "\tcinc\tx1, x0, ne",
+    "\tcsetm\tw1, ne",
+    "\tcsetm\tx1, ne",
+    "\tcinv\tw1, w0, ne",
+    "\tcinv\tx1, x0, ne",
+    "\tcneg\tw1, wzr, ne",
+    "\tcneg\tx1, xzr, ne",
+    "\tret",
+    "\tmov\tx1, #-71777214294589696",
+    "\tmov\tx1, #281470681808895",
+    "\tlsl\tw1, w2, #1",
+    "\tsbfx\tw1, w2, #0, #31",
+    "\tasr\tx1, x2, #3",
+    "\tlsr\tx1, x2, #3",
+    "\tldr\tx0, [x1, w2, uxtw]",
+    "\tldr\tx0, [x1, x2]",
+)
+
+
+@fresh
+def test_distinct_register_lines_read_back_as_themselves() -> None:
+    """Every line reads to an instruction that prints as that line: a row whose builder
+    swaps two registers, or whose text names one at the wrong width, fails here."""
+    text = "".join(line + "\n" for line in DISASSEMBLED)
+    assert print_program(parse_program(text)) == text
+
+
 @fresh
 @pytest.mark.parametrize(
     ("line", "instr"),
@@ -166,6 +281,22 @@ def test_a_line_not_in_canonical_form_is_refused_with_its_number(line: str) -> N
         (
             "\tldrb\tw1, [x2, x3, uxtb #0]",
             LoadStore(OpLoadStore.LDRB, Reg.X1, RegOffset(Reg.X2, Reg.X3, Extend.UXTB, s=True)),
+        ),
+        (
+            "\tsubs\twzr, w1, #4096",
+            AddSubImm(OpAddSub.SUBS, Width.W32, Reg.ZR, Reg.X1, 4096, False),
+        ),
+        (
+            "\tsubs\txzr, x1, w2, uxtb #5",
+            AddSubExtended(OpAddSub.SUBS, Width.W64, Reg.ZR, Reg.X1, Reg.X2, Extend.UXTB, 5),
+        ),
+        (
+            "\tsubs\txzr, x1, x2, ror #1",
+            AddSubShifted(OpAddSub.SUBS, Width.W64, Reg.ZR, Reg.X1, Reg.X2, Shift.ROR, 1),
+        ),
+        (
+            "\tsubs\twzr, w1, w2, lsl #32",
+            AddSubShifted(OpAddSub.SUBS, Width.W32, Reg.ZR, Reg.X1, Reg.X2, Shift.LSL, 32),
         ),
     ],
 )

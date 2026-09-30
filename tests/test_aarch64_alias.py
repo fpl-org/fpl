@@ -320,6 +320,71 @@ def test_each_alias_row_fires_exactly_when_its_spec_condition_holds(
     }
 
 
+# Each row's cite and mnemonic, in the order the rows are tried: the page and the condition
+# it restates, and the alias as llvm-objdump prints it (BFC prints bfi, alias-divergence).
+CITED = [
+    ("C6.2.285 MOVZ, MOV (wide immediate)", "mov"),
+    ("C6.2.284 MOVN, MOV (inverted wide immediate)", "mov"),
+    ("C6.2.301 ORR (immediate), MOV (bitmask immediate)", "mov"),
+    ("C6.2.16 ANDS (immediate), TST (immediate)", "tst"),
+    ("C6.2.5 ADD (immediate), MOV (to/from SP)", "mov"),
+    ("C6.2.10 ADDS (immediate), CMN (immediate)", "cmn"),
+    ("C6.2.464 SUBS (immediate), CMP (immediate)", "cmp"),
+    ("C6.2.302 ORR (shifted register), MOV (register)", "mov"),
+    ("C6.2.300 ORN (shifted register), MVN", "mvn"),
+    ("C6.2.17 ANDS (shifted register), TST (shifted register)", "tst"),
+    ("C6.2.9 ADDS (extended register), CMN (extended register): Rd == '11111'", "cmn"),
+    ("C6.2.463 SUBS (extended register), CMP (extended register): Rd == '11111'", "cmp"),
+    ("C6.2.11 ADDS (shifted register), CMN (shifted register): Rd == '11111'", "cmn"),
+    ("C6.2.465 SUBS (shifted register), CMP (shifted register): Rd == '11111'", "cmp"),
+    ("C6.2.458 SUB (shifted register), NEG (shifted register): Rn == '11111'", "neg"),
+    ("C6.2.465 SUBS (shifted register), NEGS: Rn == '11111'", "negs"),
+    ("C6.2.352 SBC, NGC: Rn == '11111'", "ngc"),
+    ("C6.2.353 SBCS, NGCS: Rn == '11111'", "ngcs"),
+    ("C6.2.355 SBFM, ASR (immediate): imms == sf:'11111'", "asr"),
+    ("C6.2.355 SBFM, SBFIZ: UInt(imms) < UInt(immr)", "sbfiz"),
+    ("C6.2.355 SBFM, SBFX: BFXPreferred(sf, opc<1>, imms, immr)", "sbfx"),
+    ("C6.2.355 SBFM, SXTB: immr == '000000' && imms == '000111'", "sxtb"),
+    ("C6.2.355 SBFM, SXTH: immr == '000000' && imms == '001111'", "sxth"),
+    ("C6.2.355 SBFM, SXTW: immr == '000000' && imms == '011111'", "sxtw"),
+    ("C6.2.39 BFM, BFI: Rn != '11111' && UInt(imms) < UInt(immr)", "bfi"),
+    ("C6.2.39 BFM, BFC: Rn == '11111' && UInt(imms) < UInt(immr); llvm-objdump prints bfi", "bfi"),
+    ("C6.2.39 BFM, BFXIL: UInt(imms) >= UInt(immr)", "bfxil"),
+    ("C6.2.487 UBFM, LSL (immediate): imms != sf:'11111' && imms + 1 == immr", "lsl"),
+    ("C6.2.487 UBFM, LSR (immediate): imms == sf:'11111'", "lsr"),
+    ("C6.2.487 UBFM, UBFIZ: UInt(imms) < UInt(immr)", "ubfiz"),
+    ("C6.2.487 UBFM, UBFX: BFXPreferred(sf, opc<1>, imms, immr)", "ubfx"),
+    ("C6.2.487 UBFM, UXTB: immr == '000000' && imms == '000111'", "uxtb"),
+    ("C6.2.487 UBFM, UXTH: immr == '000000' && imms == '001111'", "uxth"),
+    ("C6.2.160 EXTR, ROR (immediate): Rn == Rm", "ror"),
+    ("C6.2.271 LSLV, LSL (register): unconditionally", "lsl"),
+    ("C6.2.274 LSRV, LSR (register): unconditionally", "lsr"),
+    ("C6.2.21 ASRV, ASR (register): unconditionally", "asr"),
+    ("C6.2.349 RORV, ROR (register): unconditionally", "ror"),
+    ("C6.2.275 MADD, MUL: Ra == '11111'", "mul"),
+    ("C6.2.291 MSUB, MNEG: Ra == '11111'", "mneg"),
+    ("C6.2.369 SMADDL, SMULL: Ra == '11111'", "smull"),
+    ("C6.2.378 SMSUBL, SMNEGL: Ra == '11111'", "smnegl"),
+    ("C6.2.491 UMADDL, UMULL: Ra == '11111'", "umull"),
+    ("C6.2.497 UMSUBL, UMNEGL: Ra == '11111'", "umnegl"),
+    ("C6.2.141 CSINC, CSET: Rm == '11111' && cond != '111x' && Rn == '11111'", "cset"),
+    ("C6.2.141 CSINC, CINC: Rm != '11111' && cond != '111x' && Rn != '11111' && Rn == Rm", "cinc"),
+    ("C6.2.142 CSINV, CSETM: Rm == '11111' && cond != '111x' && Rn == '11111'", "csetm"),
+    ("C6.2.142 CSINV, CINV: Rm != '11111' && cond != '111x' && Rn != '11111' && Rn == Rm", "cinv"),
+    ("C6.2.143 CSNEG, CNEG: cond != '111x' && Rn == Rm", "cneg"),
+]
+
+
+@fresh
+def test_each_row_carries_its_page_and_the_alias_mnemonic() -> None:
+    """Every row's cite and mnemonic, in order; each mnemonic is its cited alias in lower
+    case, but BFC's, which llvm-objdump prints as bfi."""
+    every = [row for group in rows().values() for row in group]
+    assert [(row.cite, row.mnemonic) for row in every] == CITED
+    named = [key(row)[1].lower() for row in every]
+    assert [row.mnemonic for row in every] == ["bfi" if name == "bfc" else name for name in named]
+
+
 @fresh
 @pytest.mark.parametrize(
     ("width", "count", "known"),
