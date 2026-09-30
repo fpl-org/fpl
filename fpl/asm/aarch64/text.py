@@ -5,7 +5,7 @@ its preferred disassembly (`alias.preferred`), `\t{mnemonic}` when it has no ope
 `ret`), and `{name}:` for a label; every line ends in a newline.
 
 `parse_program` reads exactly that form back. For each line it tries every reading of the
-mnemonic (alias rows and base forms, `alias.CANDIDATES`) and keeps the one whose reprint is
+mnemonic (alias rows and base forms, `alias.candidates()`) and keeps the one whose reprint is
 the line, so anything not in canonical form, such as `ldrh w1, [x2, x3, lsl #0]` for the
 S = 0 form, is refused with its line number.
 """
@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass
 from typing import override
 
-from fpl.asm.aarch64.alias import CANDIDATES, Operands, preferred
+from fpl.asm.aarch64.alias import Operands, candidates, preferred
 from fpl.asm.aarch64.model import Instr, Item, Label, Program
 
 LABEL = re.compile(r"(\S+):")
@@ -53,7 +53,7 @@ def instruction(text: str) -> Instr | None:
     if found is None:
         return None
     mnemonic, operands = found.group(1), found.group(2) or ""
-    for build in CANDIDATES.get(mnemonic, ()):
+    for build in candidates().get(mnemonic, ()):
         try:
             instr = build(Operands.of(operands))
         except (LookupError, ValueError, TypeError):

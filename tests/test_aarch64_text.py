@@ -1,7 +1,7 @@
 """print_program and parse_program: one canonical line per item, and back."""
 
 import pytest
-from aarch64_strategies import bases, programs, witnesses
+from aarch64_strategies import bases, fresh_tables, programs, witnesses
 from hypothesis import example, given
 from hypothesis import strategies as st
 
@@ -58,6 +58,9 @@ items = st.one_of(
     st.builds(MoveWide, st.sampled_from(OpMoveWide), widths, regs, imm16s, st.integers(0, 3)),
     st.builds(MulAdd, st.sampled_from(OpMulAdd), widths, regs, regs, regs, regs),
 )
+
+
+pytestmark = pytest.mark.usefixtures(fresh_tables.__name__)
 
 
 @given(st.lists(items).map(tuple))

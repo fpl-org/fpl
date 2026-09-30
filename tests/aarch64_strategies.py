@@ -23,11 +23,12 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from functools import cache, partial
 
+import pytest
 from aarch64_frame import MIDDLE, OBSERVED, Block
 from hypothesis import find
 from hypothesis import strategies as st
 
-from fpl.asm.aarch64.alias import BITMASKS, ROWS, fired
+from fpl.asm.aarch64.alias import candidates, encodings, fired, rows
 from fpl.asm.aarch64.check import NAME, Kind
 from fpl.asm.aarch64.model import (
     AddSubCarry,
@@ -122,7 +123,7 @@ def nzcvs() -> st.SearchStrategy[int]:
 
 def bitmask_imms(width: Width) -> st.SearchStrategy[int]:
     """Logical immediates: the values DecodeBitMasks yields from some (N, immr, imms)."""
-    return st.sampled_from(sorted(BITMASKS[width]))
+    return st.sampled_from(sorted(encodings(width)))
 
 
 def below(width: Width) -> st.SearchStrategy[int]:
@@ -502,11 +503,19 @@ def fires(row: object, instr: Instr) -> bool:
     return fired(instr) is row
 
 
+@pytest.fixture
+def fresh_tables() -> None:
+    """Empty the alias tables' caches before a test, so the test builds them itself: mutmut
+    maps a row builder to the tests that call it, and a warm cache calls it in one test only."""
+    rows.cache_clear()
+    candidates.cache_clear()
+
+
 @cache
 def witnesses() -> Program:
     """One drawn instruction per alias row, from its class's strategy: every row is reached."""
     return tuple(
-        find(BY_CLASS[cls], partial(fires, row)) for cls, rows in ROWS.items() for row in rows
+        find(BY_CLASS[cls], partial(fires, row)) for cls, group in rows().items() for row in group
     )
 
 
@@ -613,7 +622,7 @@ def bad_bitmask(draw: st.DrawFn) -> LogicalImm:
     """BITMASK: a value at the width that DecodeBitMasks never yields (0 and all ones too)."""
     i = draw(logical_imm())
     top = (1 << i.width) - 1
-    imm = draw(outside(0, top, [0, top]).filter(lambda v: v not in BITMASKS[i.width]))
+    imm = draw(outside(0, top, [0, top]).filter(lambda v: v not in encodings(i.width)))
     return replace(i, imm=imm)
 
 

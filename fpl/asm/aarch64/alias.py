@@ -20,7 +20,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from functools import partial
+from functools import cache, partial
 from typing import Any
 
 from fpl.asm.aarch64.model import (
@@ -105,6 +105,7 @@ def decode_bitmask(n: int, immr: int, imms: int, width: Width) -> int | None:
     return sum(element << at for at in range(0, width, esize))
 
 
+@cache
 def encodings(width: Width) -> dict[int, tuple[int, int, int]]:
     """Every encodable value at `width` with its canonical (N, immr, imms): the first in
     (N, immr, imms) order, which is the smallest rotation of the smallest element."""
@@ -118,12 +119,9 @@ def encodings(width: Width) -> dict[int, tuple[int, int, int]]:
     return table
 
 
-BITMASKS = {width: encodings(width) for width in Width}
-
-
 def encode_bitmask(value: int, width: Width) -> tuple[int, int, int] | None:
     """The canonical (N, immr, imms) of `value` as a logical immediate, or None."""
-    return BITMASKS[width].get(value)
+    return encodings(width).get(value)
 
 
 def signed(value: int, width: Width) -> int:
@@ -275,10 +273,12 @@ def moved(i: MoveWide) -> str:
     return f"{i.rd.name_at(i.width)}, #{signed(value, i.width)}"
 
 
-MOVE_WIDE: tuple[Row[MoveWide], ...] = (
-    Row("mov", "C6.2.285 MOVZ, MOV (wide immediate)", movz_mov, moved, movz_of),
-    Row("mov", "C6.2.284 MOVN, MOV (inverted wide immediate)", movn_mov, moved, movn_of),
-)
+def move_wide_rows() -> tuple[Row[MoveWide], ...]:
+    """The MoveWide alias rows, in the order they are tried."""
+    return (
+        Row("mov", "C6.2.285 MOVZ, MOV (wide immediate)", movz_mov, moved, movz_of),
+        Row("mov", "C6.2.284 MOVN, MOV (inverted wide immediate)", movn_mov, moved, movn_of),
+    )
 
 
 def orr_mov(i: LogicalImm) -> bool:
@@ -297,25 +297,27 @@ def ands_tst(i: LogicalImm) -> bool:
     return i.op is OpLogicalImm.ANDS and i.rd is Reg.ZR and encodable
 
 
-LOGICAL_IMM: tuple[Row[LogicalImm], ...] = (
-    Row(
-        "mov",
-        "C6.2.301 ORR (immediate), MOV (bitmask immediate)",
-        orr_mov,
-        lambda i: f"{i.rd.name_at(i.width)}, #{signed(i.imm, i.width)}",
-        lambda o: LogicalImm(
-            OpLogicalImm.ORR, o.width, o.regs[0], Reg.ZR, o.nums[0] % (1 << o.width)
+def logical_imm_rows() -> tuple[Row[LogicalImm], ...]:
+    """The LogicalImm alias rows, in the order they are tried."""
+    return (
+        Row(
+            "mov",
+            "C6.2.301 ORR (immediate), MOV (bitmask immediate)",
+            orr_mov,
+            lambda i: f"{i.rd.name_at(i.width)}, #{signed(i.imm, i.width)}",
+            lambda o: LogicalImm(
+                OpLogicalImm.ORR, o.width, o.regs[0], Reg.ZR, o.nums[0] % (1 << o.width)
+            ),
+            spec_differs=True,
         ),
-        spec_differs=True,
-    ),
-    Row(
-        "tst",
-        "C6.2.16 ANDS (immediate), TST (immediate)",
-        ands_tst,
-        lambda i: f"{i.rn.name_at(i.width)}, #{hex(i.imm)}",
-        lambda o: LogicalImm(OpLogicalImm.ANDS, o.width, Reg.ZR, o.regs[0], o.nums[0]),
-    ),
-)
+        Row(
+            "tst",
+            "C6.2.16 ANDS (immediate), TST (immediate)",
+            ands_tst,
+            lambda i: f"{i.rn.name_at(i.width)}, #{hex(i.imm)}",
+            lambda o: LogicalImm(OpLogicalImm.ANDS, o.width, Reg.ZR, o.regs[0], o.nums[0]),
+        ),
+    )
 
 
 def shift_ok(i: LogicalShifted | AddSubShifted) -> bool:
@@ -351,29 +353,31 @@ def rest(i: LogicalShifted | AddSubShifted, rd: Reg) -> str:
     return names(i.width, rd, i.rm) + shifted(i.shift, i.amount)
 
 
-LOGICAL_SHIFTED: tuple[Row[LogicalShifted], ...] = (
-    Row(
-        "mov",
-        "C6.2.302 ORR (shifted register), MOV (register)",
-        orr_mov_reg,
-        lambda i: names(i.width, i.rd, i.rm),
-        lambda o: logical_of(OpLogical.ORR, o, o.regs[0], Reg.ZR),
-    ),
-    Row(
-        "mvn",
-        "C6.2.300 ORN (shifted register), MVN",
-        orn_mvn,
-        lambda i: rest(i, i.rd),
-        lambda o: logical_of(OpLogical.ORN, o, o.regs[0], Reg.ZR),
-    ),
-    Row(
-        "tst",
-        "C6.2.17 ANDS (shifted register), TST (shifted register)",
-        ands_tst_reg,
-        lambda i: rest(i, i.rn),
-        lambda o: logical_of(OpLogical.ANDS, o, Reg.ZR, o.regs[0]),
-    ),
-)
+def logical_shifted_rows() -> tuple[Row[LogicalShifted], ...]:
+    """The LogicalShifted alias rows, in the order they are tried."""
+    return (
+        Row(
+            "mov",
+            "C6.2.302 ORR (shifted register), MOV (register)",
+            orr_mov_reg,
+            lambda i: names(i.width, i.rd, i.rm),
+            lambda o: logical_of(OpLogical.ORR, o, o.regs[0], Reg.ZR),
+        ),
+        Row(
+            "mvn",
+            "C6.2.300 ORN (shifted register), MVN",
+            orn_mvn,
+            lambda i: rest(i, i.rd),
+            lambda o: logical_of(OpLogical.ORN, o, o.regs[0], Reg.ZR),
+        ),
+        Row(
+            "tst",
+            "C6.2.17 ANDS (shifted register), TST (shifted register)",
+            ands_tst_reg,
+            lambda i: rest(i, i.rn),
+            lambda o: logical_of(OpLogical.ANDS, o, Reg.ZR, o.regs[0]),
+        ),
+    )
 
 
 def add_mov(i: AddSubImm) -> bool:
@@ -398,29 +402,31 @@ def compare_imm_of(op: OpAddSub, o: Operands) -> AddSubImm:
     return AddSubImm(op, o.width, Reg.ZR, o.regs[0], o.nums[0], "lsl" in o.words)
 
 
-ADD_SUB_IMM: tuple[Row[AddSubImm], ...] = (
-    Row(
-        "mov",
-        "C6.2.5 ADD (immediate), MOV (to/from SP)",
-        add_mov,
-        lambda i: names(i.width, i.rd, i.rn),
-        lambda o: AddSubImm(OpAddSub.ADD, o.width, o.regs[0], o.regs[1], 0, lsl12=False),
-    ),
-    Row(
-        "cmn",
-        "C6.2.10 ADDS (immediate), CMN (immediate)",
-        compare_imm(OpAddSub.ADDS),
-        compared_imm,
-        partial(compare_imm_of, OpAddSub.ADDS),
-    ),
-    Row(
-        "cmp",
-        "C6.2.464 SUBS (immediate), CMP (immediate)",
-        compare_imm(OpAddSub.SUBS),
-        compared_imm,
-        partial(compare_imm_of, OpAddSub.SUBS),
-    ),
-)
+def add_sub_imm_rows() -> tuple[Row[AddSubImm], ...]:
+    """The AddSubImm alias rows, in the order they are tried."""
+    return (
+        Row(
+            "mov",
+            "C6.2.5 ADD (immediate), MOV (to/from SP)",
+            add_mov,
+            lambda i: names(i.width, i.rd, i.rn),
+            lambda o: AddSubImm(OpAddSub.ADD, o.width, o.regs[0], o.regs[1], 0, lsl12=False),
+        ),
+        Row(
+            "cmn",
+            "C6.2.10 ADDS (immediate), CMN (immediate)",
+            compare_imm(OpAddSub.ADDS),
+            compared_imm,
+            partial(compare_imm_of, OpAddSub.ADDS),
+        ),
+        Row(
+            "cmp",
+            "C6.2.464 SUBS (immediate), CMP (immediate)",
+            compare_imm(OpAddSub.SUBS),
+            compared_imm,
+            partial(compare_imm_of, OpAddSub.SUBS),
+        ),
+    )
 
 
 def shifted_row(op: OpAddSub, slot: str) -> Callable[[AddSubShifted], bool]:
@@ -448,29 +454,31 @@ def add_sub_row(mnemonic: str, cite: str, op: OpAddSub, zero: str) -> Row[AddSub
     )
 
 
-ADD_SUB_SHIFTED: tuple[Row[AddSubShifted], ...] = (
-    add_sub_row(
-        "cmn",
-        "C6.2.11 ADDS (shifted register), CMN (shifted register): Rd == '11111'",
-        OpAddSub.ADDS,
-        "rd",
-    ),
-    add_sub_row(
-        "cmp",
-        "C6.2.465 SUBS (shifted register), CMP (shifted register): Rd == '11111'",
-        OpAddSub.SUBS,
-        "rd",
-    ),
-    add_sub_row(
-        "neg",
-        "C6.2.458 SUB (shifted register), NEG (shifted register): Rn == '11111'",
-        OpAddSub.SUB,
-        "rn",
-    ),
-    add_sub_row(
-        "negs", "C6.2.465 SUBS (shifted register), NEGS: Rn == '11111'", OpAddSub.SUBS, "rn"
-    ),
-)
+def add_sub_shifted_rows() -> tuple[Row[AddSubShifted], ...]:
+    """The AddSubShifted alias rows, in the order they are tried."""
+    return (
+        add_sub_row(
+            "cmn",
+            "C6.2.11 ADDS (shifted register), CMN (shifted register): Rd == '11111'",
+            OpAddSub.ADDS,
+            "rd",
+        ),
+        add_sub_row(
+            "cmp",
+            "C6.2.465 SUBS (shifted register), CMP (shifted register): Rd == '11111'",
+            OpAddSub.SUBS,
+            "rd",
+        ),
+        add_sub_row(
+            "neg",
+            "C6.2.458 SUB (shifted register), NEG (shifted register): Rn == '11111'",
+            OpAddSub.SUB,
+            "rn",
+        ),
+        add_sub_row(
+            "negs", "C6.2.465 SUBS (shifted register), NEGS: Rn == '11111'", OpAddSub.SUBS, "rn"
+        ),
+    )
 
 
 def compare_extended(op: OpAddSub) -> Callable[[AddSubExtended], bool]:
@@ -489,22 +497,24 @@ def compared_extended(i: AddSubExtended) -> str:
     return f"{i.rn.name_at(i.width)}, {i.rm_name()}{i.extension()}"
 
 
-ADD_SUB_EXTENDED: tuple[Row[AddSubExtended], ...] = (
-    Row(
-        "cmn",
-        "C6.2.9 ADDS (extended register), CMN (extended register): Rd == '11111'",
-        compare_extended(OpAddSub.ADDS),
-        compared_extended,
-        partial(compare_extended_of, OpAddSub.ADDS),
-    ),
-    Row(
-        "cmp",
-        "C6.2.463 SUBS (extended register), CMP (extended register): Rd == '11111'",
-        compare_extended(OpAddSub.SUBS),
-        compared_extended,
-        partial(compare_extended_of, OpAddSub.SUBS),
-    ),
-)
+def add_sub_extended_rows() -> tuple[Row[AddSubExtended], ...]:
+    """The AddSubExtended alias rows, in the order they are tried."""
+    return (
+        Row(
+            "cmn",
+            "C6.2.9 ADDS (extended register), CMN (extended register): Rd == '11111'",
+            compare_extended(OpAddSub.ADDS),
+            compared_extended,
+            partial(compare_extended_of, OpAddSub.ADDS),
+        ),
+        Row(
+            "cmp",
+            "C6.2.463 SUBS (extended register), CMP (extended register): Rd == '11111'",
+            compare_extended(OpAddSub.SUBS),
+            compared_extended,
+            partial(compare_extended_of, OpAddSub.SUBS),
+        ),
+    )
 
 
 def negate_carry(op: OpAddSubCarry) -> Callable[[AddSubCarry], bool]:
@@ -517,22 +527,24 @@ def carry_of(op: OpAddSubCarry, o: Operands) -> AddSubCarry:
     return AddSubCarry(op, o.width, o.regs[0], Reg.ZR, o.regs[1])
 
 
-ADD_SUB_CARRY: tuple[Row[AddSubCarry], ...] = (
-    Row(
-        "ngc",
-        "C6.2.352 SBC, NGC: Rn == '11111'",
-        negate_carry(OpAddSubCarry.SBC),
-        lambda i: names(i.width, i.rd, i.rm),
-        partial(carry_of, OpAddSubCarry.SBC),
-    ),
-    Row(
-        "ngcs",
-        "C6.2.353 SBCS, NGCS: Rn == '11111'",
-        negate_carry(OpAddSubCarry.SBCS),
-        lambda i: names(i.width, i.rd, i.rm),
-        partial(carry_of, OpAddSubCarry.SBCS),
-    ),
-)
+def add_sub_carry_rows() -> tuple[Row[AddSubCarry], ...]:
+    """The AddSubCarry alias rows, in the order they are tried."""
+    return (
+        Row(
+            "ngc",
+            "C6.2.352 SBC, NGC: Rn == '11111'",
+            negate_carry(OpAddSubCarry.SBC),
+            lambda i: names(i.width, i.rd, i.rm),
+            partial(carry_of, OpAddSubCarry.SBC),
+        ),
+        Row(
+            "ngcs",
+            "C6.2.353 SBCS, NGCS: Rn == '11111'",
+            negate_carry(OpAddSubCarry.SBCS),
+            lambda i: names(i.width, i.rd, i.rm),
+            partial(carry_of, OpAddSubCarry.SBCS),
+        ),
+    )
 
 
 def bitfield(op: OpBitfield, i: Bitfield) -> bool:
@@ -608,93 +620,101 @@ def extend_row(op: OpBitfield, mnemonic: str, imms: int, cite: str) -> Row[Bitfi
 
 
 SBFM, BFM, UBFM = OpBitfield.SBFM, OpBitfield.BFM, OpBitfield.UBFM
-BITFIELD: tuple[Row[Bitfield], ...] = (
-    Row(
-        "asr",
-        "C6.2.355 SBFM, ASR (immediate): imms == sf:'11111'",
-        lambda i: bitfield(SBFM, i) and i.imms == i.width - 1,
-        lambda i: f"{names(i.width, i.rd, i.rn)}, #{i.immr}",
-        partial(shift_of, SBFM),
-    ),
-    Row(
-        "sbfiz",
-        "C6.2.355 SBFM, SBFIZ: UInt(imms) < UInt(immr)",
-        lambda i: bitfield(SBFM, i) and i.imms < i.immr,
-        inserted,
-        partial(insert_of, SBFM),
-    ),
-    Row(
-        "sbfx",
-        "C6.2.355 SBFM, SBFX: BFXPreferred(sf, opc<1>, imms, immr)",
-        lambda i: bitfield(SBFM, i) and bfx_preferred(i),
-        extracted,
-        partial(extract_of, SBFM),
-    ),
-    extend_row(SBFM, "sxtb", 7, "C6.2.355 SBFM, SXTB: immr == '000000' && imms == '000111'"),
-    extend_row(SBFM, "sxth", 15, "C6.2.355 SBFM, SXTH: immr == '000000' && imms == '001111'"),
-    extend_row(SBFM, "sxtw", 31, "C6.2.355 SBFM, SXTW: immr == '000000' && imms == '011111'"),
-    Row(
-        "bfi",
-        "C6.2.39 BFM, BFI: Rn != '11111' && UInt(imms) < UInt(immr)",
-        lambda i: bitfield(BFM, i) and i.rn is not Reg.ZR and i.imms < i.immr,
-        inserted,
-        partial(insert_of, BFM),
-    ),
-    Row(
-        "bfi",
-        "C6.2.39 BFM, BFC: Rn == '11111' && UInt(imms) < UInt(immr); llvm-objdump prints bfi",
-        lambda i: bitfield(BFM, i) and i.rn is Reg.ZR and i.imms < i.immr,
-        inserted,
-        partial(insert_of, BFM),
-        spec_differs=True,
-    ),
-    Row(
-        "bfxil",
-        "C6.2.39 BFM, BFXIL: UInt(imms) >= UInt(immr)",
-        lambda i: bitfield(BFM, i) and i.imms >= i.immr,
-        extracted,
-        partial(extract_of, BFM),
-    ),
-    Row(
-        "lsl",
-        "C6.2.487 UBFM, LSL (immediate): imms != sf:'11111' && imms + 1 == immr",
-        lambda i: bitfield(UBFM, i) and i.imms != i.width - 1 and i.imms + 1 == i.immr,
-        lambda i: f"{names(i.width, i.rd, i.rn)}, #{i.width - 1 - i.imms}",
-        lsl_of,
-    ),
-    Row(
-        "lsr",
-        "C6.2.487 UBFM, LSR (immediate): imms == sf:'11111'",
-        lambda i: bitfield(UBFM, i) and i.imms == i.width - 1,
-        lambda i: f"{names(i.width, i.rd, i.rn)}, #{i.immr}",
-        partial(shift_of, UBFM),
-    ),
-    Row(
-        "ubfiz",
-        "C6.2.487 UBFM, UBFIZ: UInt(imms) < UInt(immr)",
-        lambda i: bitfield(UBFM, i) and i.imms < i.immr,
-        inserted,
-        partial(insert_of, UBFM),
-    ),
-    Row(
-        "ubfx",
-        "C6.2.487 UBFM, UBFX: BFXPreferred(sf, opc<1>, imms, immr)",
-        lambda i: bitfield(UBFM, i) and bfx_preferred(i),
-        extracted,
-        partial(extract_of, UBFM),
-    ),
-    extend_row(UBFM, "uxtb", 7, "C6.2.487 UBFM, UXTB: immr == '000000' && imms == '000111'"),
-    extend_row(UBFM, "uxth", 15, "C6.2.487 UBFM, UXTH: immr == '000000' && imms == '001111'"),
-)
-EXTRACT: tuple[Row[Extract], ...] = (
-    Row(
-        "ror",
-        "C6.2.160 EXTR, ROR (immediate): Rn == Rm",
-        lambda i: i.rn is i.rm and fits(i.lsb, i.width),
-        lambda i: f"{names(i.width, i.rd, i.rn)}, #{i.lsb}",
-        lambda o: Extract(o.width, o.regs[0], o.regs[1], o.regs[1], o.nums[0]),
-    ),
-)
+
+
+def bitfield_rows() -> tuple[Row[Bitfield], ...]:
+    """The Bitfield alias rows, in the order they are tried."""
+    return (
+        Row(
+            "asr",
+            "C6.2.355 SBFM, ASR (immediate): imms == sf:'11111'",
+            lambda i: bitfield(SBFM, i) and i.imms == i.width - 1,
+            lambda i: f"{names(i.width, i.rd, i.rn)}, #{i.immr}",
+            partial(shift_of, SBFM),
+        ),
+        Row(
+            "sbfiz",
+            "C6.2.355 SBFM, SBFIZ: UInt(imms) < UInt(immr)",
+            lambda i: bitfield(SBFM, i) and i.imms < i.immr,
+            inserted,
+            partial(insert_of, SBFM),
+        ),
+        Row(
+            "sbfx",
+            "C6.2.355 SBFM, SBFX: BFXPreferred(sf, opc<1>, imms, immr)",
+            lambda i: bitfield(SBFM, i) and bfx_preferred(i),
+            extracted,
+            partial(extract_of, SBFM),
+        ),
+        extend_row(SBFM, "sxtb", 7, "C6.2.355 SBFM, SXTB: immr == '000000' && imms == '000111'"),
+        extend_row(SBFM, "sxth", 15, "C6.2.355 SBFM, SXTH: immr == '000000' && imms == '001111'"),
+        extend_row(SBFM, "sxtw", 31, "C6.2.355 SBFM, SXTW: immr == '000000' && imms == '011111'"),
+        Row(
+            "bfi",
+            "C6.2.39 BFM, BFI: Rn != '11111' && UInt(imms) < UInt(immr)",
+            lambda i: bitfield(BFM, i) and i.rn is not Reg.ZR and i.imms < i.immr,
+            inserted,
+            partial(insert_of, BFM),
+        ),
+        Row(
+            "bfi",
+            "C6.2.39 BFM, BFC: Rn == '11111' && UInt(imms) < UInt(immr); llvm-objdump prints bfi",
+            lambda i: bitfield(BFM, i) and i.rn is Reg.ZR and i.imms < i.immr,
+            inserted,
+            partial(insert_of, BFM),
+            spec_differs=True,
+        ),
+        Row(
+            "bfxil",
+            "C6.2.39 BFM, BFXIL: UInt(imms) >= UInt(immr)",
+            lambda i: bitfield(BFM, i) and i.imms >= i.immr,
+            extracted,
+            partial(extract_of, BFM),
+        ),
+        Row(
+            "lsl",
+            "C6.2.487 UBFM, LSL (immediate): imms != sf:'11111' && imms + 1 == immr",
+            lambda i: bitfield(UBFM, i) and i.imms != i.width - 1 and i.imms + 1 == i.immr,
+            lambda i: f"{names(i.width, i.rd, i.rn)}, #{i.width - 1 - i.imms}",
+            lsl_of,
+        ),
+        Row(
+            "lsr",
+            "C6.2.487 UBFM, LSR (immediate): imms == sf:'11111'",
+            lambda i: bitfield(UBFM, i) and i.imms == i.width - 1,
+            lambda i: f"{names(i.width, i.rd, i.rn)}, #{i.immr}",
+            partial(shift_of, UBFM),
+        ),
+        Row(
+            "ubfiz",
+            "C6.2.487 UBFM, UBFIZ: UInt(imms) < UInt(immr)",
+            lambda i: bitfield(UBFM, i) and i.imms < i.immr,
+            inserted,
+            partial(insert_of, UBFM),
+        ),
+        Row(
+            "ubfx",
+            "C6.2.487 UBFM, UBFX: BFXPreferred(sf, opc<1>, imms, immr)",
+            lambda i: bitfield(UBFM, i) and bfx_preferred(i),
+            extracted,
+            partial(extract_of, UBFM),
+        ),
+        extend_row(UBFM, "uxtb", 7, "C6.2.487 UBFM, UXTB: immr == '000000' && imms == '000111'"),
+        extend_row(UBFM, "uxth", 15, "C6.2.487 UBFM, UXTH: immr == '000000' && imms == '001111'"),
+    )
+
+
+def extract_rows() -> tuple[Row[Extract], ...]:
+    """The Extract alias rows, in the order they are tried."""
+    return (
+        Row(
+            "ror",
+            "C6.2.160 EXTR, ROR (immediate): Rn == Rm",
+            lambda i: i.rn is i.rm and fits(i.lsb, i.width),
+            lambda i: f"{names(i.width, i.rd, i.rn)}, #{i.lsb}",
+            lambda o: Extract(o.width, o.regs[0], o.regs[1], o.regs[1], o.nums[0]),
+        ),
+    )
 
 
 def three_of[T](make: Callable[[Any, Width, Reg, Reg, Reg], T], op: Any, o: Operands) -> T:
@@ -725,12 +745,14 @@ def variable_row(op: OpDataProc2, mnemonic: str, cite: str) -> Row[DataProc2]:
     )
 
 
-DATA_PROC2: tuple[Row[DataProc2], ...] = (
-    variable_row(OpDataProc2.LSLV, "lsl", "C6.2.271 LSLV, LSL (register): unconditionally"),
-    variable_row(OpDataProc2.LSRV, "lsr", "C6.2.274 LSRV, LSR (register): unconditionally"),
-    variable_row(OpDataProc2.ASRV, "asr", "C6.2.21 ASRV, ASR (register): unconditionally"),
-    variable_row(OpDataProc2.RORV, "ror", "C6.2.349 RORV, ROR (register): unconditionally"),
-)
+def data_proc2_rows() -> tuple[Row[DataProc2], ...]:
+    """The DataProc2 alias rows, in the order they are tried."""
+    return (
+        variable_row(OpDataProc2.LSLV, "lsl", "C6.2.271 LSLV, LSL (register): unconditionally"),
+        variable_row(OpDataProc2.LSRV, "lsr", "C6.2.274 LSRV, LSR (register): unconditionally"),
+        variable_row(OpDataProc2.ASRV, "asr", "C6.2.21 ASRV, ASR (register): unconditionally"),
+        variable_row(OpDataProc2.RORV, "ror", "C6.2.349 RORV, ROR (register): unconditionally"),
+    )
 
 
 def accumulates_zero(op: OpMulAdd | OpMulLong, i: MulAdd | MulLong) -> bool:
@@ -750,22 +772,30 @@ def long_product(i: MulLong) -> str:
 
 MADD, MSUB = OpMulAdd.MADD, OpMulAdd.MSUB
 SMADDL, SMSUBL, UMADDL, UMSUBL = OpMulLong
-MUL_ADD: tuple[Row[MulAdd], ...] = (
-    Row("mul", "C6.2.275 MADD, MUL: Ra == '11111'", partial(accumulates_zero, MADD), product,
-        partial(mul_add_of, MADD)),
-    Row("mneg", "C6.2.291 MSUB, MNEG: Ra == '11111'", partial(accumulates_zero, MSUB), product,
-        partial(mul_add_of, MSUB)),
-)  # fmt: skip
-MUL_LONG: tuple[Row[MulLong], ...] = (
-    Row("smull", "C6.2.369 SMADDL, SMULL: Ra == '11111'", partial(accumulates_zero, SMADDL),
-        long_product, partial(mul_long_of, SMADDL)),
-    Row("smnegl", "C6.2.378 SMSUBL, SMNEGL: Ra == '11111'", partial(accumulates_zero, SMSUBL),
-        long_product, partial(mul_long_of, SMSUBL)),
-    Row("umull", "C6.2.491 UMADDL, UMULL: Ra == '11111'", partial(accumulates_zero, UMADDL),
-        long_product, partial(mul_long_of, UMADDL)),
-    Row("umnegl", "C6.2.497 UMSUBL, UMNEGL: Ra == '11111'", partial(accumulates_zero, UMSUBL),
-        long_product, partial(mul_long_of, UMSUBL)),
-)  # fmt: skip
+
+
+def mul_add_rows() -> tuple[Row[MulAdd], ...]:
+    """The MulAdd alias rows, in the order they are tried."""
+    return (
+        Row("mul", "C6.2.275 MADD, MUL: Ra == '11111'", partial(accumulates_zero, MADD), product,
+            partial(mul_add_of, MADD)),
+        Row("mneg", "C6.2.291 MSUB, MNEG: Ra == '11111'", partial(accumulates_zero, MSUB), product,
+            partial(mul_add_of, MSUB)),
+    )  # fmt: skip
+
+
+def mul_long_rows() -> tuple[Row[MulLong], ...]:
+    """The MulLong alias rows, in the order they are tried."""
+    return (
+        Row("smull", "C6.2.369 SMADDL, SMULL: Ra == '11111'", partial(accumulates_zero, SMADDL),
+            long_product, partial(mul_long_of, SMADDL)),
+        Row("smnegl", "C6.2.378 SMSUBL, SMNEGL: Ra == '11111'", partial(accumulates_zero, SMSUBL),
+            long_product, partial(mul_long_of, SMSUBL)),
+        Row("umull", "C6.2.491 UMADDL, UMULL: Ra == '11111'", partial(accumulates_zero, UMADDL),
+            long_product, partial(mul_long_of, UMADDL)),
+        Row("umnegl", "C6.2.497 UMSUBL, UMNEGL: Ra == '11111'", partial(accumulates_zero, UMSUBL),
+            long_product, partial(mul_long_of, UMSUBL)),
+    )  # fmt: skip
 
 
 def settable(i: CondSelect) -> bool:
@@ -797,48 +827,60 @@ def same_row(op: OpCondSelect, mnemonic: str, cite: str, *, zero: bool) -> Row[C
 
 
 CSINC, CSINV, CSNEG = OpCondSelect.CSINC, OpCondSelect.CSINV, OpCondSelect.CSNEG
-COND_SELECT: tuple[Row[CondSelect], ...] = (
-    set_row(
-        CSINC, "cset", "C6.2.141 CSINC, CSET: Rm == '11111' && cond != '111x' && Rn == '11111'"
-    ),
-    same_row(
-        CSINC,
-        "cinc",
-        "C6.2.141 CSINC, CINC: Rm != '11111' && cond != '111x' && Rn != '11111' && Rn == Rm",
-        zero=False,
-    ),
-    set_row(
-        CSINV, "csetm", "C6.2.142 CSINV, CSETM: Rm == '11111' && cond != '111x' && Rn == '11111'"
-    ),
-    same_row(
-        CSINV,
-        "cinv",
-        "C6.2.142 CSINV, CINV: Rm != '11111' && cond != '111x' && Rn != '11111' && Rn == Rm",
-        zero=False,
-    ),
-    same_row(CSNEG, "cneg", "C6.2.143 CSNEG, CNEG: cond != '111x' && Rn == Rm", zero=True),
-)
 
-ROWS: dict[type, tuple[Row[Any], ...]] = {
-    MoveWide: MOVE_WIDE,
-    LogicalImm: LOGICAL_IMM,
-    AddSubImm: ADD_SUB_IMM,  # before ORR's mov: `mov x1, sp` is ADD
-    LogicalShifted: LOGICAL_SHIFTED,
-    AddSubExtended: ADD_SUB_EXTENDED,  # before shifted: `cmn wsp, wzr` is extended
-    AddSubShifted: ADD_SUB_SHIFTED,
-    AddSubCarry: ADD_SUB_CARRY,
-    Bitfield: BITFIELD,
-    Extract: EXTRACT,
-    DataProc2: DATA_PROC2,
-    MulAdd: MUL_ADD,
-    MulLong: MUL_LONG,
-    CondSelect: COND_SELECT,
-}
+
+def cond_select_rows() -> tuple[Row[CondSelect], ...]:
+    """The CondSelect alias rows, in the order they are tried."""
+    return (
+        set_row(
+            CSINC, "cset", "C6.2.141 CSINC, CSET: Rm == '11111' && cond != '111x' && Rn == '11111'"
+        ),
+        same_row(
+            CSINC,
+            "cinc",
+            "C6.2.141 CSINC, CINC: Rm != '11111' && cond != '111x' && Rn != '11111' && Rn == Rm",
+            zero=False,
+        ),
+        set_row(
+            CSINV,
+            "csetm",
+            "C6.2.142 CSINV, CSETM: Rm == '11111' && cond != '111x' && Rn == '11111'",
+        ),
+        same_row(
+            CSINV,
+            "cinv",
+            "C6.2.142 CSINV, CINV: Rm != '11111' && cond != '111x' && Rn != '11111' && Rn == Rm",
+            zero=False,
+        ),
+        same_row(CSNEG, "cneg", "C6.2.143 CSNEG, CNEG: cond != '111x' && Rn == Rm", zero=True),
+    )
+
+
+@cache
+def rows() -> dict[type, tuple[Row[Any], ...]]:
+    """Every class's alias rows, built on the first call rather than at import, so a
+    mutant of a row builder runs in the tests that read the rows."""
+    return {
+        MoveWide: move_wide_rows(),
+        LogicalImm: logical_imm_rows(),
+        AddSubImm: add_sub_imm_rows(),  # before ORR's mov: `mov x1, sp` is ADD
+        LogicalShifted: logical_shifted_rows(),
+        # before shifted: `cmn wsp, wzr` is extended
+        AddSubExtended: add_sub_extended_rows(),
+        AddSubShifted: add_sub_shifted_rows(),
+        AddSubCarry: add_sub_carry_rows(),
+        Bitfield: bitfield_rows(),
+        Extract: extract_rows(),
+        DataProc2: data_proc2_rows(),
+        MulAdd: mul_add_rows(),
+        MulLong: mul_long_rows(),
+        CondSelect: cond_select_rows(),
+    }
 
 
 def fired(instr: Instr) -> Row[Any] | None:
     """The first row of `instr`'s class whose condition holds, if any."""
-    return next((row for row in ROWS.get(type(instr), ()) if row.when(instr)), None)
+    return next((row for row in rows().get(type(instr), ()) if row.when(instr)), None)
 
 
 def mnemonic(instr: Instr) -> str:
@@ -1020,12 +1062,13 @@ SINGLES: dict[str, Callable[[Operands], Instr]] = {
 }
 
 
+@cache
 def candidates() -> dict[str, list[Callable[[Operands], Instr]]]:
     """Every reading of every mnemonic, alias rows first: the parser keeps the one whose
     reprint is the line."""
     table: defaultdict[str, list[Callable[[Operands], Instr]]] = defaultdict(list)
-    for rows in ROWS.values():
-        for row in rows:
+    for group in rows().values():
+        for row in group:
             table[row.mnemonic].append(row.build)
     for ops, build in BASES:
         for op in ops:
@@ -1033,6 +1076,3 @@ def candidates() -> dict[str, list[Callable[[Operands], Instr]]]:
     for name, single in SINGLES.items():
         table[name].append(single)
     return dict(table)
-
-
-CANDIDATES = candidates()

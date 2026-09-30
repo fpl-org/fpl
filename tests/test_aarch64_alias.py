@@ -6,11 +6,11 @@ from collections.abc import Callable
 from typing import Any
 
 import pytest
-from aarch64_strategies import BY_CLASS, witnesses
+from aarch64_strategies import BY_CLASS, fresh_tables, witnesses
 from hypothesis import given
 from hypothesis import strategies as st
 
-from fpl.asm.aarch64.alias import ROWS, Row, fired, preferred
+from fpl.asm.aarch64.alias import Row, decode_bitmask, encodings, fired, preferred, rows
 from fpl.asm.aarch64.model import (
     AddSubCarry,
     AddSubExtended,
@@ -289,7 +289,7 @@ def agreed(row: Row[Any] | None) -> tuple[str, str] | None:
     return None if row is None or row.spec_differs else key(row)
 
 
-ALL = [row for rows in ROWS.values() for row in rows]
+pytestmark = pytest.mark.usefixtures(fresh_tables.__name__)
 
 
 @pytest.fixture(scope="module")
@@ -298,7 +298,7 @@ def reached() -> list[Instr]:
     return [w for w in witnesses() if not isinstance(w, Label)]
 
 
-@given(i=st.one_of(*(BY_CLASS[cls] for cls in ROWS)))
+@given(i=st.one_of(*(BY_CLASS[cls] for cls in rows.__wrapped__())))
 def test_each_alias_row_fires_exactly_when_its_spec_condition_holds(
     reached: list[Instr], i: Instr
 ) -> None:
@@ -306,11 +306,48 @@ def test_each_alias_row_fires_exactly_when_its_spec_condition_holds(
     condition, restated here, holds, over drawn instructions of its class; every row is
     reached by the strategies (witnesses() draws one per row); the spec_differs rows are
     exactly those alias-divergence names: BFM's BFC (printed bfi) and ORR's MOV."""
+    every = [row for group in rows().values() for row in group]
     assert agreed(fired(i)) == spec(i)
-    assert [fired(w) for w in reached] == ALL
-    assert all(spec(w) == agreed(row) for w, row in zip(reached, ALL, strict=True))
-    divergent = {key(row) for row in ALL if row.spec_differs}
+    assert [fired(w) for w in reached] == every
+    assert all(spec(w) == agreed(row) for w, row in zip(reached, every, strict=True))
+    divergent = {key(row) for row in every if row.spec_differs}
     assert divergent == {("C6.2.39", "BFC"), ("C6.2.301", "MOV")}
     assert {page for pages in SPEC.values() for page, _ in pages} == {
-        key(row) for row in ALL if not row.spec_differs
+        key(row) for row in every if not row.spec_differs
     }
+
+
+@pytest.mark.parametrize(
+    ("width", "count", "known"),
+    [
+        (
+            Width.W32,
+            1302,
+            {1: (0, 0, 0), 0x55555555: (0, 0, 60), 0xFFFEFFFF: (0, 15, 30), 0x00FF00FF: (0, 0, 39)},
+        ),
+        (
+            Width.W64,
+            5334,
+            {
+                1: (1, 0, 0),
+                0x5555555555555555: (0, 0, 60),
+                0xFFFFFFFFFFFEFFFF: (1, 47, 62),
+                0x00FF00FF00FF00FF: (0, 0, 39),
+            },
+        ),
+    ],
+)
+def test_the_bitmask_table_holds_each_logical_immediate_once(
+    width: Width, count: int, known: dict[int, tuple[int, int, int]]
+) -> None:
+    """The table built afresh, not the cached one the strategies read: the architecture's
+    1302 values at 32 bits and 5334 at 64, none of them zero or all ones, each decoding back
+    from its triple, and the canonical (smallest N, immr, imms) triple for hand-worked
+    values; all ones and N set at 32 bits are reserved."""
+    table = encodings.__wrapped__(width)
+    assert len(table) == count
+    assert all(0 < value < (1 << width) - 1 for value in table)
+    assert all(decode_bitmask(*triple, width) == value for value, triple in table.items())
+    assert {value: table[value] for value in known} == known
+    assert decode_bitmask(0, 0, 0b111111, width) is None
+    assert decode_bitmask(1, 0, 0, Width.W32) is None
