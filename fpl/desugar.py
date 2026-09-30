@@ -21,6 +21,9 @@ makes its word's effect +fail.
 A line with no code, a comment's or the empty first line, is no statement and no child; its
 comment is not carried into the core, but for a word's docs (fpl/trivia.py). Anything outside
 the implemented set is refused before evaluation (hole unimplemented-words).
+A word with two or more keys, or one with a typed input, is dispatched (design 09 §1.1): its
+clause of arity n is f/n/1, and f/n its dispatcher, one row guarding each typed input with its
+type word and calling the clause; a call takes the arity group its balance picks.
 """
 
 from collections import ChainMap
@@ -71,6 +74,7 @@ LOCAL = Effect((), ("x",))
 HISTORY = Effect((), ("h",))
 DOC = Effect((), ("d",))
 QUERIES = {"history": HISTORY, "doc": DOC, "effect": Effect((), ("e",))}
+PRIME = "\N{PRIME}"
 
 type Here = tuple[str, ...]
 type Part = str | None
@@ -89,6 +93,7 @@ def desugar(program: Program) -> tuple[Statement, ...]:
     lines = coded(program.lines)
     catalog = Catalog({(): list(EFFECTS)}, dict(EFFECTS))
     catalog.enter(lines, ())
+    catalog.settle()
     for here, log in catalog.logs.items():
         for entry in log:
             if isinstance(entry, Mount):
@@ -106,11 +111,16 @@ class Mount:
 @dataclass
 class Catalog:
     """Every directory's log, by path, and the effect of every word, by its path joined. A word
-    is a directory too, holding its history."""
+    is a directory too, holding its history. Each word's heads by key, in the order first
+    written; each dispatched word's arities; the queries that answer at another path, and those
+    refused."""
 
     logs: dict[Here, list[str | Mount]]
     effects: dict[str, Effect]
-    keys: dict[str, dict[int, Key]] = field(default_factory=dict[str, dict[int, Key]])
+    heads: dict[str, dict[Key, Effect]] = field(default_factory=dict[str, dict[Key, Effect]])
+    groups: dict[str, tuple[int, ...]] = field(default_factory=dict[str, tuple[int, ...]])
+    aliases: dict[str, str] = field(default_factory=dict[str, str])
+    refused: dict[str, str] = field(default_factory=dict[str, str])
 
     def enter(self, lines: tuple[Line, ...], here: Here) -> None:
         """Log the definitions, subdirectories and mounts of one directory's lines."""
@@ -119,11 +129,8 @@ class Catalog:
             head, name = definition(line), directory(line)
             if head is not None:
                 log.append(head[0])
-                path = "/".join((*here, head[0]))
-                self.keyed(path, head[1])
-                self.effects[path] = head[1]
-                self.effects |= {f"{path}/{query}": e for query, e in QUERIES.items()}
-                self.logs.setdefault((*here, head[0]), []).extend(QUERIES)
+                self.keyed("/".join((*here, head[0])), head[1])
+                self.queried((*here, head[0]), head[1], [])
             elif name is not None:
                 log.append(name)
                 self.enter(coded(line.block), (*here, name))
@@ -131,11 +138,59 @@ class Catalog:
                 log.append(Mount(mount(line)))
 
     def keyed(self, path: str, effect: Effect) -> None:
-        """Note a definition's key; a second key of one arity is refused until clauses of one
-        arity are ordered (hole unimplemented-words), a same key shadows as before."""
-        key = keyed(effect)
-        if self.keys.setdefault(path, {}).setdefault(len(key), key) != key:
+        """Note a definition's head by its key; a second key of one arity is refused until
+        clauses of one arity are ordered (hole unimplemented-words), a same key shadows as
+        before and keeps its place."""
+        heads, key = self.heads.setdefault(path, {}), keyed(effect)
+        if key not in heads and any(len(other) == len(key) for other in heads):
             unimplemented()
+        heads[key] = effect
+
+    def queried(self, here: Here, effect: Effect, entries: list[str]) -> None:
+        """A word at here, its effect and its queries, its log holding entries before them."""
+        path = "/".join(here)
+        self.effects[path] = effect
+        self.effects |= {f"{path}/{query}": e for query, e in QUERIES.items()}
+        self.logs.setdefault(here, []).extend([*entries, *QUERIES])
+
+    def settle(self) -> None:
+        """Dispatch each word with two or more keys, or one with a typed input."""
+        for path, heads in self.heads.items():
+            typed = any(part is not None for effect in heads.values() for part in effect.types)
+            if len(heads) > 1 or typed:
+                self.dispatched(path, {len(key): effect for key, effect in heads.items()})
+
+    def dispatched(self, path: str, groups: dict[int, Effect]) -> None:
+        """A word's arity groups f/n, each with its clause f/n/1; the doc and history of f/n are
+        its clause's; f's queries are those of its only group, refused naming its groups when
+        it has more."""
+        here = tuple(path.split("/"))
+        self.groups[path] = tuple(sorted(groups))
+        self.effects[path] = groups[self.groups[path][0]]
+        for n, effect in groups.items():
+            self.logs[here].append(str(n))
+            self.queried((*here, str(n)), effect, ["1"])
+            self.queried((*here, str(n), "1"), effect, [])
+            self.aliases |= {f"{path}/{n}/{q}": f"{path}/{n}/1/{q}" for q in ("history", "doc")}
+        if len(groups) == 1:
+            (n,) = groups
+            self.aliases |= {
+                f"{path}/{q}": self.aliases.get(f"{path}/{n}/{q}", f"{path}/{n}/{q}")
+                for q in QUERIES
+            }
+        else:
+            names = " ".join(f"{path}/{n}" for n in self.groups[path])
+            message = "names more than one group:"
+            self.refused |= {f"{path}/{q}": f"{path}/{q} {message} {names}" for q in QUERIES}
+
+    def dispatch(self, path: str, balance: int) -> str:
+        """The arity group a call on balance values takes: the largest arity it saturates, else
+        the smallest; the path itself for a word not dispatched."""
+        groups = self.groups.get(path)
+        if groups is None:
+            return path
+        fits = [n for n in groups if n <= balance]
+        return f"{path}/{max(fits, default=groups[0])}"
 
     def directory(self, here: Here, name: str) -> Here:
         """The directory a name reaches from here outward; none is refused."""
@@ -362,6 +417,7 @@ class _Desugar:
         self.docs = docs
         self.effects = ChainMap(catalog.effects)
         self.here: Here = ()
+        self.dispatchers: set[str] = set()
 
     def statements(self, lines: tuple[Line, ...], here: Here) -> Iterator[Statement]:
         """A directory's definitions and, at the top, the lines to run."""
@@ -372,11 +428,64 @@ class _Desugar:
                 code = self.body(line.block, len(head[1].ins), path)
                 effect = replace(head[1], fails=fallible(code))
                 doc = self.docs.get(line.span.line, "")
-                yield Define("/".join(path), effect, code, doc, line.span)
+                yield from self.defined(Define("/".join(path), effect, code, doc, line.span), here)
             elif name is not None:
                 yield from self.statements(coded(line.block), (*here, name))
             elif not here:
                 yield Run(self.body((line,), 0, here), line.span)
+
+    def defined(self, define: Define, here: Here) -> Iterator[Define]:
+        """A definition; of a dispatched word, its clause, and after the first clause of an
+        arity its dispatcher at that clause's head (design 09 §2.4)."""
+        if define.name not in self.catalog.groups:
+            yield define
+            return
+        n = len(define.effect.ins)
+        clause = replace(define, clause=(n, 1))
+        yield clause
+        if clause.word not in self.dispatchers:
+            self.dispatchers.add(clause.word)
+            yield self.dispatcher(clause, here)
+
+    def dispatcher(self, clause: Define, here: Here) -> Define:
+        """The dispatcher of a clause: one row binding at each input a fresh name, its slot's
+        name, a prime and its position, guarding
+        each typed input with its type word, then pushing every input back in order and calling
+        the clause; +fail when the row does not catch every value."""
+        span, effect = clause.span, clause.effect
+        fresh = [f"{name}{PRIME}{i}" for i, name in enumerate(effect.ins, 1)]
+        patterns = tuple(
+            Var(name) if part is None else Guarded(Var(name), self.tested(part, here), span)
+            for name, part in zip(fresh, effect.types, strict=True)
+        )
+        body = (*(Call(name, span) for name in fresh), Call(clause.word, span))
+        code = (Match((Row(patterns, body),), span),)
+        n = len(effect.ins)
+        return Define(
+            clause.name,
+            replace(effect, fails=fallible(code)),
+            code,
+            span=span,
+            clause=(n,),
+            clauses=(clause.word,),
+        )
+
+    def tested(self, part: str, here: Here) -> str:
+        """The word a type names from the directory of its definition, on one value."""
+        return self.catalog.dispatch(self.catalog.resolve(here, (part,)), 1)
+
+    def routed(self, nodes: tuple[Node, ...], balance: int) -> tuple[Node, ...]:
+        """The nodes, each call of a dispatched word taking the arity group its balance picks;
+        a word reaching below the balance leaves it at what it adds."""
+        out: list[Node] = []
+        for node in nodes:
+            taken = node
+            if isinstance(node, Call) and not self.local(node.name):
+                taken = Call(self.catalog.dispatch(node.name, balance), node.span)
+            takes, leaves = self.arity(taken)
+            balance = max(0, balance - takes) + leaves
+            out.append(taken)
+        return tuple(out)
 
     def body(self, lines: tuple[Line, ...], balance: int, here: Here) -> tuple[Node, ...]:
         """Lines on one stack in turn, each starting on the balance the one before left, their
@@ -396,11 +505,12 @@ class _Desugar:
             )
             for part in parts:
                 before = self.effects
-                nodes = part()
+                written = part()
+                nodes = self.routed(written, balance)
                 after = self.balance(nodes, balance)
                 if after is None:
+                    nodes, after = (Push(Quotation(scoped(self.routed(written, 0)))),), balance + 1
                     self.effects = before
-                    nodes, after = (Push(Quotation(scoped(nodes))),), balance + 1
                 code.extend(nodes)
                 balance = after
         self.effects = outer
@@ -446,7 +556,7 @@ class _Desugar:
             raise FplError(line.span, f"a row is {arity} patterns and a body")
         outer = self.effects
         patterns = tuple(self.pattern(cell.items) for cell in cells[:arity])
-        body = self.frame(Frame(tuple(cells[arity:]), line.span))
+        body = self.routed(self.frame(Frame(tuple(cells[arity:]), line.span)), 0)
         self.effects = outer
         return Row(patterns, scoped(body))
 
@@ -466,7 +576,8 @@ class _Desugar:
                 test = next(marks, None)
                 if not isinstance(test, Word):
                     unimplemented()
-                found[-1] = Guarded(found[-1], self.call(test).name, item.span)
+                test_word = self.catalog.dispatch(self.call(test).name, 1)
+                found[-1] = Guarded(found[-1], test_word, item.span)
             else:
                 found.append(self.simple(item))
         return tuple(found)
@@ -505,8 +616,10 @@ class _Desugar:
         head, *args = items
         if not isinstance(head, Word):
             unimplemented()
-        name = self.call(head).name
-        effect, found = self.effects[name], self.patterns(tuple(args))
+        called = self.call(head).name
+        found = self.patterns(tuple(args))
+        name = self.catalog.dispatch(called, len(found))
+        effect = self.effects[name]
         if len(effect.outs) != 1:
             raise FplError(head.span, f"{name} is not invertible")
         if len(found) != len(effect.ins):
@@ -516,7 +629,7 @@ class _Desugar:
     def quote(self, build: Callable[[], tuple[Node, ...]]) -> Push:
         """Code built in a scope of its own, pushed as a quotation."""
         outer = self.effects
-        code = build()
+        code = self.routed(build(), 0)
         self.effects = outer
         return Push(Quotation(scoped(code)))
 
@@ -531,7 +644,7 @@ class _Desugar:
         scope thrown away, so its binders reach neither the children nor its own reading."""
         block = coded(line.block)
         outer = self.effects
-        inputs = self.inputs(self.frames(line.frames))
+        inputs = self.inputs(self.routed(self.frames(line.frames), len(block)))
         self.effects = outer
         kinds: list[Slot | None] = [None] * len(block)
         kinds += inputs
@@ -610,7 +723,10 @@ class _Desugar:
         path = "/".join(word.body)
         if not (word.prefix or word.mods) and any(path in s for s in self.effects.maps[:-1]):
             return Call(path, word.span)
-        return Call(self.catalog.resolve(self.origin(word), word.body), word.span)
+        path = self.catalog.resolve(self.origin(word), word.body)
+        if path in self.catalog.refused:
+            raise FplError(word.span, self.catalog.refused[path])
+        return Call(self.catalog.aliases.get(path, path), word.span)
 
     def origin(self, word: Word) -> Here:
         """Where a word's lookup starts: here, or after `..` the directory holding here; a
@@ -653,7 +769,7 @@ class _Desugar:
             unimplemented()
         entries: dict[str, Node] = {}
         for key_item, value_item in zip(items[::2], items[1::2], strict=True):
-            key, nodes = plain(key_item), self.item(value_item)
+            key, nodes = plain(key_item), self.routed(self.item(value_item), 0)
             if key is None or len(nodes) != 1 or self.arity(nodes[0]) != (0, 1):
                 unimplemented()
             if key in entries:
@@ -671,8 +787,10 @@ class _Desugar:
 
 def resugar(statements: tuple[Statement, ...]) -> Program:
     """Core as source that desugars to the same code: no bar but between two literals, which
-    would otherwise strand, no ( ), no block but a definition's one-line body and its docs."""
-    return Program(tuple(line for s in statements for line in (*above(s), written(s))), START)
+    would otherwise strand, no ( ), no block but a definition's one-line body and its docs; a
+    dispatcher is generated, never written."""
+    kept = (s for s in statements if not (isinstance(s, Define) and len(s.clause) == 1))
+    return Program(tuple(line for s in kept for line in (*above(s), written(s))), START)
 
 
 def listing(stacks: tuple[tuple[Value, ...], ...]) -> Program:
