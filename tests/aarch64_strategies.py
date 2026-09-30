@@ -1,22 +1,33 @@
-"""Hypothesis strategies for A64 programs: the valid half (design section 6).
+"""Hypothesis strategies for A64 programs: the valid half and the invalid half (design
+section 6).
 
 Valid means llvm-mc 21.1.8 assembles the printed text and llvm-objdump prints it back: each
 slot draws only the registers it admits (sp or the zero register where the page allows it),
 immediates inside their ranges with the boundaries included, and the constraints llvm-mc
 enforces on loads, stores and pairs (no writeback base among the transfer registers, no load
-pair into one register). No checker stands behind these draws yet; the text laws' llvm-mc
-runs are what show them valid. Registers never include x18 and x29 (hole harness-registers);
+pair into one register); `check` finds nothing in them (strategies-split), and the text laws'
+llvm-mc runs show them valid. Registers never include x18 and x29 (hole harness-registers);
 sp only in the text strategies (`instructions()`), never in `straight_line` (sp-unobserved).
+
+The invalid half, `invalid_programs()` and `far_branches()`, draws a `Drawn`: a program, the
+`Kind` of violation it carries, and the items that carry it. One kind per program, since
+llvm-mc reports its fixup and undefined-symbol errors only for a program that parsed: an
+out-of-range branch next to a line error would show on one side only. Replacements take the
+place of instructions, never of labels, so no definition goes missing by accident. The
+exclusions the agreement laws make (`rewritten`, `checker_only`, `misnamed`) are predicates
+over the program, so the laws and the draws read the same sets.
 """
 
 from collections import defaultdict
 from collections.abc import Callable
+from dataclasses import dataclass, replace
 from functools import cache, partial
 
 from hypothesis import find
 from hypothesis import strategies as st
 
 from fpl.asm.aarch64.alias import BITMASKS, ROWS, fired
+from fpl.asm.aarch64.check import Kind
 from fpl.asm.aarch64.model import (
     AddSubCarry,
     AddSubExtended,
@@ -363,3 +374,250 @@ def bases() -> Program:
     Bitfield has none in range: every in-range SBFM, BFM and UBFM prints as an alias."""
     drawn = (strategy for cls, strategy in BY_CLASS.items() if cls is not Bitfield)
     return tuple(find(strategy, unaliased) for strategy in drawn)
+
+
+# The invalid half.
+
+
+@dataclass(frozen=True, slots=True)
+class Drawn:
+    """A program, the kind of violation drawn into it (None: none), and the items replaced."""
+
+    program: Program
+    kind: Kind | None
+    replaced: tuple[int, ...]
+
+
+def rewrites_imm(imm: int) -> bool:
+    """AddSubImm values llvm-mc silently rewrites (design section 4): 4096 k with 1 <= k <=
+    4095 (`#k, lsl #12`), [-4095, -1] (the opposite op), -4096 k (both)."""
+    k, rest = divmod(abs(imm), 4096)
+    return -4095 <= imm <= -1 or (imm != 0 and rest == 0 and 1 <= k <= 4095)
+
+
+def rewrites_offset(imm: int, size: int) -> bool:
+    """Unsigned offsets llvm-mc silently rewrites to the unscaled form: in [-256, 255] and
+    negative or not a multiple of the access size."""
+    return -256 <= imm <= 255 and (imm < 0 or imm % size != 0)
+
+
+def outside(low: int, high: int, edges: list[int]) -> st.SearchStrategy[int]:
+    """Integers in [low, high], the named edges often."""
+    return st.one_of(st.sampled_from(edges), st.integers(low, high))
+
+
+@st.composite
+def bad_imm12(draw: st.DrawFn) -> AddSubImm:
+    """IMM12: the silent-rewrite sets and the values both sides refuse, lsl12 clear (llvm-mc
+    also rewrites `#-1, lsl #12`)."""
+    silent = st.one_of(
+        st.integers(1, 4095).map(lambda k: 4096 * k),
+        st.integers(-4095, -1),
+        st.integers(1, 4095).map(lambda k: -4096 * k),
+    )
+    loud = st.one_of(
+        outside(4096, 1 << 26, [4097, 16777215]), outside(-(1 << 26), -4096, [-4097])
+    ).filter(lambda imm: not rewrites_imm(imm))
+    imm = draw(st.one_of(silent, loud))
+    return replace(draw(add_sub_imm("sp")), imm=imm, lsl12=False)
+
+
+@st.composite
+def bad_bitmask(draw: st.DrawFn) -> LogicalImm:
+    """BITMASK: a value at the width that DecodeBitMasks never yields (0 and all ones too)."""
+    i = draw(logical_imm())
+    top = (1 << i.width) - 1
+    imm = draw(outside(0, top, [0, top]).filter(lambda v: v not in BITMASKS[i.width]))
+    return replace(i, imm=imm)
+
+
+@st.composite
+def bad_shift(draw: st.DrawFn) -> Instr:
+    """SHIFT_AMOUNT: an amount at or past the width, or ror in add and sub."""
+    i = draw(st.one_of(add_sub_shifted(), logical()))
+    if isinstance(i, AddSubShifted) and draw(st.booleans()):
+        return replace(i, shift=Shift.ROR, amount=draw(st.integers(1, i.width - 1)))
+    return replace(i, amount=draw(st.integers(i.width, 63 + i.width // 32)))
+
+
+@st.composite
+def bad_move_wide(draw: st.DrawFn) -> MoveWide:
+    """MOVE_WIDE: imm16 past 65535, or hw at or past width / 16."""
+    i = draw(move_wide())
+    if draw(st.booleans()):
+        return replace(i, imm16=draw(outside(1 << 16, 1 << 20, [1 << 16])))
+    return replace(i, hw=draw(st.integers(i.width // 16, 4)))
+
+
+@st.composite
+def bad_bitfield(draw: st.DrawFn) -> Instr:
+    """BITFIELD: immr, imms or lsb at or past the width."""
+    i = draw(st.one_of(bitfield(), extract()))
+    past = draw(st.integers(i.width, 63 + i.width // 32))
+    if isinstance(i, Extract):
+        return replace(i, lsb=past)
+    return replace(i, immr=past) if draw(st.booleans()) else replace(i, imms=past)
+
+
+@st.composite
+def bad_cond_imm(draw: st.DrawFn) -> Instr:
+    """COND_IMM: imm5 past 31 or nzcv past 15."""
+    i = draw(st.one_of(register_only("gp")[CondCompareImm], register_only("gp")[CondCompareReg]))
+    assert isinstance(i, CondCompareImm | CondCompareReg)
+    if isinstance(i, CondCompareImm) and draw(st.booleans()):
+        return replace(i, imm5=draw(st.integers(32, 63)))
+    return replace(i, nzcv=draw(st.integers(16, 31)))
+
+
+@st.composite
+def bad_offset(draw: st.DrawFn) -> Instr:
+    """OFFSET: unsigned offsets in the silent sets and outside them (misaligned past 255,
+    past 4095 units, below -256), pre- and post-index and unscaled offsets past a simm9,
+    and pair offsets misaligned or past an imm7."""
+    kind = draw(st.sampled_from(["offset", "index", "unscaled", "pair"]))
+    simm9 = st.one_of(st.integers(256, 600), st.integers(-600, -257))
+    if kind == "unscaled":
+        unscaled = draw(BY_CLASS[LoadStoreUnscaled])
+        assert isinstance(unscaled, LoadStoreUnscaled)
+        return replace(unscaled, simm9=draw(simm9))
+    if kind == "pair":
+        misfit = st.integers(-1100, 1100).filter(lambda v: v % 4 or abs(v) > 504)
+        return replace(draw(pair()), imm=draw(misfit))
+    i = draw(load_store().filter(lambda i: not isinstance(i.addr, RegOffset)))
+    if kind == "index" and isinstance(i.addr, PreIndex | PostIndex):
+        return replace(i, addr=replace(i.addr, imm=draw(simm9)))
+    size, rn = i.op.size, i.addr.rn
+    far = st.one_of(
+        st.integers(256, 4095 * size).filter(lambda v: v % size != 0),
+        outside(4096 * size, 4200 * size, [4096 * size]),
+        st.integers(-600, -257),
+        st.integers(-256, 255).filter(partial(rewrites_offset, size=size)),
+    )
+    return LoadStore(i.op, i.rt, Offset(rn, draw(far)))
+
+
+@st.composite
+def bad_reg31(draw: st.DrawFn) -> Instr:
+    """REG31: sp in a slot of the zero register, or the zero register in a slot of sp, in
+    slots where llvm-mc refuses it (it takes `add sp, x2, x3` as the extended form)."""
+    sp, zr, gp = st.just(Reg.SP), regs("zr"), regs()
+    choices: list[st.SearchStrategy[Instr]] = [
+        add_sub_imm("sp").map(lambda i: replace(i, rn=Reg.ZR)),
+        st.builds(AddSubCarry, st.sampled_from(OpAddSubCarry), widths, sp, zr, zr),
+        st.builds(DataProc2, st.sampled_from(OpDataProc2), widths, zr, zr, sp),
+        st.builds(MulAdd, st.sampled_from(OpMulAdd), widths, gp, sp, zr, zr),
+        cond_select().map(lambda i: replace(i, rd=Reg.SP)),
+        pair().map(lambda i: replace(i, rt=Reg.SP)),
+        load_store().map(lambda i: replace(i, rt=Reg.SP)),
+    ]
+    return draw(st.one_of(choices))
+
+
+@st.composite
+def bad_width(draw: st.DrawFn) -> Instr:
+    """WIDTH: rev32 or ldpsw at 32 bits."""
+    if draw(st.booleans()):
+        return DataProc1(OpDataProc1.REV32, Width.W32, draw(regs("zr")), draw(regs("zr")))
+    i = draw(pair().filter(lambda i: i.op is OpPair.LDPSW))
+    return replace(i, width=Width.W32)
+
+
+@st.composite
+def pair_cell(draw: st.DrawFn, op: OpPair, width: Width, mode: Mode, overlap: str) -> Pair:
+    """A pair in one cell of section 4's grids: `overlap` "rt2" puts rt2 = rt (loads), "rn=rt"
+    or "rn=rt2" puts the writeback base on that transfer register (rt != rt2)."""
+    rt = draw(regs())
+    if overlap == "rt2":
+        rn = draw(regs("sp").filter(lambda r: r is not rt))
+        return Pair(op, width, rt, rt, rn, 0, mode)
+    rt2 = draw(regs().filter(lambda r: r is not rt))
+    return Pair(op, width, rt, rt2, rt if overlap == "rn=rt" else rt2, 0, mode)
+
+
+# Section 4's two grids: rt == rt2 for the loads in every mode; the base on a transfer register
+# for every pair with writeback. X and W for ldp and stp, X for ldpsw.
+PAIRS = [(OpPair.LDP, Width.W64), (OpPair.LDP, Width.W32), (OpPair.LDPSW, Width.W64)]
+CELLS = [(op, width, mode, "rt2") for op, width in PAIRS for mode in Mode] + [
+    (op, width, mode, overlap)
+    for op, width in [*PAIRS[:2], (OpPair.STP, Width.W64), (OpPair.STP, Width.W32), PAIRS[2]]
+    for mode in (Mode.PRE, Mode.POST)
+    for overlap in ("rn=rt", "rn=rt2")
+]
+
+
+@st.composite
+def bad_unpredictable(draw: st.DrawFn) -> Instr:
+    """UNPREDICTABLE: a single load or store writing back onto rt, or a pair in any cell."""
+    if draw(st.booleans()):
+        i = draw(load_store().filter(lambda i: isinstance(i.addr, PreIndex | PostIndex)))
+        rt = draw(regs())
+        return replace(i, rt=rt, addr=replace(i.addr, rn=rt))
+    return draw(pair_cell(*draw(st.sampled_from(CELLS))))
+
+
+UNDEFINED = Label(".Lnowhere")
+VIOLATIONS: dict[Kind, st.SearchStrategy[Item]] = {
+    Kind.IMM12: bad_imm12(),
+    Kind.BITMASK: bad_bitmask(),
+    Kind.SHIFT_AMOUNT: bad_shift(),
+    Kind.EXTEND_AMOUNT: add_sub_extended("sp").flatmap(
+        lambda i: st.integers(5, 8).map(lambda amount: replace(i, amount=amount))
+    ),
+    Kind.MOVE_WIDE: bad_move_wide(),
+    Kind.BITFIELD: bad_bitfield(),
+    Kind.COND_IMM: bad_cond_imm(),
+    Kind.OFFSET: bad_offset(),
+    Kind.REG31: bad_reg31(),
+    Kind.WIDTH: bad_width(),
+    Kind.UNPREDICTABLE: bad_unpredictable(),
+    Kind.DUPLICATE_LABEL: st.just(Label(".Ldup")),
+    Kind.UNDEFINED_LABEL: st.one_of(
+        st.builds(Branch, st.sampled_from(OpBranch), st.just(UNDEFINED)),
+        st.builds(BranchCond, conds, st.just(UNDEFINED)),
+        st.builds(Adr, regs(), st.just(UNDEFINED)),
+    ),
+    Kind.LABEL_NAME: st.sampled_from(["L1", "bad", ".L", ".Lx-y"]).map(Label),
+}
+
+
+@st.composite
+def invalid_programs(draw: st.DrawFn) -> Drawn:
+    """A valid program with one to three of its instructions replaced by violations of one
+    drawn kind; for DUPLICATE_LABEL a first `.Ldup` definition leads the program."""
+    kind = draw(st.sampled_from(list(VIOLATIONS)))
+    base = draw(programs().filter(lambda p: any(not isinstance(i, Label) for i in p)))
+    items = [Label(".Ldup"), *base] if kind is Kind.DUPLICATE_LABEL else list(base)
+    spots = [at for at, item in enumerate(items) if not isinstance(item, Label)]
+    replaced = sorted(draw(st.sets(st.sampled_from(spots), min_size=1, max_size=3)))
+    for at in replaced:
+        items[at] = draw(VIOLATIONS[kind])
+    return Drawn(tuple(items), kind, tuple(replaced))
+
+
+# Branch reach, as the checker's: k for an offset in [-2^k, 2^k - 4] bytes.
+FAR = {TestBranch: 15, BranchCond: 20, CompareBranch: 20, Adr: 20}
+
+
+@st.composite
+def far_branches(draw: st.DrawFn) -> Drawn:
+    """A branch or adr padded with nops to offset 2^k - 8, 2^k - 4, 2^k or 2^k + 4 bytes,
+    forward or back (tbz k = 15; b.cond, cbz and adr k = 20, drawn one time in sixteen:
+    262,145 items). Only the nops and the one transfer, so the fixup error is llvm-mc's only."""
+    near = draw(st.integers(0, 15)) != 0
+    cls = TestBranch if near else draw(st.sampled_from([BranchCond, CompareBranch, Adr]))
+    far = draw(st.sampled_from([-8, -4, 0, 4])) + (1 << FAR[cls])
+    label = Label(".Lfar")
+    make: dict[type, Callable[[], Instr]] = {
+        TestBranch: lambda: TestBranch(OpTestBranch.TBZ, Reg.X1, 3, label),
+        BranchCond: lambda: BranchCond(Cond.EQ, label),
+        CompareBranch: lambda: CompareBranch(OpCompareBranch.CBZ, Width.W64, Reg.X2, label),
+        Adr: lambda: Adr(Reg.X1, label),
+    }
+    branch, nops = make[cls](), (Nop(),) * (far // 4)
+    if draw(st.booleans()):  # forward: the label follows far // 4 - 1 nops after the branch
+        program: Program = (branch, *nops[1:], label)
+        reach, at = far <= (1 << FAR[cls]) - 4, 0
+    else:  # back: the label leads, far // 4 nops, then the branch at -far
+        program = (label, *nops, branch)
+        reach, at = far <= 1 << FAR[cls], len(program) - 1
+    return Drawn(program, None if reach else Kind.BRANCH_RANGE, () if reach else (at,))
