@@ -4,9 +4,9 @@
 #
 #   leak-check --staged          the staged change: its added lines and its file names
 #   leak-check --message FILE    a commit message, as commit-msg is handed it
-#   leak-check --range REVS      every commit REVS names: patches, file names, messages.
-#                                REVS is what git rev-list takes: A..B, or
-#                                'B --not --remotes' for a branch new to the forge
+#   leak-check --range REVS      every commit REVS names: patches, file names, messages,
+#                                author and committer. REVS is what git rev-list takes
+#   leak-check --push REMOTE     what a push sends, from pre-push's stdin (below)
 #   leak-check --text FILE       free text: a pull request's title and body, ref names
 #   leak-check --self-test       every mode against a synthetic list, in a temp repo
 #
@@ -16,10 +16,14 @@
 #   $(git rev-parse --git-common-dir)/leak-patterns
 #   ${XDG_CONFIG_HOME:-$HOME/.config}/fpl/leak-patterns
 #
-# One extended regular expression per line, matched case-insensitively; blank lines and
-# lines starting with '#' are skipped, and so is whitespace around a line. Line n of the
-# clone's list is rule leak-<n>, of the maintainer's leak-u<n>: gitleaks keys rules by id,
-# so two lists cannot share one numbering.
+# One regular expression per line in Go's RE2 syntax (not POSIX: no \< or \>, use \b),
+# matched case-insensitively, with ^ and $ at the ends of each line. A space in a line
+# matches any run of whitespace, line breaks included, so a term that a 72-column wrap
+# splits is still found; inside [...] it also admits '+', and an escaped space is not
+# supported. Blank lines and lines starting with '#' are skipped, and so is whitespace
+# around a line. Line n of the clone's list is rule leak-<n>, of the maintainer's
+# leak-u<n>: gitleaks keys rules by id, so two lists cannot share one numbering. A list
+# that exists but cannot be read stops the check; only a missing one is silent.
 #
 # gitleaks does the matching. It runs twice over the same input: once with a config that
 # holds only the private rules, and once with its own default rules, which find real
@@ -31,10 +35,26 @@
 # removing a line never trips the check. A merge is judged by what it adds beyond the
 # automatic merge (git's remerge diff), which is where an evil merge hides.
 #
+# gitleaks reads patches that git prints, so what git would hide is forced back in view:
+# binary files and '-diff' attributes (--text), textconv and external diff drivers,
+# colour from anyone's config, and replace refs, which push ignores.
+# The staged change is judged as a throwaway commit of the index (write-tree and
+# commit-tree, with a fixed identity and date, so the same index makes the same object;
+# nothing points at it and gc drops it), because only a commit can be read with --text.
+#
+# --push REMOTE reads pre-push's lines ("<local ref> <sha> <remote ref> <sha>"). An update
+# to a branch the remote has is judged from the remote's commit. A branch new to the
+# remote is judged by the commits no ref under refs/remotes/REMOTE/ has, so a commit that
+# reached another remote, or a fetch from one, earns no exemption here. A first push to a
+# remote with no remote-tracking refs, or to a URL, judges the branch's whole history.
+# The names of the refs pushed and the text of annotated tags are judged too.
+#
 # Nothing it prints contains a term: gitleaks redacts what it matched, its own messages
 # (which may quote a rule) are swallowed while a private list exists, and a file name that
 # itself matches is reported by position, never by name. A report gives the rule, the list
-# line it came from, and where: commit, file, line.
+# line it came from, and where: commit, file, line. The file is named from git's own
+# listing, never from gitleaks's report: by position ("file 3 of 7") when the name matches
+# a term or holds a control character (a tab, a newline), by name otherwise.
 #
 #   FPL_LEAK_GATE = block (default) | warn (report, don't refuse) | off
 #
@@ -48,6 +68,8 @@ die() {
 	printf 'leak-check: %s\n' "$*" >&2
 	exit 1
 }
+
+[ "${1:-}" = --self-test ] && exec "$(dirname "$0")/leak-check-self-test"
 
 gate="${FPL_LEAK_GATE:-block}"
 case "$gate" in
@@ -69,26 +91,32 @@ lists() {
 # Writes the private config to $tmp/private.toml, one rule per term, and $tmp/ids, which
 # maps each rule id to "<list>:<line>". Sets $terms to the number of rules.
 build() {
-	local tag list n line re id
+	local tag list n line re id rule space='\s+'
 	terms=0
 	: >"$tmp/private.toml"
 	: >"$tmp/ids"
 	while IFS='|' read -r tag list; do
-		[ -r "$list" ] || continue
+		[ -e "$list" ] || continue
+		[ -f "$list" ] && [ -r "$list" ] || die "$list cannot be read; fix it or remove it"
 		n=0
 		while IFS= read -r line || [ -n "$line" ]; do
 			n=$((n + 1))
 			line="${line%$'\r'}"
+			[ "$n" -gt 1 ] || line="${line#$'\xef\xbb\xbf'}"
 			line="${line#"${line%%[![:space:]]*}"}"
 			line="${line%"${line##*[![:space:]]}"}"
 			case "$line" in '' | '#'*) continue ;; esac
 			id="leak-$tag$n"
-			# A TOML basic string: only the backslash and the quote need escaping.
-			re="${line//\\/\\\\}"
+			# A space is any run of whitespace; then a TOML basic string, in which only
+			# the backslash and the quote need escaping.
+			while [[ $line == *"  "* ]]; do line="${line//  / }"; done
+			re="${line// /$space}"
+			re="${re//\\/\\\\}"
 			re="${re//\"/\\\"}"
-			printf '[[rules]]\nid = "%s"\ndescription = "a private term"\nregex = "(?i)%s"\n\n' \
-				"$id" "$re" >"$tmp/rule-$id.toml"
-			cat "$tmp/rule-$id.toml" >>"$tmp/private.toml"
+			printf -v rule '[[rules]]\nid = "%s"\ndescription = "a private term"\nregex = "(?im)%s"\n\n' \
+				"$id" "$re"
+			printf '%s' "$rule" >"$tmp/rule-$id.toml"
+			printf '%s' "$rule" >>"$tmp/private.toml"
 			printf '%s\t%s:%s\n' "$id" "$list" "$n" >>"$tmp/ids"
 			terms=$((terms + 1))
 		done <"$list"
@@ -96,7 +124,8 @@ build() {
 }
 
 # gitleaks with the given config and arguments, the findings appended to $tmp/hits as
-# "rule<TAB>file<TAB>line<TAB>commit". Returns 0 clean, 3 found, anything else: failed.
+# "rule<TAB>file<TAB>line<TAB>commit", the file in hex: a path may hold any byte but NUL.
+# Returns 0 clean, 3 found, anything else: failed.
 scan() {
 	local config="$1" rc=0
 	shift
@@ -137,10 +166,16 @@ scan_both() {
 	return "$rc"
 }
 
-# File names through the private rules: $tmp/names holds them, one per line. Writes the
-# 1-based positions of the names that match to $tmp/namehits, and keeps those findings
-# out of $tmp/hits, where a content finding would print the name.
+# The file names in $tmp/names0 (NUL-separated, as git lists them) become $tmp/names,
+# one per line, sorted and unique, a newline inside a name turned into a space so the
+# name still reads as one line; and $tmp/names.hex, the same names in hex, which is how
+# a gitleaks finding is matched to its name. Then the names go through the private rules:
+# the 1-based positions of those that match land in $tmp/namehits.
 names() {
+	LC_ALL=C sort -zu "$tmp/names0" | sed -z '/^$/d' >"$tmp/names0.sorted"
+	tr '\n\0' ' \n' <"$tmp/names0.sorted" >"$tmp/names"
+	od -An -v -tx1 "$tmp/names0.sorted" | tr -s ' ' '\n' |
+		awk '$0 == "00" { print h; h = ""; next } { h = h $0 }' >"$tmp/names.hex"
 	: >"$tmp/namehits"
 	[ "$terms" -gt 0 ] || return 0
 	cp "$tmp/hits" "$tmp/hits.keep"
@@ -150,26 +185,37 @@ names() {
 	mv "$tmp/hits.keep" "$tmp/hits"
 }
 
-# Prints one line per finding. $1 says where a stdin finding sits ("the message"); for
-# git findings the file and commit come from gitleaks. Names listed in $tmp/badnames are
-# never printed. $2, if given, maps a stdin line to a commit ($tmp/lines: "line<TAB>sha").
+# Prints one line per finding. $1 says where a stdin finding sits ("the message"). A git
+# finding's file is looked up in $tmp/names.hex and printed from $tmp/names, by position
+# when it matched a term or is not plain printable text. A stdin line that $tmp/lines
+# maps to a commit ("line<TAB>sha<TAB>marker line") is that commit's author (1 below the
+# marker), committer (2) or message.
 report() {
 	local what="$1"
-	sort -u "$tmp/hits" | awk -F'\t' -v what="$what" \
-		-v ids="$tmp/ids" -v bad="$tmp/badnames" -v lines="$tmp/lines" '
+	sort -u "$tmp/hits" | awk -F'\t' -v what="$what" -v drop="${probe:-}" \
+		-v ids="$tmp/ids" -v hex="$tmp/names.hex" -v names="$tmp/names" \
+		-v bad="$tmp/namehits" -v lines="$tmp/lines" '
 		BEGIN {
 			while ((getline l < ids) > 0) { split(l, f, "\t"); from[f[1]] = f[2] }
-			while ((getline l < bad) > 0) hidden[l] = 1
+			while ((getline l < hex) > 0) at[l] = ++total
+			while ((getline l < names) > 0) name[++i] = l
+			while ((getline l < bad) > 0) hide[l] = 1
 			while ((getline l < lines) > 0) { split(l, f, "\t"); sha[f[1]] = f[2]; off[f[1]] = f[3] }
 		}
 		{
 			rule = $1 " (" ($1 in from ? from[$1] : "a gitleaks default rule") ")"
 			if ($2 == "") {
-				if ($3 in sha) where = substr(sha[$3], 1, 12) " message, line " ($3 - off[$3])
-				else where = what ", line " $3
+				if ($3 in sha) {
+					n = $3 - off[$3]
+					where = substr(sha[$3], 1, 12) (n == 1 ? " author" : n == 2 ? " committer" \
+						: " message, line " (n - 2))
+				} else where = what ", line " $3
 			} else {
-				file = ($2 in hidden) ? "a file whose name matches too" : $2
-				where = ($4 == "" ? "" : substr($4, 1, 12) " ") file ":" $3
+				p = ($2 in at) ? at[$2] : 0
+				if (!p) file = "a file missing from the listing"
+				else if ((p in hide) || name[p] !~ /^[[:print:]]+$/) file = "file " p " of " total
+				else file = name[p]
+				where = ($4 == "" || $4 == drop ? "" : substr($4, 1, 12) " ") file ":" $3
 			}
 			printf "leak-check: %s: %s\n", where, rule
 		}' >&2
@@ -187,26 +233,42 @@ verdict() {
 	return 1
 }
 
-# File names: a name that matches is reported by its position among the names, and
-# remembered in $tmp/badnames so no content finding prints it either. Returns 3 on a match.
+# File names, from $tmp/names0: a name that matches is reported by its position among
+# the names, never by name. Returns 3 on a match.
 check_names() {
 	local where="$1" pos total
 	names
 	[ -s "$tmp/namehits" ] || return 0
 	total="$(wc -l <"$tmp/names" | tr -d ' ')"
 	while read -r pos; do
-		sed -n "${pos}p" "$tmp/names" >>"$tmp/badnames"
 		printf 'leak-check: %s, file name %s of %s: %s\n' "$where" "$pos" "$total" \
 			"the name itself matches a private term" >&2
 	done <"$tmp/namehits"
 	return 3
 }
 
-self_test() {
-	exec "$(dirname "$0")/leak-check-self-test"
+# --push: every update pre-push hands over on stdin, judged by a --range run each, then
+# the ref names and annotated tag objects in one --text run. See the header for scope.
+# $said is global: the EXIT trap outlives the function.
+push() {
+	local remote="$1" not="" rc=0 local_ref local_sha remote_ref remote_sha revs
+	git remote | grep -xF -- "$remote" >/dev/null && not=" --not --remotes=$remote"
+	said="$(umask 077 && mktemp "${TMPDIR:-/tmp}/leak-check-push.XXXXXX")"
+	trap 'rm -f "$said"' EXIT
+	while read -r local_ref local_sha remote_ref remote_sha; do
+		[ -n "$local_ref" ] && [ "$local_ref" != "(delete)" ] || continue
+		printf '%s\n' "$remote_ref" >>"$said"
+		[ "$(git cat-file -t "$local_sha")" != tag ] || git cat-file tag "$local_sha" >>"$said"
+		if [[ "$remote_sha" =~ ^0+$ ]] || ! git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+			revs="$local_sha$not"
+		else
+			revs="$remote_sha..$local_sha"
+		fi
+		"$0" --range "$revs" || rc=1
+	done
+	"$0" --text "$said" || rc=1
+	return "$rc"
 }
-
-[ "${1:-}" = --self-test ] && self_test
 
 mode="${1:-}"
 arg="${2:-}"
@@ -214,8 +276,19 @@ case "$mode" in
 --staged) [ $# -eq 1 ] || die "usage: leak-check --staged" ;;
 --message | --text) [ $# -eq 2 ] && [ -r "$arg" ] || die "usage: leak-check $mode <readable file>" ;;
 --range) [ $# -eq 2 ] && [ -n "$arg" ] || die "usage: leak-check --range <revs>" ;;
-*) die "usage: leak-check --staged | --message FILE | --range REVS | --text FILE | --self-test" ;;
+--push) [ $# -eq 2 ] && [ -n "$arg" ] || die "usage: leak-check --push <remote> <updates" ;;
+*) die "usage: leak-check --staged | --message FILE | --range REVS | --push REMOTE | --text FILE | --self-test" ;;
 esac
+
+# A replace ref would show git log another commit than the one push sends.
+export GIT_NO_REPLACE_OBJECTS=1
+if [ "$mode" = --push ]; then
+	push "$arg"
+	exit
+fi
+# How gitleaks has git print a patch: all of it, as stored. --no-color is an option, so
+# it outranks colour from every config, `git -c` included (GIT_CONFIG_COUNT would not).
+show="--text --no-color --no-textconv --no-ext-diff"
 
 # git hands a hook relative paths in these; gitleaks runs git from elsewhere.
 for v in GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY; do
@@ -227,7 +300,6 @@ trap 'rm -rf "$tmp"' EXIT
 umask 077
 mkdir "$tmp/noignore"
 : >"$tmp/hits"
-: >"$tmp/badnames"
 : >"$tmp/lines"
 build
 
@@ -237,16 +309,23 @@ if ! command -v gitleaks >/dev/null; then
 	exit 0
 fi
 
-printf '{{range .}}{{.RuleID}}\t{{.File}}\t{{.StartLine}}\t{{.Commit}}\n{{end}}' >"$tmp/report.tmpl"
+printf '{{range .}}{{.RuleID}}\t{{printf "%%x" .File}}\t{{.StartLine}}\t{{.Commit}}\n{{end}}' \
+	>"$tmp/report.tmpl"
 printf '[extend]\nuseDefault = true\n' >"$tmp/default.toml"
 
 found=0
 case "$mode" in
 --staged)
 	gitdir="$(git rev-parse --absolute-git-dir)"
-	git diff --cached --name-only --no-renames --diff-filter=d -z | tr '\0' '\n' >"$tmp/names"
+	git diff --cached --name-only --no-renames --diff-filter=d -z >"$tmp/names0"
 	check_names "the staged change" || found=1
-	scan_both git --staged "$gitdir" || found=1
+	tree="$(git write-tree)" || die "cannot write the index as a tree (an unresolved conflict?)"
+	parent="$(git rev-parse -q --verify 'HEAD^{commit}')" || parent=""
+	probe="$(GIT_AUTHOR_NAME=leak-check GIT_AUTHOR_EMAIL=leak-check@example.invalid \
+		GIT_COMMITTER_NAME=leak-check GIT_COMMITTER_EMAIL=leak-check@example.invalid \
+		GIT_AUTHOR_DATE='@0 +0000' GIT_COMMITTER_DATE='@0 +0000' \
+		git commit-tree --no-gpg-sign ${parent:+-p "$parent"} -m 'leak-check probe' "$tree")"
+	scan_both git "--log-opts=$show -1 $probe" "$gitdir" || found=1
 	report "the staged change"
 	;;
 --message)
@@ -263,13 +342,14 @@ case "$mode" in
 --range)
 	gitdir="$(git rev-parse --absolute-git-dir)"
 	# shellcheck disable=SC2086 # REVS is a list of rev-list arguments, split on purpose
-	git log --format= --name-only --diff-filter=d -m $arg | sort -u >"$tmp/names"
+	git log --format= --name-only -z --diff-filter=d -m $arg >"$tmp/names0"
 	check_names "the commits of $arg" || found=1
-	scan_both git "--log-opts=--diff-merges=remerge $arg" "$gitdir" || found=1
-	# Every message in one stdin run. A marker line per commit, blanked before the scan,
-	# gives each finding's line its commit: $tmp/lines holds line, sha, marker line.
+	scan_both git "--log-opts=--diff-merges=remerge $show $arg" "$gitdir" || found=1
+	# Every identity and message in one stdin run. A marker line per commit, blanked
+	# before the scan, gives each finding's line its commit: $tmp/lines holds line, sha,
+	# marker line. The author and committer follow the marker, then the message.
 	# shellcheck disable=SC2086
-	git log --format=$'\x01%H%n%B' $arg >"$tmp/messages"
+	git log --format=$'\x01%H%n%an <%ae>%n%cn <%ce>%n%B' $arg >"$tmp/messages"
 	: >"$tmp/blanked"
 	awk -v blanked="$tmp/blanked" '
 		/^\x01/ { sha = substr($0, 2); at = NR; print "" > blanked; next }
