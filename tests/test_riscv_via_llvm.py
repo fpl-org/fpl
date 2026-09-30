@@ -73,12 +73,32 @@ NOISE = [
 ]
 
 
-@given(st.sampled_from(NAMES))
-def test_each_tool_is_the_pinned_one_from_the_riscv_layer(name: str) -> None:
-    """[law: tools-from-pin] Each tool is an absolute /nix/store path at its pinned version.
+def assert_refused(lines: list[str], stderr: str) -> None:
+    """`lines` on stdout are not the answer: the error shows them and what was said on stderr."""
+    stdout = "".join(f"{line}\n" for line in lines)
+    done = subprocess.CompletedProcess(["bash"], 0, stdout, stderr)
+    with pytest.raises(ToolchainError) as error:
+        parse_paths("cmd", done)
+    assert stdout in str(error.value)
+    assert stderr in str(error.value)
+
+
+@given(
+    st.sampled_from(NAMES),
+    st.lists(st.one_of(st.sampled_from(NOISE), st.text(max_size=12)), max_size=6),
+    st.text(max_size=12),
+)
+def test_each_tool_is_the_pinned_one_from_the_riscv_layer(
+    name: str, lines: list[str], stderr: str
+) -> None:
+    """[law: tools-from-pin] One /nix/store path per tool at its pinned version, or an error.
 
     Resolved once per process from the worktree's own flake (`nix develop <root>#riscv`),
-    so every call after the first is the same object.
+    so every call after the first is the same object; each tool is an absolute /nix/store
+    path under its own name and reports its pinned version. Only stdout counts: the four
+    paths, one line per tool in order, are the answer whatever stderr says. Any other stdout
+    is a `ToolchainError` that shows stdout and stderr. A missing `nix` is a
+    `ToolchainError` naming the command it tried, never a skip.
     """
     tools = toolchain()
     path = tools.by_name()[name]
@@ -90,30 +110,19 @@ def test_each_tool_is_the_pinned_one_from_the_riscv_layer(name: str) -> None:
     done = subprocess.run([path, "--version"], capture_output=True, text=True, check=True)
     assert f" {VERSIONS[name]}" in done.stdout
 
+    answer = subprocess.CompletedProcess(["bash"], 0, "".join(f"{p}\n" for p in GOOD), stderr)
+    assert parse_paths("cmd", answer).by_name()[name] == Path(GOOD[NAMES.index(name)])
+    assume(lines != GOOD)
+    assert_refused(lines, stderr)
+    with pytest.raises(ToolchainError, match="/nonexistent/nix develop"):
+        resolve(nix="/nonexistent/nix")
+
 
 def test_one_store_path_per_tool_in_order_is_the_answer() -> None:
     done = subprocess.CompletedProcess(["bash"], 0, "".join(f"{line}\n" for line in GOOD), "")
     assert parse_paths("cmd", done).by_name() == {
         n: Path(p) for n, p in zip(NAMES, GOOD, strict=True)
     }
-
-
-def assert_refused(lines: list[str]) -> None:
-    """`lines` on stdout are not the answer: the error shows them and what was said on stderr."""
-    stdout = "".join(f"{line}\n" for line in lines)
-    done = subprocess.CompletedProcess(["bash"], 0, stdout, "said on stderr")
-    with pytest.raises(ToolchainError) as error:
-        parse_paths("cmd", done)
-    assert stdout in str(error.value)
-    assert "said on stderr" in str(error.value)
-
-
-@given(st.lists(st.one_of(st.sampled_from(NOISE), st.text(max_size=12)), max_size=6))
-def test_anything_else_is_an_error_that_shows_stdout_and_stderr(
-    lines: list[str],
-) -> None:
-    assume(lines != GOOD)
-    assert_refused(lines)
 
 
 @pytest.mark.parametrize(
@@ -128,7 +137,7 @@ def test_anything_else_is_an_error_that_shows_stdout_and_stderr(
 def test_a_path_off_the_store_a_line_too_many_or_too_few_or_a_banner_is_an_error(
     lines: list[str],
 ) -> None:
-    assert_refused(lines)
+    assert_refused(lines, "said on stderr")
 
 
 def fake_nix(folder: Path, banner_to: str) -> str:
@@ -150,11 +159,6 @@ def test_resolve_reads_the_paths_from_stdout_and_ignores_stderr(tmp_path: Path) 
 def test_resolve_refuses_a_banner_on_stdout_showing_it(tmp_path: Path) -> None:
     with pytest.raises(ToolchainError, match="==> wiring the git hooks"):
         resolve(nix=fake_nix(tmp_path, ""))
-
-
-def test_no_nix_is_an_error_naming_the_command_not_a_skip() -> None:
-    with pytest.raises(ToolchainError, match="/nonexistent/nix develop"):
-        resolve(nix="/nonexistent/nix")
 
 
 # Every form but the control transfers, whose operand objdump prints as a resolved address.
