@@ -11,9 +11,11 @@
 #   make gates    proof that each check still bites: the harness's own lint, its self-tests,
 #                 and a bad example each check refuses. Also what the root runs, where there
 #                 is no code to judge: make -f quality/noslop.mk gates
+#   make map      the map of the code, imports and classes, drawn into .noslop/map/ and never
+#                 committed; no other lane runs it (scripts/diagrams)
 
 .DEFAULT_GOAL := check
-.PHONY: fix quick check harden ready gates venv pristine clean-noslop
+.PHONY: fix quick check harden ready gates map venv pristine clean-noslop
 
 Q        := quality
 VENV     := .venv
@@ -88,7 +90,8 @@ ready: harden gates
 	$(BIN)/pip-audit --progress-spinner off --requirement $(OUT)/requirements.txt --disable-pip
 
 # The harness's own Python, judged by the same ruff it judges others with.
-HARNESS := scripts/crap scripts/props scripts/escapes scripts/mutants scripts/gates $(Q)/noslop_pytest.py
+HARNESS := scripts/crap scripts/props scripts/escapes scripts/mutants scripts/gates scripts/diagrams \
+           $(Q)/noslop_pytest.py
 
 gates: venv
 	$(BIN)/ruff check --config $(Q)/ruff.toml $(HARNESS)
@@ -97,7 +100,13 @@ gates: venv
 	$(BIN)/python scripts/props --self-test
 	$(BIN)/python scripts/escapes --self-test
 	$(BIN)/python scripts/mutants --self-test
+	$(BIN)/python scripts/diagrams --self-test
 	$(BIN)/python scripts/gates
+
+# A view of the code, not a check: computed from the code each time, so it cannot go stale,
+# and kept out of git, where it would. .github/workflows/map.yml draws it on every PR.
+map: venv
+	$(BIN)/python scripts/diagrams --out $(OUT)/map
 
 clean-noslop:
 	rm -rf $(OUT) mutants .hypothesis .import_linter_cache
