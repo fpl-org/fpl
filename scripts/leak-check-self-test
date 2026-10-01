@@ -31,7 +31,7 @@ mkdir -p "$HOME" "$XDG_CONFIG_HOME/fpl"
 repo="$tmp/repo"
 git init -q -b main "$repo"
 cd "$repo"
-list="$(git rev-parse --git-common-dir)/leak-patterns"
+list="$(git rev-parse --path-format=absolute --git-common-dir)/leak-patterns"
 
 # The synthetic terms. Each output line of every run is searched for these afterwards.
 # (A key-shaped string, assembled so this file does not itself trip the default rules.)
@@ -367,10 +367,17 @@ fi
 mv "$tmp/aside" "$list"
 
 # Nothing printed may carry a term. The list's own path is fine, so it is dropped first,
-# as a literal string (it holds '#' and '['). A planted term proves the search sees one.
-leaks() {
+# as a literal string: it holds '#' and '[', which break a sed pattern made of it, or
+# turn it into another one. The strip is checked on its own, then a planted term proves
+# the search sees one.
+strip() {
 	local l
-	while IFS= read -r l; do printf '%s\n' "${l//"$list"/}"; done <"$1" | grep -Ein "$leaked"
+	while IFS= read -r l; do printf '%s\n' "${l//"$list"/}"; done
+}
+leaks() { strip <"$1" | grep -Ein "$leaked"; }
+[ "$(printf '(%s:3) x\n' "$list" | strip)" = "(:3) x" ] || {
+	fails=$((fails + 1))
+	echo "self-test: the list's path is not stripped as a literal" >&2
 }
 printf '%s quuxfrobnitz\n' "$list" >"$tmp/canary"
 leaks "$tmp/canary" >/dev/null || {
