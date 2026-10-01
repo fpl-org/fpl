@@ -1,0 +1,18 @@
+// tools/tokview/pyright.json — strict typing, as quality/pyright.json sets it for the
+// language. Paths are relative to this file.
+{
+  "include": ["tokview", "tests"],
+  "pythonVersion": "3.12",
+  "venvPath": ".",
+  "venv": ".venv",
+  "typeCheckingMode": "strict",
+  // mypy's waiver is '# type: ignore[code]'; it must not also silence pyright on that line.
+  "enableTypeIgnoreComments": false,
+  "reportMatchNotExhaustive": "error",
+  "reportUnnecessaryTypeIgnoreComment": "error",
+  "reportImplicitOverride": "error",
+  "reportUninitializedInstanceVariable": "error",
+  "reportPropertyTypeMismatch": "error",
+  "reportMissingSuperCall": "none",
+  "reportUnusedCallResult": "none"
+}
