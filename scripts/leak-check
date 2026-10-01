@@ -347,8 +347,15 @@ case "$mode" in
 	;;
 --message)
 	# commit-msg sees the message before cleanup: with `git commit -v` the diff sits
-	# below the scissors line, removed lines included. Git drops all of that.
-	sed '/^# -\{24\} >8 -\{24\}$/,$d' "$arg" >"$tmp/message"
+	# below the scissors line, removed lines included, and git drops all of that. It
+	# does so only for a message an editor saw: for -m and -F (git tells the hook with
+	# GIT_EDITOR=:) the scissors line and what follows are kept, so they are judged.
+	# Left open: an editor without -v keeps a scissors line typed by hand; push judges it.
+	if [ "${GIT_EDITOR:-}" = : ]; then
+		cp "$arg" "$tmp/message"
+	else
+		sed '/^# -\{24\} >8 -\{24\}$/,$d' "$arg" >"$tmp/message"
+	fi
 	scan_both stdin <"$tmp/message" || found=1
 	report "the message"
 	;;
