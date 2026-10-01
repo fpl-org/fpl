@@ -183,9 +183,9 @@ text="$(printf '%s%s\n\n%s%s commit%s, rebase-merge.' \
 # The forge is public: the title, the text and the branch name go through the leak gate
 # first (scripts/leak-check; FPL_LEAK_GATE=warn overrides), dry run or not.
 said="$(mktemp -d)"
+trap 'rm -rf -- "$said"' EXIT
 printf '%s\n%s\n\n%s\n' "$branch" "$title" "$text" >"$said/pull-request"
-"$top/scripts/leak-check" --text "$said/pull-request" || { rm -rf "$said"; die "nothing was sent"; }
-rm -rf "$said"
+"$top/scripts/leak-check" --text "$said/pull-request" || die "nothing was sent"
 
 if [ "$dry" -eq 1 ]; then
 	printf 'as:    %s\nbase:  %s\nhead:  %s\ntitle: %s\n\n%s\n' \
