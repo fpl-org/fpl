@@ -26,7 +26,8 @@ Keep talk about the vision sober, and the harness small: `docs/notes/2026-09-19-
   .claude/            Claude Code commands, subagents, skill, hooks
   scripts/            acommit, commit-lint, restack, setup, agent-identity, new-worktree,
                       branch-lint, layer, pr, review, land, task, rad-cob-dagtaak;
-                      crap, props, escapes, mutants, gates (the noslop gate)
+                      crap, props, escapes, mutants, gates (the noslop gate);
+                      diagrams (make map: the map of the code, never committed)
   quality/            the noslop gate's lanes, tool configs and pinned tools (docs/QUALITY.md)
   flake.nix, flake.lock   the dev shell: one pinned toolchain for everyone (docs/DEVSHELL.md)
   .githooks/          pre-commit, commit-msg, atomic-check, reference-transaction, pre-push

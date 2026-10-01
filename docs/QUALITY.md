@@ -21,6 +21,7 @@ make harden   check, then the long search: 20x the examples, CrossHair on every 
               and every contract, mutation testing
 make ready    harden, then gates, then a known-vulnerability audit of the pinned tools
 make gates    proof that each check still refuses a bad example, and the harness's own lint
+make map      the map of the code, never committed (below); no other lane runs it
 ```
 
 The same lanes run on the forge (`.github/workflows/noslop.yml`): `make check` on every push
@@ -28,6 +29,14 @@ to a pull request, `make ready` once it is out of draft and on every push to `ma
 harness-only branch, which has no code to judge, runs `make gates` from the root instead:
 `make -f quality/noslop.mk gates`. The runner enters the dev shell of `flake.nix`, so it judges
 with the tools a laptop has.
+
+`make map` is a view, not a check. `scripts/diagrams` draws the import graph of `fpl/` with
+import-linter's own verdict on each contract of `quality/importlinter.ini`, the verdict
+lint-imports gives in `make check`, and a class diagram per module, as Mermaid, into
+`.noslop/map/`.
+Its output is never committed: computed from the code each time, it cannot go stale.
+`.github/workflows/map.yml` draws the head and the base of every pull request into the run's
+summary, with the difference between the two.
 
 `make check` runs, in order:
 
@@ -187,9 +196,9 @@ worktree's `.venv` with `uv sync --frozen` the first time and whenever the lock 
 ## Proof that the checks bite
 
 A check that passes everything looks the same as a check that found nothing. `make gates` first
-holds the harness's own Python (`scripts/crap`, `props`, `escapes`, `mutants`, `gates` and the
-pytest plugin) to the ruff rules it holds others to, then runs the self-tests of the four
-scripts, then `scripts/gates`: for each case in `quality/bad/`, the
+holds the harness's own Python (`scripts/crap`, `props`, `escapes`, `mutants`, `gates`,
+`diagrams` and the pytest plugin) to the ruff rules it holds others to, then runs the self-tests
+of the five scripts that have one, then `scripts/gates`: for each case in `quality/bad/`, the
 check runs on a small fixture package, where it must pass, and then with the case's bad example
 laid over it, where it must fail with a given message. The first run is the control; without
 it, a check that fails for an unrelated reason would count as having caught something. Adding a

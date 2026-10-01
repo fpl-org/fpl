@@ -1,0 +1,511 @@
+#!/usr/bin/env python3
+"""scripts/diagrams — the map of the code, computed on demand and never committed.
+
+    scripts/diagrams [--root DIR] [--out DIR]    (defaults: ., .noslop/map)
+    scripts/diagrams --self-test
+
+A drawing of the code kept in git is out of date the first time the code moves without it.
+So the map is a view, like a coverage report: `make map` draws the working tree into
+.noslop/map/, which git ignores, and .github/workflows/map.yml draws the head and the base
+of every pull request into the run's summary, where GitHub renders Mermaid. `--root` draws
+another checkout, judged by that checkout's own contracts.
+
+Into DIR it writes:
+
+    imports.mmd          the import graph of the root package. import-linter itself reads
+                         the code and quality/importlinter.ini, as lint-imports does, and
+                         judges each contract: the map draws that graph and that verdict and
+                         judges nothing on its own, so it and the gate cannot disagree. A
+                         module's fill says which forbidden contracts limit what it imports;
+                         a module no forbidden contract names is dashed; an import in a
+                         chain that breaks a contract is red.
+    classes-<mod>.mmd    a class diagram of each module that defines a class (pyreverse):
+                         fields and methods, fields only above METHODS_UP_TO classes. A base
+                         class defined in another module is not drawn.
+    map.md               all of it in Mermaid fences, with each contract and its verdict
+                         spelled out, for a reader on the forge.
+
+Nothing about the layering is written down here: edit the contracts and the map follows.
+The output is sorted and holds no paths, times or versions, so two runs give the same bytes
+and a diff of two maps is a diff of the code's structure.
+
+Sequence diagrams, traced from a run of the conformance examples, belong next to the class
+diagrams; they are not drawn yet.
+
+Exit 0: drawn, or the self-test passed; 1: the self-test failed; 2: usage, or no contracts
+import-linter can read under DIR.
+"""
+
+import argparse
+import contextlib
+import io
+import itertools
+import re
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from importlinter import configuration
+from importlinter.application import use_cases
+from pylint.pyreverse.main import Run as Pyreverse
+
+if TYPE_CHECKING:  # the graph import-linter builds; the script needs grimp only through it
+    from grimp import ImportGraph
+
+# Above this many classes a module's diagram keeps its fields and drops its methods: an AST
+# module, a class of fields per construct, still reads as a map, a wall of signatures would
+# not. GitHub draws far larger diagrams, so nothing is split.
+METHODS_UP_TO = 12
+
+# The fills of the groups of modules one set of contracts binds, as (word, colour): GitHub's
+# subtle backgrounds, with dark text, so a node reads in its dark theme too. Past the last,
+# the colours come round again with a thicker border.
+FILLS = [
+    ("blue", "#ddf4ff"),
+    ("green", "#dafbe1"),
+    ("yellow", "#fff8c5"),
+    ("orange", "#fff1e5"),
+    ("purple", "#fbefff"),
+    ("pink", "#ffeff7"),
+]
+
+# Mermaid ends a class body at a brace, even inside a member's type: `Literal["{"]`.
+BRACES = str.maketrans({"{": "#123;", "}": "#125;"})
+
+CONFIG = Path("quality") / "importlinter.ini"
+
+FENCE = "```"
+
+
+class UnmappableError(Exception):
+    """A checkout whose contracts import-linter cannot read or check: nothing to draw."""
+
+
+@dataclass(frozen=True)
+class Contract:
+    """One contract of the config, as its file writes it, with lint-imports' verdict on it."""
+
+    key: str  # the <key> of its [importlinter:contract:<key>] section
+    name: str
+    kind: str  # import-linter's `type`; only a `forbidden` contract binds modules on the map
+    sources: tuple[str, ...]  # module expressions, as written: `fpl.parse`, `fpl.*`
+    forbidden: tuple[str, ...]
+    waived: tuple[str, ...]  # ignore_imports, as written: `fpl.lex -> fpl.ast_surface`
+    indirect: bool  # allow_indirect_imports: whether a chain through others is allowed
+    kept: bool
+    chains: tuple[tuple[str, ...], ...]  # what breaks it, for a type whose chains are drawn
+
+
+@dataclass(frozen=True)
+class Imports:
+    """The import graph of the root package, read against its contracts. All sorted."""
+
+    package: str
+    rules: list[Contract]
+    modules: list[str]  # the package's modules, and the third-party packages they import
+    links: list[tuple[str, str]]  # (importer, imported)
+    groups: list[tuple[tuple[str, ...], list[str]]]  # contract keys -> the modules they bind
+    free: list[str]  # modules whose imports no contract limits
+    unnamed: list[str]  # modules no forbidden contract names at all
+    broken: list[tuple[str, tuple[str, ...]]]  # (contract key, the import chain)
+
+    def ours(self, module: str) -> bool:
+        return covers((self.package,), module)
+
+    def short(self, module: str) -> str:
+        """A module's name without the root package in front: `fpl.parse` is `parse`."""
+        return module.removeprefix(self.package + ".")
+
+
+def entries(value: str | list[str] | None) -> tuple[str, ...]:
+    """An option's items as import-linter reads them: one per line, blank lines skipped."""
+    items = [value] if isinstance(value, str) else value or []
+    return tuple(item.strip() for item in items if item.strip())
+
+
+def judge(root: Path) -> tuple[str, list[Contract], "ImportGraph"]:
+    """The root package, each contract with lint-imports' verdict, and the graph it judged.
+
+    import-linter reads the config, builds the graph and checks every contract, as
+    `lint-imports --no-cache` does in the gate: wildcards, waived imports and indirect chains
+    mean here what they mean there, because nothing here reads them a second time. Its
+    contract registry is private API; uv.lock pins it, and the self-test fails if it moves.
+    """
+    if not (root / CONFIG).is_file():
+        raise UnmappableError(f"no {CONFIG} under {root}")
+    configuration.configure()
+    options = use_cases.read_user_options(str(root / CONFIG))
+    use_cases._register_contract_types(options)
+    sys.path.insert(0, str(root))
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):  # its progress display
+            report = use_cases.create_report(options, cache_dir=None)
+    except ValueError as e:  # a package or a module the contracts name is not there
+        raise UnmappableError(str(e)) from e
+    if report.could_not_run:
+        raise UnmappableError(
+            "; ".join(f"{k}: {e}" for k, e in report.invalid_contract_options.items())
+        )
+    found = []
+    for contract, check in report.get_contracts_and_checks():
+        o = contract.contract_options
+        kind = o["type"]
+        found.append(
+            Contract(
+                key=o["id"],
+                name=contract.name,
+                kind=kind,
+                sources=entries(o.get("source_modules")),
+                forbidden=entries(o.get("forbidden_modules")),
+                waived=entries(o.get("ignore_imports")),
+                indirect=str(o.get("allow_indirect_imports")).lower() == "true",
+                kept=check.kept,
+                chains=tuple(
+                    sorted(
+                        (links[0]["importer"], *(link["imported"] for link in links))
+                        for pair in check.metadata["invalid_chains"]
+                        for links in pair["chains"]
+                    )
+                )
+                if kind == "forbidden"
+                else (),
+            )
+        )
+    return options.session_options["root_packages"][0], found, report.graph
+
+
+def covers(names: tuple[str, ...], module: str) -> bool:
+    """Whether `module` is one of `names` or inside one, as import-linter reads a name."""
+    return any(module == n or module.startswith(n + ".") for n in names)
+
+
+def expand(graph: "ImportGraph", expressions: tuple[str, ...]) -> tuple[str, ...]:
+    """The modules that import-linter's module expressions name: `*` is one level of names."""
+    return tuple(
+        sorted(
+            m for e in expressions for m in (graph.find_matching_modules(e) if "*" in e else {e})
+        )
+    )
+
+
+def read(graph: "ImportGraph", package: str, rules: list[Contract]) -> Imports:
+    """The package's imports, the contracts that bind each module, and what breaks one.
+
+    The root package itself is drawn only when it imports or is imported: it is the
+    namespace, and an empty __init__.py is no module a contract could name.
+    """
+    ours = {m for m in graph.modules if covers((package,), m)}
+    links = sorted(
+        (a, b)
+        for a in ours
+        for b in graph.find_modules_directly_imported_by(a)
+        if b in ours or b.split(".")[0] not in sys.stdlib_module_names
+    )
+    used = {m for link in links for m in link}
+    modules = sorted(used | (ours - {package}))
+    forbidden = [c for c in rules if c.kind == "forbidden"]
+    binds = {c.key: expand(graph, c.sources) for c in forbidden}
+    keyed: dict[tuple[str, ...], list[str]] = {}
+    for m in sorted(ours & set(modules)):
+        keyed.setdefault(tuple(c.key for c in forbidden if covers(binds[c.key], m)), []).append(m)
+    order = {c.key: i for i, c in enumerate(forbidden)}
+    named = [n for c in forbidden for n in binds[c.key] + expand(graph, c.forbidden)]
+    return Imports(
+        package=package,
+        rules=rules,
+        modules=modules,
+        links=links,
+        groups=sorted(
+            ((k, v) for k, v in keyed.items() if k), key=lambda g: [order[k] for k in g[0]]
+        ),
+        free=keyed.get((), []),
+        unnamed=[m for m in modules if m in ours and not covers(tuple(named), m)],
+        broken=sorted((c.key, chain) for c in rules for chain in c.chains),
+    )
+
+
+def node(name: str) -> str:
+    """A Mermaid id for a module; the prefix keeps `end` and friends from being keywords."""
+    return "m_" + re.sub(r"\W", "_", name)
+
+
+def fill(i: int) -> tuple[str, str]:
+    """The legend's word for the i-th group of modules, and its Mermaid style."""
+    word, colour = FILLS[i % len(FILLS)]
+    style = f"fill:{colour},color:#1f2328"
+    turn = i // len(FILLS)
+    if not turn:
+        return word, style
+    return f"{word}, {2 * turn + 1}px border", f"{style},stroke-width:{2 * turn + 1}px"
+
+
+def flowchart(imports: Imports) -> str:
+    """imports.mmd: a Mermaid flowchart, top down, so importers sit above what they import."""
+    lines = ["flowchart TD"]
+    for m in imports.modules:
+        shape = '["{}"]' if imports.ours(m) else '(["{}"])'
+        lines.append(f"  {node(m)}{shape.format(imports.short(m))}")
+    lines += [f"  {node(a)} --> {node(b)}" for a, b in imports.links]
+    for i, (_, members) in enumerate(imports.groups):
+        lines.append(f"  classDef g{i} {fill(i)[1]}")
+        lines.append(f"  class {','.join(map(node, members))} g{i}")
+    if imports.unnamed:
+        lines.append("  classDef unnamed stroke-dasharray: 5 4")
+        lines.append(f"  class {','.join(map(node, imports.unnamed))} unnamed")
+    cut = {link for _, chain in imports.broken for link in itertools.pairwise(chain)}
+    red = [str(i) for i, link in enumerate(imports.links) if link in cut]
+    if red:
+        lines.append(f"  linkStyle {','.join(red)} stroke:#d1242f,stroke-width:3px")
+    return "\n".join(lines) + "\n"
+
+
+def classes(path: Path) -> tuple[str, int] | None:
+    """A module file's class diagram and its number of classes; None when it has none."""
+    with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+        Pyreverse(["-o", "mmd", "-s0", "-a0", "-d", tmp, "-p", "m", str(path)]).run()
+        lines = (Path(tmp) / "classes_m.mmd").read_text().splitlines()
+    count = sum(line.startswith("  class ") for line in lines)
+    if count == 0:
+        return None
+    if count > METHODS_UP_TO:
+        lines = [line for line in lines if not re.match(r"    \w+\(", line)]
+    lines = [line.translate(BRACES) if line.startswith("    ") else line for line in lines]
+    return "\n".join(lines) + "\n", count
+
+
+def legend(imports: Imports) -> list[str]:
+    """What the fills, dashes and colours of the flowchart mean, and each contract's verdict."""
+
+    def names(modules: tuple[str, ...] | list[str]) -> str:
+        return ", ".join(f"`{imports.short(m)}`" for m in modules) or "none"
+
+    def waived(c: Contract) -> str:
+        pairs = (names([m.strip() for m in w.split("->")]).replace(", ", " → ") for w in c.waived)
+        return f" Waived: {', '.join(pairs)}." if c.waived else ""
+
+    out = [
+        "An arrow points from a module to one it imports. The fill says which contracts of",
+        "`quality/importlinter.ini` limit what a module may import:",
+        "",
+        *(
+            f"- {fill(i)[0]}: {names(keys)} — {names(members)}"
+            for i, (keys, members) in enumerate(imports.groups)
+        ),
+        f"- plain: no contract — {names(imports.free)}",
+        "",
+        "Dashed: named in no forbidden contract, so none limits what it imports or who imports",
+        f"it; lint-imports still follows the chains through it — {names(imports.unnamed)}.",
+        "Rounded: a third-party package. Red: an import in a chain that breaks a contract.",
+        "",
+        "**The contracts, as lint-imports judges them:**",
+        "",
+    ]
+    for c in imports.rules:
+        how = "directly" if c.indirect else "directly or through other modules"
+        verdict = "kept" if c.kept else "**broken**"
+        out.append(
+            f"- `{c.key}`, {verdict}: {c.name}. {names(c.sources)} must not import "
+            f"{names(c.forbidden)}, {how}.{waived(c)}"
+            if c.kind == "forbidden"
+            else f"- `{c.key}` ({c.kind}), {verdict}: {c.name}. Not drawn here."
+        )
+    out += ["", "**Broken:** none." if all(c.kept for c in imports.rules) else "**Broken:**"]
+    out += [f"- {' → '.join(names([m]) for m in ch)} breaks `{k}`" for k, ch in imports.broken]
+    out += [
+        f"- `{c.key}` ({c.kind}): `make check` says where"
+        for c in imports.rules
+        if not c.kept and not c.chains
+    ]
+    return out
+
+
+def page(imports: Imports, flow: str, diagrams: list[tuple[str, str, int]]) -> str:
+    """map.md: the diagrams in Mermaid fences, and the contracts in words."""
+    out = ["### Imports", "", f"{FENCE}mermaid", flow + FENCE, "", *legend(imports)]
+    out += ["", "### Classes", "", "A base class defined in another module is not drawn.", ""]
+    for module, text, count in diagrams:
+        trimmed = f" ({count} classes, fields only)" if count > METHODS_UP_TO else ""
+        out += [f"#### `{imports.short(module)}`{trimmed}", "", f"{FENCE}mermaid", text + FENCE, ""]
+    return "\n".join(out)
+
+
+def draw(root: Path, out: Path) -> None:
+    """Draw the map of the checkout at `root` into `out`, replacing an earlier map there."""
+    package, rules, graph = judge(root)
+    imports = read(graph, package, rules)
+    flow = flowchart(imports)
+    diagrams = []
+    for module in (m for m in imports.modules if imports.ours(m)):
+        base = root / module.replace(".", "/")
+        drawn = classes(base / "__init__.py" if base.is_dir() else base.with_suffix(".py"))
+        if drawn:
+            diagrams.append((module, *drawn))
+    out.mkdir(parents=True, exist_ok=True)
+    for old in [*out.glob("classes-*.mmd"), out / "imports.mmd", out / "map.md"]:
+        old.unlink(missing_ok=True)
+    (out / "imports.mmd").write_text(flow)
+    for module, text, _ in diagrams:
+        (out / f"classes-{imports.short(module)}.mmd").write_text(text)
+    (out / "map.md").write_text(page(imports, flow, diagrams))
+
+
+def main(argv: list[str]) -> int:
+    if argv == ["--self-test"]:
+        return self_test()
+    parser = argparse.ArgumentParser(
+        prog="scripts/diagrams",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--root", type=Path, default=Path())
+    parser.add_argument("--out", type=Path, default=Path(".noslop/map"))
+    args = parser.parse_args(argv)
+    try:
+        draw(args.root.resolve(), args.out)
+    except UnmappableError as e:
+        print(f"diagrams: nothing to map: {e}", file=sys.stderr)
+        return 2
+    print(f"diagrams: drew {args.out / 'map.md'}")
+    return 0
+
+
+# A package to map. `a` reaches `c` through `b`: `far` forbids that at any distance, `loose`
+# only directly; `near` forbids `b` to import `c` directly, `waived` forbids it but waives
+# the import. `wild` names the modules of `e` by a wildcard, and `stack` is a layers
+# contract `b` breaks. `d` is named by no contract; `c` has a brace in a member's type;
+# `big` has too many classes for its methods to be drawn.
+TOY = {
+    "toy/__init__.py": "",
+    "toy/a.py": "from toy import b\n",
+    "toy/b.py": "import os\n\nfrom toy import c\n",
+    "toy/c.py": (
+        "from typing import Literal\n\n\nclass Node:\n    x: int = 0\n"
+        '    brace: Literal["{", "}"] = "{"\n\n    def get(self) -> int:\n        return self.x\n'
+    ),
+    "toy/d.py": "import zzz\n",
+    "toy/e/__init__.py": "",
+    "toy/e/f.py": "from toy import c\n",
+    "toy/big.py": "".join(
+        f"class K{i}:\n    y: int = 0\n\n    def m(self) -> None: ...\n\n\n"
+        for i in range(METHODS_UP_TO + 1)
+    ),
+    "quality/importlinter.ini": (
+        "[importlinter]\nroot_package = toy\ninclude_external_packages = True\n\n"
+        "[importlinter:contract:far]\nname = a never reaches c\ntype = forbidden\n"
+        "source_modules = toy.a\nforbidden_modules = toy.c\n\n"
+        "[importlinter:contract:near]\nname = b does not import c itself\ntype = forbidden\n"
+        "source_modules = toy.b\nforbidden_modules = toy.c\nallow_indirect_imports = True\n\n"
+        "[importlinter:contract:loose]\nname = a does not import c itself\ntype = forbidden\n"
+        "source_modules = toy.a\nforbidden_modules = toy.c\nallow_indirect_imports = True\n\n"
+        "[importlinter:contract:waived]\nname = b never reaches c but once\ntype = forbidden\n"
+        "source_modules = toy.b\nforbidden_modules = toy.c\nignore_imports = toy.b -> toy.c\n\n"
+        "[importlinter:contract:wild]\nname = e never reaches c\ntype = forbidden\n"
+        "source_modules = toy.e.*\nforbidden_modules = toy.c\n\n"
+        "[importlinter:contract:stack]\nname = c above b\ntype = layers\n"
+        "layers =\n    toy.c\n    toy.b\n"
+    ),
+}
+
+
+def gate(root: Path) -> dict[str, bool]:
+    """lint-imports' own verdict on each contract of `root`, by name: kept or not."""
+    run = subprocess.run(
+        [Path(sys.executable).parent / "lint-imports", "--config", str(CONFIG), "--no-cache"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return {n: v == "KEPT" for n, v in re.findall(r"^(.+) (KEPT|BROKEN)", run.stdout, re.M)}
+
+
+def self_test() -> int:
+    checks: list[tuple[str, bool]] = []
+
+    def check(name: str, ok: object) -> None:
+        checks.append((name, bool(ok)))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "root"
+        for name, text in TOY.items():
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_text(text)
+        maps = []
+        for run in ("one", "two"):
+            out = Path(tmp) / run
+            subprocess.run(  # a process each: the same bytes from a fresh interpreter
+                [sys.executable, __file__, "--root", str(root), "--out", str(out)],
+                check=True,
+                capture_output=True,
+            )
+            maps.append({p.name: p.read_text() for p in sorted(out.iterdir())})
+        one, two = maps
+        flow, md, c = (
+            one.get("imports.mmd", ""),
+            one.get("map.md", ""),
+            one.get("classes-c.mmd", ""),
+        )
+        verdicts = re.findall(r"^- `[\w-]+`(?: \(\w+\))?, (kept|\*\*broken\*\*): ([^.]+)", md, re.M)
+        drawn = {name: verdict == "kept" for verdict, name in verdicts}
+        check(
+            "each verdict is lint-imports' own",
+            drawn == gate(root)
+            and len(drawn) == TOY["quality/importlinter.ini"].count(":contract:"),
+        )
+        check("two runs give the same bytes", one == two)
+        check("no path of the checkout leaks", Path(tmp).name not in "".join(one.values()))
+        check(
+            "the standard library is left out, a third party is rounded",
+            "m_os" not in flow and "m_typing" not in flow and 'm_zzz(["zzz"])' in flow,
+        )
+        check(
+            "a chain and a direct import that break a contract are red",
+            "  m_toy_a --> m_toy_b\n  m_toy_b --> m_toy_c\n" in flow and "linkStyle 0,1,3 " in flow,
+        )
+        check(
+            "both breaks are spelled out",
+            "- `a` → `b` → `c` breaks `far`" in md and "- `b` → `c` breaks `near`" in md,
+        )
+        check(
+            "a chain is no direct import",
+            "`loose`, kept" in md and "`c`, directly." in md and "breaks `loose`" not in md,
+        )
+        check(
+            "a waived import breaks nothing",
+            "`waived`, kept" in md and "breaks `waived`" not in md and "Waived: `b` → `c`." in md,
+        )
+        check("a wildcard names what it matches", "- `e.f` → `c` breaks `wild`" in md)
+        check(
+            "a module no contract names is dashed",
+            "class m_toy_big,m_toy_d,m_toy_e unnamed" in flow,
+        )
+        check("each binding is a fill", "class m_toy_a g0" in flow and "class m_toy_b g1" in flow)
+        check(
+            "a broken contract of another type is listed, not drawn",
+            "`stack` (layers), **broken**" in md and "- `stack` (layers): `make check` says" in md,
+        )
+        check("a class is drawn with its fields and methods", "x : int" in c and "get() int" in c)
+        check(
+            "a brace in a member is an entity, not the end of the class",
+            "brace : Literal['#123;', '#125;']" in c and "  class Node {" in c,
+        )
+        check(
+            "too many classes keep their fields only",
+            "y : int" in one.get("classes-big.mmd", "") and "m()" not in one["classes-big.mmd"],
+        )
+        check("a module without classes has no diagram", "classes-a.mmd" not in one)
+    failed = [n for n, ok in checks if not ok]
+    for n in failed:
+        print(f"FAIL {n}", file=sys.stderr)
+    print(
+        f"diagrams: self-test {'FAILED' if failed else 'ok'} "
+        f"({len(checks)} checks, {len(failed)} failed)"
+    )
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
