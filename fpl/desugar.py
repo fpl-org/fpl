@@ -18,6 +18,7 @@ from itertools import groupby
 from typing import NoReturn, assert_never
 
 from fpl.ast_core import (
+    DIGITS,
     EFFECTS,
     Atom,
     Call,
@@ -142,10 +143,12 @@ def text(item: Text) -> str:
 
 def number(item: Item) -> Number:
     """An integer or a decimal, kept exact as written; ∞, π and a sigil or modifier are
-    refused."""
+    refused, and so is a numeral of more than DIGITS digits, at its position."""
     if not isinstance(item, Word) or item.prefix or item.mods or not item.body[0][-1].isdigit():
         unimplemented()
     numeral = item.body[0]
+    if sum(map(str.isdecimal, numeral)) > DIGITS:
+        raise FplError(item.span, "number too long")
     return Decimal(numeral) if "." in numeral else int(numeral)
 
 
