@@ -11,10 +11,10 @@ name: tools
 on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
-    paths: ["tools/**", "quality/noslop.mk", "quality/ruff.toml", "quality/mypy.ini", ".github/workflows/tools.yml"]
+    paths: ["tools/**", "quality/noslop.mk", "quality/ruff.toml", "quality/mypy.ini", "quality/pyproject.toml", "quality/uv.lock", "quality/noslop_pytest.py", "scripts/escapes", ".github/workflows/tools.yml"]
   push:
     branches: [main]
-    paths: ["tools/**", "quality/noslop.mk", "quality/ruff.toml", "quality/mypy.ini", ".github/workflows/tools.yml"]
+    paths: ["tools/**", "quality/noslop.mk", "quality/ruff.toml", "quality/mypy.ini", "quality/pyproject.toml", "quality/uv.lock", "quality/noslop_pytest.py", "scripts/escapes", ".github/workflows/tools.yml"]
 
 # One run per pull request; a new push cancels the run of the commit it replaces.
 concurrency:
