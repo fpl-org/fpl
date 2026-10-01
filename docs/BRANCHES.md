@@ -107,7 +107,7 @@ The numbered `part` has the same weakness in a milder form: after a reorder `2` 
 | Gate | Where | What it stops |
 | --- | --- | --- |
 | **[gate]** `reference-transaction` | local, `.githooks/` | *creating* a branch whose name does not parse (`git switch -c`, `git branch`, `git worktree add -b`, a fetch into `refs/heads/`). Git has no branch-creation hook; this is the hook that sees every ref update, and it cannot be skipped with `--no-verify`. Known gap: `git branch -m` (git 2.34 routes only the old name's deletion through the hook); the next two gates catch a renamed branch. |
-| **[gate]** `pre-push` | local, `.githooks/` | *pushing* to a remote branch whose name does not parse |
+| **[gate]** `pre-push` | local, `.githooks/` | *pushing* to a remote branch whose name does not parse. The same hook first runs `scripts/forward-only`, which refuses a push over an approved pull request (`docs/WORKFLOW.md`, rule 10); `FPL_BRANCH_GATE` does not switch that off. |
 | **[gate]** `commit-msg` | local, `.githooks/` | an agent commit (no `Human-Only: true`) on a branch outside the agent namespaces (`agent/<id>/…`, `<id>/…`). It does **not** compare the commit's model with the branch's `<id>` — see below. Human commits on agent branches stay legal; review fixups are normal. |
 | **[gate]** `branch-lint` workflow | forge, `.github/workflows/` | a pull request whose head branch does not parse; make it a required status check to harden it |
 
