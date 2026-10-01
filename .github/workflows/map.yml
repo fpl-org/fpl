@@ -1,0 +1,95 @@
+# The map of the code, for whoever reviews a pull request (docs/QUALITY.md, `make map`).
+#
+# scripts/diagrams draws the import graph and the class diagrams of the pull request and of
+# its base into the run's summary, where GitHub renders Mermaid, with the difference between
+# the two first, and keeps the .mmd files as an artifact. Nothing it draws is committed, so
+# nothing it draws goes stale. It is a view, not a gate: lint-imports in `make check` judges
+# the layering, this only shows it.
+#
+# The head is what actions/checkout gives a pull request: its merge into the base, so the
+# difference is what merging changes. The base is drawn by the head's script with the base's
+# own contracts; it may predate the script. Only a tree that carries an implementation (a
+# Makefile, as in noslop.yml) has a map: a harness-only tree is noted, not drawn. The shas
+# reach the shell through the environment.
+name: map
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+# One run per pull request; a new push cancels the run of the commit it replaces.
+concurrency:
+  group: map-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  map:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ hashFiles('quality/uv.lock') }}
+      - name: Draw the head and the base
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE"
+          git worktree add --detach .noslop/base "$BASE"
+          mkdir -p .noslop/map .noslop/map-base
+          nix develop -c make -f quality/noslop.mk venv
+          if [ -f Makefile ]; then nix develop -c make map; fi
+          if [ -f .noslop/base/Makefile ]; then
+            nix develop -c .venv/bin/python scripts/diagrams \
+              --root .noslop/base --out .noslop/map-base
+          fi
+      - name: Write the summary
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # diff's file headers carry modification times; the map itself carries none.
+          show() {  # a tree without an implementation has no map
+            if [ -f "$1/map.md" ]; then cat "$1/map.md"; else echo "No map: no implementation."; fi
+          }
+          diff -ru -x map.md .noslop/map-base .noslop/map \
+            | awk -F'\t' '/^(---|\+\+\+) / { print $1; next } { print }' > .noslop/map.diff || true
+          {
+            echo "## The map of the code"
+            echo
+            echo "Drawn by \`scripts/diagrams\` from the code (\`make map\` draws it locally); never committed."
+            echo
+            echo "### What merging changes in it"
+            echo
+            if [ -s .noslop/map.diff ]; then
+              echo '```diff'
+              cat .noslop/map.diff
+              echo '```'
+            else
+              echo "Nothing: the imports and the classes are as they are on the base."
+            fi
+            echo
+            echo "## Head ${HEAD:0:7}, merged into the base"
+            echo
+            show .noslop/map
+            echo
+            echo "## Base ${BASE:0:7}"
+            echo
+            echo "<details><summary>The map of the base</summary>"
+            echo
+            show .noslop/map-base
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: map
+          path: |
+            .noslop/map/
+            .noslop/map-base/
+          include-hidden-files: true
