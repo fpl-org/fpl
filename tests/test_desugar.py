@@ -2,7 +2,7 @@
 definitions (draft2 §frames, §currying, §( ) rotates; draft1 blocks and node; draft3 effect)."""
 
 import pytest
-from hypothesis import given
+from hypothesis import given, settings
 from hypothesis import strategies as st
 from test_parse import spans
 
@@ -32,6 +32,8 @@ LCURRY = "lcurry : x q -- q'\n\t[ swap ] swap , curry\n"
 SLOTS = "app : x t: [] c: Code -- y\n"
 
 bounded = st.integers(1 - 10**DIGITS, 10**DIGITS - 1)
+# A program over `items` may hold numerals of thousands of digits; the properties over it take
+# up to ~120 ms an example here, so a slower runner would trip Hypothesis's 200 ms deadline.
 items = st.recursive(
     st.integers(-9, 99).map(str)
     | st.integers(4090, 4400).map(lambda n: "9" * n)
@@ -73,6 +75,7 @@ def resugared(source: str) -> str:
 
 @pytest.mark.obligation("desugaring preserves meaning")
 @given(st.sampled_from(["", CURRY, "nop : --\n", SLOTS]), programs)
+@settings(deadline=None)
 def test_desugaring_preserves_meaning(head: str, body: str) -> None:
     """The core written back as source, with no bar, ( ) or block left, means what the source
     meant: bars and ( ) only sequence, a section is its quotation, a block its children."""
@@ -81,6 +84,7 @@ def test_desugaring_preserves_meaning(head: str, body: str) -> None:
 
 
 @given(programs)
+@settings(deadline=None)
 def test_comments_change_no_statement(body: str) -> None:
     """A ;; line before each line and a note after it leave the core as it was: a comment is no
     code, and its doc is not carried into the core yet."""
