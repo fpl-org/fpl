@@ -60,14 +60,14 @@ class Prelexed:
     stash: dict[int, Stashed]
 
 
-def counted(text: str, at: int, close: str, end: int) -> int:
-    """The offset just past the closer that balances the opener at `at`, or -1 if none does
+def counted(text: str, at: int, close: str, end: int) -> int | None:
+    """The offset just past the closer that balances the opener at `at`, or None if none does
     before `end`. Only the opener's own pair is counted."""
     opener, depth, j = text[at], 1, at + 1
     while j < end and depth:
         depth += (text[j] == opener) - (text[j] == close)
         j += 1
-    return -1 if depth else j
+    return None if depth else j
 
 
 class _Code:
@@ -95,7 +95,7 @@ def _pair(source: str, at: int, end: int, code: _Code) -> int:
     """Write the string or comment opening at `at`; return the offset after its closer."""
     opener = source[at]
     after = counted(source, at, PAIRS[opener], end)
-    if after < 0:
+    if after is None:
         raise FplError(Lines(source).span(at), f"{opener} never closed")
     if opener == "⟦":
         if code.at_line_start():
