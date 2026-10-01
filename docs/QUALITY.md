@@ -21,6 +21,7 @@ make harden   check, then the long search: 20x the examples, CrossHair on every 
               and every contract, mutation testing
 make ready    harden, then gates, then a known-vulnerability audit of the pinned tools
 make gates    proof that each check still refuses a bad example, and the harness's own lint
+make tools    the tooling beside the language, tools/<name>/, judged as strictly (see Tools)
 ```
 
 The same lanes run on the forge (`.github/workflows/noslop.yml`): `make check` on every push
@@ -48,6 +49,22 @@ with the tools a laptop has.
 
 On the milestone-0 skeleton `make check` takes about 6 seconds and `make harden` about 3
 minutes, almost all of it CrossHair.
+
+## Tools
+
+Tooling that serves the language without being part of it, a page that shows how tokenizers
+cut FPL source say, lives under `tools/<name>/`: each a uv project of its own, with its own
+`pyproject.toml`, lock, `pyright.json` and `coveragerc`, so its dependencies never enter the
+environment the language is judged in. `make tools` (from the root, `make -f
+quality/noslop.mk tools`) judges every such directory with the gate's own strictness: ruff
+under `quality/ruff.toml`, pyright strict, mypy under `quality/mypy.ini`, the waiver check of
+`scripts/escapes`, and its tests, with the harness's Hypothesis profiles, at 100% line and
+branch coverage.
+
+It is a lane apart. `check`, `quick`, `harden`, `ready` and `gates` do not depend on it, and
+deptry in `check` excludes `tools/`, so the inner loop of the language never waits on a
+tool's environment or reads a tool's imports. On the forge it runs from
+`.github/workflows/tools.yml`, only when `tools/` or the policy that judges it changes.
 
 ## CRAP
 
