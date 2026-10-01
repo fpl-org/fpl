@@ -262,14 +262,19 @@ check_names() {
 # the ref names and annotated tag objects in one --text run. See the header for scope.
 # $said is global: the EXIT trap outlives the function.
 push() {
-	local remote="$1" not="" rc=0 local_ref local_sha remote_ref remote_sha revs
+	local remote="$1" not="" rc=0 obj local_ref local_sha remote_ref remote_sha revs
 	git remote | grep -xF -- "$remote" >/dev/null && not=" --not --remotes=$remote"
 	said="$(umask 077 && mktemp "${TMPDIR:-/tmp}/leak-check-push.XXXXXX")"
 	trap 'rm -f "$said"' EXIT
 	while read -r local_ref local_sha remote_ref remote_sha; do
 		[ -n "$local_ref" ] && [ "$local_ref" != "(delete)" ] || continue
 		printf '%s\n' "$remote_ref" >>"$said"
-		[ "$(git cat-file -t "$local_sha")" != tag ] || git cat-file tag "$local_sha" >>"$said"
+		# A tag may name a tag, and the push sends the whole chain: each one is judged.
+		obj="$local_sha"
+		while [ "$(git cat-file -t "$obj")" = tag ]; do
+			git cat-file tag "$obj" >>"$said"
+			obj="$(git cat-file tag "$obj" | sed -n '1s/^object //p')"
+		done
 		if [[ "$remote_sha" =~ ^0+$ ]] || ! git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
 			revs="$local_sha$not"
 		else
