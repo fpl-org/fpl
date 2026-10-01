@@ -185,9 +185,10 @@ class Define:
 
 @dataclass(frozen=True)
 class Run:
-    """A line's code, run on a fresh stack; what it leaves is printed."""
+    """A line's code, run on a fresh stack; what it leaves is printed; and where the line is."""
 
     code: tuple[Node, ...]
+    span: Span = field(compare=False, default=Span(1, 1))
 
 
 type Statement = Define | Run

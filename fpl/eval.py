@@ -2,6 +2,7 @@
 one node of it. Over the core AST only."""
 
 from collections.abc import Callable, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass
 from decimal import Decimal
 from functools import partial
@@ -52,8 +53,11 @@ class State:
     words: Words
 
 
-def evaluate(statements: tuple[Statement, ...]) -> tuple[tuple[Value, ...], ...]:
-    """The stack each run line leaves, every line on a fresh stack. A later definition of a
+def evaluate(
+    statements: tuple[Statement, ...], fuel: int | None = None
+) -> tuple[tuple[Value, ...], ...]:
+    """The stack each run line leaves, every line on a fresh stack and within fuel steps, or
+    with no bound when fuel is None. A later definition of a
     name shadows an earlier one, for every line; name/history pushes the ones it shadows,
     oldest first, each as a quotation, name/doc the docstring of the one in force and
     name/effect its effect line as a list of strings, +fail last when it may fail."""
@@ -66,7 +70,38 @@ def evaluate(statements: tuple[Statement, ...]) -> tuple[tuple[Value, ...], ...]
         words[f"{name}/history"] = (Push(Listed(tuple(Quotation(d.code) for d in log[:-1]))),)
         words[f"{name}/doc"] = (Push(log[-1].doc),)
         words[f"{name}/effect"] = (Push(effect_line(log[-1])),)
-    return tuple(final(State((), s.code, words)) for s in statements if isinstance(s, Run))
+    return tuple(metered(s, words, fuel) for s in statements if isinstance(s, Run))
+
+
+@dataclass
+class Meter:
+    """The steps a run line may still take, None for no bound, and the line charged for them."""
+
+    left: int | None
+    span: Span
+
+    def spend(self) -> None:
+        """One step taken; refused, at the line, once none is left."""
+        if self.left == 0:
+            raise FplError(self.span, "out of fuel")
+        if self.left is not None:
+            self.left -= 1
+
+
+FUEL: ContextVar[Meter] = ContextVar("fuel")
+UNMETERED = Meter(None, Span(1, 1))
+
+
+def metered(run: Run, words: Words, fuel: int | None) -> tuple[Value, ...]:
+    """The stack the run line leaves, its steps and those of every run nested in it charged to
+    one meter. A recursion deeper than the walker's own stack is an error at the line."""
+    token = FUEL.set(Meter(fuel, run.span))
+    try:
+        return final(State((), run.code, words))
+    except RecursionError:
+        raise FplError(run.span, "recursion too deep") from None
+    finally:
+        FUEL.reset(token)
 
 
 def effect_line(define: Define) -> Listed:
@@ -77,8 +112,10 @@ def effect_line(define: Define) -> Listed:
 
 
 def final(state: State) -> tuple[Value, ...]:
-    """The stack once no code is left."""
+    """The stack once no code is left, each step spent from the line's meter, if any."""
+    meter = FUEL.get(UNMETERED)
     while state.code:
+        meter.spend()
         state = step(state)
     return state.stack
 

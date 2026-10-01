@@ -134,3 +134,40 @@ fpl.types.x_wanted__mutmut_22 -- timeout: a goal before a binder whose scope end
 fpl.types.x_wanted__mutmut_26 -- timeout: a goal before a binder whose scope ends in a goal then never reaches its count, and the search never ends
 fpl.types.x_wanted__mutmut_38 -- timeout: count stays at 1, so a goal wanting two values searches forever
 fpl.types.x_wanted__mutmut_39 -- timeout: count falls, so a goal wanting two values searches forever
+fpl.driver.x_stacks__mutmut_5 -- equivalent: evaluate yields one stack per run line, so zip meets equal lengths and strict never acts
+fpl.driver.x_stacks__mutmut_8 -- equivalent: evaluate yields one stack per run line, so zip meets equal lengths and strict never acts
+fpl.driver.x_stacks__mutmut_13 -- equivalent: evaluate yields one stack per run line, so zip meets equal lengths and strict never acts
+fpl.eval.x_final__mutmut_2 -- equivalent: final runs only under metered, which sets FUEL first, so the default is never read
+fpl.eval.x_repeat__mutmut_6 -- timeout: with and, a negative count is not refused and its rounds never reach 0; the test that meets it hangs, which is its kill
+fpl.fon.x__cell__mutmut_10 -- equivalent: None and False are both false for inline
+fpl.log.x__fields__mutmut_20 -- equivalent: the keys were just checked to be the fifteen of FIELDS, so zip meets equal lengths
+fpl.log.x__fields__mutmut_23 -- equivalent: the keys were just checked to be the fifteen of FIELDS, so zip meets equal lengths
+fpl.log.x__fields__mutmut_24 -- equivalent: the keys were just checked to be the fifteen of FIELDS, so zip meets equal lengths
+fpl.log.x__ident__mutmut_2 -- equivalent: None and False are both false for inline
+fpl.log.x__ident__mutmut_8 -- equivalent: an inline multihash is never an event's id, so resolve refuses the name either way
+fpl.log.x_keyed__mutmut_27 -- equivalent: token_bytes(None) gives 32 bytes, its default
+fpl.log.x_record__mutmut_40 -- equivalent: KEYS and the values are fifteen long by construction
+fpl.log.x_record__mutmut_43 -- equivalent: KEYS and the values are fifteen long by construction
+fpl.log.x_record__mutmut_44 -- equivalent: KEYS and the values are fifteen long by construction
+fpl.log.x_u64__mutmut_4 -- equivalent: to_bytes is big-endian by default since Python 3.11
+fpl.log.xǁEventǁheader__mutmut_8 -- equivalent: codec names ignore case, so ASCII is ascii
+fpl.log.xǁEventǁheader__mutmut_11 -- equivalent: codec names ignore case, so ASCII is ascii
+fpl.multihash.x__decimal__mutmut_34 -- equivalent: to_bytes is big-endian by default since Python 3.11
+fpl.multihash.x__leb128__mutmut_10 -- timeout: n <<= 7 grows n, so the loop never ends; the test that meets it hangs, which is its kill
+fpl.multihash.xǁMultihashǁspelled__mutmut_5 -- equivalent: from_bytes is big-endian by default since Python 3.11
+fpl.repl.x__call__mutmut_2 -- equivalent: None and False are both false for add_help
+fpl.repl.x__call__mutmut_3 -- equivalent: None and False are both false for allow_abbrev
+fpl.repl.x__call__mutmut_58 -- equivalent: the value of --log is never read, only whether it is None
+fpl.repl.x__call__mutmut_69 -- equivalent: the value of --show is never read, only whether it is None
+fpl.repl.x__call__mutmut_97 -- equivalent: main prints the usage line for a UsageError, never its message
+fpl.repl.x__call__mutmut_95 -- equivalent: main prints the usage line for a UsageError, never its message
+fpl.repl.x__call__mutmut_96 -- equivalent: main prints the usage line for a UsageError, never its message
+fpl.repl.x__fuel__mutmut_6 -- equivalent: argparse reports a type function's ValueError without its message, and main prints the usage line alone
+fpl.repl.x__kept__mutmut_19 -- equivalent: a log held in memory is never written, so its size is never read
+fpl.repl.x__plain__mutmut_3 -- timeout: a stream at its end gives "" forever, so the loop never ends; the test that meets it hangs, which is its kill
+fpl.repl.x__turn__mutmut_37 -- equivalent: the loop exits 0 whatever a turn's status, and _told reads no status
+fpl.repl.x__turn__mutmut_41 -- equivalent: the loop exits 0 whatever a turn's status, and _told reads no status
+fpl.repl.x_provenance__mutmut_12 -- equivalent: "" and XXXX are both printable ASCII of at most 256 characters
+fpl.session.x__changed__mutmut_8 -- equivalent: strict is False by default, and None is false
+fpl.session.x__changed__mutmut_11 -- equivalent: strict is False by default, and None is false
+fpl.session.xǁ_Entryǁmargin__mutmut_9 -- equivalent: with no non-blank line, "" and XXXX both open with no space, so nothing is refused

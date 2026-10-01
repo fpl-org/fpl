@@ -462,3 +462,57 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Default in force: every allowed entry is kept even when a run reports it as no longer living, since dropping one that lives on the next run fails the gate; the gate reports stale entries and does not fail on them; runs on one head differ (9 allowed entries reported no longer living on 7d1c179 in one run, none in the next); returned also as mutmut-run-dependent-kills
 - Closes by: maintainer, deciding whether a Hypothesis-random kill falsifies an "equivalent" reason, or pinning the seed or profile scripts/mutants runs the suite under, then pruning mutants.allow
 - Evidence: mutants.allow; scripts/mutants; session pr/05-comments.md (its PR note; the run logs are not kept)
+
+## log-hash-stand-in
+- Depends on it: fpl/multihash.py (hashed), fpl/log.py (every id, body name and MAC), fpl/session.py (evaluator)
+- Default in force: blake2b-256 (multihash code 45600) from the standard library, one current code per store; blake3 (code 30) is refused as unknown
+- Closes by: maintainer, a root [policy] commit adding blake3 to the lock, then switching the current code to 30; stored ids keep their code and are not rehashed
+- Evidence: combined-draft.md:161 (row 39, blake3-256), as amended by PSJ's decisions of 2026-09-29 (decimal multihash, $45600 and &45600 on blake2b-256 now); quality/uv.lock holds no blake3; fpl/multihash.py:47
+
+## log-signing
+- Depends on it: fpl/log.py (keyed, the MAC), tests/test_log.py
+- Default in force: a symmetric MAC, blake2b-256 keyed over the id's multihash bytes and outside the id's preimage; the key is $FPL_LOG_KEY, else $XDG_CONFIG_HOME/fpl/log.key, else ~/.config/fpl/log.key, created mode 0600 on first use
+- Closes by: design, choosing the signature of C6's signed feeds; a signature replaces the MAC and ids stay unchanged
+- Evidence: combined-draft.md:38 (C6, append-only signed single-writer logs); PSJ's decisions of 2026-09-29 (the MAC stays outside the hashed preimage); fpl/log.py:126
+
+## log-checkpoint
+- Depends on it: fpl/session.py (enter, program), fpl/log.py (load)
+- Default in force: every call loads and re-verifies the whole log and runs every accepted input up to the event again as one file
+- Closes by: design, a checkpoint of frontier and state hash (row 50) once the cost is measured
+- Evidence: combined-draft.md:172 (row 50, checkpoints certified by a hash of the frontier); fpl/session.py:63, :175; fpl/log.py:313
+
+## log-v0-in-fpl
+- Depends on it: fpl/log.py, fpl/session.py
+- Default in force: events named by the hash of their header, with deps (the state they extend) and links (a rewind's abandoned head), not v0's positional ids; this log is the first slice of v0 in FPL and the Rust v0 spike is abandoned
+- Closes by: PSJ, with an FPL v0 prototype that reads these logs
+- Evidence: PSJ's decisions of 2026-09-29; v0 repository a4dac05 src/event.rs:27-34 (Event with parents and links)
+
+## repl-bare-entry
+- Depends on it: fpl/__main__.py, tests/test_main.py:70-72
+- Default in force: bare python -m fpl prints its usage line and exits 2; the loop is python -m fpl.repl
+- Closes by: maintainer, either docs/CONVENTIONS.md naming python -m fpl.repl or bare python -m fpl routed to fpl.repl.main
+- Evidence: docs/CONVENTIONS.md:21 (python -m fpl starts the REPL); tests/test_main.py:70-72; PSJ's decisions of 2026-09-29 (entry python -m fpl.repl, python -m fpl FILE unchanged)
+
+## log-layering-unchecked
+- Depends on it: fpl/multihash.py, fpl/log.py, fpl/session.py
+- Default in force: no import-linter contract names the three modules; log imports multihash, fon and errors, never driver, by convention only
+- Closes by: maintainer, a root [policy] commit adding them to quality/importlinter.ini
+- Evidence: quality/importlinter.ini:46-60 (driver-on-top names fpl.repl only as a forbidden target)
+
+## fuel-scope
+- Depends on it: fpl/eval.py (metered), fpl/session.py (FUEL_DEFAULT), fpl/repl.py (--fuel), tests/test_fuel.py
+- Default in force: 1,000,000 steps per top-level run line, nested runs counted, the budget recorded in each event; out of fuel is an error at the run's line
+- Closes by: design, choosing the unit the budget bounds (line, input or session)
+- Evidence: fpl/eval.py:95; fpl/session.py:18; [ 1 drop ] 100000 repeat took 500,003 steps in 1.23 s at 4e26338 (about 2.5 s per line at the default)
+
+## log-fsync-barrier
+- Depends on it: fpl/log.py (write, keyed), the law write-ahead (tests/test_repl.py)
+- Default in force: os.fsync of each file and its directory; on macOS it does not flush the drive's cache (F_FULLFSYNC), so a power loss can lose an append that was printed
+- Closes by: maintainer, a per-platform coverage policy under which a darwin branch to fcntl.F_FULLFSYNC can be kept at 100%
+- Evidence: fpl/log.py:370, :406, :417; fcntl.F_FULLFSYNC exists on darwin only; quality/coveragerc:10 (fail_under = 100)
+
+## repl-transcript
+- Depends on it: fpl/repl.py, fpl/session.py (enter), tests/test_repl.py, tests/test_session.py
+- Default in force: an error in an earlier event is ERROR: @<seq> <l>:<c>; CHANGED <seq> $<id> names an earlier input whose output moved; HEAD <seq> $<id> follows an append on stderr; an input after the first starts at the left margin; an input ends at a blank line or once it is not pending; a first line with : is a command (:show :log :rewind E :canonical :quit); joined outputs differ from the file's only where a run leaves a single empty stack; at a terminal a tab inserts itself (GNU readline; libedit untried)
+- Closes by: design, fixing the transcript's form
+- Evidence: tests/test_session.py:117, :126, :136; tests/test_repl.py:264, :299, :345; fpl/print.py:24-31
