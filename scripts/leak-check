@@ -362,16 +362,27 @@ case "$mode" in
 	git log --format= --name-only -z --diff-filter=d -m $arg >"$tmp/names0"
 	check_names "the commits" || found=1
 	scan_both git "--log-opts=--diff-merges=remerge $show $arg" "$gitdir" || found=1
-	# Every identity and message in one stdin run. A marker line per commit, blanked
-	# before the scan, gives each finding's line its commit: $tmp/lines holds line, sha,
-	# marker line. The author and committer follow the marker, then the message.
+	# Every identity and message in one stdin run. Each commit is a NUL-ended record
+	# (git log -z), so no message line can pose as a boundary. A record's first line, its
+	# sha, is blanked before the scan and gives each finding's line its commit:
+	# $tmp/lines holds line, sha, sha line. The author and committer follow, then the
+	# message.
 	# shellcheck disable=SC2086
-	git log --format=$'\x01%H%n%an <%ae>%n%cn <%ce>%n%B' $arg >"$tmp/messages"
+	git log -z --format='%H%n%an <%ae>%n%cn <%ce>%n%B' $arg >"$tmp/messages"
 	: >"$tmp/blanked"
-	awk -v blanked="$tmp/blanked" '
-		/^\x01/ { sha = substr($0, 2); at = NR; print "" > blanked; next }
-		{ print > blanked; if (sha != "") print NR "\t" sha "\t" at }' \
-		"$tmp/messages" >"$tmp/lines"
+	awk -v RS='\0' -v blanked="$tmp/blanked" '
+		{
+			n = split($0, l, "\n")
+			if (l[n] == "") n--
+			for (i = 1; i <= n; i++) {
+				ln++
+				if (i == 1 && l[1] ~ /^[0-9a-f]+$/ && length(l[1]) >= 40) {
+					sha = l[1]; at = ln; print "" > blanked; continue
+				}
+				print l[i] > blanked
+				if (sha != "") print ln "\t" sha "\t" at
+			}
+		}' "$tmp/messages" >"$tmp/lines"
 	scan_both stdin <"$tmp/blanked" || found=1
 	report "the messages"
 	;;

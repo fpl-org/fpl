@@ -253,6 +253,10 @@ echo fine >ok.txt && git add ok.txt && commit -m fine -m "Refs: quuxfrobnitz"
 expect 1 "a message in the range" --range "$start..HEAD"
 says " message, line 3: leak-3" "a range message names commit and line"
 git reset -q --hard "$start"
+printf 'clean\n\n\001quuxfrobnitz\n' >"$tmp/soh" && commit --allow-empty --cleanup=verbatim -F "$tmp/soh"
+expect 1 "a message line that starts with SOH" --range "$start..HEAD"
+says " message, line 3: leak-3" "an SOH line names its commit and line"
+git reset -q --hard "$start"
 echo x >quuxfrobnitz.txt && git add quuxfrobnitz.txt && commit -m name
 git rm -q quuxfrobnitz.txt && commit -m unname
 expect 1 "a name that came and went" --range "$start..HEAD"
