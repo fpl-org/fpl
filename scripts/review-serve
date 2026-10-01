@@ -28,7 +28,9 @@ A patch that came from a pull request and is the head of the queue can be landed
 from the page: your gh account approves it and rebase-merges it, as scripts/land would, but
 only while the forge still has the commit you reviewed and its checks passed. The merge is
 then recorded in Radicle, the patches after it are replayed onto the new main and
-pushed as the machine account, and the landed branch is deleted. Your checkout's main is
+pushed as the machine account, and the landed branch is deleted. A patch whose push
+is refused, as pre-push refuses one that is approved (docs/WORKFLOW.md, rule 10), is left
+as it is, and so is what follows it; the page says so. Your checkout's main is
 left alone.
 
 The page is for one person on one machine: it binds to 127.0.0.1, and a write needs the
@@ -1703,9 +1705,17 @@ def land(repo, oid):
                     log.append(f"#{cnum} does not replay cleanly; it and what follows it are left as they are")
                     continue
                 new = run("git", "-C", work, "rev-parse", "HEAD").stdout.strip()
-                run("git", *credential_args(), "push", "-q",
-                    f"--force-with-lease=refs/heads/{cinfo['headRefName']}:{cinfo['headRefOid']}",
-                    remote, f"{new}:refs/heads/{cinfo['headRefName']}")
+                pushed = run("git", *credential_args(), "push", "-q",
+                             f"--force-with-lease=refs/heads/{cinfo['headRefName']}:{cinfo['headRefOid']}",
+                             remote, f"{new}:refs/heads/{cinfo['headRefName']}", ok=False)
+                if pushed.returncode != 0:
+                    # The landing is done by now. An approved branch is frozen (WORKFLOW.md
+                    # rule 10) and pre-push refuses to move it; in a GitHub stack the forge
+                    # moves it itself. Either way it is said, not raised.
+                    said = (pushed.stderr or pushed.stdout).splitlines()
+                    why = next((x for x in said if x.startswith("forward-only: ")), tail(pushed))
+                    log.append(f"#{cnum} was not moved, so it and what follows it are left as they are: {why}")
+                    continue
                 if onto_main:
                     gh("pr", "edit", cnum, "--repo", slug, "--base", "main")
                 log.append(f"moved #{cnum} up: {cinfo['headRefOid'][:7]} → {new[:7]}" + (", now onto main" if onto_main else ""))
@@ -2054,6 +2064,7 @@ def self_test():
            "main", "--private", "--no-confirm", "--no-seed")
         one = commit("f.txt", "".join(f"line {i}{' <b>' if i == 20 else ''}\n" for i in range(1, 41)), "one")
         two = commit("g.txt", "new\n", "two")
+        three = commit("k.txt", "third\n", "three")
 
         def push(head, below, title, num):
             out = sh("git", "push", f"--push-option=patch.base={below}",
@@ -2062,6 +2073,7 @@ def self_test():
             return re.search(r"Patch ([0-9a-f]{40})", out.stderr + out.stdout).group(1)
 
         p1, p2 = push(one, base, "first", 1), push(two, one, "second", 2)
+        push(three, two, "third", 3)
         rid = sh("rad", ".").stdout.strip()
 
         def show(p):
@@ -2207,7 +2219,7 @@ def self_test():
             sh("git", "config", f"url.{forge}.insteadOf", "https://github.com/o/r.git")
             sh("git", "remote", "add", "github", "https://github.com/o/r.git")
             sh("git", "push", "-q", "github", f"{base}:refs/heads/main", f"{one}:refs/heads/b1",
-               f"{two}:refs/heads/b2")
+               f"{two}:refs/heads/b2", f"{three}:refs/heads/b3")
             other = f"{tmp}/other"
             sh("git", "clone", "-q", forge, other)
             with open(f"{other}/h.txt", "w") as f:
@@ -2223,8 +2235,16 @@ def self_test():
             state = f"{tmp}/gh.json"
             with open(state, "w") as f:
                 json.dump({"login": "machine", "prs": {"1": {"head": "b1", "base": "main", "state": "OPEN"},
-                                                        "2": {"head": "b2", "base": "b1", "state": "OPEN"}},
+                                                        "2": {"head": "b2", "base": "b1", "state": "OPEN"},
+                                                        "3": {"head": "b3", "base": "b2", "state": "OPEN"}},
                            "forge": forge, "log": []}, f)
+            # #3 is approved: pre-push refuses to move it, as forward-only does.
+            os.makedirs(f"{tmp}/hooks")
+            with open(f"{tmp}/hooks/pre-push", "w") as f:
+                f.write("#!/bin/sh\nwhile read -r _ _ ref _; do [ \"$ref\" = refs/heads/b3 ] || continue\n"
+                        "echo 'forward-only: b3 is approved in #3 by @psj' >&2; exit 1; done\n")
+            os.chmod(f"{tmp}/hooks/pre-push", 0o755)
+            sh("git", "config", "core.hooksPath", f"{tmp}/hooks")
             os.makedirs(f"{tmp}/bin")
             with open(f"{tmp}/bin/gh", "w") as f:
                 f.write(FAKE_GH)
@@ -2314,6 +2334,8 @@ def self_test():
             code, page1 = get("/")
             check("the page says what happened", "rebase-merged #1" in page1 and "moved #2 up" in page1
                   and "now onto main" in page1)
+            check("a patch whose push is refused is left as it is, and the page says why",
+                  forge_ref("b3") == three and "#3 was not moved" in page1 and "b3 is approved in #3" in page1)
             # #2 comes back as a new revision on the new main; the hunk approved before the
             # move is the same hunk, so it stays approved.
             sh("git", "fetch", "-q", "github", "b2")
