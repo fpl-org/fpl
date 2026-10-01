@@ -127,15 +127,25 @@ build() {
 # "rule<TAB>file<TAB>line<TAB>commit", the file in hex: a path may hold any byte but NUL.
 # Returns 0 clean, 3 found, anything else: failed.
 scan() {
-	local config="$1" rc=0
+	local config="$1" rc=0 skip=0 input=/dev/null
 	shift
+	# gitleaks skips an input it takes for a binary file, by the signatures (h2non/filetype)
+	# in its first read while no line has ended: %PDF at byte 0, ustar at byte 257, and
+	# so on. That read is one buffer, 100000 bytes in 8.30.1 (sources/file.go,
+	# defaultBufferSize), so stdin goes in behind as many newlines, and its lines are
+	# shifted back after.
+	if [ "$1" = stdin ]; then
+		skip=100000 input="$tmp/padded"
+		{ printf '%*s' "$skip" '' | tr ' ' '\n' && cat; } >"$input"
+	fi
 	# --gitleaks-ignore-path points at an empty directory, but gitleaks also honours a
 	# .gitleaksignore in the root it scans, and in the working directory (a stdin scan has
 	# no root): so the callers hand it the git directory, and it runs from that empty one.
 	(cd "$tmp/noignore" && exec gitleaks "$@" --config "$config" --no-banner --redact=100 \
 		--exit-code 3 --ignore-gitleaks-allow --gitleaks-ignore-path "$tmp/noignore" \
 		--report-format template --report-template "$tmp/report.tmpl" --report-path -) \
-		>>"$tmp/hits" 2>"$tmp/stderr" || rc=$?
+		<"$input" >"$tmp/found" 2>"$tmp/stderr" || rc=$?
+	awk -F'\t' -v OFS='\t' -v skip="$skip" '{ $3 -= skip } 1' "$tmp/found" >>"$tmp/hits"
 	case "$rc" in 0 | 3) return "$rc" ;; esac
 	# gitleaks failed. Its message may quote a rule, so it is shown only when no rule is
 	# private. With a list, find the line it choked on by trying each rule alone.

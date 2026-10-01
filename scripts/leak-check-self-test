@@ -215,6 +215,12 @@ expect 1 "a pull request body" --text "$tmp/pr"
 printf ':leak-3:1\n' >.gitleaksignore && printf 'quuxfrobnitz\n' >"$tmp/t1"
 expect 1 "a .gitleaksignore where it runs" --text "$tmp/t1"
 rm .gitleaksignore
+printf '%%PDF-1.4\nquuxfrobnitz\n' >"$tmp/t2"
+expect 1 "a text that starts like a PDF" --text "$tmp/t2"
+says "line 2: leak-3" "a PDF-like text names its line"
+{ printf '%257s' '' && printf 'ustar\nquuxfrobnitz\n'; } >"$tmp/t3"
+expect 1 "a text with a tar signature at byte 257" --text "$tmp/t3"
+says "line 2: leak-3" "a tar-like text names its line"
 
 # --range -------------------------------------------------------------------------------
 start="$(git rev-parse HEAD)"
