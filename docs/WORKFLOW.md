@@ -71,15 +71,20 @@ top of base) · **restack** (rebase the stack when base or a lower commit change
     request, not a reason to reopen the approved one. So he reads each change once, and an
     approval never goes stale. The one exception is a rebase that a real conflict with the
     base or `main` forces: declare it with `FPL_FORWARD_ONLY_OVERRIDE="conflict: <reason>"`
-    and repeat the reason in the pull request, because that push dismisses his approval. The
-    rulesets keep dismiss-stale-reviews on as a tripwire: a lapsed approval is a broken rule.
-    **[gate]** `.githooks/pre-push` runs `scripts/forward-only`: a push to GitHub that would
-    overwrite or delete the branch of an open pull request whose head a human approved is
-    refused. Bots, `psjg-codex` and `psjg-claude` are not counted as human. It reads the
-    forge with GET requests only, with python3 and no `gh`, so it runs in the default dev
-    shell, and refuses when it cannot read it; then it says so, and
-    `FPL_FORWARD_ONLY_OVERRIDE="unchecked: <reason>"` lets a branch go that you know nobody
-    approved. `git push --no-verify` skips it; the tripwire stays.
+    and repeat the reason in the pull request, because his approval no longer covers what is
+    pushed. The forge backs this up only in part. Dismiss-stale-reviews, the tripwire that
+    turns a push after an approval into a dismissed approval, is on only for pull requests
+    based on `main` and on the branches the review ruleset names (today `walker/01-syntax`,
+    `walker/06-match` and `asm-layers`); on any other base the approval stays, on an older
+    commit. **[gate]** `.githooks/pre-push` runs `scripts/forward-only`: a push to GitHub
+    that would overwrite or delete the branch of an open pull request that a human approved
+    is refused, whichever commit he approved, so the gate does not lean on the tripwire. He
+    lifts the freeze by dismissing his approval or by requesting changes. Bots, `psjg-codex`
+    and `psjg-claude` are not counted as human. It reads the forge with GET requests only,
+    with python3 and no `gh`, so it runs in the default dev shell, and refuses when it cannot
+    read it; then it says so, and `FPL_FORWARD_ONLY_OVERRIDE="unchecked: <reason>"` lets a
+    branch go that you know nobody approved. `git push --no-verify` skips it, and leaves
+    only the tripwire, where it is on.
 
 ## Setup (once per clone/worktree)
 
