@@ -212,6 +212,9 @@ says "aws-access-token" "a key in a message names the default rule"
 # --text --------------------------------------------------------------------------------
 printf 'Add the thing\n\nIt came from zeta.corp.\n' >"$tmp/pr"
 expect 1 "a pull request body" --text "$tmp/pr"
+printf ':leak-3:1\n' >.gitleaksignore && printf 'quuxfrobnitz\n' >"$tmp/t1"
+expect 1 "a .gitleaksignore where it runs" --text "$tmp/t1"
+rm .gitleaksignore
 
 # --range -------------------------------------------------------------------------------
 start="$(git rev-parse HEAD)"
