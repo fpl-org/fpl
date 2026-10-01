@@ -70,6 +70,9 @@ FILLS = [
     ("pink", "#ffeff7"),
 ]
 
+# Mermaid ends a class body at a brace, even inside a member's type: `Literal["{"]`.
+BRACES = str.maketrans({"{": "#123;", "}": "#125;"})
+
 CONFIG = Path("quality") / "importlinter.ini"
 
 FENCE = "```"
@@ -257,6 +260,7 @@ def classes(path: Path) -> tuple[str, int] | None:
         return None
     if count > METHODS_UP_TO:
         lines = [line for line in lines if not re.match(r"    \w+\(", line)]
+    lines = [line.translate(BRACES) if line.startswith("    ") else line for line in lines]
     return "\n".join(lines) + "\n", count
 
 
@@ -355,13 +359,16 @@ def main(argv: list[str]) -> int:
 # A package to map. `a` reaches `c` through `b`: `far` forbids that at any distance, `loose`
 # only directly; `near` forbids `b` to import `c` directly, `waived` forbids it but waives
 # the import. `wild` names the modules of `e` by a wildcard, and `stack` is a layers
-# contract `b` breaks. `d` is named by no contract; `big` has too many classes for its
-# methods to be drawn.
+# contract `b` breaks. `d` is named by no contract; `c` has a brace in a member's type;
+# `big` has too many classes for its methods to be drawn.
 TOY = {
     "toy/__init__.py": "",
     "toy/a.py": "from toy import b\n",
     "toy/b.py": "import os\n\nfrom toy import c\n",
-    "toy/c.py": "class Node:\n    x: int = 0\n\n    def get(self) -> int:\n        return self.x\n",
+    "toy/c.py": (
+        "from typing import Literal\n\n\nclass Node:\n    x: int = 0\n"
+        '    brace: Literal["{", "}"] = "{"\n\n    def get(self) -> int:\n        return self.x\n'
+    ),
     "toy/d.py": "import zzz\n",
     "toy/e/__init__.py": "",
     "toy/e/f.py": "from toy import c\n",
@@ -465,6 +472,10 @@ def self_test() -> int:
             "`stack` (layers), **broken**" in md and "- `stack` (layers): `make check` says" in md,
         )
         check("a class is drawn with its fields and methods", "x : int" in c and "get() int" in c)
+        check(
+            "a brace in a member is an entity, not the end of the class",
+            "brace : Literal['#123;', '#125;']" in c and "  class Node {" in c,
+        )
         check(
             "too many classes keep their fields only",
             "y : int" in one.get("classes-big.mmd", "") and "m()" not in one["classes-big.mmd"],
