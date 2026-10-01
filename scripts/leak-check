@@ -369,6 +369,15 @@ case "$mode" in
 	git log --format= --name-only -z --diff-filter=d -m $arg >"$tmp/names0"
 	check_names "the commits" || found=1
 	scan_both git "--log-opts=--diff-merges=remerge $show $arg" "$gitdir" || found=1
+	# A merge of more than two parents has no remerge diff (git prints none), so what it
+	# adds would go unjudged: it is refused. The queue rebase-merges, so none lands.
+	# shellcheck disable=SC2086
+	git rev-list --min-parents=3 $arg >"$tmp/octopus"
+	while read -r sha; do
+		found=1
+		printf 'leak-check: %s: a merge of more than two parents, which this check cannot judge\n' \
+			"${sha:0:12}" >&2
+	done <"$tmp/octopus"
 	# Every identity and message in one stdin run. Each commit is a NUL-ended record
 	# (git log -z), so no message line can pose as a boundary. A record's first line, its
 	# sha, is blanked before the scan and gives each finding's line its commit:

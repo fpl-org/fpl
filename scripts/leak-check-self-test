@@ -258,6 +258,12 @@ printf 'clean\n\n\001quuxfrobnitz\n' >"$tmp/soh" && commit --allow-empty --clean
 expect 1 "a message line that starts with SOH" --range "$start..HEAD"
 says " message, line 3: leak-3" "an SOH line names its commit and line"
 git reset -q --hard "$start"
+for b in o1 o2; do git switch -q -c "$b" "$start" && echo "$b" >"$b.txt" && git add "$b.txt" && commit -m "$b"; done
+git switch -q main && git merge -q --no-ff --no-commit o1 o2 >/dev/null 2>&1
+echo "quuxfrobnitz" >octo.txt && git add octo.txt && commit -m octo
+expect 1 "a merge of three parents" --range "$start..HEAD"
+says "more than two parents" "an octopus merge is named"
+git reset -q --hard "$start" && git branch -q -D o1 o2
 echo x >quuxfrobnitz.txt && git add quuxfrobnitz.txt && commit -m name
 git rm -q quuxfrobnitz.txt && commit -m unname
 expect 1 "a name that came and went" --range "$start..HEAD"
