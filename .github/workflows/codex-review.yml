@@ -10,7 +10,8 @@ name: Codex review
 #
 # The token is the maintainer's fine-grained personal access token for this repository
 # alone, Pull requests read/write, stored as the secret CODEX_REVIEW_TOKEN: Codex answers a
-# mention by its author. Pull requests from forks get no secrets, so they are skipped.
+# mention by its author. Pull requests from forks get no secrets, so they are skipped, and so
+# are Dependabot's, whose runs read Dependabot secrets, not these.
 on:
   pull_request:
     types: [opened, ready_for_review, reopened]
@@ -25,11 +26,18 @@ jobs:
   ask:
     if: >-
       github.event.pull_request.draft == false &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
       - name: Ask Codex for a review
         env:
           GH_TOKEN: ${{ secrets.CODEX_REVIEW_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
-        run: gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "@codex review"
+        run: |
+          # The concurrency group above serialises this check with the post.
+          asked=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json comments \
+            --jq '[.comments[] | select(.body == "@codex review")] | length')
+          if [ "$asked" -eq 0 ]; then
+            gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "@codex review"
+          fi
