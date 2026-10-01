@@ -6,7 +6,7 @@
 #   leak-check --message FILE    a commit message, as commit-msg is handed it
 #   leak-check --range REVS      every commit REVS names: patches, file names, messages,
 #                                author and committer. REVS is what git rev-list takes
-#   leak-check --push REMOTE     what a push sends, from pre-push's stdin (below)
+#   leak-check --push URL        what a push sends, from pre-push's stdin (below)
 #   leak-check --text FILE       free text: a pull request's title and body, ref names
 #   leak-check --self-test       every mode against a synthetic list, in a temp repo
 #
@@ -42,10 +42,10 @@
 # commit-tree, with a fixed identity and date, so the same index makes the same object;
 # nothing points at it and gc drops it), because only a commit can be read with --text.
 #
-# --push REMOTE reads pre-push's lines ("<local ref> <sha> <remote ref> <sha>"). An update
+# --push URL reads pre-push's lines ("<local ref> <sha> <remote ref> <sha>"). An update
 # to a branch the remote has is judged from the remote's commit. A branch new to the
-# remote is judged by the commits no ref on REMOTE has, as git ls-remote lists them at
-# push time: not by refs/remotes/REMOTE/, which a fetch may never have pruned, and not by
+# remote is judged by the commits no ref at URL has, as git ls-remote lists them at
+# push time: not by remote-tracking refs, which a fetch may never have pruned, and not by
 # another remote. A remote that cannot be listed, or holds none of them, gets the whole
 # history judged.
 # The names of the refs pushed and the text of annotated tags are judged too.
@@ -296,8 +296,8 @@ case "$mode" in
 --staged) [ $# -eq 1 ] || die "usage: leak-check --staged" ;;
 --message | --text) [ $# -eq 2 ] && [ -r "$arg" ] || die "usage: leak-check $mode <readable file>" ;;
 --range) [ $# -eq 2 ] && [ -n "$arg" ] || die "usage: leak-check --range <revs>" ;;
---push) [ $# -eq 2 ] && [ -n "$arg" ] || die "usage: leak-check --push <remote> <updates" ;;
-*) die "usage: leak-check --staged | --message FILE | --range REVS | --push REMOTE | --text FILE | --self-test" ;;
+--push) [ $# -eq 2 ] && [ -n "$arg" ] || die "usage: leak-check --push <url> <updates" ;;
+*) die "usage: leak-check --staged | --message FILE | --range REVS | --push URL | --text FILE | --self-test" ;;
 esac
 
 # A replace ref would show git log another commit than the one push sends.

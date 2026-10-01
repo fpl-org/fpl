@@ -5,8 +5,9 @@
 #   1. No private term or secret in what is pushed (scripts/leak-check --push): the
 #      patches, file names, identities and messages of every commit the remote does not
 #      have yet, the names of the refs pushed, and annotated tags. A branch new to the
-#      remote is judged by the commits none of that remote's own remote-tracking refs
-#      has; a first push to a remote, or a push to a URL, judges its whole history. This
+#      remote is judged by the commits that none of the refs at the URL pushed to ($2,
+#      the pushurl when one is set) has, as git ls-remote lists them now; a URL that
+#      cannot be listed, or holds none of them, gets the whole history judged. This
 #      runs for every remote, Radicle included: publishing is publishing.
 #      FPL_LEAK_GATE = block (default) | warn | off, read by the script.
 #
@@ -24,8 +25,10 @@ mapfile -t updates
 
 # 1. leak gate -------------------------------------------------------------------------
 # Fed by process substitution, not a pipe: with FPL_LEAK_GATE=off the script exits
-# unread, and a printf killed by SIGPIPE would fail the push under pipefail.
-"$top/scripts/leak-check" --push "$1" < <(printf '%s\n' "${updates[@]}") ||
+# unread, and a printf killed by SIGPIPE would fail the push under pipefail. It is
+# handed the URL ($2), not the remote's name ($1): ls-remote of a name lists the
+# fetch url, which may hold what the pushurl does not.
+"$top/scripts/leak-check" --push "$2" < <(printf '%s\n' "${updates[@]}") ||
 	{ echo "pre-push: nothing was pushed." >&2; exit 1; }
 
 # 2. branch names ----------------------------------------------------------------------

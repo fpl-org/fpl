@@ -311,6 +311,19 @@ printf 'refs/heads/main %s refs/heads/main %s\n' "$(git rev-parse main)" "$zero"
 	cat - "$tmp/updates" >"$tmp/two"
 expect 1 "several refs, the leaky one last" --push pub <"$tmp/two"
 says "p.txt:1: leak-3" "every ref of a push is judged"
+# Through the hook, by a real push: git hands pre-push the remote's name and the URL it
+# pushes to. This remote fetches from priv, which has the commit, and pushes to pub,
+# which does not, so the push must be judged against pub. The hook finds leak-check
+# under the top of the tree, and a refused name must not be what stops the push.
+mkdir -p "$tmp/pushhooks" && ln -s "$(dirname "$check")/../.githooks/pre-push" "$tmp/pushhooks/"
+ln -s "$(dirname "$check")" scripts
+git remote add split "$tmp/priv.git" && git remote set-url --push split "$tmp/pub.git"
+total=$((total + 1))
+FPL_BRANCH_GATE=off git -c core.hooksPath="$tmp/pushhooks" push -q split leaky >"$tmp/out" 2>&1 &&
+	{ fails=$((fails + 1)); echo "self-test: a pushurl apart from the url: pushed" >&2; }
+cat "$tmp/out" >>"$tmp/log"
+says "p.txt:1: leak-3" "a push through the hook names file and rule"
+rm scripts && git remote remove split
 git switch -q main && git -c core.hooksPath=/dev/null push -q priv main
 git tag -a -m "Refs: quuxfrobnitz" rel && sha="$(git rev-parse rel)"
 printf 'refs/tags/rel %s refs/tags/rel %s\n' "$sha" "$zero" >"$tmp/updates"
