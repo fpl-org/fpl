@@ -11,9 +11,13 @@
 #   make gates    proof that each check still bites: the harness's own lint, its self-tests,
 #                 and a bad example each check refuses. Also what the root runs, where there
 #                 is no code to judge: make -f quality/noslop.mk gates
+#   make tools    the tooling beside the language: every tools/<name>/ that holds a
+#                 pyproject.toml, a uv project of its own, judged as strictly as the code.
+#                 Reached only by name, so no other lane waits on it; from the root:
+#                 make -f quality/noslop.mk tools
 
 .DEFAULT_GOAL := check
-.PHONY: fix quick check harden ready gates venv pristine clean-noslop
+.PHONY: fix quick check harden ready gates tools venv pristine clean-noslop
 
 Q        := quality
 VENV     := .venv
@@ -69,7 +73,7 @@ check: venv pristine
 	$(BIN)/python scripts/crap
 	$(BIN)/coverage report --rcfile=$(Q)/coveragerc
 	$(BIN)/lint-imports --config $(Q)/importlinter.ini --no-cache
-	$(BIN)/deptry . --extend-exclude 'mutants|quality|scripts'
+	$(BIN)/deptry . --extend-exclude 'mutants|quality|scripts|tools'
 	$(BIN)/vulture fpl tests --min-confidence 60
 	$(BIN)/pylint --rcfile=/dev/null --persistent=n --score=n --disable=all --enable=duplicate-code \
 	  --min-similarity-lines=6 --ignore-imports=yes --ignore-signatures=yes fpl
@@ -101,6 +105,27 @@ gates: venv
 	$(BIN)/python scripts/mutants --self-test
 	scripts/leak-check --self-test
 	$(BIN)/python scripts/gates
+
+# Each tool syncs its own locked environment into <tool>/.venv, so its dependencies never
+# enter the language's. The package a tool ships is named after its directory. escapes is
+# handed the package and the tests, never the tool's root, which holds the .venv.
+TOOLS := $(patsubst %/pyproject.toml,%,$(wildcard tools/*/pyproject.toml))
+
+tools: venv
+	$(BIN)/ruff check --config $(Q)/ruff.toml tools
+	$(BIN)/ruff format --config $(Q)/ruff.toml --check tools
+	@set -ex; for t in $(TOOLS); do \
+	  p=$$(basename $$t); \
+	  UV_PROJECT_ENVIRONMENT=$(CURDIR)/$$t/.venv uv sync --project $$t --frozen --all-extras \
+	    --python python3.12 --quiet; \
+	  pyright --project $$t/pyright.json; \
+	  (cd $$t && .venv/bin/mypy --config-file $(CURDIR)/$(Q)/mypy.ini $$p tests); \
+	  $(BIN)/python scripts/escapes $$t/$$p $$t/tests; \
+	  mkdir -p $$t/.noslop; \
+	  (cd $$t && .venv/bin/coverage erase --rcfile=coveragerc \
+	    && .venv/bin/coverage run --rcfile=coveragerc -m pytest -q \
+	    && .venv/bin/coverage report --rcfile=coveragerc); \
+	done
 
 clean-noslop:
 	rm -rf $(OUT) mutants .hypothesis .import_linter_cache
