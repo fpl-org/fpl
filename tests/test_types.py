@@ -2,6 +2,7 @@
 progress and preservation of the sorts it infers, against eval's step."""
 
 import contextlib
+from dataclasses import replace
 
 import pytest
 from hypothesis import given
@@ -198,8 +199,9 @@ def test_a_match_row_is_typed() -> None:
 
 @st.composite
 def code(draw: st.DrawFn, typing: Typing, arrows: dict[str, Arrow], depth: int) -> tuple[Node, ...]:
-    """Nodes that type from `typing`: each drawn, kept only if elaboration accepts it; a binder
-    takes the top and holds the rest."""
+    """Nodes that type from `typing`: each drawn, kept only if elaboration accepts it and it
+    leaves no value of no tracked sort (as rows that disagree on a sort do, hole typed-fragment);
+    a binder takes the top and holds the rest, a match takes the top and runs one of its rows."""
     nodes: list[Node] = []
     defined = (name for name in arrows if name.startswith("w") and "/" not in name)
     words = (*BUILTINS, *defined, *typing.env)
@@ -214,14 +216,24 @@ def code(draw: st.DrawFn, typing: Typing, arrows: dict[str, Arrow], depth: int) 
                 st.sampled_from(["a", "b"]).map(Push),
                 st.sampled_from([Symbol("s")]).map(Push),
                 st.sampled_from(words).map(lambda name: Call(name, HERE)),
+                *([matches(typing, arrows, depth - 1)] if typing.stack and depth else []),
             )
         )
-        try:
-            typing = after(typing, (node,), arrows)
-        except FplError:
-            continue
-        nodes.append(node)
+        with contextlib.suppress(FplError, UntypedError):
+            ended = after(typing, (node,), arrows)
+            if Kind.VALUE not in ended.stack:
+                typing = ended
+                nodes.append(node)
     return tuple(nodes)
+
+
+@st.composite
+def matches(draw: st.DrawFn, typing: Typing, arrows: dict[str, Arrow], depth: int) -> Match:
+    """A match taking the top with _, each row's body drawn to type on the values under it, so
+    that a row can find the sorts of the inputs and names around the match."""
+    under = replace(typing, stack=typing.stack[:-1])
+    bodies = draw(st.lists(code(under, arrows, depth), min_size=1, max_size=2))
+    return Match(tuple(Row((Wild(),), body) for body in bodies), HERE)
 
 
 @st.composite
