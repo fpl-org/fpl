@@ -1,11 +1,9 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 #
-# CodeRabbit, a reviewer from outside Anthropic beside Codex. It comments and proposes; a
-# Claude model signs off on anything it proposes before that lands, by making the commit
-# itself (AGENTS.md). So everything that would push to a pull request's branch is off:
-# autofix, CI fixes, merge-conflict resolution, generated docstrings and tests. A push from it
-# would also fail commit-lint (no provenance trailers), dismiss the maintainer's approvals and
-# move a stacked branch under the agents that own it.
+# CodeRabbit reviews alongside Codex. Optional docstring and unit-test generation is
+# enabled at PSJ's request; generated changes still need review before landing.
+# Autofix, CI fixes and merge-conflict resolution remain disabled to avoid those
+# tools committing changes to branches owned by other agents.
 #
 # Pull requests stack on each other (docs/WORKFLOW.md), so every base branch is reviewed, not
 # only main. Reviews include draft PRs and continue on each push. The pull
@@ -19,7 +17,7 @@ reviews:
   high_level_summary_in_walkthrough: true
   review_details: true
   poem: true
-  in_progress_fortune: false
+  in_progress_fortune: true
   sequence_diagrams: true
   suggested_labels: true
   suggested_reviewers: true
@@ -32,9 +30,9 @@ reviews:
       - ".*"
   finishing_touches:
     docstrings:
-      enabled: false
+      enabled: true
     unit_tests:
-      enabled: false
+      enabled: true
     autofix:
       enabled: false
     fix_ci:
