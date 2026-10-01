@@ -15,9 +15,11 @@
 #                 pyproject.toml, a uv project of its own, judged as strictly as the code.
 #                 Reached only by name, so no other lane waits on it; from the root:
 #                 make -f quality/noslop.mk tools
+#   make map      the map of the code, imports and classes, drawn into .noslop/map/ and never
+#                 committed; no other lane runs it (scripts/diagrams)
 
 .DEFAULT_GOAL := check
-.PHONY: fix quick check harden ready gates tools venv pristine clean-noslop
+.PHONY: fix quick check harden ready gates tools map venv pristine clean-noslop
 
 Q        := quality
 VENV     := .venv
@@ -93,7 +95,7 @@ ready: harden gates
 
 # The harness's own Python, judged by the same ruff it judges others with.
 HARNESS := scripts/crap scripts/props scripts/escapes scripts/mutants scripts/gates \
-           scripts/forward-only $(Q)/noslop_pytest.py
+           scripts/forward-only scripts/diagrams $(Q)/noslop_pytest.py
 
 gates: venv
 	$(BIN)/ruff check --config $(Q)/ruff.toml $(HARNESS)
@@ -103,6 +105,7 @@ gates: venv
 	$(BIN)/python scripts/escapes --self-test
 	$(BIN)/python scripts/forward-only --self-test
 	$(BIN)/python scripts/mutants --self-test
+	$(BIN)/python scripts/diagrams --self-test
 	scripts/leak-check --self-test
 	$(BIN)/python scripts/gates
 
@@ -126,6 +129,11 @@ tools: venv
 	    && .venv/bin/coverage run --rcfile=coveragerc -m pytest -q \
 	    && .venv/bin/coverage report --rcfile=coveragerc); \
 	done
+
+# A view of the code, not a check: computed from the code each time, so it cannot go stale,
+# and kept out of git, where it would. .github/workflows/map.yml draws it on every PR.
+map: venv
+	$(BIN)/python scripts/diagrams --out $(OUT)/map
 
 clean-noslop:
 	rm -rf $(OUT) mutants .hypothesis .import_linter_cache
