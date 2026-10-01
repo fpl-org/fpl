@@ -44,9 +44,10 @@
 #
 # --push REMOTE reads pre-push's lines ("<local ref> <sha> <remote ref> <sha>"). An update
 # to a branch the remote has is judged from the remote's commit. A branch new to the
-# remote is judged by the commits no ref under refs/remotes/REMOTE/ has, so a commit that
-# reached another remote, or a fetch from one, earns no exemption here. A first push to a
-# remote with no remote-tracking refs, or to a URL, judges the branch's whole history.
+# remote is judged by the commits no ref on REMOTE has, as git ls-remote lists them at
+# push time: not by refs/remotes/REMOTE/, which a fetch may never have pruned, and not by
+# another remote. A remote that cannot be listed, or holds none of them, gets the whole
+# history judged.
 # The names of the refs pushed and the text of annotated tags are judged too.
 #
 # Nothing it prints contains a term: gitleaks redacts what it matched, its own messages
@@ -263,7 +264,10 @@ check_names() {
 # $said is global: the EXIT trap outlives the function.
 push() {
 	local remote="$1" not="" rc=0 obj local_ref local_sha remote_ref remote_sha revs
-	git remote | grep -xF -- "$remote" >/dev/null && not=" --not --remotes=$remote"
+	not="$(git ls-remote -- "$remote" 2>/dev/null | cut -f1 | sort -u |
+		git cat-file --batch-check='%(objectname) %(objecttype)' |
+		awk '$2 == "commit" { printf " %s", $1 }')" || not=""
+	[ -z "$not" ] || not=" --not$not"
 	said="$(umask 077 && mktemp "${TMPDIR:-/tmp}/leak-check-push.XXXXXX")"
 	trap 'rm -f "$said"' EXIT
 	while read -r local_ref local_sha remote_ref remote_sha; do
