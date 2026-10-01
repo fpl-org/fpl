@@ -272,7 +272,8 @@ def bound(typing: Typing, node: Bind, arrows: Mapping[str, Arrow], need: int | N
 def matched(typing: Typing, node: Match, arrows: Mapping[str, Arrow], need: int | None) -> Typing:
     """Each row's body run on the values under those the match takes, its pattern names
     standing for values of no known sort; the sorts the rows agree on, where they leave as many
-    values, else untyped."""
+    values, else untyped. A sort a row finds for an input holds for the rows after it and the
+    word, whichever row runs."""
     cut = len(typing.stack) - len(node.rows[0].patterns)
     if cut < 0:
         raise UnderflowError(node.span)
@@ -281,14 +282,14 @@ def matched(typing: Typing, node: Match, arrows: Mapping[str, Arrow], need: int 
         names = dict.fromkeys(bindings(row.patterns), Kind.VALUE)
         begun = replace(typing, stack=typing.stack[:cut], env={**typing.env, **names})
         ends.append(after(begun, row.body, arrows, need))
-        typing = replace(typing, goals=ends[-1].goals)
+        typing = replace(typing, known=ends[-1].known, goals=ends[-1].goals)
     return replace(typing, stack=agreed(ends))
 
 
 def agreed(ends: list[Typing]) -> tuple[Sort, ...]:
-    """The sorts rows leave: each where they agree, else of no known sort; untyped where they
-    leave different counts."""
-    stacks = {resolved(end.stack, end) for end in ends}
+    """The sorts rows leave, inputs resolved by what every row found: each where they agree,
+    else of no known sort; untyped where they leave different counts."""
+    stacks = {resolved(end.stack, ends[-1]) for end in ends}
     if len({len(stack) for stack in stacks}) != 1:
         raise UntypedError
     columns = map(set, zip(*stacks, strict=True))
