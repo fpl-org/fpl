@@ -12,11 +12,11 @@
 #      FPL_LEAK_GATE = block (default) | warn | off, read by the script.
 #
 #   2. An approved pull request is frozen (docs/WORKFLOW.md rule 10). A push to GitHub that
-#      would overwrite or delete the branch of an open pull request, whose head a human
-#      approved, is refused (scripts/forward-only). It reads the forge with GET requests
-#      only, with python3 and no gh, and refuses when it cannot read it. A rebase that a
-#      real conflict forces goes with FPL_FORWARD_ONLY_OVERRIDE="conflict: <reason>"; the
-#      pull request repeats it. When GitHub cannot be read, "unchecked: <reason>" lets a
+#      would overwrite or delete the branch of an open pull request that a human approved,
+#      at whatever commit, is refused (scripts/forward-only). It reads the forge with GET
+#      requests only, with python3 and no gh, and refuses when it cannot read it. A rebase
+#      that a real conflict forces goes with FPL_FORWARD_ONLY_OVERRIDE="conflict: <reason>";
+#      the pull request repeats it. When GitHub cannot be read, "unchecked: <reason>" lets a
 #      branch go that the pusher knows nobody approved.
 #
 #   3. Refuse to push to a remote branch whose name does not parse under

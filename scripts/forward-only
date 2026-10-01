@@ -12,9 +12,12 @@ Git hands pre-push one line per ref, `<local ref> <local sha> <remote ref> <remo
 A line is judged when it goes to GitHub (the url names github.com) and overwrites or
 deletes a branch that is there: `refs/heads/…`, a remote sha that is not all zeros, a local
 sha that differs from it. For that branch the forge is asked for its open pull requests and
-their reviews, and the push is refused when a human stands by an approval of the head it
-would overwrite: of his reviews that approve or request changes, the latest approves, it
-approves that very commit, and it was not dismissed. A comment leaves a verdict standing.
+their reviews, and the push is refused when a human stands by an approval: of his reviews
+that approve or request changes, the latest approves and was not dismissed. A comment leaves
+a verdict standing. The approval need not be of the head the push overwrites. The forge
+dismisses an approval on a later push only where a ruleset says so, which today is for pull
+requests based on main and a few named branches; elsewhere it stays, on an older commit,
+and the gate must not stop guarding the branch because a push already went past it.
 Bots and the machine accounts in MACHINES are not humans here: what they find after an
 approval is work for a fix on top, not a reason to reopen the approved branch.
 
@@ -139,17 +142,17 @@ def human(user: dict[str, Any]) -> bool:
     return bool(login) and user.get("type") != "Bot" and login not in MACHINES
 
 
-def approvers(reviews: list[dict[str, Any]], head: str) -> list[str]:
-    """The humans whose standing verdict approves `head`. The forge lists reviews oldest
-    first, so the last verdict of each reviewer wins; a dismissed approval reads
-    DISMISSED."""
+def approvers(reviews: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    """(login, commit) for each human whose standing verdict approves, and the commit he
+    approved. The forge lists reviews oldest first, so the last verdict of each reviewer
+    wins; a dismissed approval reads DISMISSED."""
     last: dict[str, dict[str, Any]] = {}
     for r in reviews:
         user = r.get("user") or {}
         if r.get("state") in VERDICTS and human(user):
             last[user["login"]] = r
     return sorted(
-        who for who, r in last.items() if r["state"] == "APPROVED" and r["commit_id"] == head
+        (who, str(r.get("commit_id") or "?")) for who, r in last.items() if r["state"] == "APPROVED"
     )
 
 
@@ -171,11 +174,12 @@ def frozen(updates: list[str], url: str, read: Read) -> tuple[list[str], list[st
         try:
             for pr in read(f"repos/{owner}/{name}/pulls?state=open&head={head}&per_page=100"):
                 reviews = read(f"repos/{owner}/{name}/pulls/{pr['number']}/reviews?per_page=100")
-                if who := approvers(reviews, remote):
-                    at = ", ".join(f"@{w}" for w in who)
-                    approved.append(
-                        f"{branch} is approved by {at} in #{pr['number']} at {remote[:12]}"
+                if who := approvers(reviews):
+                    at = ", ".join(f"@{w} at {c[:12]}" for w, c in who)
+                    now = (
+                        "" if all(c == remote for _, c in who) else f"; it is at {remote[:12]} now"
                     )
+                    approved.append(f"{branch} is approved in #{pr['number']} by {at}{now}")
         except UnreadableError as e:
             unread.append(f"{branch}: {e}")
         except SHAPE as e:
@@ -303,7 +307,12 @@ UNAPPROVED = stack(
 )
 NOGH = {"PATH": "{nogh}"}  # the runner fills in a PATH with git on it and no gh
 CASES = [
-    Case("an approved pull request is refused", 1, "by @psjg in #54"),
+    Case(
+        "an approved pull request is refused",
+        1,
+        "in #54 by @psjg at aaaaaaaaaaaa\n",
+        absent=" now",
+    ),
     Case("approvals by bots and machine accounts alone freeze nothing", 0, answers=BOTS),
     Case("a branch with no open pull request goes", 0, answers={}),
     Case("a draft not yet approved goes", 0, answers=UNAPPROVED),
@@ -313,9 +322,10 @@ CASES = [
         answers=stack(review("psjg", "APPROVED"), review("psjg", "DISMISSED")),
     ),
     Case(
-        "an approval of an older head goes",
-        0,
-        answers=stack(review("psjg", "APPROVED", commit="c" * 40)),
+        "an approval of an older head still freezes, and says the branch moved on",
+        1,
+        f"by @psjg at cccccccccccc; it is at {OLD[:12]} now",
+        stack(review("psjg", "APPROVED", commit="c" * 40)),
     ),
     Case(
         "a comment after the approval leaves it standing",
@@ -331,13 +341,13 @@ CASES = [
     Case(
         "an approval on a later page is found",
         1,
-        "by @psjg in #54",
+        "in #54 by @psjg at aaaaaaaaaaaa",
         {**APPROVED, REVIEWS: ([review("psjg", "COMMENTED")], [review("psjg", "APPROVED")])},
     ),
     Case(
         "a branch name is asked for exactly, & # % + included",
         1,
-        "by @psjg in #54",
+        "in #54 by @psjg at aaaaaaaaaaaa",
         stack(review("psjg", "APPROVED"), branch=ODD),
         f"refs/heads/{ODD} {NEW} refs/heads/{ODD} {OLD}",
     ),
@@ -379,21 +389,21 @@ CASES = [
     Case(
         "a token from the environment goes first",
         1,
-        "by @psjg in #54",
+        "in #54 by @psjg at aaaaaaaaaaaa",
         env={"GH_TOKEN": "e"},
         auth="Bearer e",
     ),
     Case(
         "without gh the forge is read with the token of .git/agent-credentials",
         1,
-        "by @psjg in #54",
+        "in #54 by @psjg at aaaaaaaaaaaa",
         env=NOGH,
         auth="Bearer file-token",
     ),
     Case(
         "without any token it is read anonymously",
         1,
-        "by @psjg in #54",
+        "in #54 by @psjg at aaaaaaaaaaaa",
         env={**NOGH, "GIT_DIR": "/nonexistent"},
         auth="",
     ),
@@ -407,7 +417,7 @@ CASES = [
     Case(
         "deleting an approved branch is refused",
         1,
-        "by @psjg in #54",
+        "in #54 by @psjg at aaaaaaaaaaaa",
         line=f"(delete) {ZERO} refs/heads/{B} {OLD}",
     ),
     Case(
