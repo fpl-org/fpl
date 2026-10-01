@@ -205,6 +205,13 @@ expect 1 "a message trailer" --message "$tmp/m2"
 printf 'feat(x): add y\n\nBody.\n# ------------------------ >8 ------------------------\n-quuxfrobnitz\n' >"$tmp/m3"
 GIT_EDITOR=true expect 0 "the diff below the scissors, after an editor" --message "$tmp/m3"
 GIT_EDITOR=: expect 1 "text below the scissors with no editor (-m, -F)" --message "$tmp/m3"
+sed 's/^#/;/' "$tmp/m3" >"$tmp/m3c"
+git config core.commentChar ';'
+GIT_EDITOR=true expect 0 "the scissors of core.commentChar, after an editor" --message "$tmp/m3c"
+GIT_EDITOR=true expect 1 "a '#' scissors line that core.commentChar makes text" --message "$tmp/m3"
+git config core.commentChar auto
+GIT_EDITOR=true expect 0 "the scissors of core.commentChar=auto" --message "$tmp/m3c"
+git config --unset core.commentChar
 printf 'feat(x): add y\n\nWe rebuilt the glorp\nwidget pipeline.\n' >"$tmp/m4"
 expect 1 "a term the 72-column wrap split" --message "$tmp/m4"
 says "the message, line 3: leak-7" "a wrapped term names its line"
