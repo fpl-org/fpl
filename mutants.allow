@@ -119,3 +119,18 @@ fpl.eval.x_uncons__mutmut_2 -- equivalent: a match no case takes falls to the en
 fpl.eval.x_unpair__mutmut_2 -- equivalent: a match no case takes falls to the end and returns None, as the case does
 fpl.eval.x_unpush__mutmut_2 -- equivalent: a match no case takes falls to the end and returns None, as the case does
 fpl.eval.x_unswap__mutmut_2 -- equivalent: a match no case takes falls to the end and returns None, as the case does
+fpl.types.x_agreed__mutmut_13 -- equivalent: the stacks are checked to share one length just above, so strict never fires
+fpl.types.x_agreed__mutmut_15 -- equivalent: the stacks are checked to share one length just above, so strict never fires
+fpl.types.x_agreed__mutmut_16 -- equivalent: the stacks are checked to share one length just above, so strict never fires
+fpl.types.x_applied__mutmut_11 -- equivalent: the stack from cut holds as many sorts as the arrow takes, so strict never fires
+fpl.types.x_applied__mutmut_14 -- equivalent: the stack from cut holds as many sorts as the arrow takes, so strict never fires
+fpl.types.x_applied__mutmut_15 -- equivalent: the stack from cut holds as many sorts as the arrow takes, so strict never fires
+fpl.types.x_bound_by__mutmut_5 -- unreachable: the match covers the Pattern union, as pyright proves
+fpl.types.x_bound_by__mutmut_8 -- unreachable: the match covers the Pattern union, as pyright proves
+fpl.types.x_met__mutmut_4 -- equivalent: a match that takes no case does nothing, as pass does
+fpl.types.x_through__mutmut_6 -- unreachable: the match covers the Node union, as pyright proves
+fpl.types.x_through__mutmut_38 -- unreachable: the match covers the Node union, as pyright proves
+fpl.types.x_wanted__mutmut_22 -- timeout: a goal before a binder whose scope ends in a goal then never reaches its count, and the search never ends
+fpl.types.x_wanted__mutmut_26 -- timeout: a goal before a binder whose scope ends in a goal then never reaches its count, and the search never ends
+fpl.types.x_wanted__mutmut_38 -- timeout: count stays at 1, so a goal wanting two values searches forever
+fpl.types.x_wanted__mutmut_39 -- timeout: count falls, so a goal wanting two values searches forever

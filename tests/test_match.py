@@ -11,6 +11,7 @@ from fpl import (  # noqa: F401 -- scripts/props credits a file's obligations to
 )
 from fpl.driver import run
 from fpl.errors import FplError, Span
+from fpl.eval import unswap
 
 SHAPES = (
     "circle : r -- shape\n\t#circle swap pair\n"
@@ -161,7 +162,7 @@ def test_the_row_chosen_is_the_first_whose_patterns_match(patterns: list[str], v
     the match raises +fail."""
     rows = "".join(f"\t\t{p}\t{i} #row\n" for i, p in enumerate(patterns))
     first = next((i for i, p in enumerate(patterns) if p in ("_", str(value))), None)
-    source = f"f : x -- y\n\tmatch\n{rows}{value} f\n"
+    source = f"f : x -- y z\n\tmatch\n{rows}{value} f\n"
     if first is None:
         with pytest.raises(FplError, match="no row matches"):
             run(source)
@@ -181,7 +182,7 @@ rows = st.lists(
 def test_a_match_is_exhaustive_exactly_when_its_effect_has_no_fail(table: list[list[str]]) -> None:
     """[D4.5] a row of wildcards and names catches all; without one the match is partial and
     the word's effect carries +fail, as f/effect shows."""
-    body = "".join("\t\t" + "\t".join(r) + "\n" for r in table)
+    body = "".join("\t\t" + "\t".join(r) + "\t1\n" for r in table)
     caught = any(all(p in ("_", "v") for p in r) for r in table)
     effect = "⟨ “a” “b” “--” “c” ⟩" if caught else "⟨ “a” “b” “--” “c” “+fail” ⟩"
     assert run(f"f : a b -- c\n\tmatch\n{body}f/effect\n") == run(f"{effect}\n")
@@ -195,7 +196,7 @@ def test_a_match_is_exhaustive_exactly_when_its_effect_has_no_fail(table: list[l
         ("{ a 1 }\t1", Span(1, 1), "no evaluator yet"),
         ("( [ 1 ] x )\t1", Span(1, 1), "no evaluator yet"),
         ("( bound ∈ )\t1", Span(1, 1), "no evaluator yet"),
-        ("_\t_", Span(1, 1), "no evaluator yet"),
+        ("_\t_", Span(5, 5), "cannot infer _ : -- value"),
         ("( bound x )\t1", Span(5, 5), "a constructor is words and literals: not invertible"),
     ],
 )
@@ -209,8 +210,9 @@ def test_what_is_no_pattern_is_refused(row: str, span: Span, message: str) -> No
 
 
 def test_a_constructor_that_cannot_have_built_the_value_falls_through() -> None:
-    """rect undoes one pair of a circle, not the second; #t swap cannot undo on one value."""
-    kind = "sw : x -- y\n\t#t swap\nkind : s -- k\n\tmatch\n\t\t( rect w h )\t#rect\n"
+    """rect undoes one pair of a circle, not the second; sw's pair holds #t where a circle's
+    holds #circle."""
+    kind = "sw : x -- y\n\t#t swap pair\nkind : s -- k\n\tmatch\n\t\t( rect w h )\t#rect\n"
     kind += "\t\t( sw x )\t#sw\n\t\t_\t#other\n"
     assert run(f"{SHAPES}{kind}3 circle kind\n") == "#other\n"
 
@@ -279,12 +281,13 @@ def test_a_line_after_a_match_counts_from_nothing() -> None:
     assert run(source) == "1 #two\n"
 
 
-def test_a_wildcard_row_whose_body_is_a_goal_waits_for_goals() -> None:
-    """[D4.3] _ ? is a wildcard row whose body is a goal the elaborator reports; goals are not
-    implemented (hole goal-placeholder), so the program is refused before it runs."""
+def test_a_wildcard_row_whose_body_is_a_goal_is_reported() -> None:
+    """[D4.3] _ ? is a wildcard row whose body is a goal the elaborator reports; running the
+    row is refused at the goal (hole goal-placeholder)."""
+    reported: list[str] = []
     with pytest.raises(FplError) as refused:
-        run("f : x -- y\n\tmatch\n\t\t0\t1\n\t\t_\t?\n1 f\n")
-    assert (refused.value.span, refused.value.message) == (Span(1, 1), "no evaluator yet")
+        run("f : x -- y\n\tmatch\n\t\t0\t1\n\t\t_\t?\n1 f\n", reported.append)
+    assert (reported, str(refused.value)) == (["GOAL 4:5 ? : -- value"], "ERROR: 4:5 unfilled goal")
 
 
 def test_a_record_pattern_in_a_head_waits_for_defaults() -> None:
@@ -293,3 +296,9 @@ def test_a_record_pattern_in_a_head_waits_for_defaults() -> None:
     with pytest.raises(FplError) as refused:
         run("join : xs { sep “ ” end newline } -- s\n\txs sep interleave end ,\n")
     assert (refused.value.span, refused.value.message) == (Span(1, 1), "no evaluator yet")
+
+
+def test_swap_run_backwards_on_one_value_matches_nothing() -> None:
+    """Below the driver: with effect lines checked, no constructor's body undoes a swap on one
+    value, so the refusal is reached only here."""
+    assert unswap((1,)) is None

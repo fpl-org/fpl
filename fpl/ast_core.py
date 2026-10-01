@@ -5,7 +5,8 @@ each a push of a value, a call of a word, a binder over the code in its scope, o
 from its values. A value is a number, a string, a strand of those, a ⟨ ⟩ list, a quotation, a
 symbol or a dict; a section is a quotation. EFFECTS declares each builtin's effect, the
 same data an effect line gives a defined word; a word that runs a quotation declares a fixed
-effect whatever the quotation does (hole control-effects).
+effect whatever the quotation does (hole control-effects); ? and _ declare none, the elaborator
+finding what fills them (hole goal-placeholder).
 """
 
 from dataclasses import KW_ONLY, dataclass, field
@@ -172,12 +173,14 @@ class Effect:
 
 @dataclass(frozen=True)
 class Define:
-    """name : ins -- outs, the code of the block under it, and its docstring ("" for none)."""
+    """name : ins -- outs, the code of the block under it, its docstring ("" for none), and where
+    its effect line is."""
 
     name: str
     effect: Effect
     code: tuple[Node, ...]
     doc: str = ""
+    span: Span = field(compare=False, default=Span(1, 1))
 
 
 @dataclass(frozen=True)
@@ -208,4 +211,6 @@ EFFECTS: dict[str, Effect] = {
     "each": Effect(("xs", "q"), ("ys",), slots=("value", "thunk")),
     "scan": Effect(("xs", "q"), ("ys",), slots=("value", "thunk")),
     "fold": Effect(("xs", "q"), ("x",), slots=("value", "thunk")),
+    "?": Effect((), ()),
+    "_": Effect((), ()),
 }
