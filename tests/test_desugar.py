@@ -7,6 +7,7 @@ from hypothesis import strategies as st
 from test_parse import spans
 
 from fpl.ast_core import (
+    DIGITS,
     EFFECTS,
     Call,
     Define,
@@ -30,6 +31,7 @@ CURRY = "curry : x q -- q'\n\tswap enclose swap ,\n"
 LCURRY = "lcurry : x q -- q'\n\t[ swap ] swap , curry\n"
 SLOTS = "app : x t: [] c: Code -- y\n"
 
+bounded = st.integers(1 - 10**DIGITS, 10**DIGITS - 1)
 items = st.recursive(
     st.integers(-9, 99).map(str)
     | st.integers(4090, 4400).map(lambda n: "9" * n)
@@ -369,6 +371,36 @@ def test_a_numeral_longer_than_digits_is_refused_at_its_position(source: str, er
     with pytest.raises(FplError) as caught:
         run(source)
     assert str(caught.value) == error
+
+
+@pytest.mark.parametrize(
+    ("source", "error"),
+    [
+        ("9" * 4096 + " | 1 +\n", "ERROR: 1:4102 number too large"),
+        ("-" + "9" * 4096 + " | 1 -\n", "ERROR: 1:4103 number too large"),
+        ("10" + " dup times" * 12 + "\n", "ERROR: 1:118 number too large"),
+        ("9.9" + " dup times" * 13 + "\n", "ERROR: 1:129 number too large"),
+    ],
+    ids=["10^4096", "-10^4096", "squared", "a decimal squared"],
+)
+def test_a_result_of_more_than_digits_digits_is_refused_at_the_word(
+    source: str, error: str
+) -> None:
+    """A computed number has at most DIGITS digits before its point, as a written one does, so
+    printing it never meets Python's int-to-str limit and a decimal never overflows its context
+    (hole number-bound)."""
+    with pytest.raises(FplError) as caught:
+        run(source)
+    assert str(caught.value) == error
+
+
+@given(bounded, bounded, st.sampled_from(["+", "-", "times"]))
+def test_arithmetic_prints_its_result_or_refuses_it(x: int, y: int, word: str) -> None:
+    """Any two integers the language can write meet as a printed number or as the refusal,
+    never as a Python error."""
+    z = {"+": x + y, "-": x - y, "times": x * y}[word]
+    expected = f"{z}\n" if abs(z) < 10**DIGITS else "ERROR number too large"
+    assert outcome(f"{x} | {y} {word}\n") == expected
 
 
 @pytest.mark.parametrize(

@@ -10,6 +10,7 @@ from typing import assert_never
 import icontract
 
 from fpl.ast_core import (
+    DIGITS,
     EFFECTS,
     Call,
     Define,
@@ -26,6 +27,9 @@ from fpl.ast_core import (
 from fpl.errors import FplError, Span
 
 type Builtin = Callable[..., tuple[Value, ...]]
+
+LIMIT = 10**DIGITS
+"""The least magnitude a number cannot have."""
 
 
 @dataclass(frozen=True)
@@ -94,11 +98,14 @@ def arithmetic(
     op: Callable[[Number, Number], Number], span: Span, a: Value, b: Value
 ) -> tuple[Value, ...]:
     """A pervasive operator: a number meets a number, or each item of a strand; two strands
-    meet item by item and must be as long."""
+    meet item by item and must be as long. A result of more than DIGITS digits before its point
+    is refused at the word."""
     xs, ys = operands(a, span), operands(b, span)
     if len(xs) != len(ys) and 1 not in (len(xs), len(ys)):
         raise FplError(span, "strands of unequal length")
     zs = tuple(op(xs[i % len(xs)], ys[i % len(ys)]) for i in range(max(len(xs), len(ys))))
+    if any(abs(z) >= LIMIT for z in zs):
+        raise FplError(span, "number too large")
     return (Strand(zs) if isinstance(a, Strand) or isinstance(b, Strand) else zs[0],)
 
 
