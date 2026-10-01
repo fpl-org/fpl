@@ -130,10 +130,11 @@ scan() {
 	local config="$1" rc=0
 	shift
 	# --gitleaks-ignore-path points at an empty directory, but gitleaks also honours a
-	# .gitleaksignore in the root it scans; so the callers hand it the git directory.
-	gitleaks "$@" --config "$config" --no-banner --redact=100 --exit-code 3 \
-		--ignore-gitleaks-allow --gitleaks-ignore-path "$tmp/noignore" \
-		--report-format template --report-template "$tmp/report.tmpl" --report-path - \
+	# .gitleaksignore in the root it scans, and in the working directory (a stdin scan has
+	# no root): so the callers hand it the git directory, and it runs from that empty one.
+	(cd "$tmp/noignore" && exec gitleaks "$@" --config "$config" --no-banner --redact=100 \
+		--exit-code 3 --ignore-gitleaks-allow --gitleaks-ignore-path "$tmp/noignore" \
+		--report-format template --report-template "$tmp/report.tmpl" --report-path -) \
 		>>"$tmp/hits" 2>"$tmp/stderr" || rc=$?
 	case "$rc" in 0 | 3) return "$rc" ;; esac
 	# gitleaks failed. Its message may quote a rule, so it is shown only when no rule is
@@ -296,6 +297,7 @@ for v in GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_COMMON_DIR GIT_OBJECT_DIRECTOR
 done
 
 tmp="$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/leak-check.XXXXXX")"
+tmp="$(cd "$tmp" && pwd -P)" # gitleaks runs from inside it
 trap 'rm -rf "$tmp"' EXIT
 umask 077
 mkdir "$tmp/noignore"
