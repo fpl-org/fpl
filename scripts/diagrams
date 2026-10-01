@@ -20,7 +20,8 @@ Into DIR it writes:
                          a module no forbidden contract names is dashed; an import in a
                          chain that breaks a contract is red.
     classes-<mod>.mmd    a class diagram of each module that defines a class (pyreverse):
-                         fields and methods, fields only above METHODS_UP_TO classes.
+                         fields and methods, fields only above METHODS_UP_TO classes. A base
+                         class defined in another module is not drawn.
     map.md               all of it in Mermaid fences, with each contract and its verdict
                          spelled out, for a reader on the forge.
 
@@ -54,9 +55,9 @@ from pylint.pyreverse.main import Run as Pyreverse
 if TYPE_CHECKING:  # the graph import-linter builds; the script needs grimp only through it
     from grimp import ImportGraph
 
-# Above this many classes a module's diagram keeps its fields and drops its methods: the
-# walker's largest module (ast_core, 19 classes of fields) still reads as a map, a wall of
-# signatures would not. GitHub draws far larger diagrams, so nothing is split.
+# Above this many classes a module's diagram keeps its fields and drops its methods: an AST
+# module, a class of fields per construct, still reads as a map, a wall of signatures would
+# not. GitHub draws far larger diagrams, so nothing is split.
 METHODS_UP_TO = 12
 
 # The fills of the groups of modules one set of contracts binds, as (word, colour): GitHub's
@@ -313,7 +314,7 @@ def legend(imports: Imports) -> list[str]:
 def page(imports: Imports, flow: str, diagrams: list[tuple[str, str, int]]) -> str:
     """map.md: the diagrams in Mermaid fences, and the contracts in words."""
     out = ["### Imports", "", f"{FENCE}mermaid", flow + FENCE, "", *legend(imports)]
-    out += ["", "### Classes", ""]
+    out += ["", "### Classes", "", "A base class defined in another module is not drawn.", ""]
     for module, text, count in diagrams:
         trimmed = f" ({count} classes, fields only)" if count > METHODS_UP_TO else ""
         out += [f"#### `{imports.short(module)}`{trimmed}", "", f"{FENCE}mermaid", text + FENCE, ""]
