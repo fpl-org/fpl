@@ -88,7 +88,8 @@ ready: harden gates
 	$(BIN)/pip-audit --progress-spinner off --requirement $(OUT)/requirements.txt --disable-pip
 
 # The harness's own Python, judged by the same ruff it judges others with.
-HARNESS := scripts/crap scripts/props scripts/escapes scripts/mutants scripts/gates $(Q)/noslop_pytest.py
+HARNESS := scripts/crap scripts/props scripts/escapes scripts/mutants scripts/gates \
+           scripts/forward-only $(Q)/noslop_pytest.py
 
 gates: venv
 	$(BIN)/ruff check --config $(Q)/ruff.toml $(HARNESS)
@@ -96,6 +97,7 @@ gates: venv
 	$(BIN)/python scripts/crap --self-test
 	$(BIN)/python scripts/props --self-test
 	$(BIN)/python scripts/escapes --self-test
+	$(BIN)/python scripts/forward-only --self-test
 	$(BIN)/python scripts/mutants --self-test
 	scripts/leak-check --self-test
 	$(BIN)/python scripts/gates
