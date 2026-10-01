@@ -196,6 +196,21 @@ def test_parsing_a_printed_program_gives_it_back(program: Program, at: int, edit
     assert error.value.line == index + 1
 
 
+@given(st.integers(), st.integers())
+@example(16, 2)
+def test_a_fence_set_is_built_only_from_bits_it_prints(pred: int, succ: int) -> None:
+    """A fence set holds no bit the text has no letter for: building one refuses it.
+
+    The example is the counterexample `Fence(Access(16), Access.R)`, which an `IntFlag` keeping
+    unknown bits built and the checker passed, and which printed as `fence 0, r`.
+    """
+    try:
+        fence = Fence(Access(pred), Access(succ))
+    except ValueError:
+        return
+    assert parse_program(print_program((fence,))) == (fence,)
+
+
 @pytest.mark.parametrize("line", REFUSED)
 def test_a_line_an_assembler_might_read_is_still_refused(line: str) -> None:
     with pytest.raises(ParseError, match="line 2: not in canonical form"):

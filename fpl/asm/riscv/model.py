@@ -5,18 +5,19 @@ section numbers are that release's. The mnemonics are the 66 of the chapter 35 l
 RV64I, RV32M, RV64M) without PAUSE, lower-case: each op enum's values, and the one fixed `op`
 of each class that has no enum (`Jal`, `Jalr`, `Fence`). Each class is one operand form.
 
-An out-of-subset mnemonic has no constructor and a register cannot be out of range, both by
-construction. Immediates, shift amounts and offsets are plain `int`, and a label's name is any
-`str`: a value may be out of range or ill-formed, because the checker must be able to say so
-and the oracle must be able to refuse the same program. NOP is `I(OpI.ADDI, Reg.X0, Reg.X0, 0)`
-(2.4.3), not a class; HINTs (2.9, 4.4) are ordinary members of these classes. Directives,
-relocation operators, pseudo-instructions and aliases are not in the model.
+An out-of-subset mnemonic has no constructor, and neither a register nor a fence set can be out
+of range, all by construction. Immediates, shift amounts and offsets are plain `int`, and a
+label's name is any `str`: a value may be out of range or ill-formed, because the checker must
+be able to say so and the oracle must be able to refuse the same program. NOP is
+`I(OpI.ADDI, Reg.X0, Reg.X0, 0)` (2.4.3), not a class; HINTs (2.9, 4.4) are ordinary members of
+these classes. Directives, relocation operators, pseudo-instructions and aliases are not in the
+model.
 
 The values hold no text: `fpl.asm.riscv.text` prints and parses them.
 """
 
 from dataclasses import dataclass, fields
-from enum import IntEnum, IntFlag, StrEnum
+from enum import STRICT, IntEnum, IntFlag, StrEnum
 from typing import ClassVar, get_args
 
 
@@ -57,10 +58,12 @@ class Reg(IntEnum):
     X31 = 31
 
 
-class Access(IntFlag):
+class Access(IntFlag, boundary=STRICT):
     """The predecessor and successor sets of `fence` (2.7): device input and output, reads, writes.
 
-    The values are the bits of the encoding's pred and succ fields.
+    The values are the bits of the encoding's pred and succ fields. A set holds no other bit:
+    `Access(16)` is a `ValueError` (`boundary=STRICT`), because the text has no letter for it
+    and printing would drop it, where the default `IntFlag` would keep it.
     """
 
     I = 8  # noqa: E741 -- the spec's letter for device input
