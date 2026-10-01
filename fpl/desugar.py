@@ -161,6 +161,7 @@ class _Desugar:
     """Lines to code, with the effect of every word known."""
 
     def __init__(self, effects: Mapping[str, Effect]) -> None:
+        """Keep the effect of every word a line may call: the builtins' and the definitions'."""
         self.effects = effects
 
     def statement(self, line: Line) -> Statement:

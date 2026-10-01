@@ -120,6 +120,7 @@ def test_a_bar_alone_is_code() -> None:
 
 @pytest.mark.parametrize("source", ["", "\n", "\n\n", ";; d\n", "; a\n; b\n", "⍝ a\n\n;;;; f\n"])
 def test_a_program_of_comments_or_blank_lines_prints_nothing(source: str) -> None:
+    """A program with no code, empty or only comments, runs no line and so prints nothing."""
     assert run(source) == ""
 
 
@@ -131,6 +132,7 @@ def test_an_empty_enclosure_means_what_no_frame_meant(
     empty quotation and the empty list, as an enclosure of no frames did."""
 
     def program(enclosure: Enclosure) -> Program:
+        """The one-line program whose only cell is the enclosure."""
         cell = Cell((enclosure,), START)
         return Program((Line((Frame((cell,), START),), (), START),), START)
 
@@ -268,6 +270,7 @@ def test_a_written_tree_points_at_the_start() -> None:
 
 
 def test_a_string_is_its_parts_in_order() -> None:
+    """A string without islands is its text parts joined in the order written."""
     assert text(Text("str", ("a", "b"), START)) == "ab"
 
 
@@ -341,6 +344,7 @@ def test_parentheses_rotate_the_head_to_the_end() -> None:
     ],
 )
 def test_stack_words_and_literals(source: str, printed: str) -> None:
+    """Literals, strands and the stack words print the stack each line leaves."""
     assert run(source) == printed
 
 
@@ -355,6 +359,7 @@ def test_stack_words_and_literals(source: str, printed: str) -> None:
     ],
 )
 def test_a_word_refuses_at_its_position(source: str, error: str) -> None:
+    """A word given operands it cannot take refuses at its own position, not the line's."""
     with pytest.raises(FplError) as caught:
         run(source)
     assert str(caught.value) == error
@@ -427,6 +432,8 @@ def test_a_numeral_of_digits_digits_reads(numeral: str) -> None:
     ],
 )
 def test_what_no_part_implements_is_refused_before_running(source: str) -> None:
+    """Syntax no part implements yet is refused at 1:1 as `no evaluator yet`, before any line
+    runs."""
     with pytest.raises(FplError) as caught:
         run(source)
     assert str(caught.value) == "ERROR: 1:1 no evaluator yet"
@@ -440,4 +447,5 @@ def test_join_takes_code_and_enclose_a_value() -> None:
 
 
 def test_every_declared_builtin_has_an_implementation() -> None:
+    """Every builtin with a declared effect has an implementation, and no other one does."""
     assert set(EFFECTS) == set(BUILTINS)

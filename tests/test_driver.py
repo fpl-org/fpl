@@ -12,6 +12,7 @@ from fpl.errors import FplError
 
 @given(st.text(max_size=40))
 def test_only_an_fpl_error_escapes(source: str) -> None:
+    """Whatever text it is given, run returns or raises an FplError: nothing else escapes."""
     with contextlib.suppress(FplError):
         run(source)
 
