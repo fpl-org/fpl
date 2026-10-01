@@ -104,9 +104,13 @@ SPEC_ONLY: list[tuple[Module, Invalid | None]] = [
     (func_of((), ZERO, ZERO, ZERO, Select(()), Drop()), Invalid("mismatch", (0, 3))),
     (Module(tables=(Table(TableType(Limits(0, 2**32 - 1))),)), None),
     (Module(tables=(Table(TableType(Limits(2**32, None))),)), Invalid("limits", (0,))),
+    (Module(tables=(Table(TableType(Limits(-1, None))),)), Invalid("limits", (0,))),
+    (memory_of(Limits(-1, None)), Invalid("limits", (0,))),
+    (memory_of(Limits(-2, -1)), Invalid("limits", (0,))),
 ]
 """Fixed cases where wabt 1.0.41 leaves Release 3.0 (HOLES.md oracle-feature-set), or whose
-numbers do not print as a table's u32 limits."""
+numbers do not print as u32 limits: past a table's bound, or negative, which wabt rejects as a
+malformed token, so no oracle and no catalogue mutation can carry them."""
 
 EMPTY = FuncType((), ())
 UNARY = FuncType(("i32",), ("i32",))

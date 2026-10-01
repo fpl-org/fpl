@@ -124,8 +124,9 @@ ELEMENTS = (1 << 32) - 1
 
 
 def limits_valid(limits: Limits, bound: int) -> bool:
-    """3.2.12: min within `bound`, and max, if any, from min up to `bound`."""
-    return limits.min <= bound and (limits.max is None or limits.min <= limits.max <= bound)
+    """3.2.12: min from 0 up to `bound`, and max, if any, from min up to `bound`; the model
+    holds any int, so a negative one, which no format can write, is refused here."""
+    return 0 <= limits.min <= bound and (limits.max is None or limits.min <= limits.max <= bound)
 
 
 @dataclass(frozen=True, slots=True)
