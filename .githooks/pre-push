@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# .githooks/pre-push — two gates on what reaches a remote:
+# .githooks/pre-push — three gates on what reaches a remote:
 #
 #   1. No private term or secret in what is pushed (scripts/leak-check --push): the
 #      patches, file names, identities and messages of every commit the remote does not
@@ -11,7 +11,13 @@
 #      runs for every remote, Radicle included: publishing is publishing.
 #      FPL_LEAK_GATE = block (default) | warn | off, read by the script.
 #
-#   2. Refuse to push to a remote branch whose name does not parse under
+#   2. An approved pull request is frozen (docs/WORKFLOW.md rule 10). A push to GitHub that
+#      would overwrite or delete the branch of an open pull request, whose head a human
+#      approved, is refused (scripts/forward-only). It reads the forge with GET requests
+#      only, and refuses when it cannot read it. A rebase that a real conflict forces goes
+#      with FPL_FORWARD_ONLY_OVERRIDE="conflict: <reason>"; the pull request repeats it.
+#
+#   3. Refuse to push to a remote branch whose name does not parse under
 #      docs/BRANCHES.md. reference-transaction stops a bad name at creation, but only in
 #      a clone whose hooks are wired (scripts/setup). This is the second local net: the
 #      name that would appear on the forge is judged right before it gets there.
@@ -31,7 +37,10 @@ mapfile -t updates
 "$top/scripts/leak-check" --push "$2" < <(printf '%s\n' "${updates[@]}") ||
 	{ echo "pre-push: nothing was pushed." >&2; exit 1; }
 
-# 2. branch names ----------------------------------------------------------------------
+# 2. forward only ----------------------------------------------------------------------
+"$top/scripts/forward-only" "$1" "$2" < <(printf '%s\n' "${updates[@]}") || exit 1
+
+# 3. branch names ----------------------------------------------------------------------
 mode="${FPL_BRANCH_GATE:-block}"
 [ "$mode" = "off" ] && exit 0
 
