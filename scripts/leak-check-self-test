@@ -214,7 +214,16 @@ says "aws-access-token" "a key in a message names the default rule"
 # --text --------------------------------------------------------------------------------
 printf 'Add the thing\n\nIt came from zeta.corp.\n' >"$tmp/pr"
 expect 1 "a pull request body" --text "$tmp/pr"
-printf ':leak-3:1\n' >.gitleaksignore && printf 'quuxfrobnitz\n' >"$tmp/t1"
+# leak-check pads stdin with 100000 newlines, so gitleaks fingerprints line 1 of the text
+# as line 100001. gitleaks run here first, with the same rule, proves the ignore would
+# hide the term: the case cannot pass for want of a fingerprint that matches.
+printf ':leak-3:100001\n' >.gitleaksignore && printf 'quuxfrobnitz\n' >"$tmp/t1"
+printf '[[rules]]\nid = "leak-3"\nregex = "quuxfrobnitz"\n' >"$tmp/leak-3.toml"
+{ printf '%100000s' '' | tr ' ' '\n' && cat "$tmp/t1"; } |
+	gitleaks stdin --config "$tmp/leak-3.toml" --no-banner >/dev/null 2>&1 || {
+	fails=$((fails + 1))
+	echo "self-test: the .gitleaksignore does not hide the term from gitleaks" >&2
+}
 expect 1 "a .gitleaksignore where it runs" --text "$tmp/t1"
 rm .gitleaksignore
 printf '%%PDF-1.4\nquuxfrobnitz\n' >"$tmp/t2"
