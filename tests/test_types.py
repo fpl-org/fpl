@@ -174,6 +174,21 @@ def test_match_rows_leaving_different_counts_keep_the_effect_line() -> None:
     assert run("f : x -- y\n\tmatch\n\t\t0\t1\n\t\t_\t1 dup\n0 f\n") == "1\n"
 
 
+def test_an_input_a_row_does_arithmetic_on_is_a_number_for_its_word() -> None:
+    """A sort a row finds for a value under the match or a name around it holds for the whole
+    word, whichever row runs: its callers meet it (hole typed-fragment)."""
+    with pytest.raises(FplError) as caught:
+        run("f : x y -- z\n\t→a\n\tmatch\n\t\t_\ta 1 +\n0 | “a” f\n")
+    assert str(caught.value) == "ERROR: 5:9 arithmetic on a non-number"
+
+
+def test_rows_agree_on_the_sort_a_later_row_finds() -> None:
+    """A row that leaves an input and a row that finds it a number agree that it is one."""
+    rows = (Row((Wild(),), ()), Row((Wild(),), (Push(1), Call("+", HERE))))
+    arrows, _ = elaborate((Define("f", Effect(("x", "y"), ("z",)), (Match(rows, HERE),)),))
+    assert arrows["f"] == Arrow((Kind.NUMBER, Input(1)), (Kind.NUMBER,))
+
+
 def test_a_match_row_is_typed() -> None:
     """A row's body is typed with its pattern names standing for values of no known sort."""
     with pytest.raises(FplError) as caught:
