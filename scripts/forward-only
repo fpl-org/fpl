@@ -18,30 +18,47 @@ approves that very commit, and it was not dismissed. A comment leaves a verdict 
 Bots and the machine accounts in MACHINES are not humans here: what they find after an
 approval is work for a fix on top, not a reason to reopen the approved branch.
 
-It only reads, with `gh api --method GET`. When the forge cannot be read (no gh, no token,
-no network, an answer of the wrong shape) the push is refused: an approved pull request may
-be among those it could not see.
+It only reads, with GET requests to the REST API, and needs nothing but python3: no gh, so
+it runs in the default dev shell (docs/DEVSHELL.md). The token is the first of GH_TOKEN,
+GITHUB_TOKEN, gh's for its active account if gh is there, and the one in
+.git/agent-credentials; with none it reads anonymously, which a public repository allows.
+When the forge cannot be read (no network, a refused token, an answer of the wrong shape)
+the push is refused: an approved pull request may be among those it could not see.
 
     FPL_FORWARD_ONLY_OVERRIDE="conflict: <reason>"
 
 lets a refused push go and prints the reason; the pull request repeats it. It is for the
 one exception the rule makes, a rebase that a real conflict with the base or main forces.
-That push dismisses the approval, since the rulesets keep dismiss-stale-reviews on.
+
+    FPL_FORWARD_ONLY_OVERRIDE="unchecked: <reason>"
+
+lets a push go that was refused only because GitHub could not be read, for a branch the
+pusher knows nobody approved. It never lets a push past an approval the forge did show.
+
+FPL_FORWARD_ONLY_API replaces https://api.github.com, for the self-test.
 
 Exit 0: the push may go; 1: refused; 2: usage.
 """
 
+from __future__ import annotations
+
+import functools
+import http.server
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, NamedTuple
-from urllib.parse import quote
+from urllib.error import HTTPError
+from urllib.parse import parse_qs, quote, urlsplit
+from urllib.request import Request, urlopen
 
 MACHINES = frozenset({"psjg-claude", "psjg-codex"})
 VERDICTS = frozenset({"APPROVED", "CHANGES_REQUESTED", "DISMISSED"})
@@ -50,6 +67,8 @@ GITHUB = re.compile(
     r"([^/]+)/([^/]+?)(?:\.git)?/?"
 )
 OVERRIDE = "FPL_FORWARD_ONLY_OVERRIDE"
+API = "FPL_FORWARD_ONLY_API"
+SHAPE = (LookupError, TypeError, ValueError, AttributeError)  # an answer of another shape
 Read = Callable[[str], list[Any]]
 
 
@@ -57,26 +76,61 @@ class UnreadableError(Exception):
     """The forge did not answer, or not in the shape asked for."""
 
 
-def gh_get(path: str) -> list[Any]:
-    """Every page of one REST list, read through `gh api --method GET`."""
-    try:
-        done = subprocess.run(
-            ["gh", "api", "--method", "GET", "--paginate", "--slurp", path],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError as e:
-        raise UnreadableError(f"gh: {e.strerror}") from e
-    if done.returncode != 0:
-        raise UnreadableError("gh: " + (done.stderr.strip().splitlines() or ["failed"])[-1])
-    try:
-        pages = json.loads(done.stdout)
-    except json.JSONDecodeError as e:
-        raise UnreadableError("gh: an answer that is not JSON") from e
-    if not isinstance(pages, list) or not all(isinstance(p, list) for p in pages):
-        raise UnreadableError("gh: an answer that is not a list")
-    return [item for page in pages for item in page]
+def token() -> str:
+    """A token to read the forge with, or "" to read it anonymously."""
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        if os.environ.get(name):
+            return os.environ[name]
+    ask = [["gh", "auth", "token"]] if shutil.which("gh") else []
+    for cmd in [*ask, ["git", "rev-parse", "--git-common-dir"]]:
+        try:
+            done = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        out = done.stdout.strip()
+        if done.returncode or not out:
+            continue
+        if cmd[0] == "gh":
+            return out
+        try:
+            lines = (Path(out) / "agent-credentials").read_text().splitlines()
+        except OSError:
+            return ""
+        # git's credential-store format: https://<machine account>:<token>@github.com
+        return next((u.password for u in map(urlsplit, lines) if u.password), "")
+    return ""
+
+
+def reader(api: str) -> Read:
+    """GET every page of one REST list, following the forge's `Link: rel="next"`. The token
+    is looked up on the first read, so a push nobody needs to judge asks nobody for one."""
+    secret = functools.cache(token)
+
+    def read(path: str) -> list[Any]:
+        headers = {"Accept": "application/vnd.github+json", "User-Agent": "fpl-forward-only"}
+        if secret():
+            headers["Authorization"] = f"Bearer {secret()}"
+        items: list[Any] = []
+        url = f"{api}/{path}"
+        while url:
+            try:
+                with urlopen(Request(url, headers=headers, method="GET"), timeout=20) as answer:
+                    page = json.load(answer)
+                    link = answer.headers.get("Link") or ""
+            except HTTPError as e:
+                raise UnreadableError(f"GitHub answered {e.code} {e.reason}") from e
+            except (OSError, ValueError) as e:
+                raise UnreadableError(f"GitHub: {getattr(e, 'reason', None) or e}") from e
+            if not isinstance(page, list):
+                raise UnreadableError("GitHub: an answer that is not a list")
+            items += page
+            more = re.search(r'<([^>]+)>;\s*rel="next"', link)
+            url = more[1] if more else ""
+            if url and not url.startswith(f"{api}/"):
+                raise UnreadableError(f"GitHub: a next page off the API, {url}")
+        return items
+
+    return read
 
 
 def human(user: dict[str, Any]) -> bool:
@@ -99,45 +153,74 @@ def approvers(reviews: list[dict[str, Any]], head: str) -> list[str]:
     )
 
 
-def frozen(updates: list[str], url: str, read: Read) -> list[str]:
-    """One line for each branch in `updates` whose push would rewrite an approved pull
-    request. Raises when the forge cannot say, or says it in another shape."""
+def frozen(updates: list[str], url: str, read: Read) -> tuple[list[str], list[str]]:
+    """(approved, unread): one line for each branch in `updates` whose push would rewrite an
+    approved pull request, and one for each the forge could not answer for."""
     repo = GITHUB.fullmatch(url)
     if not repo:
-        return []
+        return [], []
     owner, name = repo.groups()
-    found: list[str] = []
+    approved: list[str] = []
+    unread: list[str] = []
     for line in updates:
         _, local, ref, remote = line.split()
         if not ref.startswith("refs/heads/") or set(remote) == {"0"} or local == remote:
             continue
         branch = ref.removeprefix("refs/heads/")
         head = quote(f"{owner}:{branch}", safe=":/")
-        for pr in read(f"repos/{owner}/{name}/pulls?state=open&head={head}&per_page=100"):
-            reviews = read(f"repos/{owner}/{name}/pulls/{pr['number']}/reviews?per_page=100")
-            if who := approvers(reviews, remote):
-                at = ", ".join(f"@{w}" for w in who)
-                found.append(f"{branch} is approved by {at} in #{pr['number']} at {remote[:12]}")
-    return found
+        try:
+            for pr in read(f"repos/{owner}/{name}/pulls?state=open&head={head}&per_page=100"):
+                reviews = read(f"repos/{owner}/{name}/pulls/{pr['number']}/reviews?per_page=100")
+                if who := approvers(reviews, remote):
+                    at = ", ".join(f"@{w}" for w in who)
+                    approved.append(
+                        f"{branch} is approved by {at} in #{pr['number']} at {remote[:12]}"
+                    )
+        except UnreadableError as e:
+            unread.append(f"{branch}: {e}")
+        except SHAPE as e:
+            unread.append(f"{branch}: GitHub: an answer of another shape ({type(e).__name__}: {e})")
+    return approved, unread
 
 
 def say(line: str) -> None:
     print(f"forward-only: {line}", file=sys.stderr)
 
 
-def decide(refused: list[str], override: str) -> int:
-    """Say why the push stops, or why it goes anyway: 1 to stop it, 0 to let it go."""
-    for line in refused:
+NOTES = {
+    "conflict": "the approval does not cover what is pushed; the pull request must say so, and why",
+    "unchecked": "the push was not checked against approvals; it must not rewrite one (rule 10)",
+}
+
+
+def decide(approved: list[str], unread: list[str], override: str) -> int:
+    """Say why the push stops, or why it goes anyway: 1 to stop it, 0 to let it go. Only a
+    declared conflict goes past an approval the forge showed; a branch the forge could not
+    answer for may also go unchecked."""
+    for line in approved:
         say(line)
-    reason = re.fullmatch(r"conflict:\s*(\S.*)", override.strip())
-    if reason:
-        say(f"pushing anyway, {OVERRIDE}: conflict: {reason[1]}")
-        say("the push dismisses the approval; the pull request must say so, and why")
+    for line in unread:
+        say(f"cannot tell whether this push rewrites an approved pull request: {line}")
+    kinds = ["conflict"] if approved else ["conflict", "unchecked"]
+    kind, _, reason = (part.strip() for part in override.partition(":"))
+    if kind in kinds and reason:
+        say(f"pushing anyway, {OVERRIDE}: {kind}: {reason}")
+        say(NOTES[kind])
         return 0
-    say("an approved pull request is frozen; fix forward in a new one on top (WORKFLOW rule 10)")
+    if approved:
+        say(
+            "an approved pull request is frozen; fix forward in a new one on top (WORKFLOW rule 10)"
+        )
     if override:
-        say(f"{OVERRIDE} must read 'conflict: <reason>', not '{override}'")
-    say(f'nothing was pushed. A rebase a real conflict forces: {OVERRIDE}="conflict: <reason>"')
+        forms = " or ".join(f"'{k}: <reason>'" for k in kinds)
+        say(f"{OVERRIDE} must read {forms}, not '{override}'")
+    if approved:
+        say(f'nothing was pushed. A rebase a real conflict forces: {OVERRIDE}="conflict: <reason>"')
+    else:
+        say(
+            "nothing was pushed. Push again once GitHub answers; for a branch you know nobody "
+            f'approved: {OVERRIDE}="unchecked: <reason>"'
+        )
     return 1
 
 
@@ -148,46 +231,48 @@ def main(argv: list[str]) -> int:
         print("usage: scripts/forward-only <remote> <url> < <pre-push lines>", file=sys.stderr)
         return 2
     updates = [line for line in sys.stdin.read().splitlines() if line.strip()]
+    api = os.environ.get(API, "https://api.github.com").rstrip("/")
     try:
-        refused = frozen(updates, argv[1], gh_get)
-    except (UnreadableError, KeyError, TypeError, ValueError) as e:
-        refused = [f"cannot tell from GitHub which pull requests are approved ({e})"]
-    return decide(refused, os.environ.get(OVERRIDE, "")) if refused else 0
+        approved, unread = frozen(updates, argv[1], reader(api))
+    except ValueError as e:
+        approved, unread = [], [f"a line pre-push does not know ({e})"]
+    if not approved and not unread:
+        return 0
+    return decide(approved, unread, os.environ.get(OVERRIDE, ""))
 
 
-# The self-test runs this script as the hook does, against a gh on PATH that answers from a
-# table, logs every call, and fails any call that is not a GET.
-STUB = """
-import json, os, sys
-from urllib.parse import parse_qs
-args = sys.argv[1:]
+# The self-test runs this script as the hook does, against a forge on 127.0.0.1 that answers
+# from a table, logs every request, refuses any that is not a GET, and wants the token the
+# case expects; and against a gh on PATH that hands out a token and does nothing else.
+GH = """
+import os, sys
 with open(os.environ["STUB_LOG"], "a") as log:
-    log.write(" ".join(args) + "\\n")
-writes = {"POST", "PATCH", "PUT", "DELETE", "-f", "-F", "--field", "--raw-field", "--input"}
-if args[:3] != ["api", "--method", "GET"] or writes & set(args) or os.environ.get("STUB_FAIL"):
-    sys.exit("gh: HTTP 502: Bad Gateway")
-path, _, query = args[-1].partition("?")
-q = parse_qs(query)
-if path.endswith("/pulls"):
-    assert q["state"] == ["open"]
-    path += "?head=" + q["head"][0]
-print(json.dumps([json.loads(os.environ["STUB_ANSWERS"]).get(path, [])]))
+    log.write(" ".join(sys.argv[1:]) + "\\n")
+if sys.argv[1:] != ["auth", "token"]:
+    sys.exit("gh: only a token is asked for here")
+print("gh-token")
 """
 REPO = "fpl-org/fpl.git"
 URL = f"https://github.com/{REPO}"
 B = "agent/claude/stack/x"
+ODD = "agent/claude/stack/a&b#c%d+e"
 OLD, NEW, ZERO = "a" * 40, "b" * 40, "0" * 40
 PUSH = f"refs/heads/{B} {NEW} refs/heads/{B} {OLD}"
 PULLS = f"repos/fpl-org/fpl/pulls?head=fpl-org:{B}"
 REVIEWS = "repos/fpl-org/fpl/pulls/54/reviews"
+GH_TOKEN = "Bearer gh-token"
+DOWN = None  # the forge answers 502 to anything
 
 
 def review(login: str, state: str, commit: str = OLD, kind: str = "User") -> dict[str, Any]:
     return {"user": {"login": login, "type": kind}, "state": state, "commit_id": commit}
 
 
-def stack(*reviews: dict[str, Any], draft: bool = False) -> dict[str, Any]:
-    return {PULLS: [{"number": 54, "draft": draft}], REVIEWS: list(reviews)}
+def stack(*reviews: dict[str, Any], draft: bool = False, branch: str = B) -> dict[str, Any]:
+    return {
+        f"repos/fpl-org/fpl/pulls?head=fpl-org:{branch}": [{"number": 54, "draft": draft}],
+        REVIEWS: list(reviews),
+    }
 
 
 APPROVED = stack(review("psjg", "APPROVED"))
@@ -199,10 +284,13 @@ class Case(NamedTuple):
     name: str
     code: int  # the exit code: 0 the push goes, 1 it is refused
     text: str = ""  # what the output must hold
-    answers: dict[str, Any] = APPROVED  # what gh answers, by path
-    line: str = PUSH  # the line git hands pre-push
+    answers: dict[str, Any] | None = APPROVED  # what the forge answers, by path; a tuple
+    # of lists is a list in pages
+    line: str = PUSH  # what git hands pre-push
     url: str = URL
     env: Mapping[str, str] = MappingProxyType({})
+    auth: str = GH_TOKEN  # the Authorization header the forge wants
+    absent: str = "\0"  # what the output must not hold
 
 
 BOTS = stack(
@@ -213,6 +301,7 @@ BOTS = stack(
 UNAPPROVED = stack(
     review("psjg", "COMMENTED"), review("psjg-codex", "CHANGES_REQUESTED"), draft=True
 )
+NOGH = {"PATH": "{nogh}"}  # the runner fills in a PATH with git on it and no gh
 CASES = [
     Case("an approved pull request is refused", 1, "by @psjg in #54"),
     Case("approvals by bots and machine accounts alone freeze nothing", 0, answers=BOTS),
@@ -240,6 +329,19 @@ CASES = [
         answers=stack(review("psjg", "APPROVED"), review("psjg", "CHANGES_REQUESTED")),
     ),
     Case(
+        "an approval on a later page is found",
+        1,
+        "by @psjg in #54",
+        {**APPROVED, REVIEWS: ([review("psjg", "COMMENTED")], [review("psjg", "APPROVED")])},
+    ),
+    Case(
+        "a branch name is asked for exactly, & # % + included",
+        1,
+        "by @psjg in #54",
+        stack(review("psjg", "APPROVED"), branch=ODD),
+        f"refs/heads/{ODD} {NEW} refs/heads/{ODD} {OLD}",
+    ),
+    Case(
         "the override with a reason goes, and prints it",
         0,
         "conflict: main moved fpl/core.py",
@@ -248,17 +350,59 @@ CASES = [
     Case(
         "the override without a reason is refused",
         1,
-        "must read 'conflict: <reason>'",
+        "must read 'conflict: <reason>', not",
         env={OVERRIDE: "conflict: "},
     ),
-    Case("gh that cannot answer refuses", 1, "HTTP 502", env={"STUB_FAIL": "1"}),
-    Case("an answer of the wrong shape refuses", 1, "cannot tell", {PULLS: {"x": 1}}),
-    Case("no gh on PATH refuses", 1, "cannot tell", env={"PATH": "/nonexistent"}),
+    Case(
+        "unchecked does not go past an approval the forge showed",
+        1,
+        "must read 'conflict: <reason>', not",
+        env={OVERRIDE: "unchecked: offline"},
+    ),
+    Case(
+        "a forge that cannot answer refuses, and does not claim an approval",
+        1,
+        "cannot tell whether this push rewrites an approved pull request",
+        DOWN,
+        absent="frozen",
+    ),
+    Case(
+        "unchecked lets a push go that only an unreadable forge stopped",
+        0,
+        "unchecked: GitHub is down, and x was never filed",
+        DOWN,
+        env={OVERRIDE: "unchecked: GitHub is down, and x was never filed"},
+    ),
+    Case("an answer of the wrong shape refuses", 1, "another shape", {PULLS: [{"x": 1}]}),
+    Case("an answer that is not a list refuses", 1, "not a list", {PULLS: {"x": 1}}),
+    Case("reviews of another shape refuse", 1, "another shape", {**APPROVED, REVIEWS: ["x"]}),
+    Case(
+        "a token from the environment goes first",
+        1,
+        "by @psjg in #54",
+        env={"GH_TOKEN": "e"},
+        auth="Bearer e",
+    ),
+    Case(
+        "without gh the forge is read with the token of .git/agent-credentials",
+        1,
+        "by @psjg in #54",
+        env=NOGH,
+        auth="Bearer file-token",
+    ),
+    Case(
+        "without any token it is read anonymously",
+        1,
+        "by @psjg in #54",
+        env={**NOGH, "GIT_DIR": "/nonexistent"},
+        auth="",
+    ),
+    Case("a refused token refuses", 1, "GitHub answered 401", auth="Bearer another"),
     Case(
         "a new branch goes without asking",
         0,
+        answers=DOWN,
         line=f"refs/heads/{B} {NEW} refs/heads/{B} {ZERO}",
-        env={"STUB_FAIL": "1"},
     ),
     Case(
         "deleting an approved branch is refused",
@@ -269,8 +413,8 @@ CASES = [
     Case(
         "a push elsewhere than GitHub is not judged",
         0,
+        answers=DOWN,
         url="https://gitlab.com/fpl-org/fpl.git",
-        env={"STUB_FAIL": "1"},
     ),
     Case(
         "the ssh form of the GitHub url is judged too", 1, "by @psjg", url=f"git@github.com:{REPO}"
@@ -279,46 +423,29 @@ CASES = [
 
 
 def self_test() -> int:
-    script = Path(__file__).resolve()
     with tempfile.TemporaryDirectory() as tmp:
         t = Path(tmp)
-        (t / "bin").mkdir()
-        (t / "bin" / "gh").write_text(f"#!{sys.executable}\n{STUB}")
+        for d in ("bin", "nogh"):
+            (t / d).mkdir()
+            (t / d / "git").symlink_to(shutil.which("git") or "git")
+        (t / "bin" / "gh").write_text(f"#!{sys.executable}\n{GH}")
         (t / "bin" / "gh").chmod(0o755)
-        base = {
-            "PATH": f"{t / 'bin'}:{os.environ.get('PATH', '')}",
-            "HOME": tmp,
-            "GIT_CONFIG_GLOBAL": "/dev/null",
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "STUB_LOG": str(t / "gh.log"),
-        }
-
-        def run(cmd: list[str], line: str, answers: dict[str, Any], env: Mapping[str, str]) -> Any:
-            env = {**base, "STUB_ANSWERS": json.dumps(answers), **env}
-            return subprocess.run(
-                cmd,
-                input=line + "\n",
-                env=env,
-                cwd=t / "repo",
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-
-        checks = hook(t, run)
-        for c in CASES:
-            done = run([sys.executable, str(script), "github", c.url], c.line, c.answers, c.env)
-            checks.append(
-                (c.name, done.returncode == c.code and c.text in done.stderr, done.stderr)
-            )
-        calls = (t / "gh.log").read_text().splitlines()
-        checks.append(
-            (
-                "the forge is only ever read, with GET",
-                bool(calls) and all(c.startswith("api --method GET ") for c in calls),
-                "\n".join(calls),
-            )
-        )
+        state: dict[str, Any] = {"log": []}
+        server = forge(state)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            checks = cases(t, state)
+        finally:
+            server.shutdown()
+        gh = (t / "gh.log").read_text().splitlines()
+    checks += [
+        (
+            "the forge is only ever read, with GET",
+            bool(state["log"]) and all(r.startswith("GET /") for r in state["log"]),
+            "\n".join(state["log"]),
+        ),
+        ("gh is only ever asked for a token", bool(gh) and set(gh) == {"auth token"}, str(gh)),
+    ]
     failed = [(n, out) for n, ok, out in checks if not ok]
     for n, out in failed:
         print(f"FAIL {n}\n{out}", file=sys.stderr)
@@ -329,7 +456,95 @@ def self_test() -> int:
     return 1 if failed else 0
 
 
-def hook(t: Path, run: Callable[..., Any]) -> list[tuple[str, bool, str]]:
+def cases(t: Path, state: dict[str, Any]) -> list[tuple[str, bool, str]]:
+    """Every case of CASES, and the hook's own, against the forge that `state` drives."""
+    base = {
+        "PATH": f"{t / 'bin'}:{os.environ.get('PATH', '')}",
+        "HOME": str(t),
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "STUB_LOG": str(t / "gh.log"),
+        API: state["api"],
+    }
+
+    def run(cmd: list[str], c: Case) -> Any:
+        state["answers"], state["auth"] = c.answers, c.auth
+        env = {**base, **{k: v.format(nogh=t / "nogh") for k, v in c.env.items()}}
+        return subprocess.run(
+            cmd,
+            input=c.line + "\n",
+            env=env,
+            cwd=t / "repo",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    checks = hook(t, run)
+    script = str(Path(__file__).resolve())
+    for c in CASES:
+        done = run([sys.executable, script, "github", c.url], c)
+        out = done.stderr
+        ok = done.returncode == c.code and c.text in out and c.absent not in out
+        checks.append((c.name, ok, f"exit {done.returncode}\n{out}"))
+    return checks
+
+
+def answer(state: dict[str, Any], url: str, auth: str) -> tuple[int, Any, str]:
+    """What the forge of the self-test answers a GET of `url`: a status, a body, and the
+    url of the next page or "". Lists in a tuple are pages."""
+    route, _, query = url.partition("?")
+    path, q = route.lstrip("/"), parse_qs(query)
+    if state["answers"] is DOWN:
+        return 502, "Bad Gateway", ""
+    if auth != state["auth"]:
+        return 401, "Bad credentials", ""
+    if path.endswith("/pulls"):
+        if q.get("state") != ["open"]:
+            return 400, "only open pull requests are asked for", ""
+        path += f"?head={q['head'][0]}"
+    pages = state["answers"].get(path, [])
+    pages = pages if isinstance(pages, tuple) else (pages,)
+    n = int(q.get("page", ["1"])[0])
+    rest = re.sub(r"&page=\d+", "", f"&{query}")
+    more = f"{state['api']}{route}?{rest[1:]}&page={n + 1}" if n < len(pages) else ""
+    return 200, pages[n - 1], more
+
+
+def forge(state: dict[str, Any]) -> http.server.ThreadingHTTPServer:
+    """A REST API on 127.0.0.1 that answers GET from `state["answers"]`, wants the
+    Authorization header `state["auth"]`, and logs every request in `state["log"]`."""
+
+    class Forge(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            state["log"].append(f"GET {self.path}")
+            code, said, more = answer(state, self.path, self.headers.get("Authorization", ""))
+            if code != 200:
+                self.send_error(code, said)
+                return
+            body = json.dumps(said).encode()
+            self.send_response(200)
+            if more:
+                self.send_header("Link", f'<{more}>; rel="next"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def refuse(self) -> None:
+            state["log"].append(f"{self.command} {self.path}")
+            self.send_error(405)
+
+        do_POST = do_PUT = do_PATCH = do_DELETE = refuse  # noqa: N815 — http.server's names
+
+        def log_message(self, *_: Any) -> None:
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Forge)
+    state["api"] = f"http://127.0.0.1:{server.server_address[1]}"
+    return server
+
+
+def hook(t: Path, run: Callable[[list[str], Case], Any]) -> list[tuple[str, bool, str]]:
     """The gate as .githooks/pre-push runs it, in the repository every case runs in: one of
     its own, whose hooks and scripts are this checkout's, pushing a real commit to a remote
     that has none."""
@@ -348,12 +563,13 @@ def hook(t: Path, run: Callable[..., Any]) -> list[tuple[str, bool, str]]:
     git("init", "-q", str(repo))
     (repo / "scripts").symlink_to(root / "scripts")
     (repo / ".githooks").symlink_to(root / ".githooks")
+    (repo / ".git" / "agent-credentials").write_text("https://psjg-claude:file-token@github.com\n")
     git("-C", str(repo), "commit", "-q", "--allow-empty", "-m", "x")
     git("-C", str(repo), "remote", "add", "github", str(t / "remote.git"))
     sha = git("-C", str(repo), "rev-parse", "HEAD")
     pre_push = [str(repo / ".githooks" / "pre-push"), "github", URL]
-    over = run(pre_push, f"refs/heads/{B} {sha} refs/heads/{B} {OLD}", APPROVED, {})
-    new = run(pre_push, f"refs/heads/{B} {sha} refs/heads/{B} {ZERO}", APPROVED, {})
+    over = run(pre_push, Case("", 1, line=f"refs/heads/{B} {sha} refs/heads/{B} {OLD}"))
+    new = run(pre_push, Case("", 0, line=f"refs/heads/{B} {sha} refs/heads/{B} {ZERO}"))
     return [
         (
             "the pre-push hook refuses what the gate refuses",

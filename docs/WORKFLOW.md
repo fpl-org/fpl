@@ -76,8 +76,10 @@ top of base) · **restack** (rebase the stack when base or a lower commit change
     **[gate]** `.githooks/pre-push` runs `scripts/forward-only`: a push to GitHub that would
     overwrite or delete the branch of an open pull request whose head a human approved is
     refused. Bots, `psjg-codex` and `psjg-claude` are not counted as human. It reads the
-    forge with GET requests only, and refuses when it cannot read it. `git push --no-verify`
-    skips it; the tripwire stays.
+    forge with GET requests only, with python3 and no `gh`, so it runs in the default dev
+    shell, and refuses when it cannot read it; then it says so, and
+    `FPL_FORWARD_ONLY_OVERRIDE="unchecked: <reason>"` lets a branch go that you know nobody
+    approved. `git push --no-verify` skips it; the tripwire stays.
 
 ## Setup (once per clone/worktree)
 
