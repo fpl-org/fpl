@@ -8,24 +8,26 @@
 # move a stacked branch under the agents that own it.
 #
 # Pull requests stack on each other (docs/WORKFLOW.md), so every base branch is reviewed, not
-# only main. One review per pull request when it leaves draft, not one per push. The pull
+# only main. Reviews start when a PR leaves draft and continue on each push. The pull
 # request description is the harness's record of why; the bot does not rewrite it. The
 # repository is public: only members of the organisation may chat with the bot.
-language: en-GB
+language: en-US
 reviews:
   profile: assertive
   request_changes_workflow: false
-  high_level_summary: false
+  high_level_summary: true
+  high_level_summary_in_walkthrough: true
+  review_details: true
   poem: false
   in_progress_fortune: false
-  sequence_diagrams: false
-  suggested_labels: false
-  suggested_reviewers: false
+  sequence_diagrams: true
+  suggested_labels: true
+  suggested_reviewers: true
   auto_apply_labels: false
   auto_review:
     enabled: true
     drafts: false
-    auto_incremental_review: false
+    auto_incremental_review: true
     base_branches:
       - ".*"
   finishing_touches:
