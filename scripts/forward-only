@@ -633,16 +633,27 @@ def hook(t: Path, run: Callable[[list[str], Case], Any]) -> list[tuple[str, bool
     git("-C", str(repo), "remote", "add", "github", str(t / "remote.git"))
     sha = git("-C", str(repo), "rev-parse", "HEAD")
     pre_push = [str(repo / ".githooks" / "pre-push"), "github", URL]
-    over = run(pre_push, Case("", 1, line=f"refs/heads/{B} {sha} refs/heads/{B} {OLD}"))
-    new = run(pre_push, Case("", 0, line=f"refs/heads/{B} {sha} refs/heads/{B} {ZERO}"))
-    return [
-        (
-            "the pre-push hook refuses what the gate refuses",
-            over.returncode == 1 and "forward-only: " in over.stderr,
-            over.stderr,
-        ),
-        ("and lets the rest through to its other gates", new.returncode == 0, new.stderr),
-    ]
+    over = Case("", 1, line=f"refs/heads/{B} {sha} refs/heads/{B} {OLD}")
+    new = Case("", 0, line=f"refs/heads/{B} {sha} refs/heads/{B} {ZERO}")
+    # As git runs it, and in /bin/bash, which is bash 3.2 on macOS.
+    shells = [[], ["/bin/bash"]] if Path("/bin/bash").exists() else [[]]
+    checks = []
+    for shell in shells:
+        refused, passed = run([*shell, *pre_push], over), run([*shell, *pre_push], new)
+        how = f" ({shell[0]})" if shell else ""
+        checks += [
+            (
+                f"the pre-push hook refuses what the gate refuses{how}",
+                refused.returncode == 1 and "forward-only: " in refused.stderr,
+                refused.stderr,
+            ),
+            (
+                f"and lets the rest through to its other gates{how}",
+                passed.returncode == 0,
+                passed.stderr,
+            ),
+        ]
+    return checks
 
 
 if __name__ == "__main__":
