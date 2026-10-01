@@ -302,3 +302,9 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Default in force: not refused in this part: a quotation both forced and inspected needs a kind on each stack cell through dup, which desugar does not track
 - Closes by: fpl/types.py (#59, types), carrying thunk and code kinds through the stack and refusing the double use
 - Evidence: features/server/examples/server.fpl:19-21; design doc FON tab S49 rule 5
+
+## number-bound
+- Depends on it: fpl/ast_core.py DIGITS, fpl/desugar.py number, tests/test_desugar.py::test_a_numeral_longer_than_digits_is_refused_at_its_position
+- Default in force: a numeral has at most 4096 digits, its sign and point not counted, the number FON's reader bounds a token by (fon.read max_token); a longer one is ERROR: <line>:<col> number too long at the numeral. 4096 is under Python's 4300-digit int/str conversion limit, so the bound is the language's, not the interpreter's setting
+- Closes by: design, naming the bound on a numeral (or none, with a reader that never meets the limit)
+- Evidence: a 4301-digit numeral raised ValueError from int() in fpl/desugar.py number before this entry, a traceback past the FplError boundary of fpl/__main__.py; docs/CONVENTIONS.md "no Python traceback ever reaches the user"

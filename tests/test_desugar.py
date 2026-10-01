@@ -31,7 +31,9 @@ LCURRY = "lcurry : x q -- q'\n\t[ swap ] swap , curry\n"
 SLOTS = "app : x t: [] c: Code -- y\n"
 
 items = st.recursive(
-    st.integers(-9, 99).map(str) | st.sampled_from(sorted(EFFECTS)),
+    st.integers(-9, 99).map(str)
+    | st.integers(4090, 4400).map(lambda n: "9" * n)
+    | st.sampled_from(sorted(EFFECTS)),
     lambda inner: (
         st.lists(inner, max_size=4).map(lambda xs: "[" + " ".join(xs) + "]")
         | st.lists(inner, min_size=1, max_size=4).map(lambda xs: "(" + " ".join(xs) + ")")
@@ -58,13 +60,22 @@ def outcome(source: str) -> str:
         return f"ERROR {error.message}"
 
 
+def resugared(source: str) -> str:
+    """The core written back as source; a source desugaring refuses, as it refuses a numeral
+    too long, is kept as it is, since its refusal is all it means."""
+    try:
+        return render(resugar(desugar(parse(source))))
+    except FplError:
+        return source
+
+
 @pytest.mark.obligation("desugaring preserves meaning")
 @given(st.sampled_from(["", CURRY, "nop : --\n", SLOTS]), programs)
 def test_desugaring_preserves_meaning(head: str, body: str) -> None:
     """The core written back as source, with no bar, ( ) or block left, means what the source
     meant: bars and ( ) only sequence, a section is its quotation, a block its children."""
     source = head + body + "\n"
-    assert outcome(render(resugar(desugar(parse(source))))) == outcome(source)
+    assert outcome(resugared(source)) == outcome(source)
 
 
 @given(programs)
@@ -341,6 +352,33 @@ def test_a_word_refuses_at_its_position(source: str, error: str) -> None:
     with pytest.raises(FplError) as caught:
         run(source)
     assert str(caught.value) == error
+
+
+@pytest.mark.parametrize(
+    ("source", "error"),
+    [
+        ("1 | " + "9" * 4097 + " +\n", "ERROR: 1:5 number too long"),
+        ("1 | 9" + "0" * 4300 + "\n", "ERROR: 1:5 number too long"),
+        ("-0." + "1" * 4096 + "\n", "ERROR: 1:1 number too long"),
+    ],
+    ids=["4097 nines", "4301 digits", "a decimal"],
+)
+def test_a_numeral_longer_than_digits_is_refused_at_its_position(source: str, error: str) -> None:
+    """A numeral has at most DIGITS digits, below Python's 4300-digit int-from-str limit, so no
+    numeral reaches int() as a ValueError (hole number-bound)."""
+    with pytest.raises(FplError) as caught:
+        run(source)
+    assert str(caught.value) == error
+
+
+@pytest.mark.parametrize(
+    "numeral",
+    ["9" * 4096, "-" + "9" * 4096, "-0." + "1" * 4095],
+    ids=["nines", "signed", "a decimal"],
+)
+def test_a_numeral_of_digits_digits_reads(numeral: str) -> None:
+    """The sign and the point are not digits."""
+    assert run(numeral + "\n") == numeral + "\n"
 
 
 @pytest.mark.parametrize(
