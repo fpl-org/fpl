@@ -1,0 +1,340 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FPL token view</title>
+<style>
+:root{--bg:#fff;--fg:#1a1a1a;--c0:#c9e4ff;--c1:#c8f0b8;--c2:#ffe0a8;--c3:#e0ccff;--c4:#ffc6dc;--size:14px;--lh:1.5;--tab:2;--byte:#e8e8e8;--fused:#c62828;--th:#555;--line:#ddd;--indent:#f6f6f6}
+@media (prefers-color-scheme: dark){:root:not([data-theme=light]){--bg:#121212;--fg:#eaeaea;--c0:#1e3a5f;--c1:#234a1f;--c2:#5a4414;--c3:#3f2a66;--c4:#5e2740;--byte:#333;--fused:#ff6b6b;--th:#aaa;--line:#333;--indent:#1a1a1a}}
+:root[data-theme=dark]{--bg:#121212;--fg:#eaeaea;--c0:#1e3a5f;--c1:#234a1f;--c2:#5a4414;--c3:#3f2a66;--c4:#5e2740;--byte:#333;--fused:#ff6b6b;--th:#aaa;--line:#333;--indent:#1a1a1a}
+body{background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,system-ui,sans-serif;margin:0;padding:16px;max-width:1200px}
+h1{font-size:20px;margin:0 16px 0 0}
+textarea{width:100%;box-sizing:border-box;min-height:220px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:var(--size);line-height:calc(var(--size) * var(--lh));tab-size:var(--tab,4);-moz-tab-size:var(--tab,4);background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:8px}
+.bar{display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin:10px 0;font-size:14px}
+.bar label{display:flex;gap:6px;align-items:center}
+select,input[type=number]{font:inherit;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:4px;padding:3px 6px}
+input[type=number]{width:5em}
+.stats{display:flex;gap:24px;margin:8px 0 12px;font-variant-numeric:tabular-nums}
+.stats b{font-size:22px;font-weight:500;display:block}
+.stats span{font-size:12px;color:var(--th)}
+#out{border:1px solid var(--line);border-radius:6px;padding:8px;overflow-x:auto;min-height:60px}
+.line{display:flex;align-items:stretch;white-space:nowrap;font-size:var(--size);line-height:var(--lh,1.5);height:calc(var(--size) * var(--lh))}   /* every row, a blank line too, is exactly one line of the input box */
+.ind{display:inline-block;flex:none;align-self:stretch}
+
+.cell{display:inline-flex;align-items:stretch;flex:none}
+.cell.last{display:inline-block}
+.tail{flex:1;min-width:var(--gap,2ch);align-self:stretch}
+.eol{flex:1;align-self:stretch;min-width:0}
+body.nobpe .eol,body.nobpe .spacer{background:transparent !important}
+body.nobpe .tail,body.nobpe .ind{background:transparent !important}
+.cell.last{border-right:none}
+.spacer{flex:none;align-self:stretch}
+.t{display:inline-block;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;padding:0;white-space:pre;vertical-align:baseline}
+#out{position:relative}
+.rule{position:absolute;top:0;bottom:0;width:0;border-left:1px solid var(--fused);opacity:.7;pointer-events:none}
+body.nobpe .t{background:transparent !important}
+body.contrast{--c0:rgba(0,114,178,.28);--c1:rgba(230,159,0,.45);--c2:rgba(0,0,0,.10);--c3:rgba(204,121,167,.40);--c4:rgba(86,180,233,.40)}
+@media (prefers-color-scheme: dark){body.contrast{--c0:rgba(86,180,233,.35);--c1:rgba(230,159,0,.45);--c2:rgba(255,255,255,.14);--c3:rgba(204,121,167,.45);--c4:rgba(0,114,178,.5)}}
+body.seps .t + .t, body.seps .t + .glyph, body.seps .glyph + .t{box-shadow:-1px 0 0 0 var(--bg)}
+body.seps.nobpe .t + .t{box-shadow:none}
+.t,.tail,.ind,.glyph,pre{font-size:var(--size)}
+.tab{display:inline-block;width:1ch}
+.c0{background:var(--c0)}.c1{background:var(--c1)}.c2{background:var(--c2)}.c3{background:var(--c3)}.c4{background:var(--c4)}.byte{background:var(--byte)}
+.fused{text-decoration:underline;text-decoration-color:var(--fused);text-decoration-thickness:2px;text-underline-offset:3px}
+.hex{opacity:.7;font-size:11px}
+.glyph{display:inline-block;position:relative;box-shadow:inset 0 0 0 1px var(--fused);border-radius:3px;padding:0;cursor:pointer;white-space:pre;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.glyph .n{position:absolute;top:1px;right:0;font-size:8px;line-height:1;color:var(--fused)}
+.w,.sp{display:inline-block;width:1ch;clip-path:inset(0);text-align:center}
+.glyph .parts{display:none}.glyph.open .parts{display:inline}.glyph.open .whole{display:none}.sp{opacity:.35}.nl{opacity:.5}
+.id{display:block;font-size:9px;color:var(--th);text-align:center;line-height:1.1;font-family:ui-monospace,Menlo,monospace}
+.note{font-size:12px;color:var(--th);max-width:90ch}
+.over{color:var(--fused)}
+</style>
+</head>
+<body>
+<div class="bar"><h1>FPL token view</h1><label>snippet <select id="snip"><option value="">load…</option></select></label></div>
+<textarea id="src" spellcheck="false"></textarea>
+<div class="bar">
+  <label>tokenizer <select id="tok"><option value="o200k">GPT-5.x / o200k</option><option value="cl100k">GPT-4 / cl100k</option><option value="qwen">Qwen2.5-Coder</option><option value="deepseek">DeepSeek-V3</option></select></label>
+  <label>hard wrap <select id="wrap"><option value="as written">none (as written)</option><option value="folded">fold notes by the lone-; rule</option><option value="ventilated">ventilate (one sentence per ; line)</option></select></label>
+  <label><input id="soft" type="checkbox"> soft wrap at the column (display only)</label>
+  <label>at <input id="width" type="number" value="80" min="20" max="400"> columns <select id="wpre"><option value="">preset…</option></select></label>
+  <label>indent <input id="indent" type="number" value="2" min="0" max="16" step="0.5"> spaces per tab <select id="ipre"><option value="">preset…</option></select></label>
+  <label>cell gap <input id="gap" type="number" value="2" min="0" max="16"> spaces</label>
+  <label><input id="bpe" type="checkbox" checked> BPE colours</label>
+  <label>scheme <select id="scheme"><option value="pastel">pastel</option><option value="contrast">high contrast (Okabe–Ito)</option></select></label>
+  <label><input id="seps" type="checkbox"> separators</label>
+  <label>text size <input id="size" type="number" value="14" min="9" max="28"> px</label>
+  <label>line height <input id="lh" type="number" value="1.5" min="1" max="3" step="0.1"></label>
+  <label><input id="ws" type="checkbox"> show whitespace</label>
+  <label><input id="ids" type="checkbox"> token IDs</label>
+  <label><input id="claude" type="checkbox"> Claude count (endpoint)</label>
+  <label><input id="elastic" type="checkbox" checked> elastic tabstops</label>
+</div>
+<div id="pedigree" class="note"></div>
+<div class="stats">
+  <div><b id="n">–</b><span>tokens</span></div>
+  <div><b id="chars">–</b><span>characters</span></div>
+  <div><b id="bpt">–</b><span>bytes per token</span></div>
+  <div><b id="lines">–</b><span>lines</span></div>
+  <div><b id="over">–</b><span>lines over width</span></div>
+  <div><b id="cl">–</b><span>Claude tokens</span></div>
+</div>
+<div id="out"></div>
+<p class="note">Each coloured run is one token (BPE colours off shows the plain text); a colour that runs from the indentation or across a cell gap into a word is one token spanning the tab. A red underline marks a token that fused across a boundary: a comment marker glued to the text after it, or a tab (indentation or a cell edge) glued to the text after it; a character in a red border with a small count is one that the tokenizer broke into that many byte fragments; click it to see them. Leading tabs are indentation (plain space, its width is the indent setting; shaded only when whitespace is shown; the red vertical line is the column width); later tabs separate cells, laid out as elastic tabstops: in a run of consecutive lines a column is as wide as its widest cell. The text itself is never changed by the indent or gap settings; the wrapping setting rewrites comments only, by the conventions under discussion, and never code.</p>
+<script>
+const EXAMPLE = `;;;; Pattern matching, one sketch: Haskell shapes, Julia/CLOS multimethods, XDuce-free list patterns,
+;;;; Prolog's family, Python's keywords, ABC's keywords — all the same match (S35–S40). Name spelling, tabs.
+
+;;; ── 1. constructors run backwards: a pattern is the inverse of an injective constructor ──
+circle : r -- shape
+\t#circle swap pair
+rect : w h -- shape
+\t#rect swap pair pair
+
+area : shape -- n
+\tmatch
+\t\t( circle r ∈ pos )\tr dup times π times\t; guard: an ascription in the pattern, no \`when\`
+\t\t( circle 0 )\t0\t; a literal matches by equality
+\t\t( rect w h )\tw h times
+\t\t_\t?\t; wildcard row; its body is a goal the elaborator reports (S40)
+`;
+const $ = id => document.getElementById(id);
+const WIDTHS = [
+  [40, "40: home computers of 1977-82 (Apple II, Commodore PET and 64 text modes)"],
+  [64, "64: TRS-80 and the Atari 8-bit 64-column modes; early BBS terminals"],
+  [66, "66: the typographers' measure, about 66 characters a line (Bringhurst); TeX's default text width lands near it"],
+  [72, "72: the Fortran punched-card code field, columns 73-80 held sequence numbers; later git commit bodies and mail (RFC 2822 folding)"],
+  [79, "79: PEP 8's limit, one under 80 so a terminal never wraps the last column"],
+  [80, "80: the IBM 80-column punched card (1928), then the 80x24 terminal (VT100, 3270); the limit most styles inherit"],
+  [88, "88: Black's limit, 80 plus ten percent"],
+  [100, "100: rustfmt's default; Google's Java and C++ guides; Kotlin"],
+  [110, "110: Ruby's RuboCop default was 80, raised to 120 in 1.0; 110 is Scala's scalafmt default"],
+  [120, "120: JetBrains IDE default; most C#/.NET shops; Ruby's RuboCop since 1.0"],
+  [132, "132: the line printer and the VT100's wide mode (132 columns)"],
+];
+const TABS = [
+  [1, "1: Whitesmiths/one-space indentation, rare; some BASIC listings"],
+  [2, "2: the Lisp family, Ruby, JavaScript (Google, Airbnb), YAML, Nix, Haskell; Borland Pascal and Delphi"],
+  [3, "3: the Ada Quality and Style Guide's three spaces; some Fortran 90 shops"],
+  [4, "4: PEP 8, rustfmt, Java (Oracle), C#/Visual Studio, Go's gofmt tabs in most editors; the common editor default"],
+  [5, "5: typewriter tab stops at half an inch (5 pica characters); Pascal (Wirth) listings"],
+  [6, "6: Fortran fixed form: continuation mark in column 6, statements from column 7; COBOL Area A at 8 and Area B at 12"],
+  [8, "8: the ASCII TAB and the teletype; Unix, vi, Emacs and the Linux kernel; Makefiles, where the tab is syntax"],
+];
+for (const [v, why] of WIDTHS) { const o = document.createElement('option'); o.value = v; o.textContent = v; o.title = why; $('wpre').appendChild(o); }
+for (const [v, why] of TABS) { const o = document.createElement('option'); o.value = v; o.textContent = v; o.title = why; $('ipre').appendChild(o); }
+function pedigree(){
+  const w = WIDTHS.find(x => x[0] == +$('width').value), i = TABS.find(x => x[0] == +$('indent').value);
+  $('pedigree').textContent = [w ? 'columns ' + w[1] : '', i ? 'indent ' + i[1] : ''].filter(Boolean).join(' · ') + (+$('indent').value && !i ? '' : '') ;
+}
+$('wpre').addEventListener('change', () => { if ($('wpre').value) { $('width').value = $('wpre').value; $('wpre').value = ''; pedigree(); schedule(); relayout(); } });
+$('ipre').addEventListener('change', () => { if ($('ipre').value) { $('indent').value = $('ipre').value; $('ipre').value = ''; pedigree(); relayout(); } });
+const COLORS = ['c0','c1','c2','c3','c4'];
+let timer = null, last = null;
+
+function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function label(tok, body){
+  if (tok.t === null) return '<span class=hex>' + tok.h.match(/../g).join(' ') + '</span>';
+  const s = esc(body === undefined ? tok.t : body), ws = $('ws').checked;
+  if (ws) return s.replace(/ /g,'<span class=sp>␣</span>').replace(/\t/g,'<span class=sp>⇥</span>').replace(/\n/g,'<span class=nl>↵</span>');
+  return s.replace(/\t/g,'<span class=tab></span>').replace(/\n/g,'');
+}
+
+// Lay the tokens out line by line and cell by cell. A token is split at its tabs and newlines into pieces
+// that all carry the token's colour: leading tabs colour the indentation gutter, a tab between two cells colours
+// the tail of the cell it ends (the elastic gap), and the text after it starts the next cell. So one colour
+// running from a gutter or a gap into a word is one token: the fusion, drawn where it happens.
+function render(data){
+  const out = $('out'); out.innerHTML = '';
+  const showIds = $('ids').checked, ws = $('ws').checked;
+  let lineEl = null, cellEl = null, cells = 0, lineStart = true, k = 0;
+  const newLine = () => { lineEl = document.createElement('div'); lineEl.className = 'line'; out.appendChild(lineEl); cellEl = null; cells = 0; lineStart = true; };
+  const newCell = () => { if (cellEl) cellEl.classList.remove('last'); cellEl = document.createElement('span'); cellEl.className = 'cell last'; cellEl.dataset.col = cells++; lineEl.appendChild(cellEl); };
+  const piece = (text, cls, fused, id) => { const b = document.createElement('span'); b.className = 't ' + cls + (fused ? ' fused' : ''); b.dataset.text = text; b.innerHTML = (ws ? mark(text).replace(/ /g,'<span class=sp>␣</span>') : mark(text)) + (id !== undefined && showIds ? '<span class=id>' + id + '</span>' : ''); return b; };
+  const gutter = (cls, n) => { const g = document.createElement('span'); g.className = 'ind ' + cls; g.dataset.tabs = n; if (ws) g.innerHTML = '<span class=sp>' + '⇥'.repeat(n) + '</span>'; lineEl.appendChild(g); };
+  const tail = (cls) => { if (!cellEl) newCell(); const s = document.createElement('span'); s.className = 'tail ' + cls; if (ws) s.innerHTML = '<span class=sp>⇥</span>'; cellEl.appendChild(s); cellEl.dataset.tail = '1'; newCell(); };
+  newLine();
+  let frag = [];
+  const flushFrag = () => {
+    if (!frag.length) return;
+    if (!cellEl) newCell();
+    const bytes = new Uint8Array(frag.flatMap(f => f.h.match(/../g).map(x => parseInt(x, 16))));
+    let whole; try { whole = new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch (e) { whole = null; }
+    const g = document.createElement('span'); g.className = 'glyph'; g.title = frag.length + ' tokens: ' + frag.map(f => f.h.match(/../g).join(' ')).join(' | ') + '; click to expand';
+    const parts = frag.map(f => '<span class="t byte"><span class=hex>' + f.h.match(/../g).join(' ') + '</span>' + (showIds ? '<span class=id>' + f.id + '</span>' : '') + '</span>').join('');
+    g.innerHTML = '<span class=whole>' + (whole === null ? '<span class=hex>' + bytes.length + ' bytes</span>' : (ws ? mark(whole).replace(/ /g, '<span class=sp>␣</span>') : mark(whole))) + '</span><span class=parts>' + parts + '</span><span class=n>' + frag.length + '</span>';
+    g.addEventListener('click', () => g.classList.toggle('open'));
+    cellEl.appendChild(g); k += frag.length; frag = []; lineStart = false;
+  };
+  for (const tok of data.tokens){
+    if (tok.t === null) { frag.push(tok); continue; }
+    flushFrag();
+    const cls = COLORS[k++ % 5];
+    const hasText = /[^\t\n]/.test(tok.t), hasTab = tok.t.includes('\t');
+    const fused = (hasTab && hasText) || (/;/.test(tok.t) && /[^;\s]/.test(tok.t));
+    let text = tok.t, first = true;
+    while (text.length){
+      if (lineStart) { const m = text.match(/^\t+/); if (m) { gutter(cls, m[0].length); text = text.slice(m[0].length); continue; } }
+      if (text[0] === '\t') { tail(cls); text = text.slice(1); continue; }
+      if (text[0] === '\n') {   // the newline is a token too: it fills the rest of the visual line in its colour
+        if (ws) { if (!cellEl) newCell(); cellEl.appendChild(piece('↵', cls + ' nl', false)); }
+        const e = document.createElement('span'); e.className = 'eol ' + cls; lineEl.appendChild(e);
+        newLine(); text = text.slice(1); continue; }
+      const m = text.match(/^[^\t\n]+/)[0];
+      lineStart = false; if (!cellEl) newCell();
+      cellEl.appendChild(piece(m, cls, fused, first ? tok.id : undefined)); first = false;
+      text = text.slice(m.length);
+    }
+    if (tok.t.endsWith('\n') || tok.t.endsWith('\t') || !hasText) { /* nothing left to place */ }
+  }
+  flushFrag();
+  if (lineEl && !lineEl.childNodes.length) lineEl.remove();   // the row after a final newline holds nothing
+  else if (lineEl && !lineEl.querySelector('.eol')) {         // no newline token at the end: the last token runs on
+    const ts = lineEl.querySelectorAll('.t'), t = ts[ts.length - 1];
+    if (t) { const e = document.createElement('span'); e.className = 'eol ' + colourOf(t); lineEl.appendChild(e); } }
+  layout();
+}
+// Every character takes one column, as a terminal and the server's column count have it: a non-ASCII glyph the
+// monospace face lacks (an em dash is two cells wide in SF Mono) is boxed to 1ch and clipped.
+const mark = (s) => esc(s).replace(/[^\x00-\x7f]/g, c => '<span class=w>' + c + '</span>');
+const colourOf = (el) => [...el.classList].find(z => /^c\d$/.test(z)) || '';
+
+// Elastic tabstops (Gravgaard): in a run of consecutive lines that have a cell in column j, every such
+// cell is as wide as the widest of them. Indentation gutters take the indent setting.
+function layout(){
+  const ch = measureCh(), gap = +$('gap').value * ch, ind = +$('indent').value * ch, elastic = $('elastic').checked;
+  document.body.classList.toggle('nobpe', !$('bpe').checked);
+  document.body.classList.toggle('contrast', $('scheme').value === 'contrast');
+  document.body.classList.toggle('seps', $('seps').checked);
+  document.documentElement.style.setProperty('--size', $('size').value + 'px');
+  document.documentElement.style.setProperty('--lh', $('lh').value);
+  document.documentElement.style.setProperty('--tab', $('indent').value);   // the input box shows tabs at the same indent
+  document.body.classList.toggle('ws', $('ws').checked);
+  let rule = document.querySelector('.rule'); if (!rule) { rule = document.createElement('div'); rule.className = 'rule'; $('out').appendChild(rule); }
+  rule.style.left = (8 + (+$('width').value) * ch) + 'px';
+  const soft = $('soft').checked;
+  pedigree();
+  for (const g of document.querySelectorAll('.ind')) g.style.width = (ind * (+g.dataset.tabs)) + 'px';
+  const lines = [...document.querySelectorAll('.line')];
+  document.documentElement.style.setProperty('--gap', gap + 'px');
+  for (const c of document.querySelectorAll('.cell')) { c.style.width = ''; c.style.marginLeft = ''; }
+  if (!elastic) return;
+  const maxCols = Math.max(0, ...lines.map(l => l.querySelectorAll('.cell').length));
+  for (let j = 0; j < maxCols - 1; j++){           // the last cell of a line is never a column
+    let run = [];
+    const flush = () => { if (run.length > 1){ const w = Math.max(...run.map(c => c.getBoundingClientRect().width)); for (const c of run) c.style.width = w + 'px'; } run = []; };
+    for (const l of lines){
+      const cs = l.querySelectorAll('.cell');
+      if (cs.length > j + 1) run.push(cs[j]); else flush();
+    }
+    flush();
+  }
+  // The note column: cells that start with a single `;` (a trailing note, or a lone-; continuation line) form one
+  // block across consecutive lines, lines without a note included, until a blank line; every note starts at the
+  // block's widest run-in. A continuation line's note is its only cell, so this is what puts it under the note above.
+  let block = [];
+  // the shift goes to the elastic thing before the note: the previous cell's tail (the tab token) or, on a
+  // continuation line, the last indentation gutter; so the space is painted in that token's colour
+  const settle = () => { if (block.length > 1) { const x = Math.max(...block.map(b => b.off)); for (const b of block) { const d = x - b.off; if (d <= 0) continue;
+    const prev = b.cell.previousElementSibling;
+    if (prev && prev.classList.contains('cell')) prev.style.width = (prev.getBoundingClientRect().width + d) + 'px';
+    else if (prev && prev.classList.contains('ind')) prev.style.width = (prev.getBoundingClientRect().width + d) + 'px';
+    else b.cell.style.marginLeft = d + 'px'; } } block = []; };
+  for (const l of lines){
+    const cs = [...l.querySelectorAll('.cell')];
+    if (!cs.length) { settle(); continue; }
+    const note = cs.find(c => /^;(?!;)/.test(c.textContent.replace(/^[\s\u2423\u21e5]+/, '')));
+    if (!note) continue;
+    const off = note.getBoundingClientRect().left - l.getBoundingClientRect().left;
+    block.push({ cell: note, off });
+  }
+  settle();
+  if (soft) softWrap(lines, ch);
+}
+
+// Soft wrap (display only): the last cell of a line that runs past the column is cut at spaces into visual
+// lines, each a row of its own, so gutters and fills stay one line tall; a token cut by the wrap keeps its
+// colour on both sides, and the room after a row's last token is painted in that token's colour. Widths are
+// counted in characters (a glyph box is one), so this is exact for a monospace face.
+function softWrap(lines, ch){
+  const width = +$('width').value, ws = $('ws').checked;
+  for (const l of lines){
+    const cs = l.querySelectorAll('.cell'), c = cs[cs.length - 1]; if (!c) continue;
+    const left = c.getBoundingClientRect().left - l.getBoundingClientRect().left;
+    const avail = Math.max(8 * ch, width * ch - left);
+    if (c.getBoundingClientRect().width <= avail + 0.5) continue;
+    const chars = [];
+    for (const el of c.children){
+      if (el.classList.contains('glyph')) { chars.push({ el, w: el.getBoundingClientRect().width, glyph: true }); continue; }
+      const text = [...(el.dataset.text ?? el.textContent)], idEl = el.querySelector('.id');
+      const extra = Math.max(0, (idEl ? idEl.getBoundingClientRect().width : 0) - text.length * ch);   // an id badge wider than its token
+      text.forEach((s, i) => chars.push({ el, s, w: ch + (i === 0 ? extra : 0), first: i === 0 }));
+    }
+    const rows = []; let start = 0, x = 0, brk = -1;
+    for (let k = 0; k < chars.length; k++){
+      const q = chars[k];
+      if (q.s !== ' ' && x + q.w > avail + 0.5 && k > start){            // a space may hang past the column
+        const b = brk > start ? brk : k;
+        rows.push(chars.slice(start, b)); start = b; x = 0; brk = -1;
+        for (let j = b; j < k; j++) { x += chars[j].w; if (chars[j].s === ' ') brk = j + 1; }
+      }
+      x += q.w;
+      if (q.s === ' ') brk = k + 1;
+    }
+    rows.push(chars.slice(start));
+    const frag = (run) => {                               // the elements of one row: runs of one token's characters
+      const out = []; let i = 0;
+      while (i < run.length){
+        const u = run[i]; if (u.glyph) { out.push(u.el); i++; continue; }
+        let j = i; while (j < run.length && run[j].el === u.el) j++;
+        const text = run.slice(i, j).map(q => q.s).join(''), idEl = u.el.querySelector('.id');
+        const b = document.createElement('span'); b.className = u.el.className; b.dataset.text = text;
+        b.innerHTML = (ws ? mark(text).replace(/ /g, '<span class=sp>␣</span>') : mark(text)) + (u.first && idEl ? '<span class=id>' + idEl.textContent + '</span>' : '');
+        out.push(b); i = j;
+      }
+      return out;
+    };
+    const colour = (run, first) => { const idx = first ? [...run.keys()] : [...run.keys()].reverse(); for (const i of idx) { const k = colourOf(run[i].el); if (k) return k; } return ''; };
+    const fill = (row, cls) => { const e = document.createElement('span'); e.className = 'eol ' + cls; row.appendChild(e); };
+    const eol = c.nextElementSibling && c.nextElementSibling.classList.contains('eol') ? c.nextElementSibling : null;
+    if (eol) eol.remove();
+    c.replaceChildren(...frag(rows[0]));
+    let row = l, prev = l;
+    for (let r = 0; r < rows.length; r++){
+      if (r > 0){
+        row = document.createElement('div'); row.className = 'line cont';
+        const sp = document.createElement('span'); sp.className = 'spacer ' + colour(rows[r], true); sp.style.width = left + 'px'; row.appendChild(sp);   // the hanging indent carries the token that continues from the row above
+        const cell = document.createElement('span'); cell.className = 'cell last'; cell.append(...frag(rows[r])); row.appendChild(cell);
+        prev.after(row);
+      }
+      if (r < rows.length - 1 || !eol) fill(row, colour(rows[r])); else row.appendChild(eol);
+      prev = row;
+    }
+  }
+}
+function measureCh(){ const s = document.createElement('span'); s.className = 't'; s.textContent = '0000000000'; s.style.visibility = 'hidden'; document.body.appendChild(s); const w = s.getBoundingClientRect().width / 10; s.remove(); return w; }
+
+async function run(){
+  const req = { text: $('src').value, tokenizer: $('tok').value, wrap: $('wrap').value, width: +$('width').value, claude: $('claude').checked };
+  const r = await fetch('/tokenize', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req) });
+  const data = await r.json(); last = data;
+  $('n').textContent = data.count; $('chars').textContent = [...data.text].length; $('lines').textContent = data.lines;
+  $('bpt').textContent = (new TextEncoder().encode(data.text).length / Math.max(1, data.count)).toFixed(2);
+  $('over').textContent = data.over; $('over').className = data.over ? 'over' : '';
+  $('cl').textContent = data.claude === null ? '–' : data.claude;
+  render(data);
+}
+function schedule(){ clearTimeout(timer); timer = setTimeout(run, 250); }
+$('src').value = location.hash.length > 1 ? decodeURIComponent(location.hash.slice(1)) : EXAMPLE;
+fetch('/snippets').then(r => r.json()).then(s => { for (const name of Object.keys(s)) { const o = document.createElement('option'); o.value = name; o.textContent = name; $('snip').appendChild(o); }
+  $('snip').addEventListener('change', () => { if ($('snip').value) { $('src').value = s[$('snip').value]; run(); } }); });
+for (const id of ['src','tok','wrap','width','claude']) $(id).addEventListener('input', schedule);
+const relayout = () => { if (last) render(last); else layout(); };
+for (const id of ['ids','ws','indent','gap','elastic','bpe','soft','scheme','seps','size','lh','width']) $(id).addEventListener('input', relayout);
+window.addEventListener('resize', relayout);
+run();
+</script>
+</body>
+</html>

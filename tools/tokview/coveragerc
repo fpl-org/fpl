@@ -1,0 +1,16 @@
+# tools/tokview/coveragerc — every line and every branch of tokview/ runs under the tests,
+# or `make tools` is red (quality/coveragerc is the language's).
+
+[run]
+branch = True
+source = tokview
+data_file = .noslop/coverage.db
+
+[report]
+fail_under = 100
+show_missing = True
+skip_covered = True
+exclude_also =
+    if __name__ == .__main__.:
+    if TYPE_CHECKING:
+    assert_never\(

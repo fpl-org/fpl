@@ -1,0 +1,36 @@
+# tools/tokview — a local page that shows how tokenizers cut FPL source.
+#
+# A uv project of its own, so its dependencies never enter the language's environment;
+# judged by `make tools` (docs/QUALITY.md).
+
+[project]
+name = "fpl-tokview"
+version = "0"
+description = "A local page that shows how tokenizers cut FPL source"
+requires-python = ">=3.12,<3.13"
+dependencies = ["tiktoken", "pysbd"]
+
+[project.optional-dependencies]
+# Qwen2.5-Coder and DeepSeek-V3, read from their Hugging Face tokenizer.json.
+hf = ["tokenizers"]
+
+[project.scripts]
+tokview = "tokview.__main__:main"
+
+[dependency-groups]
+# hypothesis-crosshair: the harness plugin registers a CrossHair profile, which current
+# Hypothesis refuses to register without the backend installed.
+dev = ["pytest", "hypothesis", "hypothesis-crosshair", "coverage", "mypy"]
+
+[build-system]
+requires = ["uv_build>=0.11,<0.13"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "tokview"
+module-root = ""
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The harness's plugin: the Hypothesis profiles (quality/noslop_pytest.py).
+addopts = ["-p", "noslop_pytest"]
