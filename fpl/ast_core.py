@@ -17,9 +17,9 @@ type Atom = Number | str
 type Slot = Literal["value", "thunk", "code"]
 
 DIGITS = 4096
-"""How many digits a numeral may have, its sign and point not counted (hole number-bound): under
-Python's 4300-digit limit on converting between int and str, so a numeral always reads as a
-number, never as a ValueError."""
+"""How many digits a numeral may have, its sign and point not counted, and how many a computed
+number may have before its point (hole number-bound): under Python's 4300-digit limit on
+converting between int and str, so a number always reads and prints, never a ValueError."""
 
 
 @dataclass(frozen=True)
