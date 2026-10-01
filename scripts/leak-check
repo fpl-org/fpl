@@ -181,18 +181,18 @@ scan_both() {
 # The file names in $tmp/names0 (NUL-separated, as git lists them) become $tmp/names,
 # one per line, sorted and unique, a newline inside a name turned into a space so the
 # name still reads as one line; and $tmp/names.hex, the same names in hex, which is how
-# a gitleaks finding is matched to its name. Then the names go through the private rules:
-# the 1-based positions of those that match land in $tmp/namehits.
+# a gitleaks finding is matched to its name. Then the names go through both rule sets, so
+# a key that is a file name is found as one in a file is: the 1-based positions of those
+# that match land in $tmp/namehits.
 names() {
 	LC_ALL=C sort -zu "$tmp/names0" | sed -z '/^$/d' >"$tmp/names0.sorted"
 	tr '\n\0' ' \n' <"$tmp/names0.sorted" >"$tmp/names"
 	od -An -v -tx1 "$tmp/names0.sorted" | tr -s ' ' '\n' |
 		awk '$0 == "00" { print h; h = ""; next } { h = h $0 }' >"$tmp/names.hex"
 	: >"$tmp/namehits"
-	[ "$terms" -gt 0 ] || return 0
 	cp "$tmp/hits" "$tmp/hits.keep"
 	: >"$tmp/hits"
-	scan "$tmp/private.toml" stdin <"$tmp/names" || true
+	scan_both stdin <"$tmp/names" || true
 	cut -f3 "$tmp/hits" | sort -un >"$tmp/namehits"
 	mv "$tmp/hits.keep" "$tmp/hits"
 }
@@ -245,8 +245,8 @@ verdict() {
 	return 1
 }
 
-# File names, from $tmp/names0: a name that matches is reported by its position among
-# the names, never by name. Returns 3 on a match.
+# File names, from $tmp/names0: a name that matches a private term or a default rule is
+# reported by its position among the names, never by name. Returns 3 on a match.
 check_names() {
 	local where="$1" pos total
 	names
@@ -254,7 +254,7 @@ check_names() {
 	total="$(wc -l <"$tmp/names" | tr -d ' ')"
 	while read -r pos; do
 		printf 'leak-check: %s, file name %s of %s: %s\n' "$where" "$pos" "$total" \
-			"the name itself matches a private term" >&2
+			"the name itself matches a private term or a secret rule" >&2
 	done <"$tmp/namehits"
 	return 3
 }

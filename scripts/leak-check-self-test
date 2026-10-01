@@ -137,6 +137,10 @@ FPL_LEAK_GATE=warn expect 0 "warn reports but passes" --staged
 says "aws-access-token" "warn still reports"
 FPL_LEAK_GATE=off expect 0 "off passes" --staged
 reset
+echo fine >"key-$secret.txt" && git add .
+expect 1 "a key in a file name, by the default rules" --staged
+says "file name 1 of 1" "a key in a name is reported by position"
+reset
 
 printf 'x\0 quuxfrobnitz\n' >bin.dat && git add bin.dat
 expect 1 "binary content" --staged
@@ -348,6 +352,9 @@ git tag -d rel >/dev/null && git branch -q -D leaky
 # The lists -----------------------------------------------------------------------------
 mv "$list" "$tmp/aside"
 expect 0 "no list" --text "$tmp/pr"
+echo fine >"key-$secret.txt" && git add .
+expect 1 "a key in a file name, with no list" --staged
+reset
 echo "Zeta.Corp" >"$XDG_CONFIG_HOME/fpl/leak-patterns"
 expect 1 "the maintainer's list" --text "$tmp/pr"
 says "leak-u1" "the maintainer's list numbers its own rules"
