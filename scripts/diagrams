@@ -61,7 +61,8 @@ if TYPE_CHECKING:  # the graph import-linter builds; the script needs grimp only
 METHODS_UP_TO = 12
 
 # The fills of the groups of modules one set of contracts binds, as (word, colour): GitHub's
-# subtle backgrounds, with dark text, so a node reads in its dark theme too.
+# subtle backgrounds, with dark text, so a node reads in its dark theme too. Past the last,
+# the colours come round again with a thicker border.
 FILLS = [
     ("blue", "#ddf4ff"),
     ("green", "#dafbe1"),
@@ -231,6 +232,16 @@ def node(name: str) -> str:
     return "m_" + re.sub(r"\W", "_", name)
 
 
+def fill(i: int) -> tuple[str, str]:
+    """The legend's word for the i-th group of modules, and its Mermaid style."""
+    word, colour = FILLS[i % len(FILLS)]
+    style = f"fill:{colour},color:#1f2328"
+    turn = i // len(FILLS)
+    if not turn:
+        return word, style
+    return f"{word}, {2 * turn + 1}px border", f"{style},stroke-width:{2 * turn + 1}px"
+
+
 def flowchart(imports: Imports) -> str:
     """imports.mmd: a Mermaid flowchart, top down, so importers sit above what they import."""
     lines = ["flowchart TD"]
@@ -239,7 +250,7 @@ def flowchart(imports: Imports) -> str:
         lines.append(f"  {node(m)}{shape.format(imports.short(m))}")
     lines += [f"  {node(a)} --> {node(b)}" for a, b in imports.links]
     for i, (_, members) in enumerate(imports.groups):
-        lines.append(f"  classDef g{i} fill:{FILLS[i % len(FILLS)][1]},color:#1f2328")
+        lines.append(f"  classDef g{i} {fill(i)[1]}")
         lines.append(f"  class {','.join(map(node, members))} g{i}")
     if imports.unnamed:
         lines.append("  classDef unnamed stroke-dasharray: 5 4")
@@ -280,7 +291,7 @@ def legend(imports: Imports) -> list[str]:
         "`quality/importlinter.ini` limit what a module may import:",
         "",
         *(
-            f"- {FILLS[i % len(FILLS)][0]}: {names(keys)} — {names(members)}"
+            f"- {fill(i)[0]}: {names(keys)} — {names(members)}"
             for i, (keys, members) in enumerate(imports.groups)
         ),
         f"- plain: no contract — {names(imports.free)}",
