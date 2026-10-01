@@ -180,6 +180,7 @@ def test_a_memarg_prints_its_offset_and_alignment_only_when_they_are_not_the_def
         "i32.load offset=4": Load("i32", MemArg(2, 4), None),
         "i64.load8_u": Load("i64", MemArg(0, 0), (8, "u")),
         "i64.load16_s offset=1 align=1": Load("i64", MemArg(0, 1), (16, "s")),
+        "i32.load align=9223372036854775808": Load("i32", MemArg(63, 0), None),
     }
     for text, load in loads.items():
         module = Module(types=(FuncType((), ()),), funcs=(Func(0, (), (ZERO, load, Drop())),))

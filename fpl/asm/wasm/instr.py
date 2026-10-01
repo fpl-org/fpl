@@ -75,8 +75,9 @@ def store_size_fits(self: "Store") -> bool:
 
 
 def memarg_in_range(self: "MemArg") -> bool:
-    """The alignment exponent and the offset are u32 (2.4.5): each in 0 <= x < 2**32."""
-    return 0 <= self.align < 1 << 32 and 0 <= self.offset < 1 << 32
+    """The offset is a u32 (2.4.5) and the alignment exponent below 64, so `2**align` is a u64
+    the text format can write and the binary's memory-0 form can hold (HOLES.md memarg-align)."""
+    return 0 <= self.align < 64 and 0 <= self.offset < 1 << 32
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,7 +287,8 @@ class ReturnCallIndirect:
 @icontract.invariant(memarg_in_range, check_on=icontract.InvariantCheckEvent.SETATTR)
 @dataclass(frozen=True)
 class MemArg:
-    """2.4.5, a memory access's static offset and alignment exponent (the hint is 2**align bytes).
+    """2.4.5, a memory access's static offset and alignment exponent (the hint is 2**align bytes),
+    the exponent narrowed from 3.0's u32 to below 64 (HOLES.md memarg-align).
 
     No `slots`: icontract's invariant does not compose with a slotted dataclass. The invariant
     is checked at construction and on `__setattr__`, not on every call: the class is frozen, so

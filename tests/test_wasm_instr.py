@@ -97,10 +97,10 @@ def test_a_control_instruction_keeps_its_arms_and_immediates(x: int) -> None:
     assert [(c.table, c.type) for c in indirect] == [(x, use), (x, use)]
 
 
-@given(st.integers(min_value=-1, max_value=2**32), st.integers(min_value=-1, max_value=2**32))
-def test_a_memarg_holds_two_u32(align: int, offset: int) -> None:
+@given(st.integers(min_value=-1, max_value=64), st.integers(min_value=-1, max_value=2**32))
+def test_a_memarg_holds_an_exponent_below_64_and_a_u32(align: int, offset: int) -> None:
     """The violation test of memarg_in_range, at each bound and one past it."""
-    if 0 <= align < 2**32 and 0 <= offset < 2**32:
+    if 0 <= align < 64 and 0 <= offset < 2**32:
         arg = MemArg(align, offset)
         assert (arg.align, arg.offset) == (align, offset)
     else:
@@ -108,8 +108,8 @@ def test_a_memarg_holds_two_u32(align: int, offset: int) -> None:
             MemArg(align, offset)
 
 
-@pytest.mark.parametrize(("align", "offset"), [(-1, 0), (2**32, 0), (0, -1), (0, 2**32)])
+@pytest.mark.parametrize(("align", "offset"), [(-1, 0), (64, 0), (0, -1), (0, 2**32)])
 def test_a_memarg_refuses_one_past_each_bound(align: int, offset: int) -> None:
-    assert MemArg(2**32 - 1, 2**32 - 1).offset == 2**32 - 1
+    assert MemArg(63, 2**32 - 1).align == 63
     with pytest.raises(icontract.ViolationError):
         MemArg(align, offset)

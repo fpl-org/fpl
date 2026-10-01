@@ -171,9 +171,8 @@ EXTERN_KINDS: tuple[ExternKind, ...] = get_args(ExternKind)
 u32s = st.integers(min_value=0, max_value=2**32 - 1)
 typeuses = st.builds(TypeUse, u32s)
 blocktypes = st.none() | numtypes | typeuses
-memargs = st.builds(MemArg, st.integers(min_value=0, max_value=8), u32s)
-"""Alignment exponents stop at 8: the printer writes `align=2**a`, and the model's bound of
-2**32 would print a number of 2**32 bits."""
+memargs = st.builds(MemArg, st.integers(min_value=0, max_value=63), u32s)
+"""Every alignment exponent the model holds, so the printer meets `align=2**63`."""
 
 
 def _rearg[M: (Load, Store)](instr: M, arg: MemArg) -> M:
