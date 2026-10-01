@@ -9,9 +9,10 @@ freely; from his approval on its branch is frozen, and a later finding is fixed 
 a new pull request on top. This is the gate on the second half.
 
 Git hands pre-push one line per ref, `<local ref> <local sha> <remote ref> <remote sha>`.
-A line is judged when it goes to GitHub (the url names github.com) and overwrites or
-deletes a branch that is there: `refs/heads/…`, a remote sha that is not all zeros, a local
-sha that differs from it. For that branch the forge is asked for its open pull requests and
+A line is judged when it goes to GitHub (the url's host is GitHub's, see github_repo; an
+ssh host alias that hides github.com is not seen) and overwrites or deletes a branch that
+is there: `refs/heads/…`, a remote sha that is not all zeros, a local sha that differs from
+it. For that branch the forge is asked for its open pull requests and
 their reviews, and the push is refused when a human stands by an approval: of his reviews
 that approve or request changes, the latest approves and was not dismissed. A comment leaves
 a verdict standing. The approval need not be of the head the push overwrites. The forge
@@ -65,10 +66,7 @@ from urllib.request import Request, urlopen
 
 MACHINES = frozenset({"psjg-claude", "psjg-codex"})
 VERDICTS = frozenset({"APPROVED", "CHANGES_REQUESTED", "DISMISSED"})
-GITHUB = re.compile(
-    r"(?:https://(?:[^@/]+@)?github\.com/|ssh://git@github\.com/|git@github\.com:)"
-    r"([^/]+)/([^/]+?)(?:\.git)?/?"
-)
+GITHUB = re.compile(r"(?:www\.|ssh\.)?github\.com(?:-[\w.-]+)?")  # a host, an ssh alias too
 OVERRIDE = "FPL_FORWARD_ONLY_OVERRIDE"
 API = "FPL_FORWARD_ONLY_API"
 SHAPE = (LookupError, TypeError, ValueError, AttributeError)  # an answer of another shape
@@ -156,30 +154,59 @@ def approvers(reviews: list[dict[str, Any]]) -> list[tuple[str, str]]:
     )
 
 
+def github_repo(url: str) -> tuple[str, str] | None:
+    """The owner and name of the GitHub repository a push goes to, or None when `url` is not
+    on GitHub. Any scheme, credentials and port; the scp form `git@github.com:o/r`; the hosts
+    www.github.com and ssh.github.com (SSH over 443); an ssh alias `github.com-<x>`. A path
+    on this machine is not GitHub, even under a directory called github.com. Raises when the
+    host is GitHub's and the path names no repository."""
+    if "://" in url:
+        parts = urlsplit(url)
+        host, path = parts.hostname or "", parts.path
+    elif re.match(r"[^/]+:", url):
+        host, _, path = url.partition(":")
+        host = host.rpartition("@")[2].lower()
+    else:
+        return None
+    if not GITHUB.fullmatch(host):
+        return None
+    repo = re.fullmatch(r"/?([^/]+)/([^/]+?)(?:\.git)?/?", path)
+    if not repo:
+        raise UnreadableError(f"{url} is on GitHub, but names no repository")
+    return repo[1], repo[2]
+
+
+def standing(read: Read, repo: tuple[str, str], branch: str, remote: str) -> list[str]:
+    """One line for each open pull request of `branch` that a human approved; `remote` is
+    the commit the push would overwrite."""
+    owner, name = repo
+    head = quote(f"{owner}:{branch}", safe=":/")
+    found = []
+    for pr in read(f"repos/{owner}/{name}/pulls?state=open&head={head}&per_page=100"):
+        if who := approvers(
+            read(f"repos/{owner}/{name}/pulls/{pr['number']}/reviews?per_page=100")
+        ):
+            at = ", ".join(f"@{w} at {c[:12]}" for w, c in who)
+            now = "" if all(c == remote for _, c in who) else f"; it is at {remote[:12]} now"
+            found.append(f"{branch} is approved in #{pr['number']} by {at}{now}")
+    return found
+
+
 def frozen(updates: list[str], url: str, read: Read) -> tuple[list[str], list[str]]:
     """(approved, unread): one line for each branch in `updates` whose push would rewrite an
-    approved pull request, and one for each the forge could not answer for."""
-    repo = GITHUB.fullmatch(url)
-    if not repo:
-        return [], []
-    owner, name = repo.groups()
-    approved: list[str] = []
-    unread: list[str] = []
+    approved pull request, and one for each the forge could not answer for. The url is only
+    looked at when a line overwrites or deletes a branch."""
+    moved = []
     for line in updates:
         _, local, ref, remote = line.split()
-        if not ref.startswith("refs/heads/") or set(remote) == {"0"} or local == remote:
-            continue
-        branch = ref.removeprefix("refs/heads/")
-        head = quote(f"{owner}:{branch}", safe=":/")
+        if ref.startswith("refs/heads/") and set(remote) != {"0"} and local != remote:
+            moved.append((ref.removeprefix("refs/heads/"), remote))
+    repo = github_repo(url) if moved else None
+    approved: list[str] = []
+    unread: list[str] = []
+    for branch, remote in moved if repo else []:
         try:
-            for pr in read(f"repos/{owner}/{name}/pulls?state=open&head={head}&per_page=100"):
-                reviews = read(f"repos/{owner}/{name}/pulls/{pr['number']}/reviews?per_page=100")
-                if who := approvers(reviews):
-                    at = ", ".join(f"@{w} at {c[:12]}" for w, c in who)
-                    now = (
-                        "" if all(c == remote for _, c in who) else f"; it is at {remote[:12]} now"
-                    )
-                    approved.append(f"{branch} is approved in #{pr['number']} by {at}{now}")
+            approved += standing(read, repo, branch, remote)
         except UnreadableError as e:
             unread.append(f"{branch}: {e}")
         except SHAPE as e:
@@ -238,6 +265,8 @@ def main(argv: list[str]) -> int:
     api = os.environ.get(API, "https://api.github.com").rstrip("/")
     try:
         approved, unread = frozen(updates, argv[1], reader(api))
+    except UnreadableError as e:
+        approved, unread = [], [str(e)]
     except ValueError as e:
         approved, unread = [], [f"a line pre-push does not know ({e})"]
     if not approved and not unread:
@@ -428,6 +457,22 @@ CASES = [
     ),
     Case(
         "the ssh form of the GitHub url is judged too", 1, "by @psjg", url=f"git@github.com:{REPO}"
+    ),
+    Case("so is ssh over port 443", 1, "by @psjg", url=f"ssh://git@ssh.github.com:443/{REPO}"),
+    Case("and an ssh alias of github.com", 1, "by @psjg", url=f"git@github.com-work:{REPO}"),
+    Case("and a host in capitals", 1, "by @psjg", url="HTTPS://GitHub.com/fpl-org/fpl"),
+    Case(
+        "a GitHub url that names no repository refuses",
+        1,
+        "names no repository",
+        DOWN,
+        url="https://github.com/fpl-org",
+    ),
+    Case(
+        "a path on this machine under a github.com directory is not judged",
+        0,
+        answers=DOWN,
+        url="/home/someone/src/github.com/fpl-org/fpl",
     ),
 ]
 
