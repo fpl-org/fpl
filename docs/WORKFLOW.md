@@ -59,6 +59,25 @@ top of base) · **restack** (rebase the stack when base or a lower commit change
    `FPL_LEAK_GATE=block` (default) · `warn` (report, don't block) · `off`. It covers what
    leaves through git and `scripts/pr`; the comments `scripts/export-review` posts, and
    anything written on the forge by hand, do not pass it.
+10. **An approved pull request is frozen; fix forward.** Until the maintainer approves a pull
+    request, agents rewrite it freely, in this order: the machines first (`make check` and
+    the other lanes of `docs/QUALITY.md`), then the review bots (CodeRabbit reviews each
+    push; Codex review is asked for in that round, not after him), then the fixes, and only
+    then his review. From his approval on, nothing is pushed to its branch: no amend, no fix
+    commit, no restack, no force push, no deletion. A finding that arrives later is fixed
+    forward, in a new pull request on top of the stack that names the finding and the pull
+    request it fixes. An approved branch gets no more pushes, so CodeRabbit, which reviews
+    each push, does not come back to it; a bot's late finding is work for that new pull
+    request, not a reason to reopen the approved one. So he reads each change once, and an
+    approval never goes stale. The one exception is a rebase that a real conflict with the
+    base or `main` forces: declare it with `FPL_FORWARD_ONLY_OVERRIDE="conflict: <reason>"`
+    and repeat the reason in the pull request, because that push dismisses his approval. The
+    rulesets keep dismiss-stale-reviews on as a tripwire: a lapsed approval is a broken rule.
+    **[gate]** `.githooks/pre-push` runs `scripts/forward-only`: a push to GitHub that would
+    overwrite or delete the branch of an open pull request whose head a human approved is
+    refused. Bots, `psjg-codex` and `psjg-claude` are not counted as human. It reads the
+    forge with GET requests only, and refuses when it cannot read it. `git push --no-verify`
+    skips it; the tripwire stays.
 
 ## Setup (once per clone/worktree)
 
@@ -103,6 +122,13 @@ full grammar, and the gates that enforce it, are in `docs/BRANCHES.md`.
 
 ## Restack (base moved, or you amended a lower commit)
 
+Only where nothing is approved yet (rule 10). A restack rewrites every branch of the stack
+above the commit it changes, so a change under an approved pull request would rebase that
+one too: fix it forward instead. Above the highest approved pull request the stack is still
+yours to rewrite, with that branch as the base. A frozen stack does not follow `main`
+around; only a real conflict with `main` asks for a rebase, and that is rule 10's declared
+exception.
+
 ```
 scripts/restack            # git fetch github && git rebase --update-refs github/main
 ```
@@ -111,7 +137,7 @@ scripts/restack            # git fetch github && git rebase --update-refs github
 rebase, so the PR branches stay correct. Conflicts: resolve, then `scripts/restack --continue`
 (or `--abort`). `rerere` replays the same resolution on the next restack.
 
-To amend a commit that isn't on top:
+To amend a commit that isn't on top, before it is approved:
 
 ```
 git rebase -i --update-refs github/main    # mark the target 'edit', amend, continue
@@ -304,14 +330,22 @@ The maintainer creates it (the account's settings, then approve the request as a
 the organisation) and writes the file. It expires; a push then fails with 403 and a new token
 is made the same way. Agents read it through git and never print it.
 
-- Merge the bottom PR first, with **Rebase and merge**, and delete its branch. GitHub then
-  retargets the next PR to `main`. Rebase-merge puts every commit on `main` individually,
-  message and trailers intact, with no merge commit — history stays linear and bisectable.
+- **A stack lands as a unit.** The maintainer picks the highest pull request to land and
+  merges it with GitHub's **Rebase and merge stack**: it and every unmerged pull request
+  below it land on `main` together, in order, in one operation, and GitHub rebases the pull
+  requests above it onto `main` itself. Landing them one by one would put a bug that is
+  already fixed further up on `main` until the fix lands too. When he stops below such a
+  fix, the pull request that lands without it names the bug under "Still waiting" in its
+  "What merging this changes for FPL" section. Rebase-merge puts every commit on `main`
+  individually, message and trailers intact, with no merge commit — history stays linear
+  and bisectable.
 - **Never squash a multi-commit PR.** Squashing collapses the atomic commits, and their
   bodies and trailers, into one. (A one-commit PR is the only case where it is harmless.)
-- GitHub's rebase-merge always rewrites the SHAs and the committer. So `scripts/restack` after
-  each merge: the rebase recognises the landed commits as already applied and drops them from
-  your local stack.
+- GitHub's rebase-merge always rewrites the SHAs and the committer, and GitHub rebases the
+  pull requests left open itself. So after a landing, build on what the forge has
+  (`git fetch github`, then `git branch -f <branch> github/<branch>`), not on a local
+  restack: that would differ from the forge's, and an approved branch is not pushed again
+  (rule 10).
 - When the stack is empty, delete the `stack/…` refs, locally and on `github`. Nothing is lost:
   the grouping lives in each commit's `Stack:` trailer, the discussion in the PRs.
 
