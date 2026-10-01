@@ -1,0 +1,368 @@
+#!/usr/bin/env python3
+"""scripts/forward-only — refuse a push that rewrites a pull request the maintainer approved.
+
+    scripts/forward-only <remote> <url> < <pre-push lines>      (.githooks/pre-push)
+    scripts/forward-only --self-test
+
+docs/WORKFLOW.md, rule 10: until the maintainer approves a pull request, agents rewrite it
+freely; from his approval on its branch is frozen, and a later finding is fixed forward, in
+a new pull request on top. This is the gate on the second half.
+
+Git hands pre-push one line per ref, `<local ref> <local sha> <remote ref> <remote sha>`.
+A line is judged when it goes to GitHub (the url names github.com) and overwrites or
+deletes a branch that is there: `refs/heads/…`, a remote sha that is not all zeros, a local
+sha that differs from it. For that branch the forge is asked for its open pull requests and
+their reviews, and the push is refused when a human stands by an approval of the head it
+would overwrite: of his reviews that approve or request changes, the latest approves, it
+approves that very commit, and it was not dismissed. A comment leaves a verdict standing.
+Bots and the machine accounts in MACHINES are not humans here: what they find after an
+approval is work for a fix on top, not a reason to reopen the approved branch.
+
+It only reads, with `gh api --method GET`. When the forge cannot be read (no gh, no token,
+no network, an answer of the wrong shape) the push is refused: an approved pull request may
+be among those it could not see.
+
+    FPL_FORWARD_ONLY_OVERRIDE="conflict: <reason>"
+
+lets a refused push go and prints the reason; the pull request repeats it. It is for the
+one exception the rule makes, a rebase that a real conflict with the base or main forces.
+That push dismisses the approval, since the rulesets keep dismiss-stale-reviews on.
+
+Exit 0: the push may go; 1: refused; 2: usage.
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from collections.abc import Callable, Mapping
+from pathlib import Path
+from types import MappingProxyType
+from typing import Any, NamedTuple
+from urllib.parse import quote
+
+MACHINES = frozenset({"psjg-claude", "psjg-codex"})
+VERDICTS = frozenset({"APPROVED", "CHANGES_REQUESTED", "DISMISSED"})
+GITHUB = re.compile(
+    r"(?:https://(?:[^@/]+@)?github\.com/|ssh://git@github\.com/|git@github\.com:)"
+    r"([^/]+)/([^/]+?)(?:\.git)?/?"
+)
+OVERRIDE = "FPL_FORWARD_ONLY_OVERRIDE"
+Read = Callable[[str], list[Any]]
+
+
+class UnreadableError(Exception):
+    """The forge did not answer, or not in the shape asked for."""
+
+
+def gh_get(path: str) -> list[Any]:
+    """Every page of one REST list, read through `gh api --method GET`."""
+    try:
+        done = subprocess.run(
+            ["gh", "api", "--method", "GET", "--paginate", "--slurp", path],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as e:
+        raise UnreadableError(f"gh: {e.strerror}") from e
+    if done.returncode != 0:
+        raise UnreadableError("gh: " + (done.stderr.strip().splitlines() or ["failed"])[-1])
+    try:
+        pages = json.loads(done.stdout)
+    except json.JSONDecodeError as e:
+        raise UnreadableError("gh: an answer that is not JSON") from e
+    if not isinstance(pages, list) or not all(isinstance(p, list) for p in pages):
+        raise UnreadableError("gh: an answer that is not a list")
+    return [item for page in pages for item in page]
+
+
+def human(user: dict[str, Any]) -> bool:
+    """A person: not an App's bot account, and not one of the machine accounts."""
+    login = user.get("login") or ""
+    return bool(login) and user.get("type") != "Bot" and login not in MACHINES
+
+
+def approvers(reviews: list[dict[str, Any]], head: str) -> list[str]:
+    """The humans whose standing verdict approves `head`. The forge lists reviews oldest
+    first, so the last verdict of each reviewer wins; a dismissed approval reads
+    DISMISSED."""
+    last: dict[str, dict[str, Any]] = {}
+    for r in reviews:
+        user = r.get("user") or {}
+        if r.get("state") in VERDICTS and human(user):
+            last[user["login"]] = r
+    return sorted(
+        who for who, r in last.items() if r["state"] == "APPROVED" and r["commit_id"] == head
+    )
+
+
+def frozen(updates: list[str], url: str, read: Read) -> list[str]:
+    """One line for each branch in `updates` whose push would rewrite an approved pull
+    request. Raises when the forge cannot say, or says it in another shape."""
+    repo = GITHUB.fullmatch(url)
+    if not repo:
+        return []
+    owner, name = repo.groups()
+    found: list[str] = []
+    for line in updates:
+        _, local, ref, remote = line.split()
+        if not ref.startswith("refs/heads/") or set(remote) == {"0"} or local == remote:
+            continue
+        branch = ref.removeprefix("refs/heads/")
+        head = quote(f"{owner}:{branch}", safe=":/")
+        for pr in read(f"repos/{owner}/{name}/pulls?state=open&head={head}&per_page=100"):
+            reviews = read(f"repos/{owner}/{name}/pulls/{pr['number']}/reviews?per_page=100")
+            if who := approvers(reviews, remote):
+                at = ", ".join(f"@{w}" for w in who)
+                found.append(f"{branch} is approved by {at} in #{pr['number']} at {remote[:12]}")
+    return found
+
+
+def say(line: str) -> None:
+    print(f"forward-only: {line}", file=sys.stderr)
+
+
+def decide(refused: list[str], override: str) -> int:
+    """Say why the push stops, or why it goes anyway: 1 to stop it, 0 to let it go."""
+    for line in refused:
+        say(line)
+    reason = re.fullmatch(r"conflict:\s*(\S.*)", override.strip())
+    if reason:
+        say(f"pushing anyway, {OVERRIDE}: conflict: {reason[1]}")
+        say("the push dismisses the approval; the pull request must say so, and why")
+        return 0
+    say("an approved pull request is frozen; fix forward in a new one on top (WORKFLOW rule 10)")
+    if override:
+        say(f"{OVERRIDE} must read 'conflict: <reason>', not '{override}'")
+    say(f'nothing was pushed. A rebase a real conflict forces: {OVERRIDE}="conflict: <reason>"')
+    return 1
+
+
+def main(argv: list[str]) -> int:
+    if argv == ["--self-test"]:
+        return self_test()
+    if len(argv) != 2:
+        print("usage: scripts/forward-only <remote> <url> < <pre-push lines>", file=sys.stderr)
+        return 2
+    updates = [line for line in sys.stdin.read().splitlines() if line.strip()]
+    try:
+        refused = frozen(updates, argv[1], gh_get)
+    except (UnreadableError, KeyError, TypeError, ValueError) as e:
+        refused = [f"cannot tell from GitHub which pull requests are approved ({e})"]
+    return decide(refused, os.environ.get(OVERRIDE, "")) if refused else 0
+
+
+# The self-test runs this script as the hook does, against a gh on PATH that answers from a
+# table, logs every call, and fails any call that is not a GET.
+STUB = """
+import json, os, sys
+from urllib.parse import parse_qs
+args = sys.argv[1:]
+with open(os.environ["STUB_LOG"], "a") as log:
+    log.write(" ".join(args) + "\\n")
+writes = {"POST", "PATCH", "PUT", "DELETE", "-f", "-F", "--field", "--raw-field", "--input"}
+if args[:3] != ["api", "--method", "GET"] or writes & set(args) or os.environ.get("STUB_FAIL"):
+    sys.exit("gh: HTTP 502: Bad Gateway")
+path, _, query = args[-1].partition("?")
+q = parse_qs(query)
+if path.endswith("/pulls"):
+    assert q["state"] == ["open"]
+    path += "?head=" + q["head"][0]
+print(json.dumps([json.loads(os.environ["STUB_ANSWERS"]).get(path, [])]))
+"""
+REPO = "fpl-org/fpl.git"
+URL = f"https://github.com/{REPO}"
+B = "agent/claude/stack/x"
+OLD, NEW, ZERO = "a" * 40, "b" * 40, "0" * 40
+PUSH = f"refs/heads/{B} {NEW} refs/heads/{B} {OLD}"
+PULLS = f"repos/fpl-org/fpl/pulls?head=fpl-org:{B}"
+REVIEWS = "repos/fpl-org/fpl/pulls/54/reviews"
+
+
+def review(login: str, state: str, commit: str = OLD, kind: str = "User") -> dict[str, Any]:
+    return {"user": {"login": login, "type": kind}, "state": state, "commit_id": commit}
+
+
+def stack(*reviews: dict[str, Any], draft: bool = False) -> dict[str, Any]:
+    return {PULLS: [{"number": 54, "draft": draft}], REVIEWS: list(reviews)}
+
+
+APPROVED = stack(review("psjg", "APPROVED"))
+
+
+class Case(NamedTuple):
+    """One push the gate is shown, and what it must make of it."""
+
+    name: str
+    code: int  # the exit code: 0 the push goes, 1 it is refused
+    text: str = ""  # what the output must hold
+    answers: dict[str, Any] = APPROVED  # what gh answers, by path
+    line: str = PUSH  # the line git hands pre-push
+    url: str = URL
+    env: Mapping[str, str] = MappingProxyType({})
+
+
+BOTS = stack(
+    review("coderabbitai[bot]", "APPROVED", kind="Bot"),
+    review("psjg-codex", "APPROVED"),
+    review("psjg-claude", "APPROVED"),
+)
+UNAPPROVED = stack(
+    review("psjg", "COMMENTED"), review("psjg-codex", "CHANGES_REQUESTED"), draft=True
+)
+CASES = [
+    Case("an approved pull request is refused", 1, "by @psjg in #54"),
+    Case("approvals by bots and machine accounts alone freeze nothing", 0, answers=BOTS),
+    Case("a branch with no open pull request goes", 0, answers={}),
+    Case("a draft not yet approved goes", 0, answers=UNAPPROVED),
+    Case(
+        "a dismissed approval goes, and hides an earlier one",
+        0,
+        answers=stack(review("psjg", "APPROVED"), review("psjg", "DISMISSED")),
+    ),
+    Case(
+        "an approval of an older head goes",
+        0,
+        answers=stack(review("psjg", "APPROVED", commit="c" * 40)),
+    ),
+    Case(
+        "a comment after the approval leaves it standing",
+        1,
+        "by @psjg",
+        stack(review("psjg", "APPROVED"), review("psjg", "COMMENTED")),
+    ),
+    Case(
+        "changes requested after the approval lift it",
+        0,
+        answers=stack(review("psjg", "APPROVED"), review("psjg", "CHANGES_REQUESTED")),
+    ),
+    Case(
+        "the override with a reason goes, and prints it",
+        0,
+        "conflict: main moved fpl/core.py",
+        env={OVERRIDE: "conflict: main moved fpl/core.py"},
+    ),
+    Case(
+        "the override without a reason is refused",
+        1,
+        "must read 'conflict: <reason>'",
+        env={OVERRIDE: "conflict: "},
+    ),
+    Case("gh that cannot answer refuses", 1, "HTTP 502", env={"STUB_FAIL": "1"}),
+    Case("an answer of the wrong shape refuses", 1, "cannot tell", {PULLS: {"x": 1}}),
+    Case("no gh on PATH refuses", 1, "cannot tell", env={"PATH": "/nonexistent"}),
+    Case(
+        "a new branch goes without asking",
+        0,
+        line=f"refs/heads/{B} {NEW} refs/heads/{B} {ZERO}",
+        env={"STUB_FAIL": "1"},
+    ),
+    Case(
+        "deleting an approved branch is refused",
+        1,
+        "by @psjg in #54",
+        line=f"(delete) {ZERO} refs/heads/{B} {OLD}",
+    ),
+    Case(
+        "a push elsewhere than GitHub is not judged",
+        0,
+        url="https://gitlab.com/fpl-org/fpl.git",
+        env={"STUB_FAIL": "1"},
+    ),
+    Case(
+        "the ssh form of the GitHub url is judged too", 1, "by @psjg", url=f"git@github.com:{REPO}"
+    ),
+]
+
+
+def self_test() -> int:
+    script = Path(__file__).resolve()
+    with tempfile.TemporaryDirectory() as tmp:
+        t = Path(tmp)
+        (t / "bin").mkdir()
+        (t / "bin" / "gh").write_text(f"#!{sys.executable}\n{STUB}")
+        (t / "bin" / "gh").chmod(0o755)
+        base = {
+            "PATH": f"{t / 'bin'}:{os.environ.get('PATH', '')}",
+            "HOME": tmp,
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "STUB_LOG": str(t / "gh.log"),
+        }
+
+        def run(cmd: list[str], line: str, answers: dict[str, Any], env: Mapping[str, str]) -> Any:
+            env = {**base, "STUB_ANSWERS": json.dumps(answers), **env}
+            return subprocess.run(
+                cmd,
+                input=line + "\n",
+                env=env,
+                cwd=t / "repo",
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        checks = hook(t, run)
+        for c in CASES:
+            done = run([sys.executable, str(script), "github", c.url], c.line, c.answers, c.env)
+            checks.append(
+                (c.name, done.returncode == c.code and c.text in done.stderr, done.stderr)
+            )
+        calls = (t / "gh.log").read_text().splitlines()
+        checks.append(
+            (
+                "the forge is only ever read, with GET",
+                bool(calls) and all(c.startswith("api --method GET ") for c in calls),
+                "\n".join(calls),
+            )
+        )
+    failed = [(n, out) for n, ok, out in checks if not ok]
+    for n, out in failed:
+        print(f"FAIL {n}\n{out}", file=sys.stderr)
+    print(
+        f"forward-only: self-test {'FAILED' if failed else 'ok'} "
+        f"({len(checks)} checks, {len(failed)} failed)"
+    )
+    return 1 if failed else 0
+
+
+def hook(t: Path, run: Callable[..., Any]) -> list[tuple[str, bool, str]]:
+    """The gate as .githooks/pre-push runs it, in the repository every case runs in: one of
+    its own, whose hooks and scripts are this checkout's, pushing a real commit to a remote
+    that has none."""
+    root = Path(__file__).resolve().parent.parent
+    repo = t / "repo"
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env |= {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
+    env |= {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t"}
+    env |= {"GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+    def git(*args: str) -> str:
+        done = subprocess.run(["git", *args], capture_output=True, text=True, check=True, env=env)
+        return done.stdout.strip()
+
+    git("init", "-q", "--bare", str(t / "remote.git"))
+    git("init", "-q", str(repo))
+    (repo / "scripts").symlink_to(root / "scripts")
+    (repo / ".githooks").symlink_to(root / ".githooks")
+    git("-C", str(repo), "commit", "-q", "--allow-empty", "-m", "x")
+    git("-C", str(repo), "remote", "add", "github", str(t / "remote.git"))
+    sha = git("-C", str(repo), "rev-parse", "HEAD")
+    pre_push = [str(repo / ".githooks" / "pre-push"), "github", URL]
+    over = run(pre_push, f"refs/heads/{B} {sha} refs/heads/{B} {OLD}", APPROVED, {})
+    new = run(pre_push, f"refs/heads/{B} {sha} refs/heads/{B} {ZERO}", APPROVED, {})
+    return [
+        (
+            "the pre-push hook refuses what the gate refuses",
+            over.returncode == 1 and "forward-only: " in over.stderr,
+            over.stderr,
+        ),
+        ("and lets the rest through to its other gates", new.returncode == 0, new.stderr),
+    ]
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
