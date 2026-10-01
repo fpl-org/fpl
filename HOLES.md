@@ -106,10 +106,10 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Evidence: decision (b); session shar/split.tsv (parses_alone column, all yes); handoff/SHAR-syntax.org:828 "The snippet corpus"
 
 ## program-output
-- Depends on it: fpl/driver.py, every .expected that is not an error line
-- Default in force: what the Drafts say; where silent, the final stack printed by fpl/print.py (format fixed by 02-stack); whether top-level lines share a stack is part of this
+- Depends on it: fpl/driver.py, fpl/desugar.py listing, tests/test_desugar.py, every .expected that is not an error line
+- Default in force: each top-level line that is not a definition runs on a fresh stack and prints one line, the stack it leaves as fpl/print.py writes the items that push it, with a bar between two literals that would otherwise strand; a definition prints nothing; a program with no line to run prints nothing. A section prints in the printer's spelling, [ 1 2 3 + ] for the Draft's [1‿2‿3 +]
 - Closes by: design side, a Draft statement of what a program prints
-- Evidence: decision (d); snippets carry values only as trailing ; comments
+- Evidence: decision (d); draft2 §frames, features/draft2/examples/01-frames.fpl:2-4 (one result per line; line 3 has nothing below after line 2 left 2 3 4); claims D2.1-D2.3
 
 ## expected-evolution
 - Depends on it: every features/*/examples/*.expected (28, _template aside); tests/test_conformance.py::test_example[*]; tests/test_main.py::test_a_file_that_cannot_run_prints_one_error_line
@@ -118,10 +118,10 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Evidence: decisions (b) and (c); AGENTS.md "The oracle rule"; features/*/examples/*.expected at 3302d197
 
 ## unimplemented-words
-- Depends on it: fpl/driver.py; every example still at ERROR: 1:1 no evaluator yet (all 28 at this commit)
-- Default in force: a program using anything outside the implemented set reports ERROR: 1:1 no evaluator yet before evaluating (the skeleton's message and position, reused)
+- Depends on it: fpl/desugar.py unimplemented; every example still at ERROR: 1:1 no evaluator yet (26 of 28 at this commit: 01-frames for swap-args, 09-rotates for fold, the rest for more)
+- Default in force: desugar refuses, before anything runs, all but: decimal numbers, strings without islands, [ ], ( ) of one cell, ⟨ ⟩ of literals, bars, tabs, blocks, name : ins -- outs definitions (each slot a name or name: Type), and the words of fpl/ast_core.py EFFECTS (+ - times swap dup drop enclose ,), with ERROR: 1:1 no evaluator yet (the skeleton's message and position, reused)
 - Closes by: each step-3 part, shrinking the set
-- Evidence: fpl/driver.py (skeleton)
+- Evidence: fpl/driver.py (skeleton); fpl/ast_core.py EFFECTS
 
 ## fresh-unify-space
 - Depends on it: features/match (Prolog's family), features/sketch (logic tree)
@@ -196,8 +196,8 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Evidence: session grammar-fix/proof2.log (note alignment section)
 
 ## comment-heads-block
-- Depends on it: fpl/grammar.lark (line)
-- Default in force: a comment line may head an indented block (an outline heading); no example has one
+- Depends on it: fpl/grammar.lark (line), fpl/desugar.py (coded)
+- Default in force: a comment line may head an indented block (an outline heading); no example has one; desugar refuses such a line as unimplemented (no evaluator yet), since running its block as quotations or as lines is undecided; a comment line with no block is no statement
 - Closes by: Caesura, confirming or refusing it
 - Evidence: session grammar-fix/proof2.log (";;; s\n\ta" parses once, 0 heads in the corpus)
 
@@ -208,9 +208,9 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Evidence: session grammar-fix/proof2.log (0 comments inside an enclosure in the corpus); tests/test_parse.py::test_a_refusal_is_one_error_line
 
 ## empty-first-line
-- Depends on it: fpl/grammar.lark (start), fpl/print.py (render)
+- Depends on it: fpl/grammar.lark (start), fpl/print.py (render), fpl/desugar.py (coded)
 - Default in force: a file that opens with blank lines has one empty first line, and "\n\tx" gives that line a block; a blank source ("", "\n") is that one line and prints as the empty text; no example opens blank (PSJ: leading blank lines are not useful, a refusal is acceptable)
-- Closes by: PSJ or Caesura, keeping it or refusing a blank first line
+- Closes by: PSJ or Caesura, keeping it or refusing a blank first line; until then desugar runs nothing for it, and refuses it as unimplemented when it heads a block
 - Evidence: session grammar-fix/proof2.log; tests/test_parse.py::test_only_the_first_line_is_empty_and_it_may_hold_a_block
 
 ## form-feed-line
@@ -218,3 +218,87 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Default in force: a form feed is the page separator, ignored like a space; a line holding only tabs, spaces and form feeds inside a blank run is part of the run, so it leaves no line and prints as nothing; only the last line's tabs are indentation, so a form feed before a line's tabs leaves it at depth 0 as before
 - Closes by: Caesura or PSJ, confirming the form feed as a page separator, or refusing it outside strings and comments
 - Evidence: bd41245 fix(grammar): read a line of form feeds as part of its blank run; session grammar-fix/proof3.log, ffcheck.log
+
+## saturation-balance
+- Depends on it: fpl/desugar.py _Desugar.body, tests/test_desugar.py (D2.1-D2.3, D2.5, D2.6, D1.5)
+- Default in force: arity is balanced statically in desugar: a top-level line starts at 0; the bar carries the balance on; a : body starts at the effect line's inputs and runs on from line to line (one stack); a block's children come before their head, each saturated as a frame is (a value child adds what its code leaves, a quotation child one); quotation bodies are code and never checked; a frame whose words reach below its starting balance is a section, the whole frame pushed as one quotation, never an error
+- Closes by: design side, a Draft rule for where a section starts (the whole frame, or from the word that underflows) and for body lines
+- Evidence: decision (f); claims D2.1-D2.3 (draft2 §frames), D2.5 (curry's body underflows its frame but not its effect line)
+
+## effect-line-trusted
+- Depends on it: fpl/desugar.py arity, fpl/eval.py builtin
+- Default in force: a defined word's arity is read from its effect line and trusted; a body that leaves fewer values than declared makes a later word find too few, refused at that word as stack underflow
+- Closes by: fpl/types.py (types part), checking a body against its effect line
+- Evidence: claim D3.4; tests/test_desugar.py test_a_word_refuses_at_its_position
+
+## definition-scope
+- Depends on it: fpl/desugar.py desugar, fpl/eval.py evaluate, tests/test_desugar.py test_lcurry_puts_a_swap_between
+- Default in force: definitions are global to the program; a word may be used above its definition; a later definition of a name shadows an earlier one for every line, builtins included
+- Closes by: design side, with bind's ordered log (decision f) once 03-binders lands
+- Evidence: features/draft2/examples/02-currying.fpl:4-5 (lcurry uses curry); decision (f) "later shadows earlier"
+
+## pervasive-arithmetic
+- Depends on it: fpl/eval.py arithmetic, tests/test_desugar.py
+- Default in force: + - times take numbers or strands of numbers; a number meets each item of a strand, two strands meet item by item; unequal lengths and non-numbers are refused at the word
+- Closes by: design side, the arithmetic of the array model
+- Evidence: claim D2.1 (1 | 1 2 3 + gives 2 3 4)
+
+## list-elements
+- Depends on it: fpl/desugar.py enclosure, element
+- Default in force: ⟨ ⟩ holds literals only (numbers, strings, quotations, lists), each item one element, nothing strands inside; , joins two lists
+- Closes by: design side, what a ⟨ ⟩ body may compute
+- Evidence: features/draft2/examples/08-objects-are-directories.fpl:7 (⟨⟩ as an empty accumulator)
+
+## number-glyphs
+- Depends on it: fpl/desugar.py atom
+- Default in force: ∞ and π, which the affix pass reads as numbers, are refused as unimplemented; numbers are integers and decimals, a decimal kept exact as written
+- Closes by: implementer, once an example that uses them evaluates
+- Evidence: fpl/lex.py NUMBER; features/draft1/examples/draft1.fpl:29-32
+
+## effect-query
+- Depends on it: claim D3.4
+- Default in force: each effect line is kept as declared data (fpl/ast_core.py Effect, on Define; EFFECTS for builtins); the query words/*/effect is not implemented
+- Closes by: the part that implements directories and paths
+- Evidence: claim D3.4 (features/draft3/examples/draft3.fpl)
+
+## stack-claims-deferred
+- Depends on it: claims D1.6, D1.9, D1.10, D2.8, D2.9, D2.10, D2.14, D2.15, D2.16 (part 02-stack)
+- Default in force: open, their examples at no evaluator yet: D2.9 needs binders and each (03-binders); D2.8 and D2.10 symbols, pair, dict, method, inverse; D2.14 and D2.15 unquote; D2.16 laziness; D1.6 ! and if; D1.9 and D1.10 ∞, inner, log, repeat and a block of literals under a head that is not a definition
+- Closes by: the parts that implement those words, each with a test named by its claim id
+- Evidence: design/claims.jsonl rows with part 02-stack
+
+## child-slots
+- Depends on it: fpl/desugar.py _Desugar.children, child; tests/test_desugar.py test_a_child_under_a_thunk_or_code_slot_is_pushed_as_a_quotation
+- Default in force: a child past the inputs of its head phrase fills no slot, so its slot is unknown: it is pushed as a quotation, as every child was before slots; a value child whose code reaches below its balance is a section, pushed whole (decision f)
+- Closes by: design side, saying what a child past the head's inputs is (an error, or a quotation)
+- Evidence: design doc FON tab S49 rule 5 ("a child is never run by its position, only by its head"); S42 (children push, head consumes)
+
+## multi-word-head
+- Depends on it: fpl/desugar.py _Desugar.inputs; tests/test_desugar.py test_a_child_under_a_value_slot_runs_at_once (+ dup times)
+- Default in force: the children fill the inputs of the head phrase as a whole, all its frames joined, the first child the deepest input and the last the top; a word's inputs that the code before it does not supply lie under those already taken; with fewer children than inputs they fill the top ones and the rest come from the stack below
+- Closes by: design side (question to Caesura: which slot a child fills under a head of several words, `+ sqrt`)
+- Evidence: design doc FON tab S42 (hypot : a b -- c over + sqrt, two children); S49 rule 5 ("top to bottom")
+
+## quotation-slot-words
+- Depends on it: fpl/ast_core.py EFFECTS; tests/test_desugar.py test_join_takes_code_and_enclose_a_value, test_a_block_is_one_node_per_head (D1.4), test_children_are_quotations_before_the_head (D1.5)
+- Default in force: , takes two code slots (it joins quotations as data, never runs them); enclose takes a value; curry and lcurry, defined in features/draft2/examples/02-currying.fpl with bare names, take values
+- Closes by: design side (question to Caesura: are , enclose and curry code, thunk or polymorphic; , also joins lists, and curry takes a thunk in 11-laziness.fpl:3)
+- Evidence: features/draft2/examples/02-currying.fpl:2-5; features/draft2/examples/11-laziness.fpl:3; claims D1.4, D1.5
+
+## bare-slot-names
+- Depends on it: fpl/desugar.py typed; every effect line in features/ and tests/
+- Default in force: a bare name on an effect line stays legal, an untyped value slot; only `name: Type` declares a thunk or code slot
+- Closes by: design side (question to Caesura: do bare names stay, and do the old bracket slots `or : [ p ] [ q ]` survive)
+- Evidence: design doc FON tab S49 item 1; features/sketch/examples/01-1-a-logic.fpl:12-13
+
+## thunk-type-dropped
+- Depends on it: fpl/desugar.py slot, declaration; tests/test_desugar.py test_core_without_sugar_writes_back_as_its_source
+- Default in force: the core keeps each input's slot, not its type: `x: Int` is written back as `x`, `t: [ -- x ]` as `t: []`, `c: Code` as itself; an output's type is read past
+- Closes by: fpl/types.py (types part), keeping the declared types it checks
+- Evidence: design doc FON tab S49 item 1 (`f : x: Int  y: Int -- z: Int`)
+
+## double-use-refusal
+- Depends on it: features/server/examples/server.fpl:21 (a ;; comment, not run)
+- Default in force: not refused in this part: a quotation both forced and inspected needs a kind on each stack cell through dup, which desugar does not track
+- Closes by: fpl/types.py (#59, types), carrying thunk and code kinds through the stack and refusing the double use
+- Evidence: features/server/examples/server.fpl:19-21; design doc FON tab S49 rule 5

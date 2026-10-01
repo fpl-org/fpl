@@ -64,3 +64,20 @@ fpl.print.xǁ_Outǁ__init____mutmut_5 -- equivalent: the first line is at depth 
 fpl.print.xǁ_Outǁitem__mutmut_4 -- unreachable: the match covers the Item union, as pyright proves
 fpl.print.xǁ_Outǁ__init____mutmut_8 -- equivalent: None and False are both false for noted
 fpl.lex.x_counted__mutmut_17 -- flaky: killed in one run, timeout in another; the mutant returns 1 for an unclosed opener, so one at offset 0 is not refused (tests/test_fon.py, “a) while one past offset 1 restarts the scan behind it and never ends, and which test mutmut reaches first decides
+fpl.desugar.xǁ_Desugarǁitem__mutmut_5 -- unreachable: the match covers the Item union, as pyright proves
+fpl.desugar.xǁ_Desugarǁitem__mutmut_15 -- unreachable: the match covers the Item union, as pyright proves
+fpl.desugar.xǁ_Desugarǁenclosure__mutmut_5 -- unreachable: the match covers the Pair literals, as pyright proves
+fpl.desugar.xǁ_Desugarǁenclosure__mutmut_26 -- unreachable: the match covers the Pair literals, as pyright proves
+fpl.desugar.x_written__mutmut_3 -- unreachable: the match covers the Statement union, as pyright proves
+fpl.desugar.x_sugared__mutmut_2 -- equivalent: stranding is false for "" as for None, neither being a push
+fpl.desugar.x_shown__mutmut_42 -- equivalent: F differs from f only for NaN and infinity; numerals are finite and the default Decimal context traps overflow and invalid operations
+fpl.desugar.x_written__mutmut_52 -- unreachable: the match covers the Statement union, as pyright proves
+fpl.desugar.x_written__mutmut_15 -- equivalent: Effect refuses a slot count other than one per input, so ins and slots are always of one length and strict never fires
+fpl.desugar.x_written__mutmut_18 -- equivalent: Effect refuses a slot count other than one per input, so ins and slots are always of one length and strict never fires
+fpl.desugar.x_written__mutmut_19 -- equivalent: Effect refuses a slot count other than one per input, so ins and slots are always of one length and strict never fires
+fpl.desugar.xǁ_Desugarǁchildren__mutmut_13 -- equivalent: kinds holds len(block) + len(inputs) entries, so its tail from len(inputs) is as long as the block and strict never fires
+fpl.desugar.xǁ_Desugarǁchildren__mutmut_16 -- equivalent: kinds holds len(block) + len(inputs) entries, so its tail from len(inputs) is as long as the block and strict never fires
+fpl.desugar.xǁ_Desugarǁchildren__mutmut_17 -- equivalent: kinds holds len(block) + len(inputs) entries, so its tail from len(inputs) is as long as the block and strict never fires
+fpl.desugar.x_declaration__mutmut_4 -- unreachable: the match covers the Slot literals, as pyright proves
+fpl.desugar.x_declaration__mutmut_31 -- unreachable: the match covers the Slot literals, as pyright proves
+fpl.desugar.x_declaration__mutmut_21 -- equivalent: framed reads None as it reads (), as no items, and makes the same empty frame
