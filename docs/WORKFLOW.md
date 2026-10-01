@@ -59,6 +59,33 @@ top of base) · **restack** (rebase the stack when base or a lower commit change
    `FPL_LEAK_GATE=block` (default) · `warn` (report, don't block) · `off`. It covers what
    leaves through git and `scripts/pr`; the comments `scripts/export-review` posts, and
    anything written on the forge by hand, do not pass it.
+10. **An approved pull request is frozen; fix forward.** Until the maintainer approves a pull
+    request, agents rewrite it freely, in this order: the machines first (`make check` and
+    the other lanes of `docs/QUALITY.md`), then the review bots (CodeRabbit reviews each
+    push; Codex review is asked for in that round, not after him), then the fixes, and only
+    then his review. From his approval on, nothing is pushed to its branch: no amend, no fix
+    commit, no restack, no force push, no deletion. A finding that arrives later is fixed
+    forward, in a new pull request on top of the stack that names the finding and the pull
+    request it fixes. An approved branch gets no more pushes, so CodeRabbit, which reviews
+    each push, does not come back to it; a bot's late finding is work for that new pull
+    request, not a reason to reopen the approved one. So he reads each change once, and an
+    approval never goes stale. The one exception is a rebase that a real conflict with the
+    base or `main` forces: declare it with `FPL_FORWARD_ONLY_OVERRIDE="conflict: <reason>"`
+    and repeat the reason in the pull request, because his approval no longer covers what is
+    pushed. The forge backs this up only in part. Dismiss-stale-reviews, the tripwire that
+    turns a push after an approval into a dismissed approval, is on only for pull requests
+    based on `main` and on the branches the review ruleset names (today `walker/01-syntax`,
+    `walker/06-match` and `asm-layers`); on any other base the approval stays, on an older
+    commit. **[gate]** `.githooks/pre-push` runs `scripts/forward-only`: a push to GitHub
+    that would overwrite or delete the branch of an open pull request that a human approved
+    is refused, whichever commit he approved, so the gate does not lean on the tripwire. He
+    lifts the freeze by dismissing his approval or by requesting changes. Bots, `psjg-codex`
+    and `psjg-claude` are not counted as human. It reads the forge with GET requests only,
+    with python3 and no `gh`, so it runs in the default dev shell, and refuses when it cannot
+    read it; then it says so, and `FPL_FORWARD_ONLY_OVERRIDE="unchecked: <reason>"` lets a
+    branch go that you know nobody approved. `git push --no-verify` and `jj git push`
+    (`docs/JJ.md`) skip it, and `git push --mirror` deletes a branch this clone lacks
+    without handing pre-push a line for it; that leaves only the tripwire, where it is on.
 
 ## Setup (once per clone/worktree)
 
@@ -103,6 +130,13 @@ full grammar, and the gates that enforce it, are in `docs/BRANCHES.md`.
 
 ## Restack (base moved, or you amended a lower commit)
 
+Only where nothing is approved yet (rule 10). A restack rewrites every branch of the stack
+above the commit it changes, so a change under an approved pull request would rebase that
+one too: fix it forward instead. Above the highest approved pull request the stack is still
+yours to rewrite, with that branch as the base. A frozen stack does not follow `main`
+around; only a real conflict with `main` asks for a rebase, and that is rule 10's declared
+exception.
+
 ```
 scripts/restack            # git fetch github && git rebase --update-refs github/main
 ```
@@ -111,7 +145,7 @@ scripts/restack            # git fetch github && git rebase --update-refs github
 rebase, so the PR branches stay correct. Conflicts: resolve, then `scripts/restack --continue`
 (or `--abort`). `rerere` replays the same resolution on the next restack.
 
-To amend a commit that isn't on top:
+To amend a commit that isn't on top, before it is approved:
 
 ```
 git rebase -i --update-refs github/main    # mark the target 'edit', amend, continue
@@ -157,12 +191,46 @@ scripts/land [<number>]    # the maintainer's side: checks, conversation, diff, 
 It files the pull request on the tail of the queue, and refuses a branch that is not built
 on that tail, with the rebase that puts it there; `-B <base>` overrides the choice.
 `scripts/land` waits for the checks, prints the conversation, opens the diff in the browser,
-and only after Enter approves, rebase-merges, deletes the branch and updates `main`. The
-author of a pull request cannot approve it, which is why the two sides are two accounts.
+and only after Enter approves, rebase-merges, deletes the branch and updates `main`. It lands
+the one pull request you name, with `gh pr merge --rebase`, which suits the bottom of a stack
+landed alone. A stack up to a higher pull request lands from the merge box (below) until
+`scripts/land` learns the asynchronous merge endpoint, which GitHub requires for merging a
+stack through the API. The author of a pull request cannot approve it, which is why the two
+sides are two accounts.
 
 `scripts/land` needs `gh`, which is not in the default dev shell: `scripts/layer on github`
 (`docs/DEVSHELL.md`, "Forge tools are opt-in"), or land in the browser. `scripts/pr` needs
 neither: it calls the API with python3 from the default shell.
+
+- **A stack lands as a unit.** The maintainer picks the highest pull request to land and
+  merges it from its merge box on the forge, with the rebase method. In a GitHub stack (one
+  the forge knows as such: the merge box shows the stack map) that lands it and every
+  unmerged pull request below it on `main` together, in order, in one operation, and GitHub
+  rebases the pull requests above it onto `main` itself. Landing them one by one would put
+  a bug that is already fixed further up on `main` until the fix lands too. When he stops
+  below such a fix, the pull request that lands without it names the bug under "Still
+  waiting" in its "What merging this changes for FPL" section. A chain of pull requests
+  that the forge does not know as a stack has no such merge: it lands one pull request at a
+  time, bottom first, and nothing moves the approved ones above it. Rebase-merge puts every
+  commit on `main` individually, message and trailers intact, with no merge commit —
+  history stays linear and bisectable.
+- **Never squash a multi-commit PR.** Squashing collapses the atomic commits, and their
+  bodies and trailers, into one. (A one-commit PR is the only case where it is harmless.)
+- GitHub's rebase-merge always rewrites the SHAs and the committer, and in a stack GitHub
+  rebases the pull requests left open itself. So after a landing, build on what the forge has
+  (`git fetch github`, then `git branch -f <branch> github/<branch>`), not on a local
+  restack: that would differ from the forge's, and an approved branch is not pushed again
+  (rule 10).
+- When the stack is empty, delete the `stack/…` refs, locally and on `github`. Nothing is lost:
+  the grouping lives in each commit's `Stack:` trailer, the discussion in the PRs.
+
+```
+git log --grep='^Stack: typed-let$'       # the whole stack, years later, forge or no forge
+```
+
+"For now" is deliberate. PRs are the review surface because they are the one at hand, not
+because the record belongs on a forge; rule 7 keeps the switch to an in-repo review system
+cheap.
 
 ## A public mirror of a pijul channel
 
@@ -272,13 +340,16 @@ comment. The first line names the writer and the key that signed it; the last is
 comment with the Radicle id, which is how a second run skips it and how scripts/import-review
 leaves it out. So a conversation can run in both places and each comment keeps one home.
 
-The page also lands. A patch from a pull request at the bottom of its stack has an
-"approve and merge" button: your gh account approves and rebase-merges it, as
-scripts/land does, but only while the forge still has the commit you reviewed and its checks
-passed. The merge is then recorded in Radicle, the patches stacked on it are replayed onto
-the new main and pushed as the machine account, and the landed branch is deleted. Your
-checkout's main is left alone. The server listens on 127.0.0.1 only and wants the token in
-the address it prints, so no other page in the browser can write to it, or land.
+The page also lands, one pull request at a time, as scripts/land does. A patch from a pull
+request at the bottom of its stack has an "approve and merge" button: your gh account
+approves and rebase-merges it, but only while the forge still has the commit you reviewed
+and its checks passed. The merge is then recorded in Radicle, the patches stacked on it
+are replayed onto the new main and pushed as the machine account, and the landed branch is
+deleted. An approved pull request among them is frozen (rule 10): pre-push refuses to move
+it, and the page leaves it and those above it as they are, says so, and finishes the
+landing. In a GitHub stack the forge moves them itself. Your checkout's main is left
+alone. The server listens on 127.0.0.1 only and wants the token in the address it prints,
+so no other page in the browser can write to it, or land.
 
 ## The agent's credential
 
@@ -303,25 +374,6 @@ be avoided.
 The maintainer creates it (the account's settings, then approve the request as an owner of
 the organisation) and writes the file. It expires; a push then fails with 403 and a new token
 is made the same way. Agents read it through git and never print it.
-
-- Merge the bottom PR first, with **Rebase and merge**, and delete its branch. GitHub then
-  retargets the next PR to `main`. Rebase-merge puts every commit on `main` individually,
-  message and trailers intact, with no merge commit — history stays linear and bisectable.
-- **Never squash a multi-commit PR.** Squashing collapses the atomic commits, and their
-  bodies and trailers, into one. (A one-commit PR is the only case where it is harmless.)
-- GitHub's rebase-merge always rewrites the SHAs and the committer. So `scripts/restack` after
-  each merge: the rebase recognises the landed commits as already applied and drops them from
-  your local stack.
-- When the stack is empty, delete the `stack/…` refs, locally and on `github`. Nothing is lost:
-  the grouping lives in each commit's `Stack:` trailer, the discussion in the PRs.
-
-```
-git log --grep='^Stack: typed-let$'       # the whole stack, years later, forge or no forge
-```
-
-"For now" is deliberate. PRs are the review surface because they are the one at hand, not
-because the record belongs on a forge; rule 7 keeps the switch to an in-repo review system
-cheap.
 
 ## Why this and not a feature branch
 

@@ -36,6 +36,7 @@ hook**, and `jj git push` does not run `pre-push`. So none of these act on a `jj
 | atomicity | `atomic-check` | nobody; keep commits atomic by hand |
 | harness/worktree boundary, no commit on `main` | `pre-commit` | review; the ruleset on `main` (`docs/WORKFLOW.md`, rule 6) |
 | branch names | `reference-transaction`, `pre-push` | the `branch-lint` check on the pull request |
+| an approved pull request is frozen (`docs/WORKFLOW.md`, rule 10) | `pre-push` | nobody; dismiss-stale-reviews on the forge, where the ruleset turns it on |
 
 Before pushing, run the message gates yourself:
 

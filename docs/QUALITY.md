@@ -187,10 +187,10 @@ worktree's `.venv` with `uv sync --frozen` the first time and whenever the lock 
 ## Proof that the checks bite
 
 A check that passes everything looks the same as a check that found nothing. `make gates` first
-holds the harness's own Python (`scripts/crap`, `props`, `escapes`, `mutants`, `gates` and the
-pytest plugin) to the ruff rules it holds others to, then runs the self-tests of the four
-scripts, then `scripts/gates`: for each case in `quality/bad/`, the
-check runs on a small fixture package, where it must pass, and then with the case's bad example
-laid over it, where it must fail with a given message. The first run is the control; without
-it, a check that fails for an unrelated reason would count as having caught something. Adding a
-check means adding its case.
+holds the harness's own Python (`scripts/crap`, `props`, `escapes`, `mutants`, `gates`,
+`forward-only` and the pytest plugin) to the ruff rules it holds others to, then runs the
+self-tests of those five scripts and of `scripts/leak-check`, then `scripts/gates`: for each
+case in `quality/bad/`, the check runs on a small fixture package, where it must pass, and then
+with the case's bad example laid over it, where it must fail with a given message. The first
+run is the control; without it, a check that fails for an unrelated reason would count as
+having caught something. Adding a check means adding its case.
