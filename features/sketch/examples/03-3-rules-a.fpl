@@ -1,0 +1,12 @@
+;;; ── 3. rules: a theory over the e-graph; forward chaining is saturation ────
+rules/
+	seam ∈ rules -- core  full faithful ; the carrier already rewrites; the seam adds only a strategy
+	rule : [ lhs ] [ rhs ] -- rule	; accepted: a rule is a quotation pair; lhs/rhs are Code-level patterns (row 23)
+	saturate : facts rules -- facts'	; accepted: the e-graph's own operation, exposed
+
+tax/
+	[ income 50000 > ] [ bracket high ] rule
+	[ bracket high ]   [ rate 0.49 ]    rule
+
+[ income 60000 ] tax rules/saturate	; → income 60000  bracket high  rate 0.49   (tax mentioned pushes the directory: mention is use)
+

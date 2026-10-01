@@ -1,0 +1,6 @@
+;;; ── currying ──
+curry  : x q -- q'	; [x q]        (BQN ⟜)
+	swap enclose swap ,
+lcurry : x q -- q'	; [x swap q]   (BQN ⊸)
+	[ swap ] swap , curry
+

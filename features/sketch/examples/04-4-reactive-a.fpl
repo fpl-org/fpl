@@ -1,0 +1,12 @@
+;;; ── 4. reactive: a handler with a contract, not a new core ─────────────────
+signal/
+	seam ∈ signal -- core  handler	; accepted: handler is a seam kind (§5a effect encoding)
+		⊨ glitch-free	; was: contract [ glitch-free ] — the rung glyph is the contract; ⊢ glitch-free once proven
+	;; lift struck — a signal is a stream; lifting f over it is ¨ (rank polymorphism, no per-theory map); lift also collides with the reflection word
+	;; fold struck — a running fold over a stream is scan, ` ; Elm's foldp is a scan
+
+main : -- +in/mouse +out/screen
+	../mouse/in position →pos
+	pos [ 2 times ] each →scaled	; was: pos [ 2 * ] signal/lift
+	scaled ../screen/out [draw] each
+

@@ -1,0 +1,4 @@
+;;; ── 6. a dissenting tree with no seam yet ───────────────────────────────────
+inet/
+	seam ? ∈ inet -- core	; a goal ascribed the functor type it must fill; elaboration reports the missing kind
+

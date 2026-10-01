@@ -1,0 +1,6 @@
+;;; ── 2. the same, Haskell's way: the pattern in the head (S37, on the table) ──
+perimeter : ( circle r ) -- n
+	r τ times
+perimeter : ( rect w h ) -- n
+	w h + 2 times
+
