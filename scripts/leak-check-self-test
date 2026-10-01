@@ -49,6 +49,7 @@ endzap$
 grüntz
 EOF
 leaked='quuxfrobnitz|fnord|tabl|zeta|corp|blorp|glorp|widget|zapfoo|endzap|grüntz|gruntz'
+leaked="$leaked|$secret"
 
 commit() { git -c core.hooksPath=/dev/null commit -q "$@"; }
 echo base >base.txt
