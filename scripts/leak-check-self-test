@@ -221,6 +221,8 @@ says "line 2: leak-3" "a PDF-like text names its line"
 { printf '%257s' '' && printf 'ustar\nquuxfrobnitz\n'; } >"$tmp/t3"
 expect 1 "a text with a tar signature at byte 257" --text "$tmp/t3"
 says "line 2: leak-3" "a tar-like text names its line"
+printf 'fine\nquuxfrobnitz\n' >"$tmp/quuxfrobnitz.txt"
+expect 1 "a text whose file name matches" --text "$tmp/quuxfrobnitz.txt"
 
 # --range -------------------------------------------------------------------------------
 start="$(git rev-parse HEAD)"

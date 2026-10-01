@@ -349,13 +349,13 @@ case "$mode" in
 	;;
 --text)
 	scan_both stdin <"$arg" || found=1
-	report "$arg"
+	report "the text"
 	;;
 --range)
 	gitdir="$(git rev-parse --absolute-git-dir)"
 	# shellcheck disable=SC2086 # REVS is a list of rev-list arguments, split on purpose
 	git log --format= --name-only -z --diff-filter=d -m $arg >"$tmp/names0"
-	check_names "the commits of $arg" || found=1
+	check_names "the commits" || found=1
 	scan_both git "--log-opts=--diff-merges=remerge $show $arg" "$gitdir" || found=1
 	# Every identity and message in one stdin run. A marker line per commit, blanked
 	# before the scan, gives each finding's line its commit: $tmp/lines holds line, sha,
@@ -368,7 +368,7 @@ case "$mode" in
 		{ print > blanked; if (sha != "") print NR "\t" sha "\t" at }' \
 		"$tmp/messages" >"$tmp/lines"
 	scan_both stdin <"$tmp/blanked" || found=1
-	report "the messages of $arg"
+	report "the messages"
 	;;
 esac
 verdict "$found"
