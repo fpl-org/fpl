@@ -602,11 +602,16 @@ def splitting() -> tuple[str, bool, str]:
 
 def forge(state: dict[str, Any]) -> http.server.ThreadingHTTPServer:
     """A REST API on 127.0.0.1 that answers GET from `state["answers"]`, wants the
-    Authorization header `state["auth"]`, and logs every request in `state["log"]`."""
+    Authorization header `state["auth"]`, and logs every request in `state["log"]`.
+
+    The handler appends to `log`, the same list under its own name: written through
+    `state[...]`, a request's text would taint every value read from `state` in CodeQL's
+    eyes, the stub's own keys and the Link header built from them included."""
+    log: list[str] = state["log"]
 
     class Forge(http.server.BaseHTTPRequestHandler):
         def do_GET(self) -> None:
-            state["log"].append(f"GET {self.path}")
+            log.append(f"GET {self.path}")
             code, said, more = answer(state, self.path, self.headers.get("Authorization", ""))
             if code != 200:
                 self.send_error(code, said)
@@ -620,7 +625,7 @@ def forge(state: dict[str, Any]) -> http.server.ThreadingHTTPServer:
             self.wfile.write(body)
 
         def refuse(self) -> None:
-            state["log"].append(f"{self.command} {self.path}")
+            log.append(f"{self.command} {self.path}")
             self.send_error(405)
 
         do_POST = do_PUT = do_PATCH = do_DELETE = refuse  # noqa: N815 — http.server's names
