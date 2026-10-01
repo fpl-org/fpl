@@ -61,7 +61,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, NamedTuple
 from urllib.error import HTTPError
-from urllib.parse import parse_qs, quote, urlsplit
+from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 MACHINES = frozenset({"psjg-claude", "psjg-codex"})
@@ -565,29 +565,37 @@ def answer(state: dict[str, Any], url: str, auth: str) -> tuple[int, Any, str]:
         return 502, "Bad Gateway", ""
     if auth != state["auth"]:
         return 401, "Bad credentials", ""
-    if path.endswith("/pulls"):
+    pulls = path.endswith("/pulls")
+    if pulls:
         if q.get("state") != ["open"]:
             return 400, "only open pull requests are asked for", ""
         path += f"?head={q['head'][0]}"
-    pages = state["answers"].get(path, [])
+    try:
+        n, per = int(q.get("page", ["1"])[0]), [int(v) for v in q.get("per_page", [])[:1]]
+    except ValueError:
+        return 400, "page and per_page are numbers", ""
+    # The next page's url is built from the stub's own key and from integers, never from
+    # the request's text: no CR or LF a request holds can reach the Link header.
+    own = next((k for k in state["answers"] if k == path), "")
+    pages = state["answers"].get(own, [])
     pages = pages if isinstance(pages, tuple) else (pages,)
-    n = int(q.get("page", ["1"])[0])
-    # The query goes back out in the Link header: no CR or LF may split the response.
-    rest = re.sub(r"&page=\d+", "", f"&{query}").replace("\r", "").replace("\n", "")
-    more = f"{state['api']}{route}?{rest[1:]}&page={n + 1}" if n < len(pages) else ""
-    return 200, pages[n - 1], more
+    base, _, head = own.partition("?head=")
+    params = {"state": "open", "head": head} if pulls else {}
+    params |= {"per_page": per[0]} if per else {}
+    more = f"{state['api']}/{base}?{urlencode({**params, 'page': n + 1})}"
+    return 200, pages[n - 1], more if n < len(pages) else ""
 
 
 def splitting() -> tuple[str, bool, str]:
-    """A CR or LF in a request's query must not reach the Link header the stub forge answers
-    with, where it would end the header and start one of its own. http.server ends a request
-    line at LF and refuses one holding CR, so neither reaches the handler: `answer` is asked
-    directly."""
+    """No text of a request's query may reach the Link header the stub forge answers with,
+    where a CR or LF would end the header and start one of its own. http.server ends a
+    request line at LF and refuses one holding CR, so neither reaches the handler: `answer`
+    is asked directly."""
     state = {"api": "http://127.0.0.1:1", "answers": {"x": ([], [])}, "auth": ""}
     _, _, more = answer(state, "/x?per_page=1&a=b\r\nX-Injected:%20y\n&page=1", "")
     return (
-        "the stub forge's Link header carries no CR or LF",
-        bool(more) and "\r" not in more and "\n" not in more,
+        "the stub forge's Link header carries nothing of the request's text",
+        more == "http://127.0.0.1:1/x?per_page=1&page=2",
         repr(more),
     )
 
