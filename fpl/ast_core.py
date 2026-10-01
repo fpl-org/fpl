@@ -77,6 +77,7 @@ class Effect:
     slots: tuple[Slot, ...] = ()
 
     def __post_init__(self) -> None:
+        """Fill the default slots, one value per input, and refuse a count that does not match."""
         slots = self.slots or ("value",) * len(self.ins)
         if len(slots) != len(self.ins):
             raise ValueError("one slot per input")
