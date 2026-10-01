@@ -438,6 +438,16 @@ CASES = [
     ),
     Case("a refused token refuses", 1, "GitHub answered 401", auth="Bearer another"),
     Case(
+        "of several refs in one push, the approved one in the middle refuses it",
+        1,
+        f"{B} is approved in #54",
+        line="\n".join(
+            [f"refs/heads/{b} {NEW} refs/heads/{b} {OLD}" for b in ("agent/claude/stack/y", B)]
+            + [f"refs/heads/agent/claude/stack/z {NEW} refs/heads/agent/claude/stack/z {OLD}"]
+        ),
+    ),
+    Case("a tag is not judged", 0, answers=DOWN, line=f"refs/tags/v1 {NEW} refs/tags/v1 {OLD}"),
+    Case(
         "a new branch goes without asking",
         0,
         answers=DOWN,
