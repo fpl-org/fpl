@@ -19,7 +19,8 @@ command -v gitleaks >/dev/null || {
 	exit 1
 }
 
-tmp="$(mktemp -d "${TMPDIR:-/tmp}/leak-check-self-test.XXXXXX")"
+# '#' and '[' in the name: every path below, the list's included, carries both.
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/leak-check-self-test#[.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 printf '[color]\n\tui = always\n\tdiff = always\n[diff]\n\tnoprefix = true\n\trelative = true\n' >"$tmp/gitconfig"
 export GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home" \
@@ -343,11 +344,21 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 mv "$tmp/aside" "$list"
 
-# Nothing printed may carry a term. The list's own path is fine, so it is dropped first.
-if sed "s#$list##g" "$tmp/log" | grep -Eiq "$leaked"; then
+# Nothing printed may carry a term. The list's own path is fine, so it is dropped first,
+# as a literal string (it holds '#' and '['). A planted term proves the search sees one.
+leaks() {
+	local l
+	while IFS= read -r l; do printf '%s\n' "${l//"$list"/}"; done <"$1" | grep -Ein "$leaked"
+}
+printf '%s quuxfrobnitz\n' "$list" >"$tmp/canary"
+leaks "$tmp/canary" >/dev/null || {
+	fails=$((fails + 1))
+	echo "self-test: the output search misses a planted term" >&2
+}
+if leaks "$tmp/log" >"$tmp/leaks"; then
 	fails=$((fails + 1))
 	echo "self-test: a term appears in the output:" >&2
-	sed "s#$list##g" "$tmp/log" | grep -Ein "$leaked" | sed 's/^/    /' >&2
+	sed 's/^/    /' "$tmp/leaks" >&2
 fi
 
 echo "leak-check: self-test $([ "$fails" -eq 0 ] && echo ok || echo FAILED) ($total runs, $fails failures)"
