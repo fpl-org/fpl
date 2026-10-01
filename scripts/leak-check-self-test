@@ -301,6 +301,11 @@ git tag -a -m "Refs: quuxfrobnitz" rel && sha="$(git rev-parse rel)"
 printf 'refs/tags/rel %s refs/tags/rel %s\n' "$sha" "$zero" >"$tmp/updates"
 expect 1 "an annotated tag's message" --push priv <"$tmp/updates"
 says "leak-3" "a tag message names the rule"
+git tag -a -m "Refs: quuxfrobnitz" inner && git tag -a -m clean outer inner 2>/dev/null
+git tag -d inner >/dev/null
+printf 'refs/tags/outer %s refs/tags/outer %s\n' "$(git rev-parse outer)" "$zero" >"$tmp/updates"
+expect 1 "a tag that names a tag" --push priv <"$tmp/updates"
+git tag -d outer >/dev/null
 git tag -d rel >/dev/null && git branch -q -D leaky
 
 # The lists -----------------------------------------------------------------------------
