@@ -1,19 +1,46 @@
-"""The grammar parses without an Earley ambiguity (docs/STACK.md): the whole example corpus,
-and programs Hypothesis derives from the grammar itself, which reach the corners no example
-was written for."""
+"""The grammar parses without an Earley ambiguity (docs/STACK.md). Programs Hypothesis derives
+from the grammar reach the corners no example was written for; they are drawn from the grammar
+with its blocks flattened, since an indenter cannot run inside a derivation (HOLES.md:
+ambiguity-over-flat). The corpus is pre-lexed and read by Earley over the whole grammar with the
+tab indenter, which keeps every derivation it finds."""
 
 from pathlib import Path
 
 import pytest
 from hypothesis import given
-from hypothesis import strategies as st
 from hypothesis.extra.lark import from_lark
-from lark import Token, Tree
+from lark import Lark, Token, Tree
 
-from fpl.parse import GRAMMAR, parse, parser
+from fpl.ast_surface import Program
+from fpl.lex import prelex
+from fpl.parse import GRAMMAR, FplIndenter, parse
 
 CORPUS = sorted(Path(__file__).parent.parent.glob("features/*/examples/*.fpl"))
-no_grammar = pytest.mark.skipif(not GRAMMAR.is_file(), reason="no grammar yet")
+REWRITES = [
+    ("line: frames (NOTE | DOC)? _NL block?", "line: frames (NOTE | DOC)? _NL"),
+    ("block: _INDENT line+ _DEDENT\n", ""),
+    ("%declare _INDENT _DEDENT\n", ""),
+    (r"_NL: /(\r?\n[\t\f ]*)*\r?\n\t*/", r"_NL: /\n/"),
+]
+
+
+def flat(grammar: str) -> str:
+    """The grammar with its blocks removed: a line is frames, its comment and one newline.
+    Each rewrite must change the text, or the grammar has moved under this test."""
+    for old, new in REWRITES:
+        assert old in grammar, old
+        grammar = grammar.replace(old, new)
+    return grammar
+
+
+FLAT = Lark(flat(GRAMMAR.read_text()), parser="earley", lexer="basic", ambiguity="explicit")
+FULL = Lark(
+    GRAMMAR.read_text(),
+    parser="earley",
+    lexer="basic",
+    ambiguity="explicit",
+    postlex=FplIndenter(),
+)
 
 
 def ambiguous(tree: Tree[Token]) -> bool:
@@ -21,15 +48,14 @@ def ambiguous(tree: Tree[Token]) -> bool:
     return any(node.data == "_ambig" for node in tree.iter_subtrees())
 
 
-@no_grammar
 @pytest.mark.parametrize("program", CORPUS, ids=[p.stem for p in CORPUS])
 def test_no_ambiguity_in_the_corpus(program: Path) -> None:
-    assert not ambiguous(parse(program.read_text()))
+    source = program.read_text()
+    assert isinstance(parse(source), Program)
+    assert not ambiguous(FULL.parse(prelex(source).code))  # pyright: ignore[reportUnknownMemberType] -- lark types its text argument loosely
 
 
-@no_grammar
 @pytest.mark.obligation("programs derived from the grammar parse without ambiguity")
-@given(st.data())
-def test_no_ambiguity_in_programs_derived_from_the_grammar(data: st.DataObject) -> None:
-    program = data.draw(from_lark(parser()))  # drawn here, since the grammar may not exist
-    assert not ambiguous(parse(program))
+@given(from_lark(FLAT))
+def test_no_ambiguity_in_programs_derived_from_the_grammar(program: str) -> None:
+    assert not ambiguous(FLAT.parse(program))  # pyright: ignore[reportUnknownMemberType] -- lark types its text argument loosely
