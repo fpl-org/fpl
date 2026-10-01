@@ -1,0 +1,43 @@
+# The tools lane: the tooling beside the language, judged as strictly as the code
+# (docs/QUALITY.md, "Tools").
+#
+# Every tools/<name>/ is a uv project of its own; `make tools` syncs each from its lock and
+# runs ruff, pyright and mypy strict, the waiver check, and its tests under 100% coverage. It
+# runs only when a tool or the policy that judges it changes, so the gate of the language
+# never waits on it. tiktoken fetches its encoding files on first use; they are kept between
+# runs with uv's download cache.
+name: tools
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+    paths: ["tools/**", "quality/noslop.mk", "quality/ruff.toml", "quality/mypy.ini", "quality/pyproject.toml", "quality/uv.lock", "quality/noslop_pytest.py", "scripts/escapes", ".github/workflows/tools.yml"]
+  push:
+    branches: [main]
+    paths: ["tools/**", "quality/noslop.mk", "quality/ruff.toml", "quality/mypy.ini", "quality/pyproject.toml", "quality/uv.lock", "quality/noslop_pytest.py", "scripts/escapes", ".github/workflows/tools.yml"]
+
+# One run per pull request; a new push cancels the run of the commit it replaces.
+concurrency:
+  group: tools-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tools:
+    runs-on: ubuntu-latest
+    env:
+      # tiktoken takes the path literally, so it is spelled out rather than with ~.
+      TIKTOKEN_CACHE_DIR: /home/runner/.cache/tiktoken
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/uv
+            ~/.cache/tiktoken
+          key: tools-${{ runner.os }}-${{ hashFiles('quality/uv.lock', 'tools/*/uv.lock') }}
+      - name: The tools lane
+        run: nix develop -c make -f quality/noslop.mk tools

@@ -28,6 +28,7 @@ Keep talk about the vision sober, and the harness small: `docs/notes/2026-09-19-
                       branch-lint, layer, pr, review, land, task, rad-cob-dagtaak;
                       crap, props, escapes, mutants, gates (the noslop gate)
   quality/            the noslop gate's lanes, tool configs and pinned tools (docs/QUALITY.md)
+  tools/<name>/       tooling beside the language, each a uv project of its own, judged by make tools (docs/QUALITY.md)
   flake.nix, flake.lock   the dev shell: one pinned toolchain for everyone (docs/DEVSHELL.md)
   .githooks/          pre-commit, commit-msg, atomic-check, reference-transaction, pre-push
                       (all enabled by scripts/setup)
