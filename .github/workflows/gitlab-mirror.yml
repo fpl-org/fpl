@@ -1,0 +1,43 @@
+name: GitLab mirror
+
+on:
+  push:
+    branches: ['**']
+    tags: ['**']
+  delete:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gitlab-mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    if: github.repository == 'fpl-org/fpl'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Mirror GitHub branches and tags to GitLab
+        shell: bash
+        env:
+          GITLAB_SSH_KEY: ${{ secrets.GITLAB_MIRROR_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$GITLAB_SSH_KEY" || { echo 'Missing GITLAB_MIRROR_SSH_KEY'; exit 1; }
+          umask 077
+          key="$RUNNER_TEMP/gitlab-mirror-key"
+          hosts="$RUNNER_TEMP/gitlab-mirror-hosts"
+          trap 'rm -f "$key" "$hosts"' EXIT
+          printf '%s\n' "$GITLAB_SSH_KEY" > "$key"
+          # Published by GitLab: https://docs.gitlab.com/user/gitlab_com/
+          printf '%s\n' 'gitlab.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAfuCHKVTjquxvt6CM6tdG4SLp1Btn/nOeHHE5UOzRdf' > "$hosts"
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$hosts"
+          git clone --bare https://github.com/fpl-org/fpl.git "$RUNNER_TEMP/fpl-mirror.git"
+          git -C "$RUNNER_TEMP/fpl-mirror.git" push --prune \
+            git@gitlab.com:PSJx/fpl.git \
+            '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'
