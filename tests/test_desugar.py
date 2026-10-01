@@ -72,7 +72,7 @@ def test_desugaring_preserves_meaning(head: str, body: str) -> None:
 @given(programs)
 def test_comments_change_no_statement(body: str) -> None:
     """A ;; line before each line and a note after it leave the core as it was: a comment is no
-    code, and its doc is not carried into the core yet."""
+    code, and a ;; before no definition is no doc."""
     commented = "".join(f";; d\n{line} ; n\n" for line in body.split("\n"))
     assert core(commented) == core(body + "\n")
 
@@ -83,7 +83,7 @@ def test_comments_change_no_statement(body: str) -> None:
         (";;; s\n; a\n; b\n\n1 ; n\n;; d\n2\n", "1\n2\n"),
         ("\n\n1\n", "1\n"),
         (
-            CURRY.replace("\n\t", "\t; n\n\t;; body\n\t") + "1 [ + ] curry\n",
+            CURRY.replace("\n\t", "\t; n\n\t") + "\t;; end\n1 [ + ] curry\n",
             CURRY + "1 [ + ] curry\n",
         ),
         (",\n\t1\n\t; c\n\t2\n", ",\n\t1\n\t2\n"),
@@ -247,6 +247,7 @@ def test_a_frame_that_reaches_below_its_balance_is_a_section(source: str, printe
         "1 →a/b a/b a/b +\n",
         "{ k 1 }\n",
         SLOTS,
+        "f : -- y\n\t;; a b\n\t1\n",
     ],
 )
 def test_core_without_sugar_writes_back_as_its_source(source: str) -> None:
@@ -257,7 +258,9 @@ def test_core_without_sugar_writes_back_as_its_source(source: str) -> None:
 
 def test_a_written_tree_points_at_the_start() -> None:
     """A tree desugar writes has no source of its own: every span is 1:1, where it refuses."""
-    source = CURRY + SLOTS + "nop : --\n1 [ + ] curry\n“a” ⟨ 1 ⟩ 1.5\n#a { k 1 } 1 →a a\n"
+    source = (
+        ";; d\n" + CURRY + SLOTS + "nop : --\n1 [ + ] curry\n“a” ⟨ 1 ⟩ 1.5\n#a { k 1 } 1 →a a\n"
+    )
     statements = desugar(parse(source))
     written = [*spans(resugar(statements)), *spans(listing(evaluate(statements)))]
     assert set(written) == {START}

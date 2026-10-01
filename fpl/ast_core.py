@@ -114,11 +114,12 @@ class Effect:
 
 @dataclass(frozen=True)
 class Define:
-    """name : ins -- outs, and the code of the block under it."""
+    """name : ins -- outs, the code of the block under it, and its docstring ("" for none)."""
 
     name: str
     effect: Effect
     code: tuple[Node, ...]
+    doc: str = ""
 
 
 @dataclass(frozen=True)

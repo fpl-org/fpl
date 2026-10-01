@@ -168,6 +168,12 @@ def test_print_then_parse_is_the_identity(program: Program) -> None:
     assert parse(render(program)) == program
 
 
+@given(programs(2, 2, top=True))
+def test_print_is_idempotent_on_generated_programs_with_comments(program: Program) -> None:
+    """Notes and ;; ;;; ;;;; lines at every depth: printing again changes nothing."""
+    canonical(render(program))
+
+
 @given(from_lark(FLAT, explicit={"TOKEN": TOKEN.map(lambda token: token + " ")}))
 def test_print_is_idempotent_on_programs_derived_from_the_grammar(source: str) -> None:
     try:
