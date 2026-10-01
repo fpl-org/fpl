@@ -21,6 +21,7 @@ make harden   check, then the long search: 20x the examples, CrossHair on every 
               and every contract, mutation testing
 make ready    harden, then gates, then a known-vulnerability audit of the pinned tools
 make gates    proof that each check still refuses a bad example, and the harness's own lint
+make map      the map of the code, never committed (below); no other lane runs it
 ```
 
 The same lanes run on the forge (`.github/workflows/noslop.yml`): `make check` on every push
@@ -28,6 +29,13 @@ to a pull request, `make ready` once it is out of draft and on every push to `ma
 harness-only branch, which has no code to judge, runs `make gates` from the root instead:
 `make -f quality/noslop.mk gates`. The runner enters the dev shell of `flake.nix`, so it judges
 with the tools a laptop has.
+
+`make map` is a view, not a check. `scripts/diagrams` draws the import graph of `fpl/`, read
+from the code by the graph builder lint-imports uses and coloured by the contracts of
+`quality/importlinter.ini`, and a class diagram per module, as Mermaid, into `.noslop/map/`.
+Its output is never committed: computed from the code each time, it cannot go stale.
+`.github/workflows/map.yml` draws the head and the base of every pull request into the run's
+summary, with the difference between the two.
 
 `make check` runs, in order:
 
