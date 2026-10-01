@@ -29,6 +29,8 @@ from fpl.ast_core import (
 from fpl.errors import FplError, Span
 
 type Builtin = Callable[..., tuple[Value, ...]]
+type Words = Mapping[str, tuple[Node, ...]]
+type Control = Callable[..., tuple[Node, ...]]
 
 
 @dataclass(frozen=True)
@@ -37,7 +39,7 @@ class State:
 
     stack: tuple[Value, ...]
     code: tuple[Node, ...]
-    words: Mapping[str, tuple[Node, ...]]
+    words: Words
 
 
 def evaluate(statements: tuple[Statement, ...]) -> tuple[tuple[Value, ...], ...]:
@@ -70,7 +72,8 @@ def running(state: State) -> bool:
 def step(state: State) -> State:
     """Run the first node: push its value, put a defined word's code in its place, apply a
     builtin to the values it takes, put a binder's scope in its place with the top for its
-    name, or push the dict its values build."""
+    name, or push the dict its values build. A control word puts the code it runs in its
+    place."""
     node, rest = state.code[0], state.code[1:]
     match node:
         case Push():
@@ -85,7 +88,7 @@ def step(state: State) -> State:
         case Call() if node.name in state.words:
             return State(state.stack, state.words[node.name] + rest, state.words)
         case Call():
-            return State(builtin(node, state.stack), rest, state.words)
+            return builtin(node, state, rest)
         case _:
             assert_never(node)
 
@@ -124,7 +127,7 @@ def held(inner: Value, name: str, value: Value) -> Value:
             return inner
 
 
-def gathered(node: Keyed, words: Mapping[str, tuple[Node, ...]]) -> Dict:
+def gathered(node: Keyed, words: Words) -> Dict:
     """Each value run on a fresh stack, where it must leave one value."""
     entries: list[tuple[str, Value]] = []
     for key, code in node.entries:
@@ -135,13 +138,18 @@ def gathered(node: Keyed, words: Mapping[str, tuple[Node, ...]]) -> Dict:
     return Dict(tuple(entries))
 
 
-def builtin(call: Call, stack: tuple[Value, ...]) -> tuple[Value, ...]:
-    """The stack with a builtin's results in place of its arguments. Fewer values than it takes
-    is refused at the word: an effect line promised more than its body left."""
-    cut = len(stack) - len(EFFECTS[call.name].ins)
+def builtin(call: Call, state: State, rest: tuple[Node, ...]) -> State:
+    """The state with a builtin's results in place of its arguments, or with a control word's
+    code before the rest. Fewer values than it takes is refused at the word: an effect line
+    promised more than its body left."""
+    cut = len(state.stack) - len(EFFECTS[call.name].ins)
     if cut < 0:
         raise FplError(call.span, "stack underflow")
-    return (*stack[:cut], *BUILTINS[call.name](call.span, *stack[cut:]))
+    below, taken = state.stack[:cut], state.stack[cut:]
+    if call.name in CONTROLS:
+        code = CONTROLS[call.name](call.span, state.words, *taken)
+        return State(below, code + rest, state.words)
+    return State((*below, *BUILTINS[call.name](call.span, *taken)), rest, state.words)
 
 
 def operands(value: Value, span: Span) -> tuple[Number, ...]:
@@ -205,4 +213,105 @@ BUILTINS: dict[str, Builtin] = {
     "drop": drop,
     "enclose": enclose,
     ",": join,
+}
+
+
+def quoted(value: Value, span: Span) -> Quotation:
+    """A value that must be a quotation."""
+    if not isinstance(value, Quotation):
+        raise FplError(span, "a quotation is expected")
+    return value
+
+
+def force(span: Span, _words: Words, q: Value) -> tuple[Node, ...]:
+    """q -- : q run in place; q fills a thunk slot, as every control word's quotation does."""
+    return quoted(q, span).code
+
+
+def choose(span: Span, _words: Words, c: Value, t: Value, e: Value) -> tuple[Node, ...]:
+    """c t e -- : t run in place on 1, e on 0; any other condition is refused (hole
+    truth-values)."""
+    branches = quoted(e, span), quoted(t, span)
+    if not isinstance(c, int) or c not in (0, 1):
+        raise FplError(span, "if takes 0 or 1")
+    return branches[c].code
+
+
+def commute(span: Span, _words: Words, x: Value, y: Value, q: Value) -> tuple[Node, ...]:
+    """x y q -- : q run in place on y x."""
+    return (Push(y), Push(x), *quoted(q, span).code)
+
+
+def repeat(span: Span, _words: Words, q: Value, n: Value) -> tuple[Node, ...]:
+    """q n -- : q run in place n times; n a count. Each round puts back one q and the rest of
+    the count, so the code grows by one q, not n."""
+    code = quoted(q, span).code
+    if not isinstance(n, int) or n < 0:
+        raise FplError(span, "repeat takes a count")
+    if n == 0:
+        return ()
+    return (*code, Push(q), Push(n - 1), Call("repeat", span))
+
+
+def items(xs: Value, span: Span) -> tuple[Value, ...]:
+    """The items of a strand or a list; anything else is refused."""
+    if not isinstance(xs, Strand | Listed):
+        raise FplError(span, "a strand or a list is expected")
+    return xs.items
+
+
+def single(state: State, span: Span) -> Value:
+    """The one value a step leaves on its fresh stack (hole step-stack)."""
+    stack = final(state)
+    if len(stack) != 1:
+        raise FplError(span, "each step leaves one value")
+    return stack[0]
+
+
+def rebuilt(xs: Value, values: list[Value]) -> Push:
+    """The results pushed as a strand when xs was one and every result is a number or a
+    string, else as a list (hole sequence-shape)."""
+    atoms = tuple(v for v in values if isinstance(v, int | Decimal | str))
+    if isinstance(xs, Strand) and len(atoms) == len(values):
+        return Push(Strand(atoms))
+    return Push(Listed(tuple(values)))
+
+
+def running_results(span: Span, words: Words, xs: Value, q: Value) -> list[Value]:
+    """The first item, then q run on the result so far and the next item, for each item."""
+    code = quoted(q, span).code
+    values = items(xs, span)
+    results = list(values[:1])
+    for x in values[1:]:
+        results.append(single(State((results[-1], x), code, words), span))
+    return results
+
+
+def each(span: Span, words: Words, xs: Value, q: Value) -> tuple[Node, ...]:
+    """xs q -- ys : q run on each item alone."""
+    code = quoted(q, span).code
+    return (rebuilt(xs, [single(State((x,), code, words), span) for x in items(xs, span)]),)
+
+
+def scan(span: Span, words: Words, xs: Value, q: Value) -> tuple[Node, ...]:
+    """xs q -- ys : every result a fold passes through."""
+    return (rebuilt(xs, running_results(span, words, xs, q)),)
+
+
+def fold(span: Span, words: Words, xs: Value, q: Value) -> tuple[Node, ...]:
+    """xs q -- x : the last result of the scan; no item to start from is refused."""
+    results = running_results(span, words, xs, q)
+    if not results:
+        raise FplError(span, "fold over nothing")
+    return (Push(results[-1]),)
+
+
+CONTROLS: dict[str, Control] = {
+    "!": force,
+    "if": choose,
+    "swap-args": commute,
+    "repeat": repeat,
+    "each": each,
+    "scan": scan,
+    "fold": fold,
 }

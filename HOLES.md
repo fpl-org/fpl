@@ -118,8 +118,8 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Evidence: decisions (b) and (c); AGENTS.md "The oracle rule"; features/*/examples/*.expected at 3302d197
 
 ## unimplemented-words
-- Depends on it: fpl/desugar.py unimplemented; every example still at ERROR: 1:1 no evaluator yet (26 of 28 at this commit: 01-frames for swap-args, 09-rotates for fold, the rest for more)
-- Default in force: desugar refuses, before anything runs, all but: decimal numbers, strings without islands, [ ], ( ) of one cell, ⟨ ⟩ of literals, bars, tabs, blocks, name : ins -- outs definitions (each slot a name or name: Type), →x and ->x of a plain name or a path, #name symbols, { } of plain keys each with one item pushing one value, name/ heads with a block of definitions, subdirectories and #name bind lines, paths a/b and ../x that name a defined word, w/history, and the words of fpl/ast_core.py EFFECTS (+ - times swap dup drop enclose ,), with ERROR: 1:1 no evaluator yet (the skeleton's message and position, reused)
+- Depends on it: fpl/desugar.py unimplemented; every example still at ERROR: 1:1 no evaluator yet (23 of 28 at this commit)
+- Default in force: desugar refuses, before anything runs, all but: decimal numbers, strings without islands, [ ], ( ) of one cell, ⟨ ⟩ of literals, bars, tabs, blocks, name : ins -- outs definitions (each slot a name or name: Type), →x and ->x of a plain name or a path, #name symbols, { } of plain keys each with one item pushing one value, name/ heads with a block of definitions, subdirectories and #name bind lines, paths a/b and ../x that name a defined word, w/history, and the words of fpl/ast_core.py EFFECTS (+ - times swap dup drop enclose , ! if swap-args repeat each scan fold), with ERROR: 1:1 no evaluator yet (the skeleton's message and position, reused)
 - Closes by: each step-3 part, shrinking the set
 - Evidence: fpl/driver.py (skeleton); fpl/ast_core.py EFFECTS
 
@@ -350,3 +350,39 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Default in force: resugar writes a definition inside a directory as a top-level path head (m/sq : x -- y), which does not parse back to the same statement; the printer's round trip holds only for programs without directories, the only ones its strategies generate
 - Closes by: implementer, by resugaring the log as nested name/ heads when a property needs it
 - Evidence: fpl/desugar.py written
+
+## control-effects
+- Depends on it: fpl/ast_core.py EFFECTS, fpl/desugar.py balance, tests/test_control.py
+- Default in force: each control word declares one fixed effect for saturation, whatever its quotation does: ! q -- x, if c t e --, swap-args x y q -- z, repeat q n --, each and scan xs q -- ys, fold xs q -- x; a quotation that does otherwise shows at run time as an underflow or as values left over; the mechanism is the builtin effect table
+- Closes by: the types part, inferring a quotation's effect and checking the word against it
+- Evidence: combined-draft.md:134 (if : c t e --, fixed valence); claims D2.4, D2.13; no document gives the outputs of !
+
+## truth-values
+- Depends on it: fpl/eval.py choose, tests/test_control.py
+- Default in force: if takes the integer 0 or 1 and refuses anything else with "if takes 0 or 1"; the 0/1 of the array model's comparisons, reused
+- Closes by: design side, naming the truth values
+- Evidence: combined-draft.md:134; draft-2.md:17-18 (my-if forces c before if)
+
+## if-valence
+- Depends on it: features/draft1/examples/draft1.fpl:16-18 (apply), tests/test_control.py
+- Default in force: if : c t e -- with c a value; a block under if gives t and e, children first, so the form works where c is already below, as in a body; draft1's two-child apply, a condition quotation and one branch, meets a non-0/1 condition and is refused; there is no when
+- Closes by: syntax author, rewriting draft1's apply with when : c t -- as combined-draft row 14 says
+- Evidence: combined-draft.md:134; draft-1.md:20-22
+
+## step-stack
+- Depends on it: fpl/eval.py single, each, scan, fold; features/draft2/examples/07-scope-follows-the, 09-rotates
+- Default in force: each runs its quotation on a fresh stack holding one item, scan and fold on one holding the result so far and the next item; a step leaves one value or is refused with "each step leaves one value"; the first item starts scan and fold, and fold over nothing is refused; the mechanism is gathered's fresh stack for a dict value
+- Closes by: design side, if a step may reach below its item or fold takes a seed
+- Evidence: claim D2.13; draft-1.md:6
+
+## sequence-shape
+- Depends on it: fpl/eval.py items, rebuilt; tests/test_control.py
+- Default in force: each, scan and fold take a strand or a ⟨ ⟩ list; each and scan give a strand back when they took one and every result is a number or a string, else a list; any other value as the sequence is refused
+- Closes by: design side, the array model
+- Evidence: combined-draft.md:44 (the one carrier is the nested array)
+
+## text-as-array
+- Depends on it: claims D1.1, D1.2, D1.3; features/draft1/examples/draft1.fpl:1-5
+- Default in force: tab = and trim space split pair are no words and each over a string is refused, so draft1's read stays at no evaluator yet; D1.2's scan then fold is tested on a strand of 0 and 1, times standing for and
+- Closes by: a later part, adding characters and the text words
+- Evidence: draft-1.md:4-8
