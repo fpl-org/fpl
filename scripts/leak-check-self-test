@@ -302,6 +302,9 @@ printf 'refs/heads/leaky %s refs/heads/leaky %s\n' "$sha" "$zero" >"$tmp/updates
 expect 1 "a branch new to this remote, though another has it" --push pub <"$tmp/updates"
 says "p.txt:1: leak-3" "a push names file and rule"
 expect 0 "a branch this remote has" --push priv <"$tmp/updates"
+git update-ref refs/remotes/pub/stale "$sha"
+expect 1 "a commit only a stale remote-tracking ref has" --push pub <"$tmp/updates"
+git update-ref -d refs/remotes/pub/stale
 expect 1 "a push to a URL" --push "$tmp/pub.git" <"$tmp/updates"
 printf 'refs/heads/main %s refs/heads/main %s\n' "$(git rev-parse main)" "$zero" |
 	cat - "$tmp/updates" >"$tmp/two"
