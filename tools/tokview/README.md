@@ -19,7 +19,8 @@ Controls:
   `~/.cache/fpl-tokview`).
 - **hard wrap**: as written; notes folded at the column width on lone `;` lines, with `;;`
   lines wrapped under their own marker; or ventilated, one sentence per `;` line. Code is
-  never rewritten, and a code line past the width counts as *over*.
+  never rewritten, and a code line past the width counts as *over*. A note or comment line
+  with nothing after its marker stays as it is.
 - **width, indent, gap, elastic tabstops, soft wrap, colours**: display only; the text sent
   to the tokenizer does not change.
 - **Claude count**: the exact count from Anthropic's token-counting endpoint, which is not a
