@@ -355,7 +355,11 @@ def draw(root: Path, out: Path) -> None:
 def main(argv: list[str]) -> int:
     if argv == ["--self-test"]:
         return self_test()
-    parser = argparse.ArgumentParser(prog="scripts/diagrams", description=__doc__)
+    parser = argparse.ArgumentParser(
+        prog="scripts/diagrams",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--root", type=Path, default=Path())
     parser.add_argument("--out", type=Path, default=Path(".noslop/map"))
     args = parser.parse_args(argv)
