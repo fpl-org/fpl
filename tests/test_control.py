@@ -2,14 +2,18 @@
 each, scan and fold run a quotation over the items of a strand or a list (draft1; draft2
 §frames, §operatives, §( ) rotates; combined draft row 14)."""
 
+import tracemalloc
 from itertools import accumulate
 
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from fpl.desugar import desugar
 from fpl.driver import run
 from fpl.errors import FplError
+from fpl.eval import evaluate
+from fpl.parse import parse
 
 numbers = st.lists(st.integers(-99, 99), min_size=2, max_size=8)
 
@@ -98,3 +102,23 @@ def test_control_words_refuse_what_they_cannot_run(source: str, message: str) ->
     with pytest.raises(FplError) as caught:
         run(source)
     assert str(caught.value) == message
+
+
+def peak_bytes(source: str) -> int:
+    """The most memory evaluating the source's statements holds at once, parsing excluded."""
+    statements = desugar(parse(source))
+    tracemalloc.start()
+    try:
+        evaluate(statements)
+        return tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+
+def test_fold_holds_only_the_result_so_far() -> None:
+    """fold keeps one accumulator, not every result a scan would print: joining n one-node
+    quotations holds results of length 1 to n, so keeping them all grows with n squared and
+    doubling n would about quadruple the peak; one accumulator about doubles it."""
+    sources = (f"⟨ {'[ 1 ] ' * n}⟩ [,] fold drop\n" for n in (1000, 2000))
+    small, large = map(peak_bytes, sources)
+    assert large < 3 * small

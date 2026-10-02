@@ -1,7 +1,8 @@
 """The core as a step machine: a state is the stack and the code still to run, and `step` runs
 one node of it. Over the core AST only."""
 
-from collections.abc import Callable, Mapping
+from collections import deque
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from functools import partial
@@ -284,14 +285,18 @@ def rebuilt(xs: Value, values: list[Value]) -> Push:
     return Push(Listed(tuple(values)))
 
 
-def running_results(span: Span, words: Words, xs: Value, q: Value) -> list[Value]:
-    """The first item, then q run on the result so far and the next item, for each item."""
+def running_results(span: Span, words: Words, xs: Value, q: Value) -> Iterator[Value]:
+    """The first item, then q run on the result so far and the next item, for each item; one
+    at a time, so a fold need not hold the ones it has passed."""
     code = quoted(q, span).code
     values = items(xs, span)
-    results = list(values[:1])
+    if not values:
+        return
+    result = values[0]
+    yield result
     for x in values[1:]:
-        results.append(single(State((results[-1], x), code, words), span))
-    return results
+        result = single(State((result, x), code, words), span)
+        yield result
 
 
 def each(span: Span, words: Words, xs: Value, q: Value) -> tuple[Node, ...]:
@@ -302,15 +307,15 @@ def each(span: Span, words: Words, xs: Value, q: Value) -> tuple[Node, ...]:
 
 def scan(span: Span, words: Words, xs: Value, q: Value) -> tuple[Node, ...]:
     """xs q -- ys : every result a fold passes through."""
-    return (rebuilt(xs, running_results(span, words, xs, q)),)
+    return (rebuilt(xs, list(running_results(span, words, xs, q))),)
 
 
 def fold(span: Span, words: Words, xs: Value, q: Value) -> tuple[Node, ...]:
     """xs q -- x : the last result of the scan; no item to start from is refused."""
-    results = running_results(span, words, xs, q)
-    if not results:
+    last = deque(running_results(span, words, xs, q), maxlen=1)
+    if not last:
         raise FplError(span, "fold over nothing")
-    return (Push(results[-1]),)
+    return (Push(last[0]),)
 
 
 CONTROLS: dict[str, Control] = {
