@@ -119,7 +119,7 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 
 ## unimplemented-words
 - Depends on it: fpl/desugar.py unimplemented; every example still at ERROR: 1:1 no evaluator yet (26 of 28 at this commit: 01-frames for swap-args, 09-rotates for fold, the rest for more)
-- Default in force: desugar refuses, before anything runs, all but: decimal numbers, strings without islands, [ ], ( ) of one cell, ⟨ ⟩ of literals, bars, tabs, blocks, name : ins -- outs definitions (each slot a name or name: Type), and the words of fpl/ast_core.py EFFECTS (+ - times swap dup drop enclose ,), with ERROR: 1:1 no evaluator yet (the skeleton's message and position, reused)
+- Default in force: desugar refuses, before anything runs, all but: decimal numbers, strings without islands, [ ], ( ) of one cell, ⟨ ⟩ of literals, bars, tabs, blocks, name : ins -- outs definitions (each slot a name or name: Type), →x and ->x of a plain name or a path, #name symbols, { } of plain keys each with one item pushing one value, name/ heads with a block of definitions, subdirectories and #name bind lines, paths a/b and ../x that name a defined word, w/history, and the words of fpl/ast_core.py EFFECTS (+ - times swap dup drop enclose ,), with ERROR: 1:1 no evaluator yet (the skeleton's message and position, reused)
 - Closes by: each step-3 part, shrinking the set
 - Evidence: fpl/driver.py (skeleton); fpl/ast_core.py EFFECTS
 
@@ -308,3 +308,51 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Default in force: a numeral has at most 4096 digits, its sign and point not counted, the number FON's reader bounds a token by (fon.read max_token); a longer one is ERROR: <line>:<col> number too long at the numeral. 4096 is under Python's 4300-digit int/str conversion limit, so the bound is the language's, not the interpreter's setting. A result of + - times of magnitude 10^4096 or more is ERROR: <line>:<col> number too large at the word, so an integer has at most 4096 digits, written or computed, and a decimal never overflows its context; a computed decimal keeps the context's 28 significant digits and its fraction is not bounded
 - Closes by: design, naming the bound on a number, written and computed (or none, with a reader and printer that never meet the limit)
 - Evidence: a 4301-digit numeral raised ValueError from int() in fpl/desugar.py number before this entry, a traceback past the FplError boundary of fpl/__main__.py, as 10 squared 13 times did from str() in fpl/desugar.py shown and 9.9 squared 22 times did as decimal.Overflow in fpl/eval.py; docs/CONVENTIONS.md "no Python traceback ever reaches the user"
+
+## binder-scope
+- Depends on it: fpl/desugar.py (body, quote, scoped), fpl/eval.py (substitute), tests/test_binders.py
+- Default in force: →x names the top for the rest of the sequence it is written in: a definition's body across its lines and the blocks under them, one top-level line, one child line under a thunk or code slot, one quotation or section; a child under a value slot runs in place, so its binder lives on in the sequence the child runs in, like a frame's (hole child-slots); eval substitutes the value for the name there (lexical, a nested binder of the name shadows, nothing mutates); past it the name is no word; the printer writes → for both spellings
+- Closes by: design, by saying where a binder's scope ends at top level and in a child line
+- Evidence: decision (f); features/server/examples/server.fpl:3-4 (p bound on one body line, read on the next); features/draft2/examples/07-scope-follows-the.fpl:3-5; features/draft2/examples/08-objects-are-directories.fpl:6-10 rebinds acc and s in a repeat child and reads acc after it, which shadowing cannot give
+
+## dict-values
+- Depends on it: fpl/desugar.py (dict), fpl/eval.py (gathered), tests/test_binders.py
+- Default in force: { } pairs a plain name key with the next item, which must push exactly one value (a literal, symbol, list, quotation, dict, bound name or a word taking none); each value runs on a fresh stack when the dict is reached; ( ) as a value, a strand, an odd count and a path key are refused as unimplemented; a repeated key is refused where it repeats with fpl/fon.py's message; symbols do not strand
+- Closes by: design, by saying what a dict value may be and where one ends
+- Evidence: features/match/examples/06-6-python-s-keywords.fpl:2-5; fpl/fon.py dict; features/draft2/examples/08-objects-are-directories.fpl:3 (#x #y swap)
+
+## require-ensure-rescue
+- Depends on it: nothing yet
+- Default in force: no example uses require, ensure or rescue; they are unknown words, refused as unimplemented
+- Closes by: design, with an example of f/require
+- Evidence: grep -l over features/*/examples/*.fpl finds none; decision (f)
+
+## directory-log
+- Depends on it: fpl/desugar.py (Catalog, directory, mount, _Desugar.call, origin), tests/test_binders.py; features/draft3/examples/draft3.fpl:1-9, features/match/examples/05-5-prolog-s-family.fpl:2, features/server/examples/server.fpl:4
+- Default in force: a head name/ with a block is a directory; its definitions, subdirectories and #name bind mounts form one ordered log, read whole before any line runs (the rule top-level definitions already follow), where the latest entry holding a name wins; a word is a directory holding its history; a name resolves at desugar time from the word's own directory outward, ../x from the directory holding the word; a mount sees only the words its directory defines, never its mounts; a second head of the same name appends to the same log; a name/ head without a block, a deeper a/b/ head, any other line in a directory, bind of anything but a literal #name, a #name that is no directory and ../x on a top-level line are refused as unimplemented
+- Closes by: design, by saying whether a log entry is visible above the line that adds it, whether mounts chain, and what a directory holds besides definitions and binds
+- Evidence: claims D3.1 (draft3.fpl:7 "ordered log append (§5.2): later shadows earlier"), D3.5 (draft3.fpl:13 "takes ../io lexically"); decision (f) f/require; features/sketch/examples/07-7-facts-signed.fpl:18 binds a quotation of paths, which this default refuses
+
+## history-shape
+- Depends on it: fpl/eval.py (evaluate), fpl/desugar.py (HISTORY), tests/test_binders.py; features/draft3/examples/draft3.fpl:11
+- Default in force: w/history pushes a ⟨ ⟩ list of the definitions of w that a later one shadows, oldest first, each its body as a quotation; the one in force is not in it; one definition gives ⟨⟩
+- Closes by: design, by saying what a history entry is (body, effect, source) and whether the one in force belongs to it
+- Evidence: claim D3.3 (draft3.fpl:11 "shadowed definitions")
+
+## effect-sugar-io
+- Depends on it: features/draft3/examples/draft3.fpl:13, features/server/examples/server.fpl:2 and 10
+- Default in force: only the lexical half of D3.5 is in force (../x resolves from the directory holding the word); an effect line naming +io or any +effect is refused as unimplemented, so nothing threads an effect linearly
+- Closes by: the effects part, with the design saying what +io desugars to
+- Evidence: claim D3.5 (draft3.fpl:13 "sugar: takes ../io lexically, threads it linearly (§4.3 answer)")
+
+## with-record-union
+- Depends on it: features/match/examples/06-6-python-s-keywords.fpl:5
+- Default in force: with is no word and is refused as unimplemented; it needs record patterns in a head (06-6-python-s-keywords.fpl:2), which no part implements yet
+- Closes by: implementer of 06-match, after record-pattern heads
+- Evidence: claim D4.12 ("with: curry-with-union; later calls still override")
+
+## qualified-resugar
+- Depends on it: fpl/desugar.py (resugar, named, written), tests/test_print.py
+- Default in force: resugar writes a definition inside a directory as a top-level path head (m/sq : x -- y), which does not parse back to the same statement; the printer's round trip holds only for programs without directories, the only ones its strategies generate
+- Closes by: implementer, by resugaring the log as nested name/ heads when a property needs it
+- Evidence: fpl/desugar.py written

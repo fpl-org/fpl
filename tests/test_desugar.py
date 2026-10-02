@@ -37,7 +37,8 @@ bounded = st.integers(1 - 10**DIGITS, 10**DIGITS - 1)
 items = st.recursive(
     st.integers(-9, 99).map(str)
     | st.integers(4090, 4400).map(lambda n: "9" * n)
-    | st.sampled_from(sorted(EFFECTS)),
+    | st.sampled_from(sorted(EFFECTS))
+    | st.sampled_from(["#a", "→a", "1 →a a", "{ k 1 }"]),
     lambda inner: (
         st.lists(inner, max_size=4).map(lambda xs: "[" + " ".join(xs) + "]")
         | st.lists(inner, min_size=1, max_size=4).map(lambda xs: "(" + " ".join(xs) + ")")
@@ -254,7 +255,17 @@ def test_a_frame_that_reaches_below_its_balance_is_a_section(source: str, printe
 
 @pytest.mark.parametrize(
     "source",
-    ["1 dup\n", "“a” “b”\n", "1.5 | -9 +\n", CURRY + "nop : --\n1 [ + ] curry\n", SLOTS],
+    [
+        "1 dup\n",
+        "“a” “b”\n",
+        "1.5 | -9 +\n",
+        CURRY + "nop : --\n1 [ + ] curry\n",
+        "#a #b\n",
+        "1 →a a\n",
+        "1 →a/b a/b a/b +\n",
+        "{ k 1 }\n",
+        SLOTS,
+    ],
 )
 def test_core_without_sugar_writes_back_as_its_source(source: str) -> None:
     """A source with no bar but between two literals, no ( ) and no block but a definition's
@@ -264,7 +275,8 @@ def test_core_without_sugar_writes_back_as_its_source(source: str) -> None:
 
 def test_a_written_tree_points_at_the_start() -> None:
     """A tree desugar writes has no source of its own: every span is 1:1, where it refuses."""
-    statements = desugar(parse(CURRY + SLOTS + "nop : --\n1 [ + ] curry\n“a” ⟨ 1 ⟩ 1.5\n"))
+    source = CURRY + SLOTS + "nop : --\n1 [ + ] curry\n“a” ⟨ 1 ⟩ 1.5\n#a { k 1 } 1 →a a\n"
+    statements = desugar(parse(source))
     written = [*spans(resugar(statements)), *spans(listing(evaluate(statements)))]
     assert set(written) == {START}
 
@@ -425,8 +437,8 @@ def test_a_numeral_of_digits_digits_reads(numeral: str) -> None:
 @pytest.mark.parametrize(
     "source",
     [
-        *("∞\n", "#x\n", "#1\n", "$1\n", "1\u00b4\n", "a/b\n", "{ 1 }\n", "()\n", "“⟨1⟩”\n"),
-        *("{}\n", ";;; s\n\t1\n", "\n\t1\n", "1\n\t; c\n\t\t2\n"),
+        *("∞\n", "#1\n", "$1\n", "1\u00b4\n", "a/b\n", "{ 1 }\n", "()\n", "“⟨1⟩”\n"),
+        *(";;; s\n\t1\n", "\n\t1\n", "1\n\t; c\n\t\t2\n"),
         *("⟨ (+ 1 2) ⟩\n", "f : x\n", "f : x -- y | 1\n", "f : #x -- y\n", "1 2 3 fold\n"),
         *("f : x: -- y\n", "f : -- y:\n", "#f : --\n", "f : t: -- x -- y\n"),
     ],
