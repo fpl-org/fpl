@@ -35,8 +35,12 @@ def test_the_stash_holds_each_string_by_its_kind() -> None:
 
 
 def test_an_opener_left_open_counts_to_none() -> None:
+    """counted: an opener its own closer never balances before the end is None, not an
+    offset; a nested opener of the same pair counts against the one closer."""
     assert counted("“a“b”", 0, "”", 5) is None
 
 
 def test_a_string_placeholder_and_its_pad_keep_the_opener_offset() -> None:
+    """Prelexed.origin: the placeholder a string becomes and the pad after it both map back
+    to the string's opener; the closing newline and the end map to the source's end."""
     assert prelex("“ab”").origin == (0, 0, 4, 4)
