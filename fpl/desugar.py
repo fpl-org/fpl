@@ -522,8 +522,8 @@ class _Desugar:
 
 def resugar(statements: tuple[Statement, ...]) -> Program:
     """Core as source that desugars to the same code: no bar but between two literals, which
-    would otherwise strand, no ( ), no block but a definition's one-line body."""
-    return Program(tuple(map(written, statements)), START)
+    would otherwise strand, no ( ), no block but a definition's one-line body and its docs."""
+    return Program(tuple(line for s in statements for line in (*above(s), written(s))), START)
 
 
 def listing(stacks: tuple[tuple[Value, ...], ...]) -> Program:
@@ -550,8 +550,22 @@ def written(statement: Statement) -> Line:
 
 
 def documented(statement: Define) -> tuple[Line, ...]:
-    """A definition's docstring as the ;; lines opening its body, none for the empty one."""
-    texts = statement.doc.split("\n") if statement.doc else []
+    """A definition's docstring as the ;; lines opening its body; none when it has no body,
+    as its docs are written above its head instead."""
+    return doc_lines(statement.doc) if statement.code else ()
+
+
+def above(statement: Statement) -> tuple[Line, ...]:
+    """The ;; lines written above a statement: the docstring of a definition with no code,
+    which under its head would be read as the next code line's (fpl/trivia.py); none else."""
+    if isinstance(statement, Define) and not statement.code:
+        return doc_lines(statement.doc)
+    return ()
+
+
+def doc_lines(doc: str) -> tuple[Line, ...]:
+    """A docstring as ;; lines, one for each of its lines; none for the empty one."""
+    texts = doc.split("\n") if doc else []
     return tuple(Line((), (), START, Comment(2, (f";; {text}",), START)) for text in texts)
 
 

@@ -69,3 +69,10 @@ def test_a_doc_is_written_back_as_it_desugars(above: str, opening: str) -> None:
     """Core written as source keeps each docstring as the ;; lines opening the body."""
     statements = desugar(parse(f"{above}f : -- y\n{opening}\t1\n"))
     assert desugar(parse(render(resugar(statements)))) == statements
+
+
+def test_the_doc_of_a_definition_with_no_code_is_written_above_its_head() -> None:
+    """Under a head with no body, a ;; looks past it to the next code line, so the doc of f
+    would be read back as g's (tests/test_trivia.py); written above f's head, it stays f's."""
+    statements = desugar(parse(";; First.\nf : --\ng : --\n"))
+    assert desugar(parse(render(resugar(statements)))) == statements
