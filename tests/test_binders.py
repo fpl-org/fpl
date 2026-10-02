@@ -96,6 +96,9 @@ def test_binders_and_dicts_refuse_at_their_position(source: str, error: str) -> 
     ],
 )
 def test_what_binders_do_not_yet_read_is_refused(source: str) -> None:
+    """Hole unimplemented-words: a modified or path symbol; a dict with a key alone, a number
+    key, or a value that is not one item pushing one value; a binder with a modifier or ending
+    in a slash; and ../ to a bound name are refused before anything runs."""
     with pytest.raises(FplError) as caught:
         run(source)
     assert str(caught.value) == "ERROR: 1:1 no evaluator yet"
@@ -192,6 +195,9 @@ def test_history_holds_the_shadowed_definitions(source: str, printed: str) -> No
     ],
 )
 def test_what_directories_do_not_yet_read_is_refused(source: str) -> None:
+    """Hole unimplemented-words: code in a directory block, a bind of anything but a known
+    #name, a path head, a head with tokens after its slash, ../ or bind at the top, a directory
+    called as a word and a path into w/history are refused before anything runs."""
     with pytest.raises(FplError) as caught:
         run(source)
     assert str(caught.value) == "ERROR: 1:1 no evaluator yet"
