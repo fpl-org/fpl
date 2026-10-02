@@ -165,6 +165,8 @@ def canonical(source: str) -> None:
 @pytest.mark.obligation("print then parse is the identity")
 @given(programs(2, 2, top=True))
 def test_print_then_parse_is_the_identity(program: Program) -> None:
+    """The tree law: a generated program, comments at every depth included, printed and read
+    back is the same tree."""
     assert parse(render(program)) == program
 
 
@@ -176,6 +178,8 @@ def test_print_is_idempotent_on_generated_programs_with_comments(program: Progra
 
 @given(from_lark(FLAT, explicit={"TOKEN": TOKEN.map(lambda token: token + " ")}))
 def test_print_is_idempotent_on_programs_derived_from_the_grammar(source: str) -> None:
+    """The flat law: a program drawn from the block-free grammar prints canonically; a draw
+    the builder refuses for a ;; after code is set aside, any other refusal fails."""
     try:
         parse(clean(source))
     except FplError as refused:  # a draw may set ;; after code, which the builder refuses
