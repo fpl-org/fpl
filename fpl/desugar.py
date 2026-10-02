@@ -13,10 +13,10 @@ A head `name/` mounts its block as a directory: its definitions are named by pat
 directory keeps an ordered log of its definitions, subdirectories and `#name bind` mounts, where
 a later entry shadows an earlier one. A word's body is its own directory (decision f), so a name
 in it is looked up from there outward, `..` from the directory holding the word, and every word
-w has w/history.
+w has w/history and w/doc, its docstring.
 A line with no code, a comment's or the empty first line, is no statement and no child; its
-comment is not carried into the core. Anything outside the implemented set is refused before
-evaluation (hole unimplemented-words).
+comment is not carried into the core, but for a word's docs (fpl/trivia.py). Anything outside
+the implemented set is refused before evaluation (hole unimplemented-words).
 """
 
 from collections import ChainMap
@@ -27,6 +27,7 @@ from functools import partial
 from itertools import groupby
 from typing import NoReturn, assert_never
 
+from fpl import trivia
 from fpl.ast_core import (
     DIGITS,
     EFFECTS,
@@ -49,13 +50,14 @@ from fpl.ast_core import (
     Symbol,
     Value,
 )
-from fpl.ast_surface import Cell, Enclosure, Frame, Item, Line, Program, Text, Word
+from fpl.ast_surface import Cell, Comment, Enclosure, Frame, Item, Line, Program, Text, Word
 from fpl.errors import FplError, Span
 
 START = Span(1, 1)
 ARROWS = ("→", "->")
 LOCAL = Effect((), ("x",))
 HISTORY = Effect((), ("h",))
+DOC = Effect((), ("d",))
 
 type Here = tuple[str, ...]
 
@@ -76,7 +78,7 @@ def desugar(program: Program) -> tuple[Statement, ...]:
         for entry in log:
             if isinstance(entry, Mount):
                 catalog.directory(here, entry.name)
-    return tuple(_Desugar(catalog).statements(lines, ()))
+    return tuple(_Desugar(catalog, trivia.docstrings(program)).statements(lines, ()))
 
 
 @dataclass(frozen=True)
@@ -104,7 +106,8 @@ class Catalog:
                 path = "/".join((*here, head[0]))
                 self.effects[path] = head[1]
                 self.effects[f"{path}/history"] = HISTORY
-                self.logs.setdefault((*here, head[0]), []).append("history")
+                self.effects[f"{path}/doc"] = DOC
+                self.logs.setdefault((*here, head[0]), []).extend(("history", "doc"))
             elif name is not None:
                 log.append(name)
                 self.enter(coded(line.block), (*here, name))
@@ -176,7 +179,7 @@ def coded(lines: tuple[Line, ...]) -> tuple[Line, ...]:
     empty-first-line)."""
     kept: list[Line] = []
     for line in lines:
-        if len(line.frames) > 1 or any(frame.cells for frame in line.frames):
+        if trivia.code(line):
             kept.append(line)
         elif line.block:
             unimplemented()
@@ -185,9 +188,9 @@ def coded(lines: tuple[Line, ...]) -> tuple[Line, ...]:
 
 def definition(line: Line) -> tuple[str, Effect] | None:
     """The name and effect of a `name : ins -- outs` line; None for a line that is not one."""
-    cells = line.frames[0].cells
-    if [plain(item) for cell in cells[:1] for item in cell.items[1:2]] != [":"]:
+    if not trivia.head(line):
         return None
+    cells = line.frames[0].cells
     if len(line.frames) + len(cells) > 2:
         unimplemented()
     return effect_line(cells[0].items)
@@ -294,10 +297,11 @@ def literal(item: Item) -> bool:
 class _Desugar:
     """Lines to code, with the effect of every word known."""
 
-    def __init__(self, catalog: Catalog) -> None:
-        """Keep the catalog and the effect of every word a line may call: the builtins' and the
-        definitions', by path."""
+    def __init__(self, catalog: Catalog, docs: dict[int, str]) -> None:
+        """Keep the catalog, the docstrings by the line they document, and the effect of every
+        word a line may call: the builtins' and the definitions', by path."""
         self.catalog = catalog
+        self.docs = docs
         self.effects = ChainMap(catalog.effects)
         self.here: Here = ()
 
@@ -308,7 +312,7 @@ class _Desugar:
             if head is not None:
                 path = (*here, head[0])
                 code = self.body(line.block, len(head[1].ins), path)
-                yield Define("/".join(path), head[1], code)
+                yield Define("/".join(path), head[1], code, self.docs.get(line.span.line, ""))
             elif name is not None:
                 yield from self.statements(coded(line.block), (*here, name))
             elif not here:
@@ -518,8 +522,8 @@ class _Desugar:
 
 def resugar(statements: tuple[Statement, ...]) -> Program:
     """Core as source that desugars to the same code: no bar but between two literals, which
-    would otherwise strand, no ( ), no block but a definition's one-line body."""
-    return Program(tuple(map(written, statements)), START)
+    would otherwise strand, no ( ), no block but a definition's one-line body and its docs."""
+    return Program(tuple(line for s in statements for line in (*above(s), written(s))), START)
 
 
 def listing(stacks: tuple[tuple[Value, ...], ...]) -> Program:
@@ -538,9 +542,31 @@ def written(statement: Statement) -> Line:
             taken = (item for name, kind in ins for item in declaration(name, kind))
             head = (named(statement.name), named(":"), *taken, named("--"))
             body = (Line(sugared(statement.code), (), START),) if statement.code else ()
-            return Line((framed((*head, *map(named, effect.outs))),), body, START)
+            return Line(
+                (framed((*head, *map(named, effect.outs))),), documented(statement) + body, START
+            )
         case _:
             assert_never(statement)
+
+
+def documented(statement: Define) -> tuple[Line, ...]:
+    """A definition's docstring as the ;; lines opening its body; none when it has no body,
+    as its docs are written above its head instead."""
+    return doc_lines(statement.doc) if statement.code else ()
+
+
+def above(statement: Statement) -> tuple[Line, ...]:
+    """The ;; lines written above a statement: the docstring of a definition with no code,
+    which under its head would be read as the next code line's (fpl/trivia.py); none else."""
+    if isinstance(statement, Define) and not statement.code:
+        return doc_lines(statement.doc)
+    return ()
+
+
+def doc_lines(doc: str) -> tuple[Line, ...]:
+    """A docstring as ;; lines, one for each of its lines; none for the empty one."""
+    texts = doc.split("\n") if doc else []
+    return tuple(Line((), (), START, Comment(2, (f";; {text}",), START)) for text in texts)
 
 
 def sugared(code: tuple[Node, ...]) -> tuple[Frame, ...]:
