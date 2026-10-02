@@ -34,12 +34,16 @@ def attached(kinds: list[str], n: int) -> Attached:
 
 @given(st.lists(st.sampled_from(sorted(LINES)), min_size=1, max_size=12))
 def test_a_comment_attaches_by_its_level(kinds: list[str]) -> None:
+    """Any run of unindented lines: each comment attaches as its level and the next code line
+    decide, which attached() works out independently."""
     comment = [n for n, kind in enumerate(kinds, 1) if kind not in {"code", "head"}]
     expected = [attached(kinds, n) for n in comment]
     assert list(comments(parse("\n".join(LINES[kind] for kind in kinds) + "\n"))) == expected
 
 
 def test_a_doc_belongs_to_the_head_above_or_around_it_and_a_string_holds_none() -> None:
+    """A ;; above a head and one opening its body are both its docs, a ;;; in the body is a
+    section, and a ; inside a string is no comment."""
     source = ";; above\nf : x\n\t;; under\n\tx “; no”\n\t;;; inner\n"
     assert comments(parse(source)) == (
         Attached(1, 2, "doc", 2, "above"),
@@ -71,6 +75,8 @@ def test_a_comment_looks_past_comments_and_blanks_for_its_code(
 
 
 def test_a_note_reads_as_its_lines_joined_without_their_marks() -> None:
+    """A note running over lines, ; or ⍝ marks of any count, reads as one text attached to
+    the code line it trails."""
     assert comments(parse("a ;X one\n;two\n⍝⍝ three\n")) == (
         Attached(1, 1, "trailing", 1, "X one two three"),
     )
