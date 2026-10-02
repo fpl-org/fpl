@@ -94,3 +94,5 @@ fpl.desugar.xǁ_Desugarǁcall__mutmut_12 -- equivalent: a call of a bound name l
 fpl.desugar.xǁ_Desugarǁdict__mutmut_8 -- equivalent: an odd item count is refused above, so the keys and values are as many and strict never fires
 fpl.desugar.xǁ_Desugarǁdict__mutmut_11 -- equivalent: an odd item count is refused above, so the keys and values are as many and strict never fires
 fpl.desugar.xǁ_Desugarǁdict__mutmut_15 -- equivalent: an odd item count is refused above, so the keys and values are as many and strict never fires
+fpl.eval.x_repeat__mutmut_20 -- timeout: the mutant puts back n + 1, so a repeat of one round or more counts up and never ends
+fpl.eval.x_repeat__mutmut_23 -- equivalent: the round puts back q, a quotation, and n - 1, a count, so the repeat it calls never refuses and its span is never reported
