@@ -163,7 +163,8 @@ function render(data){
     if (!cellEl) newCell();
     const bytes = new Uint8Array(frag.flatMap(f => f.h.match(/../g).map(x => parseInt(x, 16))));
     let whole; try { whole = new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch (e) { whole = null; }
-    const g = document.createElement('button'); g.type = 'button'; g.className = 'glyph';   // a button: Tab reaches it, Enter and Space open it g.title = frag.length + ' tokens: ' + frag.map(f => f.h.match(/../g).join(' ')).join(' | ') + '; click to expand';
+    // a button: Tab reaches it, Enter and Space open it
+    const g = document.createElement('button'); g.type = 'button'; g.className = 'glyph'; g.title =frag.length + ' tokens: ' + frag.map(f => f.h.match(/../g).join(' ')).join(' | ') + '; click to expand';
     const parts = frag.map(f => '<span class="t byte"><span class=hex>' + f.h.match(/../g).join(' ') + '</span>' + (showIds ? '<span class=id>' + f.id + '</span>' : '') + '</span>').join('');
     g.innerHTML = '<span class=whole>' + (whole === null ? '<span class=hex>' + bytes.length + ' bytes</span>' : (ws ? mark(whole).replace(/ /g, '<span class=sp>␣</span>') : mark(whole))) + '</span><span class=parts>' + parts + '</span><span class=n>' + frag.length + '</span>';
     g.addEventListener('click', () => g.classList.toggle('open'));
