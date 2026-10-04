@@ -43,7 +43,7 @@ body.seps.nobpe .t + .t{box-shadow:none}
 .c0{background:var(--c0)}.c1{background:var(--c1)}.c2{background:var(--c2)}.c3{background:var(--c3)}.c4{background:var(--c4)}.byte{background:var(--byte)}
 .fused{text-decoration:underline;text-decoration-color:var(--fused);text-decoration-thickness:2px;text-underline-offset:3px}
 .hex{opacity:.7;font-size:11px}
-.glyph{display:inline-block;position:relative;box-shadow:inset 0 0 0 1px var(--fused);border-radius:3px;padding:0;cursor:pointer;white-space:pre;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.glyph{display:inline-block;position:relative;box-shadow:inset 0 0 0 1px var(--fused);border-radius:3px;padding:0;cursor:pointer;border:0;margin:0;background:none;color:inherit;line-height:inherit;font-weight:inherit;vertical-align:baseline;white-space:pre;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .glyph .n{position:absolute;top:1px;right:0;font-size:8px;line-height:1;color:var(--fused)}
 .w,.sp{display:inline-block;width:1ch;clip-path:inset(0);text-align:center}
 .glyph .parts{display:none}.glyph.open .parts{display:inline}.glyph.open .whole{display:none}.sp{opacity:.35}.nl{opacity:.5}
@@ -162,7 +162,7 @@ function render(data){
     if (!cellEl) newCell();
     const bytes = new Uint8Array(frag.flatMap(f => f.h.match(/../g).map(x => parseInt(x, 16))));
     let whole; try { whole = new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch (e) { whole = null; }
-    const g = document.createElement('span'); g.className = 'glyph'; g.title = frag.length + ' tokens: ' + frag.map(f => f.h.match(/../g).join(' ')).join(' | ') + '; click to expand';
+    const g = document.createElement('button'); g.type = 'button'; g.className = 'glyph';   // a button: Tab reaches it, Enter and Space open it g.title = frag.length + ' tokens: ' + frag.map(f => f.h.match(/../g).join(' ')).join(' | ') + '; click to expand';
     const parts = frag.map(f => '<span class="t byte"><span class=hex>' + f.h.match(/../g).join(' ') + '</span>' + (showIds ? '<span class=id>' + f.id + '</span>' : '') + '</span>').join('');
     g.innerHTML = '<span class=whole>' + (whole === null ? '<span class=hex>' + bytes.length + ' bytes</span>' : (ws ? mark(whole).replace(/ /g, '<span class=sp>␣</span>') : mark(whole))) + '</span><span class=parts>' + parts + '</span><span class=n>' + frag.length + '</span>';
     g.addEventListener('click', () => g.classList.toggle('open'));
