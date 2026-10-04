@@ -18,7 +18,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Protocol, override
+from typing import Any, Protocol, cast, override
 
 from tokview.tokens import Tokenizers
 from tokview.wrap import cols, folded, ventilated
@@ -82,13 +82,20 @@ class App:
         paths = sorted(self.root.glob("features/*/examples/*.fpl"))
         return {f"{p.parent.parent.name}/{p.stem}": p.read_text().rstrip("\n") for p in paths}
 
-    def tokenize(self, request: dict[str, Any]) -> dict[str, Any]:
-        """The answer to POST /tokenize; a malformed request is a ValueError."""
+    def tokenize(self, body: object) -> dict[str, Any]:
+        """The answer to POST /tokenize, given its decoded JSON body; a malformed request (not
+        an object, an unknown tokenizer, a width that is not a number) is a ValueError."""
+        if not isinstance(body, dict):
+            raise ValueError("the request is not a JSON object")
+        request = cast(dict[str, Any], body)
         tk = self.tokenizers.get(str(request.get("tokenizer", "o200k")))
+        width = request.get("width", 80)
+        try:
+            columns = int(width)
+        except TypeError as wrong:
+            raise ValueError(f"width {width!r} is not a number") from wrong
         text, over = layout(
-            str(request.get("text", "")),
-            str(request.get("wrap", "as written")),
-            int(request.get("width", 80)),
+            str(request.get("text", "")), str(request.get("wrap", "as written")), columns
         )
         tokens: list[dict[str, Any]] = []
         for i in tk.encode(text):
