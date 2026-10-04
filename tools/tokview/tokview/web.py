@@ -161,7 +161,7 @@ class App:
         negative one would read until the client hangs up, and "1_0" would wait for ten
         bytes. A body over BODY bytes is a 413, refused before a byte of it is read. A
         malformed request is a 400; a tokenizer that could not be fetched (refused,
-        unreachable, timed out) is a 502 that says why, in at most ERROR bytes."""
+        unreachable, too slow, too large) is a 502 that says why, in at most ERROR bytes."""
         if not (length.isascii() and length.isdigit()):
             return 400, f"Content-Length {length!r} is not a count".encode(), TEXT
         if int(length) > BODY:
