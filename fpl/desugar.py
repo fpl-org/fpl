@@ -572,6 +572,7 @@ class _Desugar:
         if not any(map(grouped, effect.types)):
             return self.body(line.block, len(effect.ins), here)
         outer, patterns, repush = self.effects, list[Pattern](), list[Node]()
+        self.here = here
         for name, part in zip(fresh(effect), effect.types, strict=True):
             if grouped(part):
                 group = next(groups)
