@@ -451,12 +451,14 @@ def _key_file(env: Mapping[str, str]) -> Path:
 def _made(directory: Path, mode: int) -> None:
     """directory and its missing ancestors made from the top down, ancestors with the default
     mode and directory with mode, each one's entry synced into its parent before the next is
-    made under it. One found made, by a racing maker whose own sync may not have run, has its
-    entry synced all the same."""
+    made under it. The deepest one found made, before the loop or inside it, has its entry
+    synced all the same: a racing maker may not have run that sync yet. Those above it need
+    none, as such a maker synced each before it made the next under it."""
     missing: list[Path] = []
     while not directory.exists():
         missing.append(directory)
         directory = directory.parent
+    _synced(directory.parent)
     for made in reversed(missing):
         with contextlib.suppress(FileExistsError):
             made.mkdir(mode=mode if made == missing[0] else 0o777)
@@ -466,9 +468,10 @@ def _made(directory: Path, mode: int) -> None:
 def keyed(env: Mapping[str, str]) -> bytes:
     """The key that macs this operator's records, made on first use as 32 random bytes in a
     file only its owner may read, in a directory only its owner may enter. Each directory made
-    on the way has its entry synced into its parent, and the file's bytes, once read, and its
-    entry in its directory are synced before the key is used, made here or found made by a
-    racing maker whose own sync may not have run, so no record outlives the key that macs it.
+    on the way, and the deepest one found, has its entry synced into its parent, and the
+    file's bytes, once read, and its entry in its directory are synced before the key is used,
+    made here or found made by a racing maker whose own sync may not have run, so no record
+    outlives the key that macs it.
     The bytes are read before their sync, so none read can have been written after it.
     Refused: a key file others may read or write, or one not 32 bytes long; a reader racing
     the first maker may meet it empty and be refused."""

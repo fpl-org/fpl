@@ -473,7 +473,8 @@ def test_the_key_is_synced_into_its_directory(
     assert directory in seen
     seen.clear()
     keyed(home)
-    assert seen == [inode(tmp_path / ".config" / "fpl" / "log.key"), directory]
+    key = inode(tmp_path / ".config" / "fpl" / "log.key")
+    assert seen == [inode(tmp_path / ".config"), key, directory]
 
 
 def test_a_key_found_unsynced_is_synced_before_it_is_used(
@@ -486,20 +487,40 @@ def test_a_key_found_unsynced_is_synced_before_it_is_used(
     made.chmod(0o600)
     seen = synced(monkeypatch)
     assert keyed({"FPL_LOG_KEY": str(made)}) == KEY
-    assert seen == [inode(made), inode(tmp_path)]
+    assert seen == [inode(tmp_path.parent), inode(made), inode(tmp_path)]
 
 
 def test_each_directory_made_for_the_key_is_synced_into_its_parent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Every directory keyed makes on the way to the key has its entry synced into its parent,
-    from the top down, before the key is made; a call that makes none syncs no parent."""
+    from the top down, after the entry of the one it found, before the key is made; a call
+    that makes none syncs no directory above the key's."""
     seen = synced(monkeypatch)
     home = {"HOME": str(tmp_path)}
     keyed(home)
     config = tmp_path / ".config"
-    assert seen[:2] == [inode(tmp_path), inode(config)]
+    assert seen[:3] == [inode(tmp_path.parent), inode(tmp_path), inode(config)]
     seen.clear()
     keyed(home)
     assert inode(tmp_path) not in seen
-    assert inode(config) not in seen
+
+
+def test_a_key_directory_found_unsynced_is_synced_into_its_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The deepest directory keyed finds made on the way to the key, as by a racing maker whose
+    sync of it has not yet run, has its entry synced into its parent before the key is used;
+    the ones above it, which such a maker synced before making it, are not synced again."""
+    config = tmp_path / ".config"
+    home = {"HOME": str(tmp_path)}
+    config.mkdir()
+    seen = synced(monkeypatch)
+    keyed(home)
+    assert seen[:2] == [inode(tmp_path), inode(config)]
+    assert inode(tmp_path.parent) not in seen
+    (config / "fpl" / "log.key").unlink()
+    seen.clear()
+    keyed(home)
+    assert seen[0] == inode(config)
+    assert inode(tmp_path) not in seen
