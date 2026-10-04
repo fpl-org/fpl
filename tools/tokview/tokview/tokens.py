@@ -93,7 +93,9 @@ def fetch(
     on it. A socket timeout alone bounds each read, not the whole: a server that sends a
     byte at a time would never trip it. So the body is read as it arrives (read1 returns
     what one read gave, where read(n) would wait for all n bytes) and the clock checked
-    after each piece; a download overruns its deadline by at most one timeout."""
+    after each piece; a body overruns the deadline by at most one timeout. The clock is
+    first read with the body: the status line and headers are bounded only by the timeout
+    of each read that brings them."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_suffix(".part")
     end = time.monotonic() + deadline
