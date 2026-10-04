@@ -160,6 +160,7 @@ def test_a_length_that_is_not_a_count_is_refused(url: str, length: str) -> None:
 
 def test_a_body_over_the_cap_is_refused_unread(url: str) -> None:
     assert stated(url, str(web.BODY + 1)) == 413
+    assert stated(url, "9" * 5000) == 413  # past the digits int() converts by default
     assert 0 < web.BODY < 1 << 30
 
 
