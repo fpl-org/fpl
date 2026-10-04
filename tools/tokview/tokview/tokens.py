@@ -11,6 +11,7 @@ import threading
 import time
 import urllib.request
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -143,11 +144,14 @@ def registry() -> dict[str, Callable[[], Tk]]:
 class Tokenizers:
     """The registry's tokenizers, each loaded on first use and kept. The server answers
     requests on threads, so loading holds a lock: two first requests for one Hugging Face
-    tokenizer would otherwise both fetch it through the same `.part` file."""
+    tokenizer would otherwise both fetch it through the same `.part` file. The lock is
+    anything held with `with`, so a test can watch who waits on it."""
 
     loaders: dict[str, Callable[[], Tk]] = field(default_factory=registry)
     loaded: dict[str, Tk] = field(default_factory=dict[str, Tk])
-    lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+    lock: AbstractContextManager[object] = field(
+        default_factory=threading.Lock, repr=False, compare=False
+    )
 
     def get(self, name: str) -> Tk:
         """The tokenizer of that name; a name the registry lacks is a ValueError."""

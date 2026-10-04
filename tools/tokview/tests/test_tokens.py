@@ -117,22 +117,45 @@ def test_a_tokenizer_loads_once() -> None:
     assert calls == ["load"]
 
 
+class Watched:
+    """A lock that sets contended when a caller arrives while another holds it."""
+
+    def __init__(self) -> None:
+        self.inner = threading.Lock()
+        self.contended = threading.Event()
+
+    def __enter__(self) -> None:
+        if self.inner.locked():
+            self.contended.set()
+        self.inner.acquire()
+
+    def __exit__(self, *_: object) -> None:
+        self.inner.release()
+
+
 def test_concurrent_first_uses_load_once() -> None:
     calls: list[str] = []
     tk = Tk(lambda _: [], lambda _: b"")
+    entered, release = threading.Event(), threading.Event()
 
-    def slow() -> Tk:
+    def held() -> Tk:
         calls.append("load")
-        threading.Event().wait(0.2)  # long enough for the other request to arrive
+        entered.set()
+        release.wait(5)
         return tk
 
-    loaded = Tokenizers({"t": slow})
+    lock = Watched()
+    loaded = Tokenizers({"t": held}, lock=lock)
     got: list[Tk] = []
-    threads = [threading.Thread(target=lambda: got.append(loaded.get("t"))) for _ in range(2)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
+    first, second = (threading.Thread(target=lambda: got.append(loaded.get("t"))) for _ in "12")
+    first.start()
+    assert entered.wait(5)
+    second.start()
+    assert lock.contended.wait(5)  # the second caller is at the lock while the load holds it
+    assert got == []
+    release.set()
+    first.join()
+    second.join()
     assert calls == ["load"]
     assert got == [tk, tk]
 
