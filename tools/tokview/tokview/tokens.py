@@ -110,11 +110,13 @@ class Cutter(urllib.request.HTTPSHandler, urllib.request.HTTPHandler):
     def cut(self) -> None:
         """Shuts every socket still open, so a read blocked on it returns at once. The plain
         socket's shutdown, under TLS too: SSLSocket's drops its TLS state first, which a
-        read in flight would trip over."""
+        read in flight would trip over. Each socket is read once: the fetch thread may set
+        conn.sock to None between a check and a use."""
         for conn in list(self.conns):
-            if conn.sock is not None:
+            sock = conn.sock
+            if sock is not None:
                 with suppress(OSError):  # closed by now
-                    socket.socket.shutdown(conn.sock, socket.SHUT_RDWR)
+                    socket.socket.shutdown(sock, socket.SHUT_RDWR)
 
 
 def fetch(
