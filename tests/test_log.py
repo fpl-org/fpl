@@ -459,3 +459,18 @@ def test_key(tmp_path: Path) -> None:
     made.write_bytes(bytes(31))
     with pytest.raises(RefusedError, match=r"log\.key holds 31 bytes, not 32"):
         keyed(home)
+
+
+def test_the_key_is_synced_into_its_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """keyed syncs the key's entry in its directory before it returns the key, whether it made
+    the file or found it, as from a maker racing it whose own sync has not yet run."""
+    seen = synced(monkeypatch)
+    home = {"HOME": str(tmp_path)}
+    keyed(home)
+    directory = inode(tmp_path / ".config" / "fpl")
+    assert directory in seen
+    seen.clear()
+    keyed(home)
+    assert seen == [directory]

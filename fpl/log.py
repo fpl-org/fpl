@@ -450,7 +450,9 @@ def _key_file(env: Mapping[str, str]) -> Path:
 
 def keyed(env: Mapping[str, str]) -> bytes:
     """The key that macs this operator's records, made on first use as 32 random bytes in a
-    file only its owner may read, in a directory only its owner may enter. Refused: a key
+    file only its owner may read, in a directory only its owner may enter. The file's entry
+    there is synced before the key is used, made here or found made by a racing maker whose
+    own sync may not have run, so no record outlives the key that macs it. Refused: a key
     file others may read or write, or one not 32 bytes long; a reader racing the first maker
     may meet it empty and be refused."""
     path = _key_file(env)
@@ -462,6 +464,7 @@ def keyed(env: Mapping[str, str]) -> bytes:
             os.fsync(fd)
         finally:
             os.close(fd)
+    _synced(path.parent)
     if path.stat().st_mode & 0o077:
         raise RefusedError(f"{path} is open to others")
     key = path.read_bytes()
