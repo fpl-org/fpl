@@ -1,10 +1,12 @@
 """tokview.web and tokview.__main__: the server answers the page's three requests."""
 
+import http.client
 import inspect
 import io
 import json
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Generator, Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
@@ -136,6 +138,29 @@ def test_a_tokenizer_that_cannot_be_fetched_is_a_bad_gateway(root: Path) -> None
         post(base, {"tokenizer": "t"})
     assert failed.value.code == 502
     assert b"huggingface.co unreachable" in failed.value.read()
+
+
+def stated(url: str, length: str) -> int:
+    """The status of a bodiless POST /tokenize whose Content-Length header says length."""
+    at = urllib.parse.urlsplit(url)
+    connection = http.client.HTTPConnection(at.hostname or "", at.port, timeout=5)
+    try:
+        connection.putrequest("POST", "/tokenize")
+        connection.putheader("Content-Length", length)
+        connection.endheaders()
+        return connection.getresponse().status
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("length", ["many", "-1", "", "1_0"])
+def test_a_length_that_is_not_a_count_is_refused(url: str, length: str) -> None:
+    assert stated(url, length) == 400
+
+
+def test_a_body_over_the_cap_is_refused_unread(url: str) -> None:
+    assert stated(url, str(web.BODY + 1)) == 413
+    assert 0 < web.BODY < 1 << 30
 
 
 def test_an_empty_post_is_the_defaults(url: str) -> None:
