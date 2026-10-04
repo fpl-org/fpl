@@ -501,6 +501,15 @@ def test_a_head_group_looks_its_constructor_up_from_its_own_definition() -> None
         run(nested + "3 b/c/circle b/area\n")
 
 
+def test_a_thunk_slot_is_not_a_head_group() -> None:
+    """[law: head-group] the [ ] of a thunk slot is the slot's type, not a group: with t: [ ]
+    before ( circle r ), the group is ( circle r ), which binds r and matches a circle."""
+    thunked = "f : t: [ ]  ( circle r ) -- y\n\tdrop r\n"
+    assert run(SHAPES + thunked + "[ ] 3 circle f\n") == "3\n"
+    with pytest.raises(FplError, match=r"^ERROR: 5:1 no row matches$"):
+        run(SHAPES + thunked + "[ ] [ ] f\n")
+
+
 F = "f : x: Int -- y\n\t1 +\nf : x: Text -- y\n\tdrop #text\n"
 G = "g : x -- y\n\tf\n"
 
