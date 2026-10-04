@@ -132,7 +132,7 @@ function pedigree(){
 $('wpre').addEventListener('change', () => { if ($('wpre').value) { $('width').value = $('wpre').value; $('wpre').value = ''; pedigree(); schedule(); relayout(); } });
 $('ipre').addEventListener('change', () => { if ($('ipre').value) { $('indent').value = $('ipre').value; $('ipre').value = ''; pedigree(); relayout(); } });
 const COLORS = ['c0','c1','c2','c3','c4'];
-let timer = null, last = null;
+let timer = null, last = null, runs = 0;
 
 function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function label(tok, body){
@@ -316,10 +316,26 @@ function softWrap(lines, ch){
 }
 function measureCh(){ const s = document.createElement('span'); s.className = 't'; s.textContent = '0000000000'; s.style.visibility = 'hidden'; document.body.appendChild(s); const w = s.getBoundingClientRect().width / 10; s.remove(); return w; }
 
+// Only the latest request may draw: a slow answer to an earlier one is dropped. A failed request (no
+// server, or a 400/502 with its reason) replaces the view with the reason and forgets the last answer, so
+// a later relayout cannot paint stale tokens over it.
 async function run(){
+  const mine = ++runs;
   const req = { text: $('src').value, tokenizer: $('tok').value, wrap: $('wrap').value, width: +$('width').value, claude: $('claude').checked };
-  const r = await fetch('/tokenize', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req) });
-  const data = await r.json(); last = data;
+  let data;
+  try {
+    const r = await fetch('/tokenize', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req) });
+    if (!r.ok) throw new Error(r.status + ' ' + (await r.text()));
+    data = await r.json();
+  } catch (e) {
+    if (mine !== runs) return;
+    last = null; $('out').textContent = 'tokenize failed: ' + e.message;
+    for (const id of ['n','chars','bpt','lines','over','cl']) $(id).textContent = '–';
+    $('over').className = '';
+    return;
+  }
+  if (mine !== runs) return;
+  last = data;
   $('n').textContent = data.count; $('chars').textContent = [...data.text].length; $('lines').textContent = data.lines;
   $('bpt').textContent = (new TextEncoder().encode(data.text).length / Math.max(1, data.count)).toFixed(2);
   $('over').textContent = data.over; $('over').className = data.over ? 'over' : '';
