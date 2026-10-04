@@ -487,6 +487,20 @@ def test_a_pin_in_a_head_group_is_refused() -> None:
         run(SHAPES + "area : y  ( circle $y ) -- n\n\tdrop 1\n")
 
 
+def test_a_head_group_looks_its_constructor_up_from_its_own_definition() -> None:
+    """[law: head-group] the constructor in a head group is found from the definition it
+    heads, not the one desugared before it: b/area's ( circle r ) is b/circle, though
+    b/c/circle comes between them."""
+    nested = (
+        "b/\n\tcircle : r -- shape\n\t\t#circle swap pair\n"
+        "\tc/\n\t\tcircle : r -- shape\n\t\t\t#other swap pair\n"
+        "\tarea : ( circle r ) -- n\n\t\tr dup times\n"
+    )
+    assert run(nested + "3 b/circle b/area\n") == "9\n"
+    with pytest.raises(FplError, match=r"^ERROR: 7:2 no row matches$"):
+        run(nested + "3 b/c/circle b/area\n")
+
+
 F = "f : x: Int -- y\n\t1 +\nf : x: Text -- y\n\tdrop #text\n"
 G = "g : x -- y\n\tf\n"
 
