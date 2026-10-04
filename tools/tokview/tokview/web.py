@@ -40,8 +40,10 @@ class Response(Protocol):
 Opener = Callable[[urllib.request.Request], AbstractContextManager[Response]]
 
 
-def claude_count(text: str, key: str, opener: Opener = urllib.request.urlopen) -> int:
-    """Claude's token count of text as one user message, from the counting endpoint."""
+def claude_count(text: str, key: str, opener: Opener = urllib.request.urlopen) -> int | None:
+    """Claude's token count of text as one user message, from the counting endpoint; None
+    when the endpoint cannot be reached, refuses, or answers something that is not a count.
+    The count is an extra, so its failure never costs the page the rest of the answer."""
     request = urllib.request.Request(
         COUNT_URL,
         data=json.dumps({"model": MODEL, "messages": [{"role": "user", "content": text}]}).encode(),
@@ -52,8 +54,11 @@ def claude_count(text: str, key: str, opener: Opener = urllib.request.urlopen) -
         },
         method="POST",
     )
-    with opener(request) as response:
-        return int(json.loads(response.read())["input_tokens"])
+    try:
+        with opener(request) as response:
+            return int(json.loads(response.read())["input_tokens"])
+    except (OSError, KeyError, TypeError, ValueError):
+        return None
 
 
 def layout(text: str, wrap: str, width: int) -> tuple[str, int]:
