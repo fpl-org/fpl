@@ -59,7 +59,7 @@ def get(url: str) -> bytes:
         return body
 
 
-def post(url: str, body: dict[str, Any]) -> dict[str, Any]:
+def post(url: str, body: object) -> dict[str, Any]:
     request = urllib.request.Request(f"{url}/tokenize", data=json.dumps(body).encode())
     answer: dict[str, Any] = json.loads(get_request(request))
     return answer
@@ -99,7 +99,8 @@ def test_a_split_character_has_no_text(url: str) -> None:
 
 
 def test_a_bad_request_is_refused(url: str) -> None:
-    for body in [{"tokenizer": "gpt2"}, {"width": "wide"}]:
+    wrong: list[object] = [{"tokenizer": "gpt2"}, {"width": "wide"}, {"width": None}, [1], None]
+    for body in wrong:
         with pytest.raises(urllib.error.HTTPError) as refused:
             post(url, body)
         assert refused.value.code == 400
