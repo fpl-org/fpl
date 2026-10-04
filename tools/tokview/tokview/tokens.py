@@ -8,6 +8,7 @@ each file is fetched once into the cache directory.
 import importlib.util
 import os
 import threading
+import time
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -17,7 +18,10 @@ from pathlib import Path
 import tiktoken
 
 HF = {"qwen": "Qwen/Qwen2.5-Coder-7B", "deepseek": "deepseek-ai/DeepSeek-V3"}
-TIMEOUT = 60.0  # seconds a stalled download may hold up the request that wants the tokenizer
+TIMEOUT = 60.0  # seconds a download may stay silent before it is given up
+DEADLINE = 300.0  # seconds a download may run in all, however steadily its bytes come
+LIMIT = 64 << 20  # bytes of a tokenizer.json; the real ones are under 8 MiB
+CHUNK = 1 << 16  # bytes read, at most, before the deadline is checked again
 
 
 @dataclass(frozen=True)
@@ -72,13 +76,39 @@ def cache_dir() -> Path:
     return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "fpl-tokview"
 
 
-def fetch(url: str, dest: Path) -> None:
-    """Dest holds the body of url, written whole or not at all; a server silent for TIMEOUT
-    seconds is an error, never a request that hangs."""
+def fetch(
+    url: str,
+    dest: Path,
+    *,
+    timeout: float = TIMEOUT,
+    deadline: float = DEADLINE,
+    limit: int = LIMIT,
+) -> None:
+    """Dest holds the body of url, written whole or not at all.
+
+    A server silent for timeout seconds, a download still running after deadline seconds,
+    and a body over limit bytes are each an OSError, never a request that hangs or a disk
+    that fills; the fetch runs under the Tokenizers lock, so every other first use waits
+    on it. A socket timeout alone bounds each read, not the whole: a server that sends a
+    byte at a time would never trip it. So the body is read as it arrives (read1 returns
+    what one read gave, where read(n) would wait for all n bytes) and the clock checked
+    after each piece; a download overruns its deadline by at most one timeout."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_suffix(".part")
-    with urllib.request.urlopen(url, timeout=TIMEOUT) as response:
-        part.write_bytes(response.read())
+    end = time.monotonic() + deadline
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response, part.open("wb") as out:
+            size = 0
+            while chunk := response.read1(CHUNK):
+                size += len(chunk)
+                if size > limit:
+                    raise OSError(f"{url} is larger than {limit} bytes")
+                if time.monotonic() > end:
+                    raise TimeoutError(f"{url} took longer than {deadline} s")
+                out.write(chunk)
+    except OSError:
+        part.unlink(missing_ok=True)
+        raise
     part.replace(dest)
 
 

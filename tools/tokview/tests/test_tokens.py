@@ -3,9 +3,13 @@
 import json
 import sys
 import threading
-import urllib.request
+import time
+from collections.abc import Callable, Generator
+from contextlib import contextmanager, suppress
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import pairwise
 from pathlib import Path
+from typing import Any, override
 
 import pytest
 from hypothesis import given
@@ -156,20 +160,90 @@ def test_fetch_writes_the_body_whole(tmp_path: Path) -> None:
     assert not dest.with_suffix(".part").exists()
 
 
-def test_fetch_gives_up_in_finite_time(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    timeouts: list[object] = []
-    urlopen = urllib.request.urlopen
+@contextmanager
+def serving(answer: Callable[[BaseHTTPRequestHandler, threading.Event], None]) -> Generator[str]:
+    """The URL of a local server that answers each GET with answer, for the length of the
+    block; answer is handed an event set when the block ends, to stop waiting on."""
+    done = threading.Event()
 
-    def recording(url: str, *, timeout: float) -> object:
-        timeouts.append(timeout)
-        return urlopen(url, timeout=timeout)
+    class Answer(BaseHTTPRequestHandler):
+        @override
+        def log_message(self, format: str, *args: Any) -> None:
+            """Quiet."""
 
-    monkeypatch.setattr(urllib.request, "urlopen", recording)
-    source = tmp_path / "source.json"
-    source.write_text("{}")
-    fetch(source.as_uri(), tmp_path / "tokenizer.json")
-    assert timeouts == [tokens.TIMEOUT]
-    assert 0 < tokens.TIMEOUT < 600
+        def do_GET(self) -> None:
+            with suppress(OSError):  # the client gave up first, as the tests want it to
+                answer(self, done)
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Answer)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{httpd.server_port}/tokenizer.json"
+    finally:
+        done.set()
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def head(handler: BaseHTTPRequestHandler, length: int) -> None:
+    """A 200 whose body will be length bytes, its headers sent."""
+    handler.send_response(200)
+    handler.send_header("Content-Length", str(length))
+    handler.end_headers()
+
+
+def silent(handler: BaseHTTPRequestHandler, done: threading.Event) -> None:
+    """Promises a byte and never sends it."""
+    head(handler, 1)
+    done.wait()
+
+
+def trickling(handler: BaseHTTPRequestHandler, done: threading.Event) -> None:
+    """A byte every 20 ms, never silent for long, two seconds in all."""
+    head(handler, 100)
+    for _ in range(100):
+        handler.wfile.write(b" ")
+        if done.wait(0.02):
+            return
+
+
+def eleven(handler: BaseHTTPRequestHandler, _: threading.Event) -> None:
+    """Eleven bytes at once."""
+    head(handler, 11)
+    handler.wfile.write(b"x" * 11)
+
+
+def test_fetch_gives_up_on_a_silent_server(tmp_path: Path) -> None:
+    with serving(silent) as url:
+        start = time.monotonic()
+        with pytest.raises(TimeoutError):
+            fetch(url, tmp_path / "tokenizer.json", timeout=0.2)
+        assert time.monotonic() - start < 2
+    assert not any(tmp_path.iterdir())
+
+
+def test_fetch_gives_up_on_a_server_that_trickles(tmp_path: Path) -> None:
+    with serving(trickling) as url:
+        start = time.monotonic()
+        with pytest.raises(TimeoutError, match=r"longer than 0\.3 s"):
+            fetch(url, tmp_path / "tokenizer.json", timeout=5, deadline=0.3)
+        assert time.monotonic() - start < 1.5
+    assert not any(tmp_path.iterdir())
+
+
+def test_fetch_refuses_a_body_over_the_limit(tmp_path: Path) -> None:
+    dest = tmp_path / "tokenizer.json"
+    with serving(eleven) as url:
+        with pytest.raises(OSError, match="larger than 10 bytes"):
+            fetch(url, dest, limit=10)
+        assert not any(tmp_path.iterdir())
+        fetch(url, dest, limit=11)
+    assert dest.read_bytes() == b"x" * 11
+
+
+def test_the_fetch_bounds_clear_the_real_files() -> None:
+    assert 0 < tokens.TIMEOUT <= tokens.DEADLINE < 3600
+    assert tokens.LIMIT >= 32 << 20  # DeepSeek-V3's tokenizer.json is under 8 MiB
 
 
 @pytest.fixture
