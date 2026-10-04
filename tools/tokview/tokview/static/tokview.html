@@ -220,7 +220,7 @@ function layout(){
   const lines = [...document.querySelectorAll('.line')];
   document.documentElement.style.setProperty('--gap', gap + 'px');
   for (const c of document.querySelectorAll('.cell')) { c.style.width = ''; c.style.marginLeft = ''; }
-  if (!elastic) return;
+  if (!elastic) { if (soft) softWrap(lines, ch); return; }
   const maxCols = Math.max(0, ...lines.map(l => l.querySelectorAll('.cell').length));
   for (let j = 0; j < maxCols - 1; j++){           // the last cell of a line is never a column
     let run = [];
