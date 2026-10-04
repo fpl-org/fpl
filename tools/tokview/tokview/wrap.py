@@ -47,8 +47,11 @@ def wrap(words: list[str], width: int, prefix: int) -> list[str]:
 
 
 def fold_line(line: str, width: int) -> tuple[list[str], bool]:
-    """The line folded to width, and whether its code alone is wider than that."""
+    """The line folded to width, and whether its code alone is wider than that. A comment
+    line that fits is left as written, its spacing included."""
     if m := COMMENT.match(line):
+        if cols(line) <= width:
+            return [line], False
         indent, mark, text = m.groups()
         parts = wrap(text.split(" "), width, len(indent) * TAB + len(mark) + 1)
         return [f"{indent}{mark} {p}" for p in parts], False

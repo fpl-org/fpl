@@ -80,6 +80,11 @@ def test_a_note_that_fits_is_left_alone() -> None:
     assert fold_line("dup times\t; the square", 80) == (["dup times\t; the square"], False)
 
 
+def test_a_comment_that_fits_is_left_alone() -> None:
+    line = "\t;;  two  spaces, kept"
+    assert fold_line(line, 80) == ([line], False)
+
+
 def test_an_empty_comment_survives() -> None:
     assert fold_line(";; ", 20) == ([";; "], False)
     assert wrap([], 20, 0) == [""]
