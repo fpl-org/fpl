@@ -134,6 +134,7 @@ def test_concurrent_first_uses_load_once() -> None:
 
 
 def test_the_hugging_face_entries_need_tokenizers(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("tokenizers")
     assert set(registry()) == {"o200k", "cl100k", "qwen", "deepseek"}
     monkeypatch.setitem(sys.modules, "tokenizers", None)
     assert set(registry()) == {"o200k", "cl100k"}
@@ -173,7 +174,9 @@ def test_fetch_gives_up_in_finite_time(monkeypatch: pytest.MonkeyPatch, tmp_path
 
 @pytest.fixture
 def hf(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Tk:
-    """The tiny tokenizer, loaded the way a Hugging Face one is, fetched once."""
+    """The tiny tokenizer, loaded the way a Hugging Face one is, fetched once. Skipped
+    without the hf extra; `make tools` syncs every extra, so the lane always runs it."""
+    pytest.importorskip("tokenizers")
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     urls: list[str] = []
 
