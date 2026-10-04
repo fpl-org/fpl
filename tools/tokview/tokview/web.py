@@ -159,15 +159,18 @@ class App:
 
         A Content-Length that is not a count of digits is a 400: taken as int() takes it, a
         negative one would read until the client hangs up, and "1_0" would wait for ten
-        bytes. A body over BODY bytes is a 413, refused before a byte of it is read. A
+        bytes. A body over BODY bytes is a 413, refused before a byte of it is read; its
+        digits are counted before int() sees them, which refuses more than 4300. A
         malformed request is a 400; a tokenizer that could not be fetched (refused,
         unreachable, too slow, too large) is a 502 that says why, in at most ERROR bytes."""
         if not (length.isascii() and length.isdigit()):
             return 400, f"Content-Length {length!r} is not a count".encode(), TEXT
-        if int(length) > BODY:
+        digits = length.lstrip("0") or "0"
+        size = int(digits) if len(digits) <= len(str(BODY)) else BODY + 1
+        if size > BODY:
             return 413, f"a body over {BODY} bytes is refused".encode(), TEXT
         try:
-            answer = self.tokenize(json.loads(read(int(length)) or b"{}"))
+            answer = self.tokenize(json.loads(read(size) or b"{}"))
         except ValueError as refused:
             return 400, str(refused).encode(), TEXT
         except OSError as failed:
