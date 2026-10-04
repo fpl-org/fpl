@@ -98,6 +98,7 @@ class UnderflowError(FplError):
     """Fewer values than a word takes."""
 
     def __init__(self, span: Span) -> None:
+        """An underflow at the word the span points to; the message is always the same."""
         super().__init__(span, "stack underflow")
 
 

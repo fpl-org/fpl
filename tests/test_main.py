@@ -34,9 +34,12 @@ def test_the_caret_goes_to_stderr_and_the_error_line_to_stdout(
     source: str,
     message: str,
 ) -> None:
+    """A file that fails exits 1 with its error line on stdout and, when the span falls in the
+    source, the line it points into and the caret on stderr; nothing else on either."""
     error = FplError(Span(1, 2), message)
 
     def run(_source: str, _report: Callable[[str], None]) -> str:
+        """Stand in for the driver: fail with the drawn error, whatever the source."""
         raise error
 
     monkeypatch.setattr("fpl.__main__.run", run)
@@ -55,9 +58,12 @@ def test_a_file_that_runs_prints_its_output(
     monkeypatch: pytest.MonkeyPatch,
     output: str,
 ) -> None:
+    """A file that runs exits 0 and prints the driver's output unchanged, the driver having been
+    given the file's text."""
     seen: list[str] = []
 
     def run(source: str, _report: Callable[[str], None]) -> str:
+        """Stand in for the driver: note the source it was given, return the drawn output."""
         seen.append(source)
         return output
 
