@@ -353,6 +353,45 @@ def test_bodies_hash_to_their_names(tmp_path: Path) -> None:
         write(tmp_path / "t.log", KEY, Log((), {}, 0), short, {hashed(b"3\n"): b"3\n"})
 
 
+def synced(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int]]:
+    """The device and inode of every file and directory fsynced from now on, in order."""
+    seen: list[tuple[int, int]] = []
+    real = os.fsync
+
+    def recording(fd: int) -> None:
+        """Note what fd names, then sync it."""
+        found = os.fstat(fd)
+        seen.append((found.st_dev, found.st_ino))
+        real(fd)
+
+    monkeypatch.setattr(os, "fsync", recording)
+    return seen
+
+
+def inode(path: Path) -> tuple[int, int]:
+    """The device and inode of path, as `synced` notes them."""
+    found = path.stat()
+    return found.st_dev, found.st_ino
+
+
+def test_a_new_store_is_synced_into_its_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The write that makes the body store syncs the store's entry in the log's directory
+    before it syncs the record naming a body in it; a write finding the store does not."""
+    path = tmp_path / "s.log"
+    seen = synced(monkeypatch)
+    event = dataclasses.replace(FIRST, body=hashed(LONG))
+    log = write(path, KEY, load(path, KEY), event, {hashed(LONG): LONG, BASE.out: b"3\n"})
+    directory, record = inode(tmp_path), inode(path)
+    assert directory in seen[: seen.index(record)]
+    seen.clear()
+    other = b"2 3 +\n" * 8
+    again = dataclasses.replace(BASE, deps=(event.ident,), body=hashed(other))
+    write(path, KEY, log, again, {hashed(other): other})
+    assert directory not in seen[: seen.index(record)]
+
+
 def test_framing(tmp_path: Path) -> None:
     """No file is the empty log; an empty line is a record, and refused."""
     path = tmp_path / "s.log"

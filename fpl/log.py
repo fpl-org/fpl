@@ -373,8 +373,11 @@ def _synced(directory: Path) -> None:
 
 
 def _kept(store: Path, name: Multihash, data: bytes) -> None:
-    """data durable in the store under its name, whole or not at all."""
-    store.mkdir(mode=0o700, exist_ok=True)
+    """data durable in the store under its name, whole or not at all. A store made here has its
+    own entry synced too, so a record naming a body in it never outlives the store."""
+    with contextlib.suppress(FileExistsError):
+        store.mkdir(mode=0o700)
+        _synced(store.parent)
     temporary = store / f".{name.spelled()}.tmp"
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
