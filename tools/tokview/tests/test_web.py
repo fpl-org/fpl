@@ -1,5 +1,6 @@
 """tokview.web and tokview.__main__: the server answers the page's three requests."""
 
+import inspect
 import io
 import json
 import threading
@@ -8,12 +9,13 @@ import urllib.request
 from collections.abc import Generator, Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from email.message import Message
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 
 import pytest
 from tokview import __main__ as cli
+from tokview import web
 from tokview.tokens import Tk, Tokenizers
 from tokview.web import (
     PAGE,
@@ -23,6 +25,7 @@ from tokview.web import (
     claude_count,
     find_root,
     layout,
+    send,
     server,
 )
 
@@ -198,6 +201,64 @@ def test_a_failed_count_still_tokenizes(root: Path, monkeypatch: pytest.MonkeyPa
         answer = post(base, {"text": NOTE, "claude": True})
     assert answer["claude"] is None
     assert answer["count"] > 0
+
+
+def test_the_count_follows_no_redirect() -> None:
+    followed: list[str] = []
+
+    class Moved(BaseHTTPRequestHandler):
+        """Answers the POST with a redirect, and notes any request that follows it."""
+
+        @override
+        def log_message(self, format: str, *args: Any) -> None:
+            """Quiet."""
+
+        def do_POST(self) -> None:
+            self.send_response(302)
+            self.send_header("Location", "/elsewhere")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_GET(self) -> None:
+            followed.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Moved)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{httpd.server_port}/count",
+        data=b"{}",
+        headers={"x-api-key": "test-key"},
+        method="POST",
+    )
+    try:
+        with pytest.raises(urllib.error.HTTPError) as refused:
+            send(request)
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    assert refused.value.code == 302
+    assert followed == []
+
+
+def test_the_count_gives_up_in_finite_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    opened: list[tuple[str, float]] = []
+
+    def recording(request: urllib.request.Request, *, timeout: float) -> object:
+        opened.append((request.full_url, timeout))
+        return nullcontext(io.BytesIO(b""))
+
+    monkeypatch.setattr(web.NO_REDIRECTS, "open", recording)
+    send(urllib.request.Request(web.COUNT_URL))
+    assert opened == [(web.COUNT_URL, web.TIMEOUT)]
+    assert 0 < web.TIMEOUT < 600
+
+
+def test_the_count_opens_through_send(root: Path) -> None:
+    assert inspect.signature(claude_count).parameters["opener"].default is send
+    assert App(root).opener is send
 
 
 def test_a_code_line_past_the_width_is_over() -> None:
