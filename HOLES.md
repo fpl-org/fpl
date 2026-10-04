@@ -515,7 +515,7 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Depends on it: fpl/log.py (write, keyed), the law write-ahead (tests/test_repl.py)
 - Default in force: os.fsync of each file and its directory; on macOS it does not flush the drive's cache (F_FULLFSYNC), so a power loss can lose an append that was printed
 - Closes by: maintainer, a per-platform coverage policy under which a darwin branch to fcntl.F_FULLFSYNC can be kept at 100%
-- Evidence: fpl/log.py:370, :385, :420, :487; fcntl.F_FULLFSYNC exists on darwin only; quality/coveragerc:10 (fail_under = 100)
+- Evidence: fpl/log.py:370, :385, :420, :490; fcntl.F_FULLFSYNC exists on darwin only; quality/coveragerc:10 (fail_under = 100)
 
 ## repl-transcript
 - Depends on it: fpl/repl.py, fpl/session.py (enter), tests/test_repl.py, tests/test_session.py
