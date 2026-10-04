@@ -16,9 +16,10 @@ import urllib.request
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
+from http.client import HTTPMessage
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Protocol, cast, override
+from typing import IO, Any, Protocol, cast, override
 
 from tokview.tokens import Tokenizers
 from tokview.wrap import cols, folded, ventilated
@@ -38,9 +39,37 @@ class Response(Protocol):
 
 
 Opener = Callable[[urllib.request.Request], AbstractContextManager[Response]]
+TIMEOUT = 10.0  # seconds the counting endpoint may take before the count is given up
 
 
-def claude_count(text: str, key: str, opener: Opener = urllib.request.urlopen) -> int | None:
+class Unredirected(urllib.request.HTTPRedirectHandler):
+    """Follows no redirect. urllib's handler copies every header but Content-Type and
+    Content-Length to the new URL, so the counting call's x-api-key would go wherever a
+    redirect pointed; refused, a redirect is an HTTPError, and the count is None."""
+
+    @override
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: HTTPMessage,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        return None
+
+
+NO_REDIRECTS = urllib.request.build_opener(Unredirected)
+
+
+def send(request: urllib.request.Request) -> AbstractContextManager[Response]:
+    """The counting call's opener: request opened with a TIMEOUT, following no redirect."""
+    response: AbstractContextManager[Response] = NO_REDIRECTS.open(request, timeout=TIMEOUT)
+    return response
+
+
+def claude_count(text: str, key: str, opener: Opener = send) -> int | None:
     """Claude's token count of text as one user message, from the counting endpoint; None
     when the endpoint cannot be reached, refuses, or answers something that is not a count.
     The count is an extra, so its failure never costs the page the rest of the answer."""
@@ -80,7 +109,7 @@ class App:
     """What a request needs: the checkout's root, the tokenizers, and how to open a URL."""
 
     root: Path
-    opener: Opener = urllib.request.urlopen
+    opener: Opener = send
     tokenizers: Tokenizers = field(default_factory=Tokenizers)
 
     def snippets(self) -> dict[str, str]:
