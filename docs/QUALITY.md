@@ -38,7 +38,9 @@ lint-imports gives in `make check`, and a class diagram per module, as Mermaid, 
 `.noslop/map/`.
 Its output is never committed: computed from the code each time, it cannot go stale.
 `.github/workflows/map.yml` draws the head and the base of every pull request into the run's
-summary, with the difference between the two.
+summary, with the difference between the two. Each checkout is drawn where its own
+`scripts/diagrams` says its package lies, read without running it, so the base of a pull
+request that moves the package is drawn where the package was.
 
 `make check` runs, in order:
 

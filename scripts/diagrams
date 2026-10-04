@@ -2,7 +2,7 @@
 """scripts/diagrams — the map of the code, computed on demand and never committed.
 
     scripts/diagrams [--root DIR] [--source DIR] [--out DIR]
-                     (defaults: ., SOURCE, .noslop/map)
+                     (defaults: ., that checkout's SOURCE, .noslop/map)
     scripts/diagrams --self-test
 
 A drawing of the code kept in git is out of date the first time the code moves without it.
@@ -10,8 +10,9 @@ So the map is a view, like a coverage report: `make map` draws the working tree 
 .noslop/map/, which git ignores, and .github/workflows/map.yml draws the head and the base
 of every pull request into the run's summary, where GitHub renders Mermaid. `--root` draws
 another checkout, judged by that checkout's own contracts. `--source` is the directory under
-the checkout that holds its root package; it defaults to SOURCE, below, the one place the map
-says where the package lives.
+the checkout that holds its root package; it defaults to the SOURCE, below, of the drawn
+checkout's own copy of this script, the one place each checkout says where its package
+lives. So the base of a pull request that moves the package is drawn where it was.
 
 Into DIR it writes:
 
@@ -40,6 +41,7 @@ import-linter can read under DIR.
 """
 
 import argparse
+import ast
 import contextlib
 import io
 import itertools
@@ -343,10 +345,36 @@ def page(imports: Imports, flow: str, diagrams: list[tuple[str, str, int]]) -> s
     return "\n".join(out)
 
 
+def source_of(root: Path) -> Path:
+    """Where the checkout at `root` keeps its root package: the SOURCE of its own copy of
+    this script.
+
+    The copy is read, never run, and its SOURCE must be a literal `Path("dir", ...)`: one
+    that only running it would tell is refused, not guessed at. A checkout whose copy names
+    no SOURCE, or that has none, predates SOURCE and kept the package at the top.
+    """
+    script = root / "scripts" / "diagrams"
+    if not script.is_file():
+        return Path()
+    for s in ast.parse(script.read_text()).body:
+        match s:
+            case (
+                ast.Assign(targets=[ast.Name("SOURCE")], value=value)
+                | ast.AnnAssign(target=ast.Name("SOURCE"), value=value)
+            ):
+                match value:
+                    case ast.Call(func=ast.Name("Path"), args=args, keywords=[]) if all(
+                        isinstance(a, ast.Constant) and isinstance(a.value, str) for a in args
+                    ):
+                        return Path(*(a.value for a in args))
+                raise UnmappableError(f"SOURCE in {script} is no literal Path(...)")
+    return Path()
+
+
 def draw(root: Path, source: Path, out: Path) -> None:
     """Draw the map of the checkout at `root` into `out`, replacing an earlier map there.
 
-    The root package lies in the checkout's `source` directory (SOURCE, unless told).
+    The root package lies in the checkout's `source` directory.
     """
     home = root / source
     package, rules, graph = judge(root, home)
@@ -376,11 +404,12 @@ def main(argv: list[str]) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--root", type=Path, default=Path())
-    parser.add_argument("--source", type=Path, default=SOURCE)
+    parser.add_argument("--source", type=Path)
     parser.add_argument("--out", type=Path, default=Path(".noslop/map"))
     args = parser.parse_args(argv)
+    root = args.root.resolve()
     try:
-        draw(args.root.resolve(), args.source, args.out)
+        draw(root, args.source or source_of(root), args.out)
     except UnmappableError as e:
         print(f"diagrams: nothing to map: {e}", file=sys.stderr)
         return 2
@@ -477,10 +506,21 @@ def self_test() -> int:
         root = lay(Path(tmp) / "lib", lib)
         (code1, one), (code2, two) = run(root, "--source", "lib"), run(root, "--source", "lib")
         check("the package is found where --source says", code1 == code2 == 0)
-        deep = run(lay(Path(tmp) / "deep", Path("src", "py")), "--source", "src/py")
+
+        def script(source: str) -> str:
+            """A checkout's own scripts/diagrams, as much of it as names its SOURCE."""
+            return f"from pathlib import Path\n\nSOURCE = {source}\n"
+
+        home = Path(tmp) / "deep"
+        deep = run(lay(home, Path("src", "py"), script('Path("else")')), "--source", "src/py")
         check("another directory, two deep, gives the same map", deep == (0, one))
-        check("the default, SOURCE, is the top", run(lay(Path(tmp) / "top", Path())) == (0, one))
-        check("without --source the package is not looked for below the top", run(root)[0] == 2)
+        own = run(lay(Path(tmp) / "own", Path("pkg"), script('Path("pkg")')))
+        check("by default, the package is where the checkout's own SOURCE says", own == (0, one))
+        check("this script's SOURCE is its default", source_of(Path(__file__).parents[1]) == SOURCE)
+        check("before SOURCE, it was at the top", run(lay(Path(tmp) / "top", Path())) == (0, one))
+        check("nor is it looked for below the top", run(root)[0] == 2)
+        odd = lay(Path(tmp) / "odd", Path(), script('Path("a") / "b"'))
+        check("a SOURCE that must be run to be read is refused", run(odd)[0] == 2)
         flow, md, c = (
             one.get("imports.mmd", ""),
             one.get("map.md", ""),
