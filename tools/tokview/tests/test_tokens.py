@@ -4,6 +4,7 @@ import json
 import sys
 import threading
 import time
+import urllib.request
 from collections.abc import Callable, Generator
 from contextlib import contextmanager, suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -230,6 +231,18 @@ def trickling(handler: BaseHTTPRequestHandler, done: threading.Event) -> None:
             return
 
 
+def dripping(head: bytes) -> Callable[[BaseHTTPRequestHandler, threading.Event], None]:
+    """Sends head a byte every 20 ms, two seconds in all, and nothing after it."""
+
+    def answer(handler: BaseHTTPRequestHandler, done: threading.Event) -> None:
+        for byte in head.ljust(100, b"a"):
+            handler.wfile.write(bytes([byte]))
+            if done.wait(0.02):
+                return
+
+    return answer
+
+
 def eleven(handler: BaseHTTPRequestHandler, _: threading.Event) -> None:
     """Eleven bytes at once."""
     head(handler, 11)
@@ -254,6 +267,20 @@ def test_fetch_gives_up_on_a_server_that_trickles(tmp_path: Path) -> None:
     assert not any(tmp_path.iterdir())
 
 
+@pytest.mark.parametrize(
+    "head",
+    [b"HTTP/1.0 200 OK", b"HTTP/1.0 200 OK\r\nX-Slow: "],
+    ids=["status line", "headers"],
+)
+def test_fetch_gives_up_on_a_server_that_trickles_its_head(tmp_path: Path, head: bytes) -> None:
+    with serving(dripping(head)) as url:
+        start = time.monotonic()
+        with pytest.raises(TimeoutError, match=r"longer than 0\.3 s"):
+            fetch(url, tmp_path / "tokenizer.json", timeout=5, deadline=0.3)
+        assert time.monotonic() - start < 1.5
+    assert not any(tmp_path.iterdir())
+
+
 def test_fetch_refuses_a_body_over_the_limit(tmp_path: Path) -> None:
     dest = tmp_path / "tokenizer.json"
     with serving(eleven) as url:
@@ -262,6 +289,14 @@ def test_fetch_refuses_a_body_over_the_limit(tmp_path: Path) -> None:
         assert not any(tmp_path.iterdir())
         fetch(url, dest, limit=11)
     assert dest.read_bytes() == b"x" * 11
+
+
+def test_a_cut_after_the_head_leaves_the_body_alone() -> None:
+    cutter = tokens.Cutter()
+    with serving(eleven) as url, urllib.request.build_opener(cutter).open(url) as response:
+        cutter.cut()
+        assert response.read() == b"x" * 11
+    assert len(cutter.conns) == 1
 
 
 def test_the_fetch_bounds_clear_the_real_files() -> None:
