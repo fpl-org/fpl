@@ -7,6 +7,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Generator, Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
+from email.message import Message
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,16 @@ from typing import Any
 import pytest
 from tokview import __main__ as cli
 from tokview.tokens import Tk, Tokenizers
-from tokview.web import PAGE, App, Response, claude_count, find_root, layout, server
+from tokview.web import (
+    PAGE,
+    App,
+    Opener,
+    Response,
+    claude_count,
+    find_root,
+    layout,
+    server,
+)
 
 NOTE = "sq : x -- y\t; the square of x. Multiplying keeps its kind; an integer stays exact."
 
@@ -153,6 +163,41 @@ def test_the_count_request(opener: FakeOpener) -> None:
     assert isinstance(request.data, bytes)
     sent = json.loads(request.data)
     assert sent["messages"] == [{"role": "user", "content": "dup times"}]
+
+
+def refusing(request: urllib.request.Request) -> AbstractContextManager[Response]:
+    raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", Message(), None)
+
+
+def unreachable(_: urllib.request.Request) -> AbstractContextManager[Response]:
+    raise urllib.error.URLError("api.anthropic.com unreachable")
+
+
+def answering(body: bytes) -> Opener:
+    return lambda _: nullcontext(io.BytesIO(body))
+
+
+@pytest.mark.parametrize(
+    "failing",
+    [
+        refusing,
+        unreachable,
+        answering(b"<html>busy</html>"),
+        answering(b'{"error": "overloaded"}'),
+        answering(b"[7]"),
+        answering(b'{"input_tokens": "many"}'),
+    ],
+)
+def test_a_failed_count_is_no_count(failing: Opener) -> None:
+    assert claude_count("dup times", "test-key", failing) is None
+
+
+def test_a_failed_count_still_tokenizes(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    with serving(App(root, refusing)) as base:
+        answer = post(base, {"text": NOTE, "claude": True})
+    assert answer["claude"] is None
+    assert answer["count"] > 0
 
 
 def test_a_code_line_past_the_width_is_over() -> None:
