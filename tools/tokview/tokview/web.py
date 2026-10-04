@@ -28,6 +28,8 @@ PAGE = Path(__file__).with_name("static") / "tokview.html"
 COUNT_URL = "https://api.anthropic.com/v1/messages/count_tokens"
 MODEL = "claude-opus-5-5"
 ERROR = 500  # bytes of an upstream failure passed on to the page
+BODY = 1 << 22  # bytes of a request body; the page sends one source file, never this much
+TEXT = "text/plain; charset=utf-8"
 
 
 class Response(Protocol):
@@ -151,6 +153,27 @@ class App:
             "claude": claude_count(text, key, self.opener) if key and wanted else None,
         }
 
+    def post(self, length: str, read: Callable[[int], bytes]) -> tuple[int, bytes, str]:
+        """The status, body and type of the answer to POST /tokenize, whose Content-Length
+        header says length and whose body read gives.
+
+        A Content-Length that is not a count of digits is a 400: taken as int() takes it, a
+        negative one would read until the client hangs up, and "1_0" would wait for ten
+        bytes. A body over BODY bytes is a 413, refused before a byte of it is read. A
+        malformed request is a 400; a tokenizer that could not be fetched (refused,
+        unreachable, timed out) is a 502 that says why, in at most ERROR bytes."""
+        if not (length.isascii() and length.isdigit()):
+            return 400, f"Content-Length {length!r} is not a count".encode(), TEXT
+        if int(length) > BODY:
+            return 413, f"a body over {BODY} bytes is refused".encode(), TEXT
+        try:
+            answer = self.tokenize(json.loads(read(int(length)) or b"{}"))
+        except ValueError as refused:
+            return 400, str(refused).encode(), TEXT
+        except OSError as failed:
+            return 502, str(failed).encode()[:ERROR], TEXT
+        return 200, json.dumps(answer).encode(), "application/json"
+
 
 def handler(app: App) -> type[BaseHTTPRequestHandler]:
     """The request handler serving app."""
@@ -174,18 +197,7 @@ def handler(app: App) -> type[BaseHTTPRequestHandler]:
                 self.send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
 
         def do_POST(self) -> None:
-            """A malformed request is a 400; a tokenizer that could not be fetched (refused,
-            unreachable, timed out) is a 502 that says why, in at most ERROR bytes."""
-            body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
-            try:
-                answer = app.tokenize(json.loads(body or b"{}"))
-            except ValueError as refused:
-                self.send(400, str(refused).encode(), "text/plain; charset=utf-8")
-                return
-            except OSError as failed:
-                self.send(502, str(failed).encode()[:ERROR], "text/plain; charset=utf-8")
-                return
-            self.send(200, json.dumps(answer).encode(), "application/json")
+            self.send(*app.post(self.headers.get("Content-Length", "0"), self.rfile.read))
 
     return Handler
 
