@@ -392,9 +392,8 @@ def main(argv: list[str]) -> int:
 # only directly; `near` forbids `b` to import `c` directly, `waived` forbids it but waives
 # the import. `wild` names the modules of `e` by a wildcard, and `stack` is a layers
 # contract `b` breaks. `d` is named by no contract; `c` has a brace in a member's type;
-# `big` has too many classes for its methods to be drawn. The package lies under TOY_SOURCE,
-# not at the top of the checkout, so a map that looked for it anywhere but its source fails.
-TOY_SOURCE = Path("lib")
+# `big` has too many classes for its methods to be drawn. The self-test lays it out under
+# several directories, so a map that looked for it anywhere but where it is told fails.
 TOY = {
     "toy/__init__.py": "",
     "toy/a.py": "from toy import b\n",
@@ -428,12 +427,25 @@ TOY = {
 }
 
 
-def gate(root: Path) -> dict[str, bool]:
+def lay(root: Path, source: Path, script: str | None = None) -> Path:
+    """The toy as a checkout at `root`, its package under `source` and, when given, `script`
+    as the checkout's own scripts/diagrams."""
+    files = {CONFIG: TOY[str(CONFIG)]}
+    files |= {source / n: t for n, t in TOY.items() if Path(n) != CONFIG}
+    if script is not None:
+        files[Path("scripts") / "diagrams"] = script
+    for name, text in files.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(text)
+    return root
+
+
+def gate(root: Path, source: Path) -> dict[str, bool]:
     """lint-imports' own verdict on each contract of the toy at `root`, by name: kept or not."""
     run = subprocess.run(
         [Path(sys.executable).parent / "lint-imports", "--config", str(CONFIG), "--no-cache"],
         cwd=root,
-        env={**os.environ, "PYTHONPATH": str(root / TOY_SOURCE)},
+        env={**os.environ, "PYTHONPATH": str(root / source)},
         capture_output=True,
         text=True,
         check=False,
@@ -448,24 +460,27 @@ def self_test() -> int:
         checks.append((name, bool(ok)))
 
     with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp) / "root"
-        for name, text in TOY.items():
-            path = root / (name if name.startswith("quality/") else TOY_SOURCE / name)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text)
-        maps, codes = [], []
-        where = ["--root", str(root), "--source", str(TOY_SOURCE)]
-        for run in ("one", "two"):
-            out = Path(tmp) / run
-            drawn = subprocess.run(  # a process each: the same bytes from a fresh interpreter
-                [sys.executable, __file__, *where, "--out", str(out)],
+        runs = itertools.count()
+
+        def run(root: Path, *flags: str) -> tuple[int, dict[str, str]]:
+            """Draw the checkout at `root` in a process of its own: the same bytes from a
+            fresh interpreter. Its exit code, and what it drew, by file name."""
+            out = Path(tmp) / f"map-{next(runs)}"
+            drawn = subprocess.run(
+                [sys.executable, __file__, "--root", str(root), *flags, "--out", str(out)],
                 check=False,
                 capture_output=True,
             )
-            codes.append(drawn.returncode)
-            maps.append({p.name: p.read_text() for p in sorted(out.glob("*"))})
-        check("the package is found where --source says, not at the top", codes == [0, 0])
-        one, two = maps
+            return drawn.returncode, {p.name: p.read_text() for p in sorted(out.glob("*"))}
+
+        lib = Path("lib")
+        root = lay(Path(tmp) / "lib", lib)
+        (code1, one), (code2, two) = run(root, "--source", "lib"), run(root, "--source", "lib")
+        check("the package is found where --source says", code1 == code2 == 0)
+        deep = run(lay(Path(tmp) / "deep", Path("src", "py")), "--source", "src/py")
+        check("another directory, two deep, gives the same map", deep == (0, one))
+        check("the default, SOURCE, is the top", run(lay(Path(tmp) / "top", Path())) == (0, one))
+        check("without --source the package is not looked for below the top", run(root)[0] == 2)
         flow, md, c = (
             one.get("imports.mmd", ""),
             one.get("map.md", ""),
@@ -475,7 +490,7 @@ def self_test() -> int:
         drawn = {name: verdict == "kept" for verdict, name in verdicts}
         check(
             "each verdict is lint-imports' own",
-            drawn == gate(root)
+            drawn == gate(root, lib)
             and len(drawn) == TOY["quality/importlinter.ini"].count(":contract:"),
         )
         check("two runs give the same bytes", one == two)
