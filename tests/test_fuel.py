@@ -4,7 +4,7 @@ walker refused at the line that ran it."""
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
-from test_desugar import CURRY, lines
+from test_desugar import CURRY, lines, readable
 
 import fpl.eval
 from fpl.ast_core import Statement, Strand
@@ -28,7 +28,7 @@ def outcome(statements: tuple[Statement, ...], *fuel: int) -> tuple[Stack, ...] 
 @given(
     st.sampled_from(["", CURRY, "nop : --\n"]),
     st.integers(0, 2),
-    st.one_of(lines.map(" | ".join), st.just(NESTED)),
+    st.one_of(lines.map(" | ".join).map(readable), st.just(NESTED)),
 )
 def test_fuel_bounds_the_steps_of_a_run_line(head: str, blanks: int, line: str) -> None:
     """[law: fuel] With fuel n a run line of n steps completes as it does with no fuel, and with

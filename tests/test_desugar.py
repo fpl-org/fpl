@@ -1,6 +1,8 @@
 """Running lines: the stack, frames and the bar, sections, strands, ( ), blocks and `:`
 definitions (draft2 §frames, §currying, §( ) rotates; draft1 blocks and node; draft3 effect)."""
 
+import re
+
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
@@ -47,6 +49,12 @@ items = st.recursive(
 )
 lines = st.lists(st.lists(items, min_size=1, max_size=4).map(" ".join), min_size=1, max_size=3)
 programs = st.lists(lines.map(" | ".join), min_size=1, max_size=3).map("\n".join)
+
+
+def readable(source: str) -> str:
+    """source with each numeral of more than DIGITS digits cut to DIGITS, so desugaring reads
+    it: for properties of the code a program makes rather than of its refusals."""
+    return re.sub(f"9{{{DIGITS + 1},}}", "9" * DIGITS, source)
 
 
 def core(source: str) -> tuple[Statement, ...] | str:
@@ -467,7 +475,7 @@ def test_every_declared_builtin_has_an_implementation() -> None:
     assert set(EFFECTS) == set(BUILTINS) | set(CONTROLS)
 
 
-@given(st.sampled_from(["", CURRY, "nop : --\n"]), programs)
+@given(st.sampled_from(["", CURRY, "nop : --\n"]), programs.map(readable))
 def test_a_run_is_placed_at_its_line(head: str, body: str) -> None:
     """A run line's statement points at the line it runs, column 1, below any definition."""
     statements = desugar(parse(head + body + "\n"))
