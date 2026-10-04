@@ -466,24 +466,26 @@ def _made(directory: Path, mode: int) -> None:
 def keyed(env: Mapping[str, str]) -> bytes:
     """The key that macs this operator's records, made on first use as 32 random bytes in a
     file only its owner may read, in a directory only its owner may enter. Each directory made
-    on the way has its entry synced into its parent, and the file's entry is synced into its
-    directory, before the key is used, made here or found made by a racing maker whose own
-    sync may not have run, so no record outlives the key that macs it. Refused: a key file
-    others may read or write, or one not 32 bytes long; a reader racing the first maker may
-    meet it empty and be refused."""
+    on the way has its entry synced into its parent, and the file's bytes, once read, and its
+    entry in its directory are synced before the key is used, made here or found made by a
+    racing maker whose own sync may not have run, so no record outlives the key that macs it.
+    The bytes are read before their sync, so none read can have been written after it.
+    Refused: a key file others may read or write, or one not 32 bytes long; a reader racing
+    the first maker may meet it empty and be refused."""
     path = _key_file(env)
     _made(path.parent, 0o700)
     with contextlib.suppress(FileExistsError):
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
             _written(fd, secrets.token_bytes(32))
-            os.fsync(fd)
         finally:
             os.close(fd)
+    with path.open("rb") as file:
+        if os.fstat(file.fileno()).st_mode & 0o077:
+            raise RefusedError(f"{path} is open to others")
+        key = file.read()
+        os.fsync(file.fileno())
     _synced(path.parent)
-    if path.stat().st_mode & 0o077:
-        raise RefusedError(f"{path} is open to others")
-    key = path.read_bytes()
     if len(key) != 32:
         raise RefusedError(f"{path} holds {len(key)} bytes, not 32")
     return key

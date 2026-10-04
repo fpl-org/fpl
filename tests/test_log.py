@@ -473,7 +473,20 @@ def test_the_key_is_synced_into_its_directory(
     assert directory in seen
     seen.clear()
     keyed(home)
-    assert seen == [directory]
+    assert seen == [inode(tmp_path / ".config" / "fpl" / "log.key"), directory]
+
+
+def test_a_key_found_unsynced_is_synced_before_it_is_used(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A key file a racing maker wrote but has not yet synced is synced, bytes and entry, by
+    the keyed that finds it, before it returns the key."""
+    made = tmp_path / "log.key"
+    made.write_bytes(KEY)
+    made.chmod(0o600)
+    seen = synced(monkeypatch)
+    assert keyed({"FPL_LOG_KEY": str(made)}) == KEY
+    assert seen == [inode(made), inode(tmp_path)]
 
 
 def test_each_directory_made_for_the_key_is_synced_into_its_parent(
