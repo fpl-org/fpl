@@ -2,6 +2,7 @@
 
 import json
 import sys
+import threading
 import urllib.request
 from itertools import pairwise
 from pathlib import Path
@@ -110,6 +111,26 @@ def test_a_tokenizer_loads_once() -> None:
     loaded = Tokenizers({"t": load})
     assert loaded.get("t") is loaded.get("t") is tk
     assert calls == ["load"]
+
+
+def test_concurrent_first_uses_load_once() -> None:
+    calls: list[str] = []
+    tk = Tk(lambda _: [], lambda _: b"")
+
+    def slow() -> Tk:
+        calls.append("load")
+        threading.Event().wait(0.2)  # long enough for the other request to arrive
+        return tk
+
+    loaded = Tokenizers({"t": slow})
+    got: list[Tk] = []
+    threads = [threading.Thread(target=lambda: got.append(loaded.get("t"))) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert calls == ["load"]
+    assert got == [tk, tk]
 
 
 def test_the_hugging_face_entries_need_tokenizers(monkeypatch: pytest.MonkeyPatch) -> None:
