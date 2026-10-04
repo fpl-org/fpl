@@ -232,10 +232,10 @@ def trickling(handler: BaseHTTPRequestHandler, done: threading.Event) -> None:
 
 
 def dripping(head: bytes) -> Callable[[BaseHTTPRequestHandler, threading.Event], None]:
-    """Sends head a byte every 20 ms, two seconds in all, and nothing after it."""
+    """Sends head a byte every 20 ms, and nothing after it."""
 
     def answer(handler: BaseHTTPRequestHandler, done: threading.Event) -> None:
-        for byte in head.ljust(100, b"a"):
+        for byte in head:
             handler.wfile.write(bytes([byte]))
             if done.wait(0.02):
                 return
@@ -269,7 +269,9 @@ def test_fetch_gives_up_on_a_server_that_trickles(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "head",
-    [b"HTTP/1.0 200 OK", b"HTTP/1.0 200 OK\r\nX-Slow: "],
+    # Cut anywhere, the first is no status line at all (its code is zero however long)
+    # and the second a whole one, its headers ended early.
+    [b"HTTP/1.0 0".ljust(100, b"0"), b"HTTP/1.0 200 OK\r\nX-Slow: ".ljust(100, b"a")],
     ids=["status line", "headers"],
 )
 def test_fetch_gives_up_on_a_server_that_trickles_its_head(tmp_path: Path, head: bytes) -> None:
