@@ -568,7 +568,11 @@ class _Desugar:
         every other input and the group's pattern at each group, the other inputs pushed back in
         order, then the body, which sees the group's names (design 09 §2.4). A `$` pin in a
         head group is refused (hole head-group-pin)."""
-        groups = iter(i for i in line.frames[0].cells[0].items[2:] if isinstance(i, Enclosure))
+        groups = iter(
+            i
+            for i in line.frames[0].cells[0].items[2:]
+            if isinstance(i, Enclosure) and i.pair == "prefix"
+        )
         if not any(map(grouped, effect.types)):
             return self.body(line.block, len(effect.ins), here)
         outer, patterns, repush = self.effects, list[Pattern](), list[Node]()
