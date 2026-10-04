@@ -1,6 +1,6 @@
 """Running a program never lets anything but an FplError out."""
 
-from pathlib import Path
+import contextlib
 
 import pytest
 from hypothesis import given
@@ -11,14 +11,13 @@ from fpl.errors import FplError
 
 
 @given(st.text(max_size=40))
-def test_nothing_runs_before_there_is_a_language(source: str) -> None:
-    with pytest.raises(FplError):
-        run(source, Path("/nonexistent/grammar.lark"))
+def test_only_an_fpl_error_escapes(source: str) -> None:
+    """Whatever text it is given, run returns or raises an FplError: nothing else escapes."""
+    with contextlib.suppress(FplError):
+        run(source)
 
 
-def test_a_parse_is_not_yet_a_run(tmp_path: Path) -> None:
-    grammar = tmp_path / "g.lark"
-    grammar.write_text('start: "x"\n')
+def test_a_parse_is_not_yet_a_run() -> None:
     with pytest.raises(FplError) as caught:
-        run("x", grammar)
+        run("x\n")
     assert str(caught.value) == "ERROR: 1:1 no evaluator yet"

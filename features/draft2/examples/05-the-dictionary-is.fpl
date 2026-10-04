@@ -1,0 +1,11 @@
+;;; ── the dictionary is a directory; select over it ──
+select
+	words
+	doc “∞” find [or] fold
+	name effect
+select
+	trade
+	price 100 >
+	sym
+	size price wavg
+

@@ -1,0 +1,22 @@
+;; Syntax author's pass, 2026-09-27; name spelling (S32), ; comment levels (S33). Words struck or renamed in place; the reason is on the line.
+;; ⟨sketch⟩ stays on anything not settled. Holes: _ is inferred by the elaborator (or a wildcard, or absence), ? is a goal it reports (S40).
+
+;;; ── 1. a logic tree: search encapsulated, the centre stays deterministic ───
+logic/	; a theory is a directory; the reserved entry seam is what makes it a tree
+	seam ∈ logic -- core	; was: seam ∈ core ⟵ logic — renamed: a functor's type is an effect line, read left to right
+		faithful  not-full  [ space ] keeps-determinism	; seam-kind words: quotations consumed by seam (head word receives children as quotations)
+		⊢ ?	; ⟨sketch⟩ the obligations the kind implies (typing preservation, adequacy) are a proof goal, rung 1
+	fresh : -- v +st	; was: -- v, body ? ∈ Term — a logic variable is the IDENTITY of a hole allocated in the space's store; grade ω, so dup/over accept it
+		Term ../store/new	; ⟨sketch⟩ allocate a typed hole in the store, push its identity; +st is the store effect space handles
+	unify : a b -- +fail +st	; unify: a tell into the store; +fail when it cannot
+	or : [ p ] [ q ] -- +fail	; not new: the language's own alternation (try p, on failure q); inside a space it yields all successes (Wadler)
+	space : [ goal ] -- solutions +div	; the handler that delimits +st and multi-shot ∨; it is try in multi-shot form: no solutions is the empty array, a value, never +fail. +div by default; n space (bounded) is total
+
+append : xs ys zs -- +st
+	[or] fold	; was: ∨: — refused (a head with N children is variadic, X1). A block of quotation literals is a saturated frame, one array; ∨´ folds it
+		[ xs [] unify  ys zs unify ]
+		[ fresh →h  fresh →t  fresh →zs'
+		  xs h t cons unify  t ys zs' append  zs h zs' cons unify ]
+
+[ fresh →q  q [ 1 2 ] [ 3 ] append  q ] logic/space	; → [ [ 1 2 3 ] ]  a saturated frame: quotation literal + word of arity 1; value on the core stack
+

@@ -11,10 +11,11 @@ from fpl.errors import FplError, Span
 
 
 @settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
-@given(st.text(alphabet="ab \n", max_size=30))
+@given(st.text(alphabet="ab \n", max_size=30).map("a".__add__))
 def test_a_file_that_cannot_run_prints_one_error_line(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], source: str
 ) -> None:
+    """A file that does not run exits 1 and prints exactly one line, starting `ERROR: `."""
     program = tmp_path / "p.fpl"
     program.write_text(source)
     assert main([str(program)]) == 1

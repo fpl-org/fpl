@@ -1,0 +1,6 @@
+;;; ── quasiquote: $ inside a quotation is unquote; $xs¨ splices (S30) ──
+twice : q -- q'	; the code of q, twice: [ $q¨ $q¨ ]
+	[ $q each $q each ]
+with-log : q -- q'	; wrap a quotation: the value of q spliced as one item
+	[ #enter log $q ! #leave log ]
+

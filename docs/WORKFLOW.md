@@ -41,6 +41,24 @@ top of base) · **restack** (rebase the stack when base or a lower commit change
    maintainer pushes those branches himself, over SSH, with a key that needs a touch for
    every use (a Secure Enclave key; checked, it asks each time, twice in a row too). No key
    that works without him is registered for the account on a machine where agents run.
+9. **Nothing private reaches the repository.** It is public, and so is whatever a commit,
+   a push or a pull request carries. **[gate]** `scripts/leak-check` runs
+   [gitleaks](https://github.com/gitleaks/gitleaks) over the staged change
+   (`.githooks/pre-commit`), the message (`.githooks/commit-msg`), every commit and ref
+   name a push sends (`.githooks/pre-push`), and a pull request's title and body
+   (`scripts/pr`). It judges added lines, file names and messages against two sets of
+   rules: gitleaks's defaults, which find keys and tokens, and a private list of terms.
+   The list is local and per maintainer, never committed: one regular expression per line
+   in Go's RE2 syntax (`\b`, not `\<`), matched regardless of case, `^` and `$` at line
+   ends, in `.git/leak-patterns` (this clone and its worktrees) and
+   `~/.config/fpl/leak-patterns` (every clone). A space in a line matches any run of
+   whitespace, a line break included, so a 72-column wrap cannot split a term. A push
+   judges the commits the remote it goes to lacks; a first push to a remote, or to a URL,
+   judges the branch's whole history. Its report names the rule, the list line and the
+   place, never the match. With no list only the defaults run.
+   `FPL_LEAK_GATE=block` (default) · `warn` (report, don't block) · `off`. It covers what
+   leaves through git and `scripts/pr`; the comments `scripts/export-review` posts, and
+   anything written on the forge by hand, do not pass it.
 
 ## Setup (once per clone/worktree)
 

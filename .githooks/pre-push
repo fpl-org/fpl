@@ -1,17 +1,37 @@
 #!/usr/bin/env bash
 #
-# .githooks/pre-push — refuse to push to a remote branch whose name does not parse
-# under docs/BRANCHES.md.
+# .githooks/pre-push — two gates on what reaches a remote:
 #
-# reference-transaction stops a bad name at creation, but only in a clone whose
-# hooks are wired (scripts/setup). This is the second local net: the name that
-# would appear on the forge is judged right before it gets there. Deletions are
-# let through so a non-conforming remote branch can still be cleaned up.
+#   1. No private term or secret in what is pushed (scripts/leak-check --push): the
+#      patches, file names, identities and messages of every commit the remote does not
+#      have yet, the names of the refs pushed, and annotated tags. A branch new to the
+#      remote is judged by the commits that none of the refs at the URL pushed to ($2,
+#      the pushurl when one is set) has, as git ls-remote lists them now; a URL that
+#      cannot be listed, or holds none of them, gets the whole history judged. This
+#      runs for every remote, Radicle included: publishing is publishing.
+#      FPL_LEAK_GATE = block (default) | warn | off, read by the script.
 #
-#   FPL_BRANCH_GATE = block (default) | warn | off
+#   2. Refuse to push to a remote branch whose name does not parse under
+#      docs/BRANCHES.md. reference-transaction stops a bad name at creation, but only in
+#      a clone whose hooks are wired (scripts/setup). This is the second local net: the
+#      name that would appear on the forge is judged right before it gets there.
+#      Deletions are let through so a non-conforming remote branch can still be cleaned
+#      up. FPL_BRANCH_GATE = block (default) | warn | off
 
 set -euo pipefail
 
+top="$(git rev-parse --show-toplevel)"
+mapfile -t updates
+
+# 1. leak gate -------------------------------------------------------------------------
+# Fed by process substitution, not a pipe: with FPL_LEAK_GATE=off the script exits
+# unread, and a printf killed by SIGPIPE would fail the push under pipefail. It is
+# handed the URL ($2), not the remote's name ($1): ls-remote of a name lists the
+# fetch url, which may hold what the pushurl does not.
+"$top/scripts/leak-check" --push "$2" < <(printf '%s\n' "${updates[@]}") ||
+	{ echo "pre-push: nothing was pushed." >&2; exit 1; }
+
+# 2. branch names ----------------------------------------------------------------------
 mode="${FPL_BRANCH_GATE:-block}"
 [ "$mode" = "off" ] && exit 0
 
@@ -19,11 +39,12 @@ mode="${FPL_BRANCH_GATE:-block}"
 # patch under refs/heads/patches/<id>, and a new revision of a patch is a push there. The
 # grammar is for names on the forge, so a push to a rad:// remote is not judged.
 case "${2:-}" in rad://*) exit 0 ;; esac
-lint="$(git rev-parse --show-toplevel)/scripts/branch-lint"
+lint="$top/scripts/branch-lint"
 [ -x "$lint" ] || exit 0
 
 rc=0
-while read -r local_ref _local_sha remote_ref _remote_sha; do
+for u in "${updates[@]}"; do
+	read -r local_ref _local_sha remote_ref _remote_sha <<<"$u"
 	[ "$local_ref" = "(delete)" ] && continue
 	case "$remote_ref" in refs/heads/*) : ;; *) continue ;; esac
 	"$lint" "${remote_ref#refs/heads/}" || rc=1

@@ -1,0 +1,10 @@
+;;; ── constructors run backwards; clauses are an agenda ──
+rect   : wh -- shape
+	#rect swap pair
+circle : r -- shape
+	#circle swap pair
+area : shape -- a
+	unpair swap | #circle #rect index
+	| [ dup times π times ] [ [times] fold ] agenda
+3 4 rect rect inverse	; → 3 4
+

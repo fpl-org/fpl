@@ -1,0 +1,7 @@
+;;; ── 5. multiple dispatch: static where it can be, a loosened region where it must ──
+area : shape -- n
+	shape/kind agenda	; was: shape/kind as a head with N children — refused (variadic); @. keyed by pattern over a literal table (X17)
+		#circle	[ shape/r dup times π times ]	; each line strands a string literal and a quotation literal; the block is a rank-2 literal, one value
+		#rect	[ shape/w shape/h times ]
+		_	[ sorry ]	; was: ? [ sorry ] — the hole is _; a hole as pattern matches anything; sorry discharges it (P2): a point, not a region
+

@@ -1,0 +1,6 @@
+;;; ── operatives (thunks + env; lift/reify/reflect are stage-creating behind ../meta) ──
+my-if : c t --
+	swap ! [ ! ] [ drop ] if
+when-debug : q --
+	../debug [ ! ] [ drop ] if
+

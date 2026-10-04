@@ -1,0 +1,3 @@
+;;; ── 7. ABC's keywords: a view, not a form ──
+;   under abc, the same ABT prints as a keyword template with holes, JOIN ? WITH ? ENDING ?,
+;   and the editor completes from the effect line, not from an LL(1) guess (CWI CS-R9256).

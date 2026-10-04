@@ -1,0 +1,27 @@
+;;; ── 5. Prolog's family: the same match, inside a space, is two-way unification ──
+family/
+	parent : x y --	; a relation: two pattern cells, an empty body = succeed
+		match
+			#tom	#bob
+			#bob	#ann
+			#bob	#pat
+			#pat	#jim
+	male : x --
+		match
+			#tom
+			#bob
+			#jim
+	female : x --
+		match
+			#ann
+			#pat
+	mother : x y --
+		x y parent  x female
+	grandfather : x z --
+		fresh →y
+		x y parent  y z parent  x male
+
+#pat #jim family/parent	; outside a space: one-way, first match, deterministic; succeeds
+[ fresh →g  g #jim family/grandfather  g ] logic/space	; inside: fresh g unifies against the rows → [ #bob ]
+[ fresh →c  #bob c family/parent  c ] logic/space	; all solutions, not the first → [ #ann #pat ]
+

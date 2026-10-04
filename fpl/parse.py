@@ -1,32 +1,221 @@
-"""Source text to a Lark tree. No semantics live here (docs/CONVENTIONS.md)."""
+"""Source text to the surface AST: pre-lex, the tab indenter, LALR over fpl/grammar.lark, then
+the affix pass on every token. No semantics live here (docs/CONVENTIONS.md)."""
 
+from collections.abc import Callable, Iterator
 from functools import cache
 from pathlib import Path
+from typing import override
 
 import icontract
-from lark import Lark, Token, Tree, UnexpectedInput
+from lark import Lark, Token, Tree, UnexpectedInput, UnexpectedToken
+from lark.indenter import DedentError, Indenter
 
+from fpl.ast_surface import Cell, Comment, Enclosure, Frame, Item, Line, Pair, Program, Text, Word
 from fpl.errors import FplError, Span
+from fpl.lex import BRACKETS, Lines, Prelexed, Stashed, counted, prelex, shape
 
 GRAMMAR = Path(__file__).with_name("grammar.lark")
+PAIRS: dict[str, Pair] = {
+    "quotation": "quotation",
+    "prefix": "prefix",
+    "group": "group",
+    "dict": "dict",
+}
+
+
+class MisindentedError(Exception):
+    """The indenter met a dedent to a level no line opened, at the newline token given."""
+
+    def __init__(self, token: Token) -> None:
+        super().__init__(token)
+        self.token = token
+
+
+class FplIndenter(Indenter):
+    """One tab per level; a newline inside [ ] ( ) ⟨ ⟩ { } is not block structure."""
+
+    NL_type = "_NL"  # pyright: ignore[reportIncompatibleMethodOverride, reportAssignmentType] -- lark declares an abstract property and reads a class attribute
+    OPEN_PAREN_types = ["LSQB", "LPAR", "_LANGLE", "_LBRACE"]  # noqa: RUF012 -- lark reads a class attribute  # pyright: ignore[reportIncompatibleMethodOverride, reportAssignmentType] -- lark declares an abstract property and reads a class attribute
+    CLOSE_PAREN_types = ["RSQB", "RPAR", "_RANGLE", "_RBRACE"]  # noqa: RUF012 -- lark reads a class attribute  # pyright: ignore[reportIncompatibleMethodOverride, reportAssignmentType] -- lark declares an abstract property and reads a class attribute
+    INDENT_type = "_INDENT"  # pyright: ignore[reportIncompatibleMethodOverride, reportAssignmentType] -- lark declares an abstract property and reads a class attribute
+    DEDENT_type = "_DEDENT"  # pyright: ignore[reportIncompatibleMethodOverride, reportAssignmentType] -- lark declares an abstract property and reads a class attribute
+    tab_len = 1  # pyright: ignore[reportIncompatibleMethodOverride, reportAssignmentType] -- lark declares an abstract property and reads a class attribute
+
+    @override
+    def handle_NL(self, token: Token) -> Iterator[Token]:
+        """Lark's indentation, with the newline where a dedent went wrong kept for the error."""
+        try:
+            yield from super().handle_NL(token)
+        except DedentError as failure:
+            raise MisindentedError(token) from failure
 
 
 @cache
-def parser(grammar: Path = GRAMMAR) -> Lark:
-    """The Earley parser for a grammar file, with ambiguity kept explicit (docs/STACK.md)."""
-    if not grammar.is_file():
-        raise FplError(Span(1, 1), f"no grammar yet: {grammar.name} is the maintainer's to write")
+def parser() -> Lark:
+    """The LALR parser, fed by the tab indenter."""
     return Lark(
-        grammar.read_text(), parser="earley", ambiguity="explicit", propagate_positions=True
+        GRAMMAR.read_text(),
+        parser="lalr",
+        postlex=FplIndenter(),
+        propagate_positions=True,
+        maybe_placeholders=False,
     )
 
 
-def parse(source: str, grammar: Path = GRAMMAR) -> Tree[Token]:
-    """Parse source text, turning Lark's failure into an FplError at the offending position."""
+def parse(source: str) -> Program:
+    """Parse source text to the surface AST. Every refusal, the pre-lexer's, the indenter's or
+    the grammar's, is an FplError at a position inside the source; nothing else escapes.
+    Nesting deeper than the build can recurse to is refused at the source's start."""
     try:
-        return parser(grammar).parse(source)  # pyright: ignore[reportUnknownMemberType] -- lark types its text argument loosely
+        return read(source, Lines(source), 0, len(source))
+    except RecursionError:
+        raise FplError(Span(1, 1), "nesting too deep to read") from None
+
+
+def read(source: str, lines: Lines, start: int, end: int) -> Program:
+    """Parse source[start:end], placing every node in the whole source."""
+    lexed = prelex(source, start, end)
+    tree = _tree(source, lexed)
+    return _Build(source, lines, lexed).program(tree, lines.span(start))
+
+
+def _tree(source: str, lexed: Prelexed) -> Tree[Token]:
+    """Lark's tree for the pre-lexed code, or its failure placed in the source."""
+    try:
+        return parser().parse(lexed.code)  # pyright: ignore[reportUnknownMemberType] -- lark types its text argument loosely
+    except UnexpectedToken as failure:
+        comment = isinstance(failure.token, Token) and failure.token.type in {"NOTE", "DOC"}
+        message = "a comment cannot stand inside an enclosure" if comment else "unexpected input"
+        raise FplError(placed(source, lexed, failure.pos_in_stream), message) from None
     except UnexpectedInput as failure:
-        raise FplError(where(source, failure.line, failure.column), "unexpected input") from failure
+        raise FplError(placed(source, lexed, failure.pos_in_stream), "unexpected input") from None
+    except MisindentedError as failure:
+        where_ = placed(source, lexed, failure.token.end_pos)
+        raise FplError(where_, "dedent to a level never opened") from None
+
+
+def placed(source: str, lexed: Prelexed, offset: int | None) -> Span:
+    """The source position of a code offset; Lark's unknown or end position is the source's end."""
+    if offset is None or offset < 0:
+        return where(source, -1, -1)
+    at = Lines(source).span(lexed.origin[offset])
+    return where(source, at.line, at.col)
+
+
+class _Build:
+    """The surface AST from Lark's tree, every node placed through the code's origins."""
+
+    def __init__(self, source: str, lines: Lines, lexed: Prelexed) -> None:
+        self.source, self.lines, self.lexed = source, lines, lexed
+
+    def at(self, tree: Tree[Token], outer: Span) -> Span:
+        """Where a subtree starts, or `outer` for one that matched nothing."""
+        if tree.meta.empty:
+            return outer
+        return self.lines.span(self.lexed.origin[tree.meta.start_pos])
+
+    def program(self, tree: Tree[Token], outer: Span) -> Program:
+        """The start rule: the program's lines."""
+        return Program(self.subtrees(tree, outer, self.line), outer)
+
+    def subtrees[T](
+        self, tree: Tree[Token], outer: Span, build: Callable[[Tree[Token], Span], T]
+    ) -> tuple[T, ...]:
+        """Each child subtree built."""
+        return tuple(build(child, outer) for child in tree.children if isinstance(child, Tree))
+
+    def line(self, tree: Tree[Token], outer: Span) -> Line:
+        """frames (NOTE | DOC)? _NL block?; a ;; line holds its comment and no frames."""
+        span = self.at(tree, outer)
+        frames, *rest = tree.children
+        assert isinstance(frames, Tree)
+        lines = tuple(
+            line
+            for child in rest
+            if isinstance(child, Tree)
+            for line in self.subtrees(child, span, self.line)
+        )
+        comment = next((self.comment(c, frames) for c in rest if isinstance(c, Token)), None)
+        return Line(self.held(frames, span, comment), lines, span, comment)
+
+    def held(self, frames: Tree[Token], span: Span, comment: Comment | None) -> tuple[Frame, ...]:
+        """A line's frames; a ;; line holds none."""
+        if comment is not None and comment.level > 1:
+            return ()
+        return self.subtrees(frames, span, self.frame)
+
+    def comment(self, token: Token, frames: Tree[Token]) -> Comment:
+        """A note and its continuation lines, or a ;; comment, refused after code on its line."""
+        span = self.lines.span(self.lexed.origin[token.start_pos or 0])
+        level = 1 if token.type == "NOTE" else len(token) - len(token.lstrip(";"))
+        if level > 1 and _code(frames):
+            raise FplError(span, f"a {';' * level} comment stands on a line of its own")
+        return Comment(level, tuple(part.lstrip("\t") for part in token.split("\n")), span)
+
+    def frames(self, tree: Tree[Token], outer: Span) -> tuple[Frame, ...]:
+        """frame (_BAR frame)*"""
+        return self.subtrees(tree, outer, self.frame)
+
+    def frame(self, tree: Tree[Token], outer: Span) -> Frame:
+        """_TABS? (cell (_TABS cell)* _TABS?)?; empty, it starts where its enclosing node does."""
+        span = self.at(tree, outer)
+        return Frame(self.subtrees(tree, span, self.cell), span)
+
+    def cell(self, tree: Tree[Token], outer: Span) -> Cell:
+        """item+"""
+        span = self.at(tree, outer)
+        return Cell(tuple(self.item(child, span) for child in tree.children), span)
+
+    def item(self, child: Tree[Token] | Token, outer: Span) -> Item:
+        """A token, a string placeholder, or an enclosure."""
+        if isinstance(child, Tree):
+            span = self.at(child, outer)
+            (frames,) = self.subtrees(child, span, self.frames)
+            return Enclosure(PAIRS[str(child.data)], frames, span)
+        start = child.start_pos or 0
+        span = self.lines.span(self.lexed.origin[start])
+        stashed = self.lexed.stash.get(start)
+        if stashed is not None:
+            return self.text(stashed, span)
+        return self.word(str(child), span)
+
+    def word(self, token: str, span: Span) -> Word:
+        """The affix pass on one token."""
+        read_ = shape(token)
+        if read_ is None:
+            raise FplError(span, f"a modifier ends its word: {token}")
+        prefix, kind, body, mods = read_
+        return Word(prefix, kind, body, mods, span)
+
+    def text(self, stashed: Stashed, span: Span) -> Text:
+        """A string's interior: a raw one whole; an interpolating one split into text, with the
+        incidental indentation of its continuation lines dropped (S26), and ⟨ ⟩ islands read."""
+        if stashed.kind == "raw":
+            return Text("raw", (self.source[stashed.start : stashed.end],), span)
+        parts: list[str | Program] = []
+        at = stashed.start
+        while at < stashed.end:
+            island = self.source.find("⟨", at, stashed.end)
+            upto = stashed.end if island < 0 else island
+            if upto > at:
+                parts.append(self.source[at:upto].replace("\n" + "\t" * stashed.depth, "\n"))
+            at = upto if island < 0 else self.island(island, stashed.end, parts)
+        return Text("str", tuple(parts), span)
+
+    def island(self, at: int, end: int, parts: list[str | Program]) -> int:
+        """Read the ⟨ ⟩ island opening at `at` into parts; return the offset after it."""
+        after = counted(self.source, at, BRACKETS["⟨"], end)
+        if after < 0:
+            raise FplError(self.lines.span(at), "⟨ never closed")
+        parts.append(read(self.source, self.lines, at + 1, after - 1))
+        return after
+
+
+def _code(frames: Tree[Token]) -> bool:
+    """A line's frames hold code: a bar, or a frame with cells."""
+    return len(frames.children) > 1 or any(
+        isinstance(frame, Tree) and frame.children for frame in frames.children
+    )
 
 
 def within(source: str, line: int, col: int) -> bool:

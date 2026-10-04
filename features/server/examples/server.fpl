@@ -1,0 +1,21 @@
+;;; ── a counting file server ────────────────────────────────────────
+serve : n req -- n resp +in/data	; +in/data: load permission on the data segment, resolved lexically
+	req | #path lookup →p	; frame: p lives on this frame's stack; mentioned once below
+	../data p index →text	; single-level store: a segment reached by path; no read call, mention is load
+	text shape first →size	; text is mentioned once after binding: unique, freed in place
+	n 1 + →n
+	| #size size pair #count n pair dict	; saturated frame: a value, pushed
+	n swap	; stack now matches the head effect
+
+main : -- +in/net +out/net
+	../net/in requests →reqs	; the network is a channel, not a segment: `in` is a real operation here
+	0 →n
+	reqs [ serve ] n \ →responses	; stateful scan: n threaded through the stream, one step per request
+	responses ../net/out [reply] each	; `out` on a channel: each response sent; the each fuses with the scan
+
+trace : code -- code	; a macro: an each over a code array (level 1)
+	[ #print pair ] each [,] fold
+
+[ serve ] trace →serve/traced	; [ serve ] consumed by trace: Code, level 1
+[ serve ] !	; [ serve ] consumed by !: a thunk, level 0
+;; [ serve ] dup ! swap trace	// rejected: one quotation both forced and inspected

@@ -1,0 +1,6 @@
+;;; ── frames ──
+1 | 1 2 3 +	; 2 3 4        literals strand inside a frame; the bar applies across
+1 2 3 +	; [1‿2‿3 +]    unsaturated, nothing below: a section
+2 | 3 +	; 5
+1 | 1 2 3 [-] swap-args	; 1 2 3 - 1    commute fills the right slot from outside
+

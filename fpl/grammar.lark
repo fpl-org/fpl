@@ -1,0 +1,54 @@
+// FPL surface grammar — prototype, 2026-09-27.
+// Layers: (1) lexing splits on whitespace; enclosure delimiters and the bar self-delimit.
+//         (2) enclosures are Dyck pairs (nesting rules below); indentation is the invisible pair.
+//         (3) token shape (affixes, numbers, modifiers) is a regular post-pass, not in this grammar.
+// Outside this grammar on purpose: named closers (heredocs, `end name`) are Type-1 and handled by a
+// pre-lexer; saturation, arity and effects are typing, not parsing.
+
+start: line*  // a leading blank run is one empty first line: _NL takes every later run
+
+// A line is a flat program; an optional indented block follows it (children first, post-order).
+line: frames (NOTE | DOC)? _NL block?  // a ;; line is one empty frame and its comment; it may head a block
+block: _INDENT line+ _DEDENT
+
+// The bar separates frames; a tab separates cells within a frame (rank literals: space = token, tab = cell,
+// newline = row); a frame is a sequence of cells, and in code a tab is simply a cell boundary too.
+frames: frame (_BAR frame)*  // bars + 1 frames, so the empty enclosure [] is one empty frame, the base case
+frame: _TABS? (cell (_TABS cell)* _TABS?)?  // a run of tabs is one separator: no empty cells (an empty cell is written ⟨⟩)
+cell: item+
+
+?item: TOKEN
+     | group
+     | quotation
+     | prefix
+     | dict
+
+// Enclosures — every one a distinct pair; interiors counted, so they nest in themselves.
+// Strings “ ” and 「 」 and block comments ⟦ ⟧ are counted by the pre-lexer (see test harness):
+// their interior is handed to the pair's interpreter, and islands ⟨ ⟩ inside “ ” are read recursively.
+quotation: "[" _NL* frames "]"                   // thunk / Code, decided by consumer; a quotation holds frames, so the bar is allowed inside
+prefix:    "(" _NL* frames ")"                   // reader op: rotate head to end, bar the arguments
+group:     _LANGLE _NL* frames _RANGLE
+dict:      _LBRACE _NL* frames _RBRACE        // S15: keys literal, values evaluated; entries by juxtaposition or by line               // evaluated enclosure: ⟨⟩ the empty list, ⟨1 2 3⟩ a list, ⟨expr⟩ an island in text
+
+
+// A token is any run of non-whitespace, non-self-delimiting characters (Forth rule).
+TOKEN.1: /[^\s\[\]()“”「」⟦⟧⟨⟩{}|⍝;]+/          // ; is self-delimiting: x; note
+_BAR: "|"
+_TABS: /\t+/
+_LANGLE: "⟨"
+_LBRACE: "{"
+_RBRACE: "}"
+_RANGLE: "⟩"
+
+// Comments have value: tokens kept in the tree, not ignored. The level is bound to position (S33, Lisp): ; (⍝ its
+// glyph view) is a note after the code of its line, continued by the ; lines right under it; ;; ;;; ;;;; stand on a
+// line of their own: ;; the doc of the line after it, ;;; a section, ;;;; the file.
+NOTE.2: /(;(?!;)|⍝)[^\n]*(\r?\n\t*(;(?!;)|⍝)[^\n]*)*/  // one token with its continuations, so they never reach the indenter
+DOC.2: /;;+[^\n]*/
+
+_NL: /(\r?\n[\t\f ]*)*\r?\n\t*/  // indentation is tabs only: one tab per level, a counter, no width comparison;
+                                    // a blank line in the run may hold tabs, spaces and form feeds (a page separator),
+                                    // so it stays blank; only the last line's tabs are indentation
+%declare _INDENT _DEDENT
+%ignore /[ \f]+/                      // spaces (and a form feed, the page separator) only; tabs are cell boundaries
