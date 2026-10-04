@@ -16,6 +16,7 @@ from pathlib import Path
 import tiktoken
 
 HF = {"qwen": "Qwen/Qwen2.5-Coder-7B", "deepseek": "deepseek-ai/DeepSeek-V3"}
+TIMEOUT = 60.0  # seconds a stalled download may hold up the request that wants the tokenizer
 
 
 @dataclass(frozen=True)
@@ -71,10 +72,11 @@ def cache_dir() -> Path:
 
 
 def fetch(url: str, dest: Path) -> None:
-    """Dest holds the body of url, written whole or not at all."""
+    """Dest holds the body of url, written whole or not at all; a server silent for TIMEOUT
+    seconds is an error, never a request that hangs."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_suffix(".part")
-    with urllib.request.urlopen(url) as response:
+    with urllib.request.urlopen(url, timeout=TIMEOUT) as response:
         part.write_bytes(response.read())
     part.replace(dest)
 

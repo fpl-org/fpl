@@ -2,6 +2,7 @@
 
 import json
 import sys
+import urllib.request
 from itertools import pairwise
 from pathlib import Path
 
@@ -131,6 +132,22 @@ def test_fetch_writes_the_body_whole(tmp_path: Path) -> None:
     fetch(source.as_uri(), dest)
     assert dest.read_text() == "{}"
     assert not dest.with_suffix(".part").exists()
+
+
+def test_fetch_gives_up_in_finite_time(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    timeouts: list[object] = []
+    urlopen = urllib.request.urlopen
+
+    def recording(url: str, *, timeout: float) -> object:
+        timeouts.append(timeout)
+        return urlopen(url, timeout=timeout)
+
+    monkeypatch.setattr(urllib.request, "urlopen", recording)
+    source = tmp_path / "source.json"
+    source.write_text("{}")
+    fetch(source.as_uri(), tmp_path / "tokenizer.json")
+    assert timeouts == [tokens.TIMEOUT]
+    assert 0 < tokens.TIMEOUT < 600
 
 
 @pytest.fixture
