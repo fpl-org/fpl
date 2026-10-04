@@ -26,6 +26,7 @@ from tokview.wrap import cols, folded, ventilated
 PAGE = Path(__file__).with_name("static") / "tokview.html"
 COUNT_URL = "https://api.anthropic.com/v1/messages/count_tokens"
 MODEL = "claude-opus-5-5"
+ERROR = 500  # bytes of an upstream failure passed on to the page
 
 
 class Response(Protocol):
@@ -139,11 +140,16 @@ def handler(app: App) -> type[BaseHTTPRequestHandler]:
                 self.send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
 
         def do_POST(self) -> None:
+            """A malformed request is a 400; a tokenizer that could not be fetched (refused,
+            unreachable, timed out) is a 502 that says why, in at most ERROR bytes."""
             body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
             try:
                 answer = app.tokenize(json.loads(body or b"{}"))
             except ValueError as refused:
                 self.send(400, str(refused).encode(), "text/plain; charset=utf-8")
+                return
+            except OSError as failed:
+                self.send(502, str(failed).encode()[:ERROR], "text/plain; charset=utf-8")
                 return
             self.send(200, json.dumps(answer).encode(), "application/json")
 

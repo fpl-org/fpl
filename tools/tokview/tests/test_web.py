@@ -5,14 +5,15 @@ import json
 import threading
 import urllib.error
 import urllib.request
-from collections.abc import Iterator
-from contextlib import AbstractContextManager, nullcontext
+from collections.abc import Generator, Iterator
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
 import pytest
 from tokview import __main__ as cli
+from tokview.tokens import Tk, Tokenizers
 from tokview.web import PAGE, App, Response, claude_count, find_root, layout, server
 
 NOTE = "sq : x -- y\t; the square of x. Multiplying keeps its kind; an integer stays exact."
@@ -43,14 +44,21 @@ def opener() -> FakeOpener:
     return FakeOpener()
 
 
-@pytest.fixture
-def url(root: Path, opener: FakeOpener) -> Iterator[str]:
-    httpd = server(App(root, opener), 0)
+@contextmanager
+def serving(app: App) -> Generator[str]:
+    """The base URL of app served on a free port, for the length of the block."""
+    httpd = server(app, 0)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     yield f"http://127.0.0.1:{httpd.server_port}"
     httpd.shutdown()
     httpd.server_close()
+
+
+@pytest.fixture
+def url(root: Path, opener: FakeOpener) -> Iterator[str]:
+    with serving(App(root, opener)) as base:
+        yield base
 
 
 def get(url: str) -> bytes:
@@ -104,6 +112,17 @@ def test_a_bad_request_is_refused(url: str) -> None:
         with pytest.raises(urllib.error.HTTPError) as refused:
             post(url, body)
         assert refused.value.code == 400
+
+
+def test_a_tokenizer_that_cannot_be_fetched_is_a_bad_gateway(root: Path) -> None:
+    def unreachable() -> Tk:
+        raise urllib.error.URLError("huggingface.co unreachable")
+
+    app = App(root, tokenizers=Tokenizers({"t": unreachable}))
+    with serving(app) as base, pytest.raises(urllib.error.HTTPError) as failed:
+        post(base, {"tokenizer": "t"})
+    assert failed.value.code == 502
+    assert b"huggingface.co unreachable" in failed.value.read()
 
 
 def test_an_empty_post_is_the_defaults(url: str) -> None:
