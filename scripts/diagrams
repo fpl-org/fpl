@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """scripts/diagrams — the map of the code, computed on demand and never committed.
 
-    scripts/diagrams [--root DIR] [--out DIR]    (defaults: ., .noslop/map)
+    scripts/diagrams [--root DIR] [--source DIR] [--out DIR]
+                     (defaults: ., SOURCE, .noslop/map)
     scripts/diagrams --self-test
 
 A drawing of the code kept in git is out of date the first time the code moves without it.
 So the map is a view, like a coverage report: `make map` draws the working tree into
 .noslop/map/, which git ignores, and .github/workflows/map.yml draws the head and the base
 of every pull request into the run's summary, where GitHub renders Mermaid. `--root` draws
-another checkout, judged by that checkout's own contracts.
+another checkout, judged by that checkout's own contracts. `--source` is the directory under
+the checkout that holds its root package; it defaults to SOURCE, below, the one place the map
+says where the package lives.
 
 Into DIR it writes:
 
@@ -40,6 +43,7 @@ import argparse
 import contextlib
 import io
 import itertools
+import os
 import re
 import subprocess
 import sys
@@ -77,6 +81,12 @@ BRACES = str.maketrans({"{": "#123;", "}": "#125;"})
 
 CONFIG = Path("quality") / "importlinter.ini"
 
+# Where a checkout keeps its root package: the directory, from the checkout's top, that goes
+# on the import path, as PYTHONPATH in quality/noslop.mk has it. The map's one line to change
+# when the package moves, to bootstrap/ say; its name comes from the contracts, its directory
+# from Python's rule that a package is a directory of its name.
+SOURCE = Path()
+
 FENCE = "```"
 
 
@@ -91,9 +101,9 @@ class Contract:
     key: str  # the <key> of its [importlinter:contract:<key>] section
     name: str
     kind: str  # import-linter's `type`; only a `forbidden` contract binds modules on the map
-    sources: tuple[str, ...]  # module expressions, as written: `fpl.parse`, `fpl.*`
+    sources: tuple[str, ...]  # module expressions, as written: `toy.a`, `toy.e.*`
     forbidden: tuple[str, ...]
-    waived: tuple[str, ...]  # ignore_imports, as written: `fpl.lex -> fpl.ast_surface`
+    waived: tuple[str, ...]  # ignore_imports, as written: `toy.b -> toy.c`
     indirect: bool  # allow_indirect_imports: whether a chain through others is allowed
     kept: bool
     chains: tuple[tuple[str, ...], ...]  # what breaks it, for a type whose chains are drawn
@@ -116,7 +126,7 @@ class Imports:
         return covers((self.package,), module)
 
     def short(self, module: str) -> str:
-        """A module's name without the root package in front: `fpl.parse` is `parse`."""
+        """A module's name without the root package in front: `toy.e.f` is `e.f`."""
         return module.removeprefix(self.package + ".")
 
 
@@ -126,20 +136,21 @@ def entries(value: str | list[str] | None) -> tuple[str, ...]:
     return tuple(item.strip() for item in items if item.strip())
 
 
-def judge(root: Path) -> tuple[str, list[Contract], "ImportGraph"]:
+def judge(root: Path, home: Path) -> tuple[str, list[Contract], "ImportGraph"]:
     """The root package, each contract with lint-imports' verdict, and the graph it judged.
 
-    import-linter reads the config, builds the graph and checks every contract, as
-    `lint-imports --no-cache` does in the gate: wildcards, waived imports and indirect chains
-    mean here what they mean there, because nothing here reads them a second time. Its
-    contract registry is private API; uv.lock pins it, and the self-test fails if it moves.
+    import-linter reads the config of the checkout at `root`, builds the graph of the package
+    it finds in `home` and checks every contract, as `lint-imports --no-cache` does in the
+    gate: wildcards, waived imports and indirect chains mean here what they mean there,
+    because nothing here reads them a second time. Its contract registry is private API;
+    uv.lock pins it, and the self-test fails if it moves.
     """
     if not (root / CONFIG).is_file():
         raise UnmappableError(f"no {CONFIG} under {root}")
     configuration.configure()
     options = use_cases.read_user_options(str(root / CONFIG))
     use_cases._register_contract_types(options)
-    sys.path.insert(0, str(root))
+    sys.path.insert(0, str(home))
     try:
         with contextlib.redirect_stdout(io.StringIO()):  # its progress display
             report = use_cases.create_report(options, cache_dir=None)
@@ -332,14 +343,18 @@ def page(imports: Imports, flow: str, diagrams: list[tuple[str, str, int]]) -> s
     return "\n".join(out)
 
 
-def draw(root: Path, out: Path) -> None:
-    """Draw the map of the checkout at `root` into `out`, replacing an earlier map there."""
-    package, rules, graph = judge(root)
+def draw(root: Path, source: Path, out: Path) -> None:
+    """Draw the map of the checkout at `root` into `out`, replacing an earlier map there.
+
+    The root package lies in the checkout's `source` directory (SOURCE, unless told).
+    """
+    home = root / source
+    package, rules, graph = judge(root, home)
     imports = read(graph, package, rules)
     flow = flowchart(imports)
     diagrams = []
     for module in (m for m in imports.modules if imports.ours(m)):
-        base = root / module.replace(".", "/")
+        base = home / module.replace(".", "/")
         drawn = classes(base / "__init__.py" if base.is_dir() else base.with_suffix(".py"))
         if drawn:
             diagrams.append((module, *drawn))
@@ -361,10 +376,11 @@ def main(argv: list[str]) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--root", type=Path, default=Path())
+    parser.add_argument("--source", type=Path, default=SOURCE)
     parser.add_argument("--out", type=Path, default=Path(".noslop/map"))
     args = parser.parse_args(argv)
     try:
-        draw(args.root.resolve(), args.out)
+        draw(args.root.resolve(), args.source, args.out)
     except UnmappableError as e:
         print(f"diagrams: nothing to map: {e}", file=sys.stderr)
         return 2
@@ -376,7 +392,9 @@ def main(argv: list[str]) -> int:
 # only directly; `near` forbids `b` to import `c` directly, `waived` forbids it but waives
 # the import. `wild` names the modules of `e` by a wildcard, and `stack` is a layers
 # contract `b` breaks. `d` is named by no contract; `c` has a brace in a member's type;
-# `big` has too many classes for its methods to be drawn.
+# `big` has too many classes for its methods to be drawn. The package lies under TOY_SOURCE,
+# not at the top of the checkout, so a map that looked for it anywhere but its source fails.
+TOY_SOURCE = Path("lib")
 TOY = {
     "toy/__init__.py": "",
     "toy/a.py": "from toy import b\n",
@@ -411,10 +429,11 @@ TOY = {
 
 
 def gate(root: Path) -> dict[str, bool]:
-    """lint-imports' own verdict on each contract of `root`, by name: kept or not."""
+    """lint-imports' own verdict on each contract of the toy at `root`, by name: kept or not."""
     run = subprocess.run(
         [Path(sys.executable).parent / "lint-imports", "--config", str(CONFIG), "--no-cache"],
         cwd=root,
+        env={**os.environ, "PYTHONPATH": str(root / TOY_SOURCE)},
         capture_output=True,
         text=True,
         check=False,
@@ -431,17 +450,21 @@ def self_test() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "root"
         for name, text in TOY.items():
-            (root / name).parent.mkdir(parents=True, exist_ok=True)
-            (root / name).write_text(text)
-        maps = []
+            path = root / (name if name.startswith("quality/") else TOY_SOURCE / name)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        maps, codes = [], []
+        where = ["--root", str(root), "--source", str(TOY_SOURCE)]
         for run in ("one", "two"):
             out = Path(tmp) / run
-            subprocess.run(  # a process each: the same bytes from a fresh interpreter
-                [sys.executable, __file__, "--root", str(root), "--out", str(out)],
-                check=True,
+            drawn = subprocess.run(  # a process each: the same bytes from a fresh interpreter
+                [sys.executable, __file__, *where, "--out", str(out)],
+                check=False,
                 capture_output=True,
             )
-            maps.append({p.name: p.read_text() for p in sorted(out.iterdir())})
+            codes.append(drawn.returncode)
+            maps.append({p.name: p.read_text() for p in sorted(out.glob("*"))})
+        check("the package is found where --source says, not at the top", codes == [0, 0])
         one, two = maps
         flow, md, c = (
             one.get("imports.mmd", ""),
