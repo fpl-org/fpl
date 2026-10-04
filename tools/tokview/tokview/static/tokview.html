@@ -204,11 +204,11 @@ const colourOf = (el) => [...el.classList].find(z => /^c\d$/.test(z)) || '';
 // Elastic tabstops (Gravgaard): in a run of consecutive lines that have a cell in column j, every such
 // cell is as wide as the widest of them. Indentation gutters take the indent setting.
 function layout(){
+  document.documentElement.style.setProperty('--size', $('size').value + 'px');   // before measuring: ch follows it
   const ch = measureCh(), gap = +$('gap').value * ch, ind = +$('indent').value * ch, elastic = $('elastic').checked;
   document.body.classList.toggle('nobpe', !$('bpe').checked);
   document.body.classList.toggle('contrast', $('scheme').value === 'contrast');
   document.body.classList.toggle('seps', $('seps').checked);
-  document.documentElement.style.setProperty('--size', $('size').value + 'px');
   document.documentElement.style.setProperty('--lh', $('lh').value);
   document.documentElement.style.setProperty('--tab', $('indent').value);   // the input box shows tabs at the same indent
   document.body.classList.toggle('ws', $('ws').checked);
