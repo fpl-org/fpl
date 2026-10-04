@@ -474,3 +474,19 @@ def test_the_key_is_synced_into_its_directory(
     seen.clear()
     keyed(home)
     assert seen == [directory]
+
+
+def test_each_directory_made_for_the_key_is_synced_into_its_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every directory keyed makes on the way to the key has its entry synced into its parent,
+    from the top down, before the key is made; a call that makes none syncs no parent."""
+    seen = synced(monkeypatch)
+    home = {"HOME": str(tmp_path)}
+    keyed(home)
+    config = tmp_path / ".config"
+    assert seen[:2] == [inode(tmp_path), inode(config)]
+    seen.clear()
+    keyed(home)
+    assert inode(tmp_path) not in seen
+    assert inode(config) not in seen
