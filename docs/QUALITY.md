@@ -31,8 +31,9 @@ harness-only branch, which has no code to judge, runs `make gates` from the root
 `make -f quality/noslop.mk gates`. The runner enters the dev shell of `flake.nix`, so it judges
 with the tools a laptop has.
 
-`make map` is a view, not a check. `scripts/diagrams` draws the import graph of `fpl/` with
-import-linter's own verdict on each contract of `quality/importlinter.ini`, the verdict
+`make map` is a view, not a check. `scripts/diagrams` draws the import graph of the root
+package `quality/importlinter.ini` names, found in the directory the script's `SOURCE`
+names, with import-linter's own verdict on each contract of that file, the verdict
 lint-imports gives in `make check`, and a class diagram per module, as Mermaid, into
 `.noslop/map/`.
 Its output is never committed: computed from the code each time, it cannot go stale.
