@@ -7,6 +7,7 @@ each file is fetched once into the cache directory.
 
 import importlib.util
 import os
+import threading
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -110,15 +111,19 @@ def registry() -> dict[str, Callable[[], Tk]]:
 
 @dataclass
 class Tokenizers:
-    """The registry's tokenizers, each loaded on first use and kept."""
+    """The registry's tokenizers, each loaded on first use and kept. The server answers
+    requests on threads, so loading holds a lock: two first requests for one Hugging Face
+    tokenizer would otherwise both fetch it through the same `.part` file."""
 
     loaders: dict[str, Callable[[], Tk]] = field(default_factory=registry)
     loaded: dict[str, Tk] = field(default_factory=dict[str, Tk])
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def get(self, name: str) -> Tk:
         """The tokenizer of that name; a name the registry lacks is a ValueError."""
         if name not in self.loaders:
             raise ValueError(f"unknown tokenizer {name!r}; known: {', '.join(self.loaders)}")
-        if name not in self.loaded:
-            self.loaded[name] = self.loaders[name]()
-        return self.loaded[name]
+        with self.lock:
+            if name not in self.loaded:
+                self.loaded[name] = self.loaders[name]()
+            return self.loaded[name]
