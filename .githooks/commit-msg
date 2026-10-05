@@ -90,7 +90,10 @@ fi
 
 # Split body / trailer block. The trailer block is the last paragraph when every
 # one of its lines looks like  Token: value  (or a folded continuation).
-mapfile -t lines <"$msg_file"
+# Not mapfile: bash 3.2, still /bin/bash on macOS, lacks it, and pre-push reaches this hook
+# through scripts/commit-lint wherever a push is made.
+lines=()
+while IFS= read -r line || [ -n "$line" ]; do lines+=("$line"); done <"$msg_file"
 n=${#lines[@]}
 trailer_start=$n
 if [ "$n" -gt 0 ]; then
