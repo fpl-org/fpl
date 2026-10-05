@@ -58,11 +58,12 @@ commit -m base
 
 fails=0 total=0
 # expect <exit code> <description> <leak-check arguments...>; output lands in $tmp/log.
+# $shim, when set, is a directory put first on leak-check's PATH, and on nothing else's.
 expect() {
 	local want="$1" what="$2" rc=0
 	shift 2
 	total=$((total + 1))
-	"$check" "$@" >"$tmp/out" 2>&1 || rc=$?
+	PATH="${shim:+$shim:}$PATH" "$check" "$@" >"$tmp/out" 2>&1 || rc=$?
 	cat "$tmp/out" >>"$tmp/log"
 	if [ "$rc" -ne "$want" ]; then
 		fails=$((fails + 1))
@@ -90,6 +91,20 @@ git mv base.txt quuxfrobnitz-notes.txt
 expect 1 "a file renamed to a matching name" --staged
 says "file name 1 of 1" "a matching name is reported by position"
 reset
+
+# A step that fails may not pass what it never judged. The name check and the scans run on
+# the left of `||`, where bash ignores set -e, so a tool that fails there would leave an
+# empty list behind and a clean verdict. It refuses instead, in warn mode too.
+for tool in sort tr od awk cut cat cp mv; do
+	mkdir -p "$tmp/broken-$tool"
+	printf '#!/bin/sh\necho "%s: broken" >&2\nexit 1\n' "$tool" >"$tmp/broken-$tool/$tool"
+	chmod +x "$tmp/broken-$tool/$tool"
+	echo fine >fine.txt && git add fine.txt
+	shim="$tmp/broken-$tool" expect 1 "a clean change with a broken $tool" --staged
+	says "failed; refusing" "a broken $tool is a refusal"
+	shim="$tmp/broken-$tool" FPL_LEAK_GATE=warn expect 1 "warn with a broken $tool" --staged
+	reset
+done
 
 echo "at zeta.corp" >fnord-table.txt && git add fnord-table.txt
 expect 1 "a matching name with a matching line" --staged
