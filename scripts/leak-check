@@ -414,23 +414,25 @@ case "$mode" in
 	# (git log -z), so no message line can pose as a boundary. A record's first line, its
 	# sha, is blanked before the scan and gives each finding's line its commit:
 	# $tmp/lines holds line, sha, sha line. The author and committer follow, then the
-	# message.
+	# message. bash splits on NUL itself; awk -v RS='\0' did it before, but macOS awk
+	# takes that RS for the empty string (paragraph mode) and kept every record after the
+	# first from the scan.
 	# shellcheck disable=SC2086
 	git log -z --format='%H%n%an <%ae>%n%cn <%ce>%n%B' $arg >"$tmp/messages"
-	: >"$tmp/blanked"
-	awk -v RS='\0' -v blanked="$tmp/blanked" '
-		{
-			n = split($0, l, "\n")
-			if (l[n] == "") n--
-			for (i = 1; i <= n; i++) {
-				ln++
-				if (i == 1 && l[1] ~ /^[0-9a-f]+$/ && length(l[1]) >= 40) {
-					sha = l[1]; at = ln; print "" > blanked; continue
-				}
-				print l[i] > blanked
-				if (sha != "") print ln "\t" sha "\t" at
-			}
-		}' "$tmp/messages" >"$tmp/lines"
+	ln=0
+	while IFS= read -r -d '' record || [ -n "$record" ]; do
+		i=0 sha="" at=0
+		while IFS= read -r line; do
+			i=$((i + 1)) ln=$((ln + 1))
+			if [ "$i" -eq 1 ] && [[ $line =~ ^[0-9a-f]{40,}$ ]]; then
+				sha="$line" at="$ln"
+				echo >&3
+				continue
+			fi
+			printf '%s\n' "$line" >&3
+			[ -z "$sha" ] || printf '%s\t%s\t%s\n' "$ln" "$sha" "$at"
+		done <<<"${record%$'\n'}"
+	done <"$tmp/messages" >"$tmp/lines" 3>"$tmp/blanked" || broke "splitting the messages"
 	scan_both stdin <"$tmp/blanked" || found=1
 	report "the messages"
 	;;
