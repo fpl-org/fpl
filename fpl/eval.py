@@ -62,10 +62,12 @@ def evaluate(
     statements: tuple[Statement, ...], fuel: int | None = None
 ) -> tuple[tuple[Value, ...], ...]:
     """The stack each run line leaves, every line on a fresh stack and within fuel steps, or
-    with no bound when fuel is None. A later definition of a
+    with no bound when fuel is None; a fuel below zero would bound nothing, so it is refused
+    before the first step. A later definition of a
     name shadows an earlier one, for every line; name/history pushes the ones it shadows,
     oldest first, each as a quotation, name/doc the docstring of the one in force and
     name/effect its effect line as a list of strings, +fail last when it may fail."""
+    budget(fuel)
     logged: dict[str, list[Define]] = {}
     for s in statements:
         if isinstance(s, Define):
@@ -76,6 +78,12 @@ def evaluate(
         words[f"{name}/doc"] = (Push(log[-1].doc),)
         words[f"{name}/effect"] = (Push(effect_line(log[-1])),)
     return tuple(metered(s, words, fuel) for s in statements if isinstance(s, Run))
+
+
+def budget(fuel: int | None) -> None:
+    """Refuses a fuel below zero, which Meter would count down past zero and never stop on."""
+    if fuel is not None and fuel < 0:
+        raise ValueError(f"fuel below zero: {fuel}")
 
 
 @dataclass

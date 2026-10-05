@@ -1,6 +1,8 @@
 """A step budget per run line, the runs nested in it counted, and a recursion too deep for the
 walker refused at the line that ran it."""
 
+from collections.abc import Callable
+
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
@@ -75,3 +77,20 @@ def test_a_recursion_too_deep_is_an_error_at_its_line() -> None:
     with pytest.raises(FplError) as caught:
         run("f : x -- y\n\t1 2 [f] each\n1 f\n")
     assert str(caught.value) == "ERROR: 3:1 recursion too deep"
+
+
+@given(st.integers(max_value=-1), st.sampled_from([evaluate, stacks]))
+def test_a_negative_fuel_is_refused_before_a_step(
+    fuel: int, entry: Callable[[tuple[Statement, ...], int], object]
+) -> None:
+    """A budget below zero bounds nothing, so evaluate and stacks refuse it as an argument
+    before the first step, as the CLI refuses it, rather than run until the walker's stack ends."""
+    statements = desugar(parse(NESTED + "\n"))
+
+    def unwalked(state: State) -> State:
+        raise AssertionError(state)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr("fpl.eval.step", unwalked)
+        with pytest.raises(ValueError, match=r"^fuel below zero: -\d+$"):
+            entry(statements, fuel)
