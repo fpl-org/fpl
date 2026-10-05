@@ -1,0 +1,8 @@
+# The author addresses agents commit as, accepted by scripts/commit-lint for an agent
+# commit beside .git/agent-identity: in the commit-lint workflow and in .githooks/pre-push
+# alike, so the two give one verdict (docs/COMMITS.md, sections 1 and 2). The workflow
+# also lists them inline in FPL_AGENT_EMAILS until the owner removes that duplicate: keep
+# the two lists equal.
+326980220+psjg-claude@users.noreply.github.com
+41898282+claude[bot]@users.noreply.github.com
+336224473+psjg-codex@users.noreply.github.com

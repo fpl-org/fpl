@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# .githooks/pre-push — three gates on what reaches a remote:
+# .githooks/pre-push — four gates on what reaches a remote:
 #
 #   1. No private term or secret in what is pushed (scripts/leak-check --push): the
 #      patches, file names, identities and messages of every commit the remote does not
@@ -25,6 +25,17 @@
 #      name that would appear on the forge is judged right before it gets there.
 #      Deletions are let through so a non-conforming remote branch can still be cleaned
 #      up. FPL_BRANCH_GATE = block (default) | warn | off
+#
+#   4. Every commit a push adds to a branch passes the commit-msg gates for that branch
+#      (scripts/commit-lint -b <branch>), as the commit-lint workflow will judge it on the
+#      pull request. commit-msg judges a commit's 'Stack:' trailer only on the branch it
+#      was made on; a commit moved since (cherry-pick, rebase --onto, branch -f) is judged
+#      here again, under the name it arrives with. The commits added are <remote sha>..<local
+#      sha> for an update and <the remote's main>..<local sha> for a new branch, the main
+#      that git ls-remote lists at the URL now or, when that commit is not fetched yet,
+#      refs/remotes/<remote>/main. A push to main, a tag, a deletion and a push to Radicle
+#      are not judged: the workflow judges none of them. A URL that cannot be listed, one
+#      with no main, or a remote side of the range that is not here is a refusal.
 
 set -euo pipefail
 
@@ -44,24 +55,57 @@ updates="$(cat)"
 "$top/scripts/forward-only" "${1:-}" "${2:-}" <<<"$updates" || exit 1
 
 # 3. branch names ----------------------------------------------------------------------
-mode="${FPL_BRANCH_GATE:-block}"
-[ "$mode" = "off" ] && exit 0
-
 # Radicle is not a forge with branch names of its own choosing: its remote helper keeps a
 # patch under refs/heads/patches/<id>, and a new revision of a patch is a push there. The
-# grammar is for names on the forge, so a push to a rad:// remote is not judged.
+# grammar is for names on the forge, so a push to a rad:// remote is not judged, here or in
+# gate 4.
 case "${2:-}" in rad://*) exit 0 ;; esac
+
+mode="${FPL_BRANCH_GATE:-block}"
 lint="$top/scripts/branch-lint"
-[ -x "$lint" ] || exit 0
-
 rc=0
-while read -r local_ref _local_sha remote_ref _remote_sha; do
-	[ "$local_ref" = "(delete)" ] && continue
-	case "$remote_ref" in refs/heads/*) : ;; *) continue ;; esac
-	"$lint" "${remote_ref#refs/heads/}" || rc=1
-done <<<"$updates"
+if [ "$mode" != "off" ] && [ -x "$lint" ]; then
+	while read -r local_ref _local_sha remote_ref _remote_sha; do
+		[ "$local_ref" = "(delete)" ] && continue
+		case "$remote_ref" in refs/heads/*) : ;; *) continue ;; esac
+		"$lint" "${remote_ref#refs/heads/}" || rc=1
+	done <<<"$updates"
+fi
+if [ "$rc" -ne 0 ]; then
+	echo "pre-push: nothing was pushed. FPL_BRANCH_GATE=warn to override." >&2
+	[ "$mode" = "warn" ] || exit 1
+fi
 
-[ "$rc" -eq 0 ] && exit 0
-echo "pre-push: nothing was pushed. FPL_BRANCH_GATE=warn to override." >&2
-[ "$mode" = "warn" ] && exit 0
-exit 1
+# 4. commit messages -------------------------------------------------------------------
+refuse() {
+	echo "pre-push: $*; nothing was pushed." >&2
+	exit 1
+}
+main=""
+while read -r local_ref local_sha remote_ref remote_sha; do
+	[ "$local_ref" = "(delete)" ] && continue
+	case "$remote_ref" in refs/heads/main) continue ;; refs/heads/*) : ;; *) continue ;; esac
+	branch="${remote_ref#refs/heads/}"
+	from="$remote_sha"
+	if [ -z "${from//0/}" ]; then # all zeros: a branch new to the remote
+		if [ -z "$main" ]; then
+			main="$(git ls-remote --heads -- "${2:-}" refs/heads/main)" ||
+				refuse "cannot list ${2:-}"
+			main="${main%%[[:space:]]*}"
+			[ -n "$main" ] || refuse "${2:-} has no main to judge $branch against"
+			# A main that moved since the last fetch: the commits it gained are not in
+			# what is pushed, so the main last fetched marks the same range.
+			git cat-file -e "$main^{commit}" 2>/dev/null ||
+				main="$(git rev-parse -q --verify "refs/remotes/${1:-}/main^{commit}")" ||
+				refuse "${2:-}'s main is not here, nor a main fetched from it; fetch it"
+		fi
+		from="$main"
+	fi
+	git cat-file -e "$from^{commit}" 2>/dev/null ||
+		refuse "${from:0:7}, ${2:-}'s side of $branch, is not here; fetch it"
+	# commit-lint refuses an empty range, and skips merges as the workflow does.
+	[ -n "$(git rev-list --no-merges "$from..$local_sha")" ] || continue
+	out="$("$top/scripts/commit-lint" -b "$branch" "$from..$local_sha" 2>&1)" ||
+		{ printf '%s\n' "$out" >&2 && refuse "a commit fails the gates for $branch"; }
+done <<<"$updates"
+exit 0

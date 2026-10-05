@@ -14,11 +14,19 @@ The hook only sees a commit made with git, in a clone whose hooks are wired.
 `git commit --no-verify`, an unwired clone and `jj` (`docs/JJ.md`) get past it. So the same
 gates run a second time where they cannot be skipped: `scripts/commit-lint <rev-range>` runs
 the hook over commits that already exist, and `.github/workflows/commit-lint.yml` does that
-for every commit of a pull request. Run it yourself before pushing:
+for every commit of a pull request. `.githooks/pre-push` runs it too, over the commits a push
+adds to a branch, judged for the branch they arrive at: a commit moved since it was made
+(cherry-pick, `rebase --onto`, `branch -f`) still carries the `Stack:` of the branch it left,
+and is refused before it reaches the forge. By hand, as the hook does it for a new branch:
 
 ```
 scripts/commit-lint -b "$(git branch --show-current)" github/main..HEAD
 ```
+
+The agent addresses it accepts beside `.git/agent-identity` are listed in
+`.github/agent-emails`, which the hook and the workflow both read through it. The workflow
+still sets the same addresses inline in `FPL_AGENT_EMAILS`, a duplicate of the file until the
+owner removes it (an agent's token cannot push `.github/workflows/`); change both together.
 
 Judged after the fact, a `fixup!`, `squash!` or `amend!` commit fails (a rebase-merge would
 land it as it is), and the atomicity check is skipped.
@@ -134,7 +142,7 @@ email, independent identity — no collision, no impersonation either way.
 it makes there meets the same `commit-msg` as one made in a terminal. It commits with
 `scripts/acommit`: the author name carries its model, `Session-Id` is `gha-<run id>` and
 leads back to the Actions run. `scripts/commit-lint` holds its commits to every gate; the
-App's address is one of the accepted agent addresses in the `commit-lint` workflow.
+App's address is one of the accepted agent addresses in `.github/agent-emails`.
 
 GitHub links a commit to an account by matching the author/co-author **email** to one
 registered on that account. `noreply@anthropic.com` is not a forge account, so a bare

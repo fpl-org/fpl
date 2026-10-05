@@ -16,8 +16,8 @@
 #               commits. Without it those two comparisons are skipped, which is what you
 #               want for a range of main.
 #
-# Environment: FPL_AGENT_EMAILS, space-separated author addresses accepted for agent
-# commits, in addition to .git/agent-identity.
+# Agent commits may be authored by .git/agent-identity, by an address listed in
+# .github/agent-emails, or by one in FPL_AGENT_EMAILS (space-separated).
 set -euo pipefail
 
 die() {
@@ -43,6 +43,9 @@ commits="$(git rev-list --reverse --no-merges "$range")" || die "bad revision ra
 [ -n "$commits" ] || die "no commits in $range"
 
 export FPL_LINT_BRANCH="$branch"
+listed="$top/.github/agent-emails"
+[ ! -f "$listed" ] || FPL_AGENT_EMAILS="${FPL_AGENT_EMAILS:-} $(sed -e 's/#.*//' "$listed" | xargs)"
+export FPL_AGENT_EMAILS
 msg="$(mktemp)"
 trap 'rm -f "$msg"' EXIT
 
