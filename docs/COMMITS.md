@@ -17,10 +17,18 @@ the hook over commits that already exist, and `.github/workflows/commit-lint.yml
 for every commit of a pull request. `.githooks/pre-push` runs it too, over the commits a push
 adds to a branch, judged for the branch they arrive at: a commit moved since it was made
 (cherry-pick, `rebase --onto`, `branch -f`) still carries the `Stack:` of the branch it left,
-and is refused before it reaches the forge. By hand, as the hook does it for a new branch:
+and is refused before it reaches the forge. By hand, for a branch based on `main`:
 
 ```
 scripts/commit-lint -b "$(git branch --show-current)" github/main..HEAD
+```
+
+For a branch based on a parent not merged yet, the base is that parent on the remote, so
+the parent's commits, which may carry another `Stack:`, are left out as the hook leaves
+them out:
+
+```
+scripts/commit-lint -b "$(git branch --show-current)" github/<parent branch>..HEAD
 ```
 
 The agent addresses it accepts beside `.git/agent-identity` are listed in
