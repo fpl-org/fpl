@@ -17,8 +17,13 @@
 #               commits. Without it those two comparisons are skipped, which is what you
 #               want for a range of main.
 #
-# Agent commits may be authored by .git/agent-identity, by an address listed in
-# .github/agent-emails, or by one in FPL_AGENT_EMAILS (space-separated).
+# Agent commits may be authored by .git/agent-identity or by an accepted agent address.
+# Which addresses are accepted depends on who runs this:
+#   FPL_AGENT_EMAILS set (CI: the workflow sets it inline)   that list, space-separated, is
+#               the only one. .github/agent-emails comes from the tree under judgment, so a
+#               pull request could add its own author there; it is never read into the
+#               list. An address in it that the list lacks is refused, so drift shows.
+#   FPL_AGENT_EMAILS unset (local: commit-msg, pre-push)     .github/agent-emails.
 set -euo pipefail
 
 die() {
@@ -45,8 +50,26 @@ commits="$(git rev-list --reverse --no-merges "$@")" || die "bad revision range:
 
 export FPL_LINT_BRANCH="$branch"
 listed="$top/.github/agent-emails"
-[ ! -f "$listed" ] || FPL_AGENT_EMAILS="${FPL_AGENT_EMAILS:-} $(sed -e 's/#.*//' "$listed" | xargs)"
-export FPL_AGENT_EMAILS
+if [ -f "$listed" ]; then
+	file_emails="$(sed -e 's/#.*//' "$listed" | xargs)"
+	trusted_list="${FPL_AGENT_EMAILS:-}"
+	if [ -z "${trusted_list//[[:space:]]/}" ]; then
+		FPL_AGENT_EMAILS="$file_emails"
+	elif [ -n "$file_emails" ]; then
+		# Arrays, not unquoted strings: an address such as 41898282+claude[bot]@... would be
+		# globbed against the working directory.
+		read -r -a trusted <<<"$trusted_list"
+		read -r -a in_file <<<"$file_emails"
+		for a in "${in_file[@]}"; do
+			found=0
+			for t in "${trusted[@]}"; do
+				[ "$a" = "$t" ] && found=1
+			done
+			[ "$found" -eq 1 ] || die ".github/agent-emails lists '$a', which FPL_AGENT_EMAILS does not: the list the workflow sets is the trusted one, and a file in the tree under judgment cannot widen it"
+		done
+	fi
+fi
+export FPL_AGENT_EMAILS="${FPL_AGENT_EMAILS:-}"
 msg="$(mktemp)"
 trap 'rm -f "$msg"' EXIT
 

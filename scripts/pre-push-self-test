@@ -217,6 +217,41 @@ rm "$(git rev-parse --git-path objects)/${lost:0:2}/${lost:2}"
 h="$(git rev-parse HEAD)"
 hook 1 "a range git cannot walk" "refs/heads/agent/claude/stack/h $h refs/heads/agent/claude/stack/h $zero"
 
+# commit-lint's list of agent addresses. With FPL_AGENT_EMAILS set (CI), that list alone
+# is trusted: .github/agent-emails comes from the pull request, and an author added there
+# in the same pull request must not pass the provenance gate (Codex on fpl-org/fpl#129).
+git switch -q -c agent/claude/stack/k main
+rogue=999+rogue@users.noreply.github.com
+GIT_AUTHOR_EMAIL=$rogue commit -m "feat(x): rogue" \
+	-m "Stack: k"$'\n'"Assisted-By: claude"$'\n'"Session-Id: s"
+# The workflow's inline list, simulated: every address the checked-in file holds.
+ci="$(sed -e 's/#.*//' .github/agent-emails | xargs)"
+lint() { # lint <exit code> <description>: scripts/commit-lint over the branch, output in $tmp/out
+	local want="$1" what="$2" rc=0
+	total=$((total + 1))
+	scripts/commit-lint -b agent/claude/stack/k main..HEAD >"$tmp/out" 2>&1 || rc=$?
+	[ "$rc" -eq 0 ] || rc=1
+	if [ "$rc" -ne "$want" ]; then
+		fails=$((fails + 1))
+		echo "self-test: $what: exit $rc, want $want" >&2
+		sed 's/^/    /' "$tmp/out" >&2
+	fi
+}
+echo "$rogue" >>.github/agent-emails
+FPL_AGENT_EMAILS="$ci" lint 1 "an address only the file lists, with the workflow's list set"
+says "$rogue" "the refusal names the address"
+says "the trusted one" "the refusal says the workflow's list is trusted"
+lint 0 "the same address, with no workflow list: the file is used locally"
+git checkout -q -- .github/agent-emails
+FPL_AGENT_EMAILS="$ci" lint 1 "an author the workflow's list lacks, though the file is a subset"
+says "author email is" "the author gate refuses it"
+FPL_AGENT_EMAILS="$ci $rogue" lint 0 "an author in the workflow's list"
+git reset -q --hard HEAD~1
+GIT_AUTHOR_EMAIL=326980220+psjg-claude@users.noreply.github.com commit -m "feat(x): listed" \
+	-m "Stack: k"$'\n'"Assisted-By: claude"$'\n'"Session-Id: s"
+FPL_AGENT_EMAILS="$ci" lint 0 "the file a subset of the workflow's list"
+lint 0 "no workflow list: the file's addresses"
+
 echo "pre-push self-test: $fails of $total checks failed (bash $BASH_VERSION)"
 if [ -z "${PRE_PUSH_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ]; then
 	mkdir -p "$tmp/shim"
