@@ -91,15 +91,25 @@ class Flt:
         return float(struct.unpack("<d", struct.pack("<q", self.bits))[0])
 
     def written(self) -> str:
-        """Canonical FON: nan, -nan, ∞, -∞ or the shortest %a spelling."""
+        """Canonical FON: nan, -nan, ∞, -∞, [-]0x0p0, or [-]0x1[.hex]p<exp> with trailing zero
+        hex digits dropped. A subnormal is normalised like every other nonzero float, its
+        exponent below -1022: the smallest is 0x1p-1074, not float.hex's
+        0x0.0000000000001p-1022, so that each float has one spelling."""
         x = self.value
         sign = "-" if math.copysign(1, x) < 0 else ""
         if math.isnan(x):
             return sign + "nan"
         if math.isinf(x):
             return sign + "∞"
-        mantissa, exponent = x.hex().split("p")
-        return mantissa.rstrip("0").rstrip(".") + "p" + exponent.replace("+", "")
+        if x == 0:
+            return sign + "0x0p0"
+        fraction, biased = self.bits & ((1 << 52) - 1), (self.bits >> 52) & 0x7FF
+        exponent = biased - 1023
+        if biased == 0:
+            top = fraction.bit_length() - 1
+            fraction, exponent = (fraction - (1 << top)) << (52 - top), top - 1074
+        digits = f"{fraction:013x}".rstrip("0")
+        return f"{sign}0x1{'.' if digits else ''}{digits}p{exponent}"
 
 
 @dataclass(frozen=True)
