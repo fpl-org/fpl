@@ -61,5 +61,6 @@ jobs:
           printf '%s\n' "$GITLAB_HOST_KEY" > "$work/known_hosts"
           export GIT_SSH_COMMAND="ssh -i $work/key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$work/known_hosts"
           git clone --bare --quiet "$SOURCE" "$work/fpl.git"
-          git -C "$work/fpl.git" push --prune "$TARGET" \
+          # --atomic: every ref change lands, or none does; a refused ref never leaves a half mirror.
+          git -C "$work/fpl.git" push --atomic --prune "$TARGET" \
             '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'
