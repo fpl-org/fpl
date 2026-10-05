@@ -196,8 +196,13 @@ scan_both() {
 # a key that is a file name is found as one in a file is: the 1-based positions of those
 # that match land in $tmp/namehits.
 names() {
-	LC_ALL=C sort -zu "$tmp/names0" | sed -z '/^$/d' >"$tmp/names0.sorted" ||
-		broke "sorting the file names"
+	local name
+	LC_ALL=C sort -zu "$tmp/names0" >"$tmp/names0.unique" || broke "sorting the file names"
+	# An empty record is no name, and is dropped should git list one. bash splits on NUL
+	# itself; sed -z did it before, but macOS sed has no -z.
+	while IFS= read -r -d '' name; do
+		[ -z "$name" ] || printf '%s\0' "$name"
+	done <"$tmp/names0.unique" >"$tmp/names0.sorted" || broke "listing the file names"
 	tr '\n\0' ' \n' <"$tmp/names0.sorted" >"$tmp/names" || broke "listing the file names"
 	od -An -v -tx1 "$tmp/names0.sorted" | tr -s ' ' '\n' |
 		awk '$0 == "00" { print h; h = ""; next } { h = h $0 }' >"$tmp/names.hex" ||
