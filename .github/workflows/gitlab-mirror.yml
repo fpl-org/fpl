@@ -1,0 +1,65 @@
+# Mirror every branch and tag of fpl-org/fpl to gitlab.com/PSJx/fpl (#108).
+#
+# GitHub is authoritative: each run takes a fresh bare clone of all branches and tags from
+# GitHub and pushes them to GitLab with --prune, so a ref GitHub no longer has is deleted
+# there too. Nothing is taken from the working tree of the branch that triggered the run.
+#
+# The deploy key can force-push and prune the mirror, so only main may reach it. It lives in
+# the environment `gitlab-mirror` as GITLAB_MIRROR_SSH_KEY, and that environment admits
+# deployments from main alone; a run from any other ref, workflow_dispatch from a branch
+# included, is refused before the job starts. The first attempt (#86) kept the key as a
+# repository secret and ran on a push to any branch, which let any branch's copy of this
+# file decide what the key did.
+#
+# Triggers: a push to main, the hourly schedule and a manual dispatch. Branches other than
+# main and tags are not triggers: the environment rule is matched against GITHUB_REF, so a
+# run fired by a tag push (refs/tags/...) would be refused, and admitting tags to the
+# environment would hand the key to any commit a tag points at. The hourly run carries them.
+#
+# The GitLab host key is pinned and checked strictly (StrictHostKeyChecking=yes). It is the
+# ed25519 key GitLab publishes, SHA256:eUXGGm1YGsMAS7vkcx6JOJdOGHPem5gQp4taiCfCLB8:
+# https://docs.gitlab.com/user/gitlab_com/ (section "SSH known_hosts entries").
+# If GitLab rotates it, replace the line below with the newly published one.
+name: gitlab-mirror
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+# One run at a time; a queued run waits rather than cancelling a push half-way.
+concurrency:
+  group: gitlab-mirror
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    if: github.repository == 'fpl-org/fpl'
+    runs-on: ubuntu-latest
+    environment: gitlab-mirror
+    timeout-minutes: 10
+    steps:
+      - name: Mirror GitHub branches and tags to GitLab
+        env:
+          GITLAB_SSH_KEY: ${{ secrets.GITLAB_MIRROR_SSH_KEY }}
+          GITLAB_HOST_KEY: gitlab.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAfuCHKVTjquxvt6CM6tdG4SLp1Btn/nOeHHE5UOzRdf
+          SOURCE: https://github.com/fpl-org/fpl.git
+          TARGET: git@gitlab.com:PSJx/fpl.git
+        run: |
+          set -euo pipefail
+          test -n "$GITLAB_SSH_KEY" || { echo "GITLAB_MIRROR_SSH_KEY is not set in the gitlab-mirror environment" >&2; exit 1; }
+          umask 077
+          work="$(mktemp -d "$RUNNER_TEMP/gitlab-mirror.XXXXXX")"
+          trap 'rm -rf "$work"' EXIT
+          printf '%s\n' "$GITLAB_SSH_KEY" > "$work/key"
+          chmod 600 "$work/key"
+          printf '%s\n' "$GITLAB_HOST_KEY" > "$work/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $work/key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$work/known_hosts"
+          git clone --bare --quiet "$SOURCE" "$work/fpl.git"
+          git -C "$work/fpl.git" push --prune "$TARGET" \
+            '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'
