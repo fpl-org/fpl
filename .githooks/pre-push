@@ -30,12 +30,18 @@
 #      (scripts/commit-lint -b <branch>), as the commit-lint workflow will judge it on the
 #      pull request. commit-msg judges a commit's 'Stack:' trailer only on the branch it
 #      was made on; a commit moved since (cherry-pick, rebase --onto, branch -f) is judged
-#      here again, under the name it arrives with. The commits added are <remote sha>..<local
-#      sha> for an update and <the remote's main>..<local sha> for a new branch, the main
-#      that git ls-remote lists at the URL now or, when that commit is not fetched yet,
-#      refs/remotes/<remote>/main. A push to main, a tag, a deletion and a push to Radicle
-#      are not judged: the workflow judges none of them. A URL that cannot be listed, one
-#      with no main, or a remote side of the range that is not here is a refusal.
+#      here again, under the name it arrives with. The commits a push adds are those of the
+#      local sha that no branch at the URL ($2) holds, as git ls-remote lists them now.
+#      That reads an update, a new branch and a new stack on a parent not merged yet alike:
+#      the parent's commits are on the remote under their own name, and scripts/pr bases
+#      the child's pull request on the tail of the queue, so the workflow does not judge
+#      them under the child's name either (a pull request based elsewhere would). A branch
+#      at the URL whose commit is not here cannot be excluded, so the range only grows:
+#      the gate errs strict, never loose. A push to main, a tag, a deletion and
+#      a push to Radicle are not judged: the workflow judges none of them. Any git command
+#      that fails, the listing of the URL included, refuses the push, and so does a
+#      refusal that cannot be printed. Replace refs are off, so the commits judged are the
+#      ones the push sends.
 
 set -euo pipefail
 
@@ -78,34 +84,40 @@ fi
 
 # 4. commit messages -------------------------------------------------------------------
 refuse() {
-	echo "pre-push: $*; nothing was pushed." >&2
+	echo "pre-push: $*; nothing was pushed." >&2 || :
 	exit 1
 }
-main=""
+export GIT_NO_REPLACE_OBJECTS=1
+listed=0 not=""
 while read -r local_ref local_sha remote_ref remote_sha; do
 	[ "$local_ref" = "(delete)" ] && continue
 	case "$remote_ref" in refs/heads/main) continue ;; refs/heads/*) : ;; *) continue ;; esac
 	branch="${remote_ref#refs/heads/}"
-	from="$remote_sha"
-	if [ -z "${from//0/}" ]; then # all zeros: a branch new to the remote
-		if [ -z "$main" ]; then
-			main="$(git ls-remote --heads -- "${2:-}" refs/heads/main)" ||
-				refuse "cannot list ${2:-}"
-			main="${main%%[[:space:]]*}"
-			[ -n "$main" ] || refuse "${2:-} has no main to judge $branch against"
-			# A main that moved since the last fetch: the commits it gained are not in
-			# what is pushed, so the main last fetched marks the same range.
-			git cat-file -e "$main^{commit}" 2>/dev/null ||
-				main="$(git rev-parse -q --verify "refs/remotes/${1:-}/main^{commit}")" ||
-				refuse "${2:-}'s main is not here, nor a main fetched from it; fetch it"
-		fi
-		from="$main"
+	if [ "$listed" -eq 0 ]; then
+		heads="$(git ls-remote --heads -- "${2:-}")" || refuse "cannot list ${2:-}"
+		# Only the commits here can be excluded; a missing one is skipped, not an error.
+		known="$(printf '%s\n' "$heads" | cut -f1 | sed '/^$/d' |
+			git cat-file --batch-check='%(objectname) %(objecttype)')" ||
+			refuse "cannot look up ${2:-}'s branches here"
+		not="$(printf '%s\n' "$known" | awk '$2 == "commit" { printf " ^%s", $1 }')" ||
+			refuse "cannot read ${2:-}'s branches"
+		listed=1
 	fi
-	git cat-file -e "$from^{commit}" 2>/dev/null ||
-		refuse "${from:0:7}, ${2:-}'s side of $branch, is not here; fetch it"
-	# commit-lint refuses an empty range, and skips merges as the workflow does.
-	[ -n "$(git rev-list --no-merges "$from..$local_sha")" ] || continue
-	out="$("$top/scripts/commit-lint" -b "$branch" "$from..$local_sha" 2>&1)" ||
-		{ printf '%s\n' "$out" >&2 && refuse "a commit fails the gates for $branch"; }
+	# The remote's side of this ref is on the remote by definition.
+	extra=""
+	if [ -n "${remote_sha//0/}" ] && git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+		extra=" ^$remote_sha"
+	fi
+	# commit-lint refuses an empty range, and skips merges as the workflow does. Only a
+	# walk that succeeded and found nothing is let through.
+	# shellcheck disable=SC2086 # $not and $extra are lists of ^sha, split on purpose
+	added="$(git rev-list --no-merges "$local_sha" $not $extra)" ||
+		refuse "cannot list the commits $branch adds"
+	[ -n "$added" ] || continue
+	# shellcheck disable=SC2086
+	out="$("$top/scripts/commit-lint" -b "$branch" "$local_sha" $not $extra 2>&1)" || {
+		printf '%s\n' "$out" >&2 || :
+		refuse "a commit fails the gates for $branch"
+	}
 done <<<"$updates"
 exit 0

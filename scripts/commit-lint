@@ -4,12 +4,13 @@
 #
 #   scripts/commit-lint github/main..HEAD
 #   scripts/commit-lint -b agent/claude/stack/x github/main..HEAD
+#   scripts/commit-lint -b agent/claude/stack/x HEAD ^<sha> ^<sha>    (what pre-push hands it)
 #
 # .githooks/commit-msg judges a commit while it is being made, and only in a clone whose
 # hooks are wired, with a tool that runs hooks. `git commit --no-verify`, an unwired clone
 # and jj (docs/JJ.md) all get past it. This runs the same hook, in its lint mode, over a
-# revision range, so the forge can judge every commit of a pull request
-# (.github/workflows/commit-lint.yml) and anyone can do the same before pushing.
+# revision range, or any rev-list arguments, so the forge can judge every commit of a pull
+# request (.github/workflows/commit-lint.yml) and anyone can do the same before pushing.
 #
 #   -b BRANCH   the branch the commits are headed for review on. With it, gate 8 wants
 #               the matching 'Stack:' trailer and gate 9 wants an agent branch for agent
@@ -29,17 +30,17 @@ branch=""
 while getopts "b:" opt; do
 	case "$opt" in
 	b) branch="$OPTARG" ;;
-	*) die "usage: scripts/commit-lint [-b <branch>] <rev-range>" ;;
+	*) die "usage: scripts/commit-lint [-b <branch>] <rev-range>..." ;;
 	esac
 done
 shift $((OPTIND - 1))
-[ $# -eq 1 ] || die "usage: scripts/commit-lint [-b <branch>] <rev-range>"
-range="$1"
+[ $# -ge 1 ] || die "usage: scripts/commit-lint [-b <branch>] <rev-range>..."
+range="$*"
 
 top="$(git rev-parse --show-toplevel)"
 hook="$top/.githooks/commit-msg"
 [ -x "$hook" ] || die "no executable $hook"
-commits="$(git rev-list --reverse --no-merges "$range")" || die "bad revision range: $range"
+commits="$(git rev-list --reverse --no-merges "$@")" || die "bad revision range: $range"
 [ -n "$commits" ] || die "no commits in $range"
 
 export FPL_LINT_BRANCH="$branch"
