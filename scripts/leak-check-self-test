@@ -103,6 +103,7 @@ for tool in sort tr od awk cut cat cp mv; do
 	shim="$tmp/broken-$tool" expect 1 "a clean change with a broken $tool" --staged
 	says "failed; refusing" "a broken $tool is a refusal"
 	shim="$tmp/broken-$tool" FPL_LEAK_GATE=warn expect 1 "warn with a broken $tool" --staged
+	says "failed; refusing" "warn with a broken $tool is a refusal, not a finding"
 	reset
 done
 
