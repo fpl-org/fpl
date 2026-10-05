@@ -118,16 +118,16 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Evidence: decisions (b) and (c); AGENTS.md "The oracle rule"; features/*/examples/*.expected at 3302d197
 
 ## unimplemented-words
-- Depends on it: fpl/desugar.py unimplemented; the 23 of 28 examples still at ERROR: 1:1 no evaluator yet, each named with the first thing desugar refuses: features/draft1/examples/draft1.fpl (newline), features/draft2/examples/03-operatives-thunks.fpl (debug), features/draft2/examples/04-effects-holes-ascription.fpl (shape), features/draft2/examples/05-the-dictionary-is.fpl (words), features/draft2/examples/06-constructors-run-backwards.fpl (unpair), features/draft2/examples/08-objects-are-directories.fpl (dict), features/draft2/examples/10-quasiquote-inside.fpl ($q, an unquote), features/draft2/examples/11-laziness.fpl (curry), features/draft3/examples/draft3.fpl (shape), features/match/examples/01-1-constructors-run.fpl (pos), features/match/examples/02-2-the-same.fpl (a pattern on the effect line), features/match/examples/03-3-multiple-dispatch.fpl (Asteroid), features/match/examples/04-4-list-patterns.fpl (false), features/match/examples/05-5-prolog-s-family.fpl (x in mother's body), features/match/examples/06-6-python-s-keywords.fpl (a record pattern on the effect line), features/server/examples/server.fpl (+in/data on the effect line), features/sketch/examples/05-5-multiple-dispatch.fpl (shape/r), and features/sketch/examples/01, 02, 03, 04, 06 and 07 (seam ∈ … in a directory, no definition nor bind)
+- Depends on it: fpl/desugar.py unimplemented; the 23 of 28 examples still at ERROR: 1:1 no evaluator yet, each named with the first thing desugar refuses: features/draft1/examples/draft1.fpl (newline), features/draft2/examples/03-operatives-thunks.fpl (debug), features/draft2/examples/04-effects-holes-ascription.fpl (shape), features/draft2/examples/05-the-dictionary-is.fpl (words), features/draft2/examples/06-constructors-run-backwards.fpl (unpair), features/draft2/examples/08-objects-are-directories.fpl (dict), features/draft2/examples/10-quasiquote-inside.fpl ($q, an unquote), features/draft2/examples/11-laziness.fpl (curry), features/draft3/examples/paths.fpl (shape), features/match/examples/01-1-constructors-run.fpl (pos), features/match/examples/02-2-the-same.fpl (a pattern on the effect line), features/match/examples/03-3-multiple-dispatch.fpl (Asteroid), features/match/examples/04-4-list-patterns.fpl (false), features/match/examples/05-5-prolog-s-family.fpl (x in mother's body), features/match/examples/06-6-python-s-keywords.fpl (a record pattern on the effect line), features/server/examples/server.fpl (+in/data on the effect line), features/sketch/examples/05-5-multiple-dispatch.fpl (shape/r), and features/sketch/examples/01, 02, 03, 04, 06 and 07 (seam ∈ … in a directory, no definition nor bind)
 - Default in force: desugar refuses, before anything runs, all but: decimal numbers, strings without islands, [ ], ( ) of one cell, ⟨ ⟩ of literals, bars, tabs, blocks, name : ins -- outs definitions (each slot a name or name: Type), →x and ->x of a plain name or a path, #name symbols, { } of plain keys each with one item pushing one value, name/ heads with a block of definitions, subdirectories and #name bind lines, paths a/b and ../x that name a defined word, w/history, w/doc, w/effect, a match line with its block of rows in a definition's body, clauses of one word whose typed inputs cross only where their meet is a clause or two builtin type words make them disjoint, and the words of fpl/ast_core.py EFFECTS (+ - times swap dup drop enclose , pair cons ! if swap-args repeat each scan fold, and ? and _ in a term), with ERROR: 1:1 no evaluator yet (the skeleton's message and position, reused)
 - Closes by: each step-3 part, shrinking the set
 - Evidence: fpl/driver.py (skeleton); fpl/ast_core.py EFFECTS; each example run through fpl.driver.run at 203e0ba, the refusal traced to its caller in fpl/desugar.py (resolve, origin, effect_line, mount)
 
 ## doc-absent
-- Depends on it: fpl/desugar.py (Catalog.enter, DOC), fpl/eval.py (evaluate), tests/test_comments.py, features/draft3/examples/draft3.fpl:10
+- Depends on it: fpl/desugar.py (Catalog.enter, DOC), fpl/eval.py (evaluate), tests/test_comments.py, features/draft3/examples/paths.fpl:10
 - Default in force: every word w has w/doc, as it has w/history; the doc goes with the definition in force (Define.doc), so a word with no doc, or shadowed by a definition with none, pushes the empty string
 - Closes by: design, saying what an undocumented word's doc is (a refusal, the empty string, or no such word)
-- Evidence: claim D3.2 (draft-3.md:13); draft3.fpl:10 asks math/mean/doc of a mean with no ;; line
+- Evidence: claim D3.2 (draft-3.md:13); paths.fpl:10 asks math/mean/doc of a mean with no ;; line
 
 ## doc-text
 - Depends on it: fpl/trivia.py (docstrings, _aimed), tests/test_trivia.py, tests/test_comments.py
@@ -320,22 +320,22 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Evidence: grep -l over features/*/examples/*.fpl finds none; decision (f)
 
 ## directory-log
-- Depends on it: fpl/desugar.py (Catalog, directory, mount, _Desugar.call, origin), tests/test_binders.py; features/draft3/examples/draft3.fpl:1-9, features/match/examples/05-5-prolog-s-family.fpl:2, features/server/examples/server.fpl:4
+- Depends on it: fpl/desugar.py (Catalog, directory, mount, _Desugar.call, origin), tests/test_binders.py; features/draft3/examples/paths.fpl:1-9, features/match/examples/05-5-prolog-s-family.fpl:2, features/server/examples/server.fpl:4
 - Default in force: a head name/ with a block is a directory; its definitions, subdirectories and #name bind mounts form one ordered log, read whole before any line runs (the rule top-level definitions already follow), where the latest entry holding a name wins; a word is a directory holding its history; a name resolves at desugar time from the word's own directory outward, ../x from the directory holding the word; a mount sees only the words its directory defines, never its mounts; a second head of the same name appends to the same log; a name/ head without a block, a deeper a/b/ head, any other line in a directory, bind of anything but a literal #name, a #name that is no directory and ../x on a top-level line are refused as unimplemented
 - Closes by: design, by saying whether a log entry is visible above the line that adds it, whether mounts chain, and what a directory holds besides definitions and binds
-- Evidence: claims D3.1 (draft3.fpl:7 "ordered log append (§5.2): later shadows earlier"), D3.5 (draft3.fpl:13 "takes ../io lexically"); decision (f) f/require; features/sketch/examples/07-7-facts-signed.fpl:18 binds a quotation of paths, which this default refuses
+- Evidence: claims D3.1 (paths.fpl:7 "ordered log append (§5.2): later shadows earlier"), D3.5 (paths.fpl:13 "takes ../io lexically"); decision (f) f/require; features/sketch/examples/07-7-facts-signed.fpl:18 binds a quotation of paths, which this default refuses
 
 ## history-shape
-- Depends on it: fpl/eval.py (evaluate), fpl/desugar.py (HISTORY), tests/test_binders.py; features/draft3/examples/draft3.fpl:11
+- Depends on it: fpl/eval.py (evaluate), fpl/desugar.py (HISTORY), tests/test_binders.py; features/draft3/examples/paths.fpl:11
 - Default in force: w/history pushes a ⟨ ⟩ list of the definitions of w that a later one shadows, oldest first, each its body as a quotation; the one in force is not in it; one definition gives ⟨⟩
 - Closes by: design, by saying what a history entry is (body, effect, source) and whether the one in force belongs to it
-- Evidence: claim D3.3 (draft3.fpl:11 "shadowed definitions")
+- Evidence: claim D3.3 (paths.fpl:11 "shadowed definitions")
 
 ## effect-sugar-io
-- Depends on it: features/draft3/examples/draft3.fpl:13, features/server/examples/server.fpl:2 and 10
+- Depends on it: features/draft3/examples/paths.fpl:13, features/server/examples/server.fpl:2 and 10
 - Default in force: only the lexical half of D3.5 is in force (../x resolves from the directory holding the word); an effect line naming +io or any +effect is refused as unimplemented, so nothing threads an effect linearly
 - Closes by: the effects part, with the design saying what +io desugars to
-- Evidence: claim D3.5 (draft3.fpl:13 "sugar: takes ../io lexically, threads it linearly (§4.3 answer)")
+- Evidence: claim D3.5 (paths.fpl:13 "sugar: takes ../io lexically, threads it linearly (§4.3 answer)")
 
 ## with-record-union
 - Depends on it: features/match/examples/06-6-python-s-keywords.fpl:5

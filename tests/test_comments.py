@@ -30,7 +30,7 @@ AFTER = st.sampled_from(["", " ; n", "\t⍝ n"])
     ],
 )
 def test_a_words_doc_pushes_its_docstring(source: str, printed: str) -> None:
-    """[D3.2] math/mean/doc pushes the docstring (draft3 examples/draft3.fpl:10): the ;; lines
+    """[D3.2] math/mean/doc pushes the docstring (draft3 examples/paths.fpl:10): the ;; lines
     above the head, then those opening the body (draft2 examples/04-effects-holes-ascription
     .fpl:3), a line each; a word with none, or shadowed by one with none, pushes the empty
     string (holes doc-absent, doc-text)."""

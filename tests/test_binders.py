@@ -117,7 +117,7 @@ def test_what_binders_do_not_yet_read_is_refused(source: str) -> None:
 def test_a_head_ending_in_a_slash_mounts_its_children_as_a_directory(
     source: str, printed: str
 ) -> None:
-    """draft3 examples/draft3.fpl:1-5 (math/ holds mean and median, math/mean/doc reaches one);
+    """draft3 examples/paths.fpl:1-5 (math/ holds mean and median, math/mean/doc reaches one);
     match examples/05-5-prolog-s-family.fpl:2 and 24 (family/parent): a path looks up through
     directories, a name in a body is looked up from its word outward (draft2 §scope follows
     the tree), and →a/b names a path for its line (server.fpl:19)."""
