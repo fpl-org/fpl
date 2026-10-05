@@ -237,13 +237,22 @@ def matched(pattern: Pattern, value: Value, words: Words) -> Bound | None:
         case Equal():
             return {} if pattern.node == Push(value) else None
         case Guarded():
-            bound = matched(pattern.pattern, value, words)
-            test = final(State((value,), (Call(pattern.test, pattern.span),), words))
-            return bound if test == (1,) else None
+            return guarded(pattern, value, words)
         case Inverse():
             return unbuilt(pattern, value, words)
         case _:
             assert_never(pattern)
+
+
+def guarded(pattern: Guarded, value: Value, words: Words) -> Bound | None:
+    """What the inner pattern binds on the value, if the guard word then leaves 1 on it; the
+    word runs only on a value the inner pattern matched, so a row whose pattern refuses the
+    value falls through even where the word would raise on it."""
+    bound = matched(pattern.pattern, value, words)
+    if bound is None:
+        return None
+    test = final(State((value,), (Call(pattern.test, pattern.span),), words))
+    return bound if test == (1,) else None
 
 
 def unbuilt(pattern: Inverse, value: Value, words: Words) -> Bound | None:
