@@ -142,7 +142,10 @@ if ! grep -Eq '^Human-Only:[[:space:]]*true[[:space:]]*$' "$msg_file"; then
 	[ -n "$want" ] \
 		|| fail "agent identity unset; run scripts/agent-identity set <email> (or commit with 'Human-Only: true')"
 	known=0
-	for w in $want; do
+	# An array, not an unquoted $want: the shell would glob an address such as
+	# 41898282+claude[bot]@users.noreply.github.com against the working directory.
+	read -r -a wanted <<<"$want"
+	for w in "${wanted[@]}"; do
 		[ "$author_email" = "$w" ] && known=1
 	done
 	[ "$known" -eq 1 ] \
