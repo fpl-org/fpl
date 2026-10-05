@@ -67,6 +67,14 @@ says() {
 		echo "self-test: $2: output lacks '$1'" >&2
 	}
 }
+# never <text> <description>: the last push's output does not contain text.
+never() {
+	total=$((total + 1))
+	if grep -Fq -- "$1" "$tmp/out"; then
+		fails=$((fails + 1))
+		echo "self-test: $2: output holds '$1'" >&2
+	fi
+}
 # absent <ref> <description>: the remote does not hold ref.
 absent() {
 	total=$((total + 1))
@@ -77,14 +85,15 @@ absent() {
 }
 # hook <exit code> <description> <update line> [closed]: run the hook itself on one line of
 # what git hands it, for what a whole push cannot isolate: git refuses some of these pushes
-# itself, later, and git's own messages need a stderr. With 'closed', stderr is shut.
+# itself, later, and git's own messages need a stderr. With 'closed', stderr is shut. The
+# URL is $url when it is set, the remote on disk otherwise.
 hook() {
 	local want="$1" what="$2" rc=0
 	total=$((total + 1))
 	if [ "${4:-}" = closed ]; then
-		.githooks/pre-push origin "$remote" <<<"$3" >"$tmp/out" 2>&- || rc=$?
+		.githooks/pre-push origin "${url:-$remote}" <<<"$3" >"$tmp/out" 2>&- || rc=$?
 	else
-		.githooks/pre-push origin "$remote" <<<"$3" >"$tmp/out" 2>&1 || rc=$?
+		.githooks/pre-push origin "${url:-$remote}" <<<"$3" >"$tmp/out" 2>&1 || rc=$?
 	fi
 	[ "$rc" -eq 0 ] || rc=1
 	if [ "$rc" -ne "$want" ]; then
@@ -183,6 +192,13 @@ git switch -q -c agent/claude/stack/s main
 human "feat(x): unprinted" a
 s="$(git rev-parse HEAD)"
 hook 1 "a refusal with stderr closed" "refs/heads/agent/claude/stack/s $s refs/heads/agent/claude/stack/s $zero" closed
+
+# A URL that cannot be listed refuses, and the refusal names it without the credential it
+# carries. Nothing listens on port 9 here, so nothing leaves this machine.
+url="https://agent:s3cret@127.0.0.1:9/fpl.git" GIT_TERMINAL_PROMPT=0 \
+	hook 1 "a URL that cannot be listed" "refs/heads/agent/claude/stack/s $s refs/heads/agent/claude/stack/s $zero"
+says "cannot list https://127.0.0.1:9/fpl.git" "the refusal names the URL"
+never "s3cret" "the refusal names no credential"
 
 # A walk that fails (here a commit whose parent is gone) judges nothing, so it refuses.
 git switch -q -c agent/claude/stack/h main

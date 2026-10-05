@@ -87,6 +87,16 @@ refuse() {
 	echo "pre-push: $*; nothing was pushed." >&2 || :
 	exit 1
 }
+# A refusal names the URL without the user:password@ it may carry, so a credential that
+# rides in the URL never reaches a terminal or a log; git's own messages drop it too.
+shown="${2:-}"
+case "$shown" in
+*://*)
+	rest="${shown#*://}"
+	auth="${rest%%/*}"
+	shown="${shown%%://*}://${auth##*@}${rest#"$auth"}"
+	;;
+esac
 export GIT_NO_REPLACE_OBJECTS=1
 listed=0 not=""
 while read -r local_ref local_sha remote_ref remote_sha; do
@@ -94,13 +104,13 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 	case "$remote_ref" in refs/heads/main) continue ;; refs/heads/*) : ;; *) continue ;; esac
 	branch="${remote_ref#refs/heads/}"
 	if [ "$listed" -eq 0 ]; then
-		heads="$(git ls-remote --heads -- "${2:-}")" || refuse "cannot list ${2:-}"
+		heads="$(git ls-remote --heads -- "${2:-}")" || refuse "cannot list $shown"
 		# Only the commits here can be excluded; a missing one is skipped, not an error.
 		known="$(printf '%s\n' "$heads" | cut -f1 | sed '/^$/d' |
 			git cat-file --batch-check='%(objectname) %(objecttype)')" ||
-			refuse "cannot look up ${2:-}'s branches here"
+			refuse "cannot look up $shown's branches here"
 		not="$(printf '%s\n' "$known" | awk '$2 == "commit" { printf " ^%s", $1 }')" ||
-			refuse "cannot read ${2:-}'s branches"
+			refuse "cannot read $shown's branches"
 		listed=1
 	fi
 	# The remote's side of this ref is on the remote by definition.
