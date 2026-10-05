@@ -153,6 +153,14 @@ GIT_AUTHOR_EMAIL=336224473+psjg-codex@users.noreply.github.com commit -m "feat(x
 	-m "Stack: a"$'\n'"Assisted-By: gpt"$'\n'"Session-Id: s"
 expect 0 "an agent address the workflow accepts" agent/claude/stack/a/2
 
+# An address with a glob class, as the GitHub App's is, where a file named like what the
+# class matches sits in the working directory: the list of addresses must not be globbed.
+: >41898282+claudeb@users.noreply.github.com
+GIT_AUTHOR_EMAIL='41898282+claude[bot]@users.noreply.github.com' commit -m "feat(x): bot" \
+	-m "Stack: a"$'\n'"Assisted-By: claude"$'\n'"Session-Id: s"
+expect 0 "an agent address holding a glob class, beside a file it matches" agent/claude/stack/a/2
+rm -f 41898282+claudeb@users.noreply.github.com
+
 # A new stack on a parent not merged yet: the parent's commits are on the remote already,
 # under their own name, and the pull request is based on the parent, so they are not judged.
 git switch -q -c agent/claude/stack/g agent/claude/stack/a/2
