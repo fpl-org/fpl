@@ -106,6 +106,16 @@ for tool in sort tr od awk cut cat cp mv; do
 	reset
 done
 
+# macOS sed has no -z. A sed that refuses it may not cost a single name its judgment.
+mkdir -p "$tmp/nosedz"
+printf '#!/bin/sh\nfor a; do case "$a" in -*z* | --null-data) echo "sed: illegal option -- z" >&2; exit 1 ;; esac; done\nexec "%s" "$@"\n' \
+	"$(command -v sed)" >"$tmp/nosedz/sed"
+chmod +x "$tmp/nosedz/sed"
+git mv base.txt quuxfrobnitz-notes.txt
+shim="$tmp/nosedz" expect 1 "a matching name, with a sed that lacks -z" --staged
+says "file name 1 of 1" "a sed that lacks -z still judges the names"
+reset
+
 echo "at zeta.corp" >fnord-table.txt && git add fnord-table.txt
 expect 1 "a matching name with a matching line" --staged
 says "file 1 of 1:1: leak-5" "a content finding hides a matching name"
@@ -304,6 +314,8 @@ git reset -q --hard "$start" && git branch -q -D o1 o2
 echo x >quuxfrobnitz.txt && git add quuxfrobnitz.txt && commit -m name
 git rm -q quuxfrobnitz.txt && commit -m unname
 expect 1 "a name that came and went" --range "$start..HEAD"
+shim="$tmp/nosedz" expect 1 "a name in the range, with a sed that lacks -z" --range "$start..HEAD"
+says "file name 1 of 1" "a sed that lacks -z still judges the names in a range"
 git reset -q --hard "$start"
 printf 'x\0 quuxfrobnitz\n' >bin.dat && git add bin.dat && commit -m bin
 expect 1 "binary content in the range" --range "$start..HEAD"
