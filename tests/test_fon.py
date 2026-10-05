@@ -9,6 +9,7 @@ from hypothesis import strategies as st
 
 from fpl.errors import FplError
 from fpl.fon import (
+    HEXFLT,
     Absent,
     Bool,
     Cell,
@@ -152,6 +153,11 @@ def test_fon_ids(i: Multihash, h: Multihash) -> None:
         ("⟨" * 70 + "⟩" * 70, "ERROR: 1:65 nesting too deep"),
         ("01", "ERROR: 1:1 non-canonical number 01"),
         ("1e5", "ERROR: 1:1 non-canonical number 1e5"),
+        ("0x0.8p0", "ERROR: 1:1 non-canonical number 0x0.8p0"),
+        ("0x1p-2000", "ERROR: 1:1 non-canonical number 0x1p-2000"),
+        ("0x0p5", "ERROR: 1:1 non-canonical number 0x0p5"),
+        ("-0x0p-0", "ERROR: 1:1 non-canonical number -0x0p-0"),
+        ("⟨ 0x1p2000 ⟩", "ERROR: 1:3 float out of range 0x1p2000"),
         ("“a", "ERROR: 1:1 “ never closed"),
         ("⟨ a }\n⟩", "ERROR: 1:5 unexpected input"),
         ("a | b", "ERROR: 1:3 unexpected input"),
@@ -192,6 +198,21 @@ def test_a_sigil_alone_is_a_symbol(sigil: str) -> None:
 def test_a_float_is_its_bits(x: float, spelled: str) -> None:
     assert write(Flt.of(x)) == spelled
     assert read(spelled) == Flt.of(x)
+
+
+@given(st.from_regex(HEXFLT, fullmatch=True))
+def test_a_hex_float_reads_only_as_it_is_written(spelled: str) -> None:
+    """Every token of hex float shape is refused in place or reads back to itself: no second
+    spelling of a float, and no float beyond binary64, gets past the reader."""
+    try:
+        outcome = write(read(spelled))
+    except FplError as refused:
+        outcome = str(refused)
+    assert outcome in {
+        spelled,
+        f"ERROR: 1:1 non-canonical number {spelled}",
+        f"ERROR: 1:1 float out of range {spelled}",
+    }
 
 
 def test_the_reader_is_inert() -> None:

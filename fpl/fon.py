@@ -242,6 +242,20 @@ def _cell(text: str) -> Cell:
     raise _RefusedError(f"malformed identity ${text}")
 
 
+def _hexflt(token: str) -> Flt:
+    """A hex float, read only in the spelling Flt.written gives it: a second spelling of the
+    same bits (0x0.8p0 for 0x1p-1, 0x0p5 for 0x0p0) or one that rounds or underflows
+    (0x1p-2000) is refused, so that write ∘ read is the identity on what reads, as it is for
+    decimals; past binary64 (0x1p2000) is out of range."""
+    try:
+        flt = Flt.of(float.fromhex(token))
+    except OverflowError:
+        raise _RefusedError(f"float out of range {token}") from None
+    if flt.written() != token:
+        raise _RefusedError(f"non-canonical number {token}")
+    return flt
+
+
 SIGILS: dict[str, Callable[[str], Leaf]] = {"$": _cell, "&": _hash, "#": Sym}
 
 
@@ -251,7 +265,7 @@ def leaf(token: str) -> Leaf:
     if constant is not None:
         return constant
     if HEXFLT.fullmatch(token):
-        return Flt.of(float.fromhex(token))
+        return _hexflt(token)
     if NUMBER.fullmatch(token):
         return Num(Decimal(token))
     if NUMERIC.match(token):
