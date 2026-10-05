@@ -1,0 +1,45 @@
+"""Every citation of an example program names one that exists.
+
+The harness cites the maintainer's examples by name: HOLES.md, the docs and the test
+docstrings point at a program as a path under `features/`, as `examples/<name>` or, with a
+line, as `<name>:<line>`. A rename under `features/` leaves those citations pointing at
+nothing, and nothing else notices. A bare name with no line is not taken as a citation:
+`python -m fpl file.fpl` and a test's `tmp_path / "p.fpl"` name no example.
+"""
+
+import re
+from pathlib import Path
+
+ROOT = Path(__file__).parent.parent
+PROGRAMS = sorted(ROOT.glob("features/*/examples/*.fpl"))
+NAMES = {p.name for p in PROGRAMS}
+CITERS = sorted(
+    [
+        *ROOT.glob("*.md"),
+        *ROOT.glob("docs/**/*.md"),
+        *ROOT.glob("tests/*.py"),
+        *ROOT.glob("fpl/**/*.py"),
+    ]
+)
+
+# A full path, `examples/<name>`, or `<name>:<line>`; a glob or a brace never matches.
+PATH = re.compile(r"\bfeatures/[\w.-]+/examples/[\w.-]+\.fpl\b")
+NAME = re.compile(r"(?:\bexamples/([\w.-]+\.fpl)\b|(?<![\w./-])([\w.-]+\.fpl):\d)")
+
+
+def dangling(text: str) -> list[str]:
+    """The citations in `text` that name no example program."""
+    paths = [m for m in PATH.findall(text) if not (ROOT / m).is_file()]
+    names = [a or b for a, b in NAME.findall(text) if (a or b) not in NAMES]
+    return paths + names
+
+
+def test_a_renamed_program_dangles() -> None:
+    name = "gone.fpl"
+    path = f"features/draft1/examples/{name}"
+    assert dangling(f"{path}:3, {name}:3 and draft1.fpl:2") == [path, name, name]
+
+
+def test_every_citation_names_a_program() -> None:
+    found = {str(p.relative_to(ROOT)): dangling(p.read_text()) for p in CITERS}
+    assert {p: d for p, d in found.items() if d} == {}
