@@ -41,5 +41,5 @@ def test_a_renamed_program_dangles() -> None:
 
 
 def test_every_citation_names_a_program() -> None:
-    found = {str(p.relative_to(ROOT)): dangling(p.read_text()) for p in CITERS}
+    found = {str(p.relative_to(ROOT)): dangling(p.read_text(encoding="utf-8")) for p in CITERS}
     assert {p: d for p, d in found.items() if d} == {}
