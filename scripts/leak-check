@@ -59,15 +59,25 @@
 #
 #   FPL_LEAK_GATE = block (default) | warn (report, don't refuse) | off
 #
-# Exit 0: nothing found (or warn/off). 1: something found, or the check could not run
-# while a private list exists. With no list and no gitleaks it warns and passes: there is
-# nothing private to protect, and the default rules are a bonus, not the point.
+# Exit 0: nothing found (or warn/off). 1: something found, or the check could not run:
+# gitleaks failed while a private list exists, or a step of its own failed (in warn mode
+# too). With no list and no gitleaks it warns and passes: there is nothing private to
+# protect, and the default rules are a bonus, not the point.
 
 set -euo pipefail
 
 die() {
 	printf 'leak-check: %s\n' "$*" >&2
 	exit 1
+}
+
+# The name check and the scans run on the left of `||`, where bash ignores set -e for the
+# whole call: a tool that failed there would leave an empty list behind, and the check
+# would pass what it never judged. So each of their steps is checked by hand, and a step
+# that fails refuses outright, not as a finding, which warn would let through. A step in a
+# pipeline or $(...) is checked after it, since die inside one leaves only the subshell.
+broke() {
+	die "$1 failed; refusing, since what it was to judge went unjudged"
 }
 
 [ "${1:-}" = --self-test ] && exec "$(dirname "$0")/leak-check-self-test"
@@ -137,7 +147,7 @@ scan() {
 	# shifted back after.
 	if [ "$1" = stdin ]; then
 		skip=100000 input="$tmp/padded"
-		{ printf '%*s' "$skip" '' | tr ' ' '\n' && cat; } >"$input"
+		{ printf '%*s' "$skip" '' | tr ' ' '\n' && cat; } >"$input" || broke "padding stdin"
 	fi
 	# --gitleaks-ignore-path points at an empty directory, but gitleaks also honours a
 	# .gitleaksignore in the root it scans, and in the working directory (a stdin scan has
@@ -146,7 +156,8 @@ scan() {
 		--exit-code 3 --ignore-gitleaks-allow --gitleaks-ignore-path "$tmp/noignore" \
 		--report-format template --report-template "$tmp/report.tmpl" --report-path -) \
 		<"$input" >"$tmp/found" 2>"$tmp/stderr" || rc=$?
-	awk -F'\t' -v OFS='\t' -v skip="$skip" '{ $3 -= skip } 1' "$tmp/found" >>"$tmp/hits"
+	awk -F'\t' -v OFS='\t' -v skip="$skip" '{ $3 -= skip } 1' "$tmp/found" >>"$tmp/hits" ||
+		broke "recording the findings"
 	case "$rc" in 0 | 3) return "$rc" ;; esac
 	# gitleaks failed. Its message may quote a rule, so it is shown only when no rule is
 	# private. With a list, find the line it choked on by trying each rule alone.
@@ -168,7 +179,7 @@ scan_both() {
 	local how="$1" rc=0
 	shift
 	if [ "$how" = stdin ]; then
-		cat >"$tmp/input"
+		cat >"$tmp/input" || broke "reading stdin"
 		[ "$terms" -eq 0 ] || scan "$tmp/private.toml" stdin "$@" <"$tmp/input" || rc=$?
 		scan "$tmp/default.toml" stdin "$@" <"$tmp/input" || rc=$?
 	else
@@ -185,16 +196,17 @@ scan_both() {
 # a key that is a file name is found as one in a file is: the 1-based positions of those
 # that match land in $tmp/namehits.
 names() {
-	LC_ALL=C sort -zu "$tmp/names0" | sed -z '/^$/d' >"$tmp/names0.sorted"
-	tr '\n\0' ' \n' <"$tmp/names0.sorted" >"$tmp/names"
+	LC_ALL=C sort -zu "$tmp/names0" | sed -z '/^$/d' >"$tmp/names0.sorted" ||
+		broke "sorting the file names"
+	tr '\n\0' ' \n' <"$tmp/names0.sorted" >"$tmp/names" || broke "listing the file names"
 	od -An -v -tx1 "$tmp/names0.sorted" | tr -s ' ' '\n' |
-		awk '$0 == "00" { print h; h = ""; next } { h = h $0 }' >"$tmp/names.hex"
-	: >"$tmp/namehits"
-	cp "$tmp/hits" "$tmp/hits.keep"
+		awk '$0 == "00" { print h; h = ""; next } { h = h $0 }' >"$tmp/names.hex" ||
+		broke "listing the file names in hex"
+	cp "$tmp/hits" "$tmp/hits.keep" || broke "setting the findings aside"
 	: >"$tmp/hits"
 	scan_both stdin <"$tmp/names" || true
-	cut -f3 "$tmp/hits" | sort -un >"$tmp/namehits"
-	mv "$tmp/hits.keep" "$tmp/hits"
+	cut -f3 "$tmp/hits" | sort -un >"$tmp/namehits" || broke "numbering the matching names"
+	mv "$tmp/hits.keep" "$tmp/hits" || broke "restoring the findings"
 }
 
 # Prints one line per finding. $1 says where a stdin finding sits ("the message"). A git
@@ -251,7 +263,7 @@ check_names() {
 	local where="$1" pos total
 	names
 	[ -s "$tmp/namehits" ] || return 0
-	total="$(wc -l <"$tmp/names" | tr -d ' ')"
+	total="$(wc -l <"$tmp/names" | tr -d ' ')" || broke "counting the file names"
 	while read -r pos; do
 		printf 'leak-check: %s, file name %s of %s: %s\n' "$where" "$pos" "$total" \
 			"the name itself matches a private term or a secret rule" >&2
