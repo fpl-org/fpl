@@ -660,10 +660,18 @@ def hook(t: Path, run: Callable[[list[str], Case], Any]) -> list[tuple[str, bool
     (repo / ".git" / "agent-credentials").write_text("https://psjg-claude:file-token@github.com\n")
     git("-C", str(repo), "commit", "-q", "--allow-empty", "-m", "x")
     git("-C", str(repo), "remote", "add", "github", str(t / "remote.git"))
+    git("-C", str(repo), "push", "-q", "github", "HEAD:refs/heads/main")
     sha = git("-C", str(repo), "rev-parse", "HEAD")
     pre_push = [str(repo / ".githooks" / "pre-push"), "github", URL]
-    over = Case("", 1, line=f"refs/heads/{B} {sha} refs/heads/{B} {OLD}")
-    new = Case("", 0, line=f"refs/heads/{B} {sha} refs/heads/{B} {ZERO}")
+    # The gates after this one list the URL with git ls-remote. Git reads the remote on disk
+    # in its place, whose main holds the commit, so nothing reaches the network.
+    local = {
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": f"url.{t / 'remote.git'}.insteadOf",
+        "GIT_CONFIG_VALUE_0": URL,
+    }
+    over = Case("", 1, line=f"refs/heads/{B} {sha} refs/heads/{B} {OLD}", env=local)
+    new = Case("", 0, line=f"refs/heads/{B} {sha} refs/heads/{B} {ZERO}", env=local)
     # As git runs it, and in /bin/bash, which is bash 3.2 on macOS.
     shells = [[], ["/bin/bash"]] if Path("/bin/bash").exists() else [[]]
     checks = []

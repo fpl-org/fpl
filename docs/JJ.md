@@ -32,7 +32,7 @@ hook**, and `jj git push` does not run `pre-push`. So none of these act on a `jj
 
 | Gate | Hook it lives in | Who judges a `jj` commit instead |
 | --- | --- | --- |
-| message format, provenance, `Stack:`, agent territory | `commit-msg` | `scripts/commit-lint`, and the `commit-lint` check on the pull request |
+| message format, provenance, `Stack:`, agent territory | `commit-msg`, `pre-push` | `scripts/commit-lint`, and the `commit-lint` check on the pull request |
 | atomicity | `atomic-check` | nobody; keep commits atomic by hand |
 | harness/worktree boundary, no commit on `main` | `pre-commit` | review; the ruleset on `main` (`docs/WORKFLOW.md`, rule 6) |
 | branch names | `reference-transaction`, `pre-push` | the `branch-lint` check on the pull request |

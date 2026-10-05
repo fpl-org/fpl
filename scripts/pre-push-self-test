@@ -118,6 +118,18 @@ GIT_AUTHOR_EMAIL=336224473+psjg-codex@users.noreply.github.com commit -m "feat(x
 	-m "Stack: a"$'\n'"Assisted-By: gpt"$'\n'"Session-Id: s"
 expect 0 "an agent address the workflow accepts" agent/claude/stack/a/2
 
+# A main that moved since the last fetch: judged against the main last fetched.
+git clone -q "$remote" "$tmp/other"
+git -C "$tmp/other" -c core.hooksPath=/dev/null commit -q --allow-empty -m "chore(x): elsewhere" \
+	-m "Human-Only: true"
+git -C "$tmp/other" push -q --no-verify origin main
+git switch -q -c agent/claude/stack/f main
+human "feat(x): six" f
+expect 0 "a new branch, after main moved on the remote" agent/claude/stack/f
+human "feat(x): seven" a
+expect 1 "another stack's commit, after main moved on the remote" agent/claude/stack/f
+says "needs 'Stack: f'" "a refusal after main moved is commit-lint's"
+
 # What the workflow never judges: no commits, a tag, a deletion, main.
 git branch agent/claude/stack/e main
 expect 0 "a new branch with no commit of its own" agent/claude/stack/e
