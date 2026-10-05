@@ -254,6 +254,14 @@ def test_guards_nest_and_a_guarded_pin_reads_its_name() -> None:
     assert run(f"{nonzero}{twice}{same}{runs}") == "3\n#zero\n#same\n#diff\n#diff\n"
 
 
+def test_a_guard_runs_only_on_a_value_its_pattern_matched() -> None:
+    """[D4.1] #b fails the literal #a, so the row falls through before its guard, a partial
+    word that would raise +fail on #b, is run."""
+    only = "only : x -- b\n\tmatch\n\t\t#a\t1\n"
+    f = "f : x -- y\n\tmatch\n\t\t( #a ∈ only )\t#first\n\t\t_\t#second\n"
+    assert run(f"{only}{f}#b f\n#a f\n") == "#second\n#first\n"
+
+
 @pytest.mark.parametrize(
     ("pattern", "span", "message"),
     [
