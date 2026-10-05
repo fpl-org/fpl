@@ -1,8 +1,10 @@
-# The author addresses agents commit as, accepted by scripts/commit-lint for an agent
-# commit beside .git/agent-identity: in the commit-lint workflow and in .githooks/pre-push
-# alike, so the two give one verdict (docs/COMMITS.md, sections 1 and 2). The workflow
-# also lists them inline in FPL_AGENT_EMAILS until the owner removes that duplicate: keep
-# the two lists equal.
+# The author addresses agents commit as. The local hooks (.githooks/commit-msg and
+# .githooks/pre-push) accept them for an agent commit beside .git/agent-identity
+# (docs/COMMITS.md, sections 1 and 2). In CI the trusted list is the one the commit-lint
+# workflow sets inline in FPL_AGENT_EMAILS: this file comes from the pull request under
+# judgment, so scripts/commit-lint never reads it there. It must be a subset of that
+# list, and scripts/commit-lint refuses, naming the address, when it lists one the
+# workflow's list lacks. Add an address to the workflow first, then here.
 326980220+psjg-claude@users.noreply.github.com
 41898282+claude[bot]@users.noreply.github.com
 336224473+psjg-codex@users.noreply.github.com
