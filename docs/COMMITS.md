@@ -25,10 +25,11 @@ scripts/commit-lint -b "$(git branch --show-current)" github/main..HEAD
 
 For a branch based on a parent not merged yet, the base is that parent on the remote, so
 the parent's commits, which may carry another `Stack:`, are left out as the hook leaves
-them out:
+them out. Set `PARENT` to the parent branch's name first:
 
 ```
-scripts/commit-lint -b "$(git branch --show-current)" github/<parent branch>..HEAD
+PARENT=agent/claude/stack/parent-name
+scripts/commit-lint -b "$(git branch --show-current)" "github/$PARENT..HEAD"
 ```
 
 The agent addresses it accepts beside `.git/agent-identity` are listed in
