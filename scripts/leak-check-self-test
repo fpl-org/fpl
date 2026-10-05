@@ -58,11 +58,12 @@ commit -m base
 
 fails=0 total=0
 # expect <exit code> <description> <leak-check arguments...>; output lands in $tmp/log.
+# $shim, when set, is a directory put first on leak-check's PATH, and on nothing else's.
 expect() {
 	local want="$1" what="$2" rc=0
 	shift 2
 	total=$((total + 1))
-	"$check" "$@" >"$tmp/out" 2>&1 || rc=$?
+	PATH="${shim:+$shim:}$PATH" "$check" "$@" >"$tmp/out" 2>&1 || rc=$?
 	cat "$tmp/out" >>"$tmp/log"
 	if [ "$rc" -ne "$want" ]; then
 		fails=$((fails + 1))
@@ -89,6 +90,31 @@ reset
 git mv base.txt quuxfrobnitz-notes.txt
 expect 1 "a file renamed to a matching name" --staged
 says "file name 1 of 1" "a matching name is reported by position"
+reset
+
+# A step that fails may not pass what it never judged. The name check and the scans run on
+# the left of `||`, where bash ignores set -e, so a tool that fails there would leave an
+# empty list behind and a clean verdict. It refuses instead, in warn mode too.
+for tool in sort tr od awk cut cat cp mv; do
+	mkdir -p "$tmp/broken-$tool"
+	printf '#!/bin/sh\necho "%s: broken" >&2\nexit 1\n' "$tool" >"$tmp/broken-$tool/$tool"
+	chmod +x "$tmp/broken-$tool/$tool"
+	echo fine >fine.txt && git add fine.txt
+	shim="$tmp/broken-$tool" expect 1 "a clean change with a broken $tool" --staged
+	says "failed; refusing" "a broken $tool is a refusal"
+	shim="$tmp/broken-$tool" FPL_LEAK_GATE=warn expect 1 "warn with a broken $tool" --staged
+	says "failed; refusing" "warn with a broken $tool is a refusal, not a finding"
+	reset
+done
+
+# macOS sed has no -z. A sed that refuses it may not cost a single name its judgment.
+mkdir -p "$tmp/nosedz"
+printf '#!/bin/sh\nfor a; do case "$a" in -*z* | --null-data) echo "sed: illegal option -- z" >&2; exit 1 ;; esac; done\nexec "%s" "$@"\n' \
+	"$(command -v sed)" >"$tmp/nosedz/sed"
+chmod +x "$tmp/nosedz/sed"
+git mv base.txt quuxfrobnitz-notes.txt
+shim="$tmp/nosedz" expect 1 "a matching name, with a sed that lacks -z" --staged
+says "file name 1 of 1" "a sed that lacks -z still judges the names"
 reset
 
 echo "at zeta.corp" >fnord-table.txt && git add fnord-table.txt
@@ -289,6 +315,8 @@ git reset -q --hard "$start" && git branch -q -D o1 o2
 echo x >quuxfrobnitz.txt && git add quuxfrobnitz.txt && commit -m name
 git rm -q quuxfrobnitz.txt && commit -m unname
 expect 1 "a name that came and went" --range "$start..HEAD"
+shim="$tmp/nosedz" expect 1 "a name in the range, with a sed that lacks -z" --range "$start..HEAD"
+says "file name 1 of 1" "a sed that lacks -z still judges the names in a range"
 git reset -q --hard "$start"
 printf 'x\0 quuxfrobnitz\n' >bin.dat && git add bin.dat && commit -m bin
 expect 1 "binary content in the range" --range "$start..HEAD"
@@ -303,6 +331,20 @@ GIT_COMMITTER_EMAIL=ops@zeta.corp commit --allow-empty -m id2
 expect 1 "an author and a committer" --range "$start..HEAD"
 says " author: leak-5" "an author names the rule"
 says " committer: leak-5" "a committer names the rule"
+git reset -q --hard "$start"
+# macOS awk keeps RS in a C string, where '\0' is the empty string: paragraph mode, which
+# splits no record at a NUL. This awk sees RS='\0' as macOS awk does. A range of three
+# commits may not lose the identity of the one in the middle.
+mkdir -p "$tmp/nulawk"
+printf '#!/bin/sh\nfor a; do shift; case "$a" in "RS=\\\\0") a=RS= ;; esac; set -- "$@" "$a"; done\nexec "%s" "$@"\n' \
+	"$(command -v awk)" >"$tmp/nulawk/awk"
+chmod +x "$tmp/nulawk/awk"
+commit --allow-empty -m one
+GIT_AUTHOR_EMAIL=me@quuxfrobnitz.example commit --allow-empty -m two
+commit --allow-empty -m three
+shim="$tmp/nulawk" expect 1 "an author mid-range, with an awk that splits no record at NUL" \
+	--range "$start..HEAD"
+says "$(git rev-parse --short=12 HEAD~1) author: leak-3" "an awk without NUL records still judges every author"
 git reset -q --hard "$start"
 echo "quuxfrobnitz" >r.txt && git add r.txt && commit -m leaky
 leaky="$(git rev-parse HEAD)"
