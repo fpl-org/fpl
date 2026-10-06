@@ -94,7 +94,11 @@ export GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home"
 	GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid FPL_LEAK_GATE=off \
 	FPL_ATOMIC_GATE=off
 unset FPL_BRANCH_GATE FPL_MAIN_GATE FPL_AGENT_EMAILS FPL_LINT_BRANCH FPL_LINT_COMMIT \
-	GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_EDITOR GIT_SEQUENCE_EDITOR
+	GIT_EDITOR GIT_SEQUENCE_EDITOR
+# Every repository-local variable git itself lists (object stores, config injected by
+# `git -c`, replace refs, grafts, shallow files...): a hook or worktree sets some of them.
+# shellcheck disable=SC2046 # one variable name per line, no spaces
+unset $(git rev-parse --local-env-vars)
 mkdir -p "$HOME" "$XDG_CONFIG_HOME"
 checker="$root/scripts/boundary"
 nl='
@@ -302,7 +306,8 @@ judge mixed "twelve implementation paths"
 says "implementation side (12):" "the count is the whole side"
 says "... and 7 more" "the listing stops after five"
 total=$((total + 1))
-if grep -q "fpl/9$" "$tmp/out"; then fail "the listing names a sixth path"; fi
+# git sorts by byte: fpl/1 fpl/10 fpl/11 fpl/12 fpl/2 come first, so count the listed lines.
+[ "$(grep -c '^ *fpl/[0-9]*$' "$tmp/out")" -eq 5 ] || fail "the listing does not stop at five paths"
 
 # The remedy, run as printed.
 change docs/a fpl/a README.md
