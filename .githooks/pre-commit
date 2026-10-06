@@ -1,36 +1,21 @@
 #!/usr/bin/env bash
 #
-# .githooks/pre-commit — three symbolic gates on what a commit may hold and where:
-#   0. no private term or secret in the staged change (scripts/leak-check)
-#   1. the root/worktree edit boundary (below)
-#   2. no direct commits on main (end of file)
+# .githooks/pre-commit — two symbolic gates on what a commit may hold:
+#   1. no private term or secret in the staged change (scripts/leak-check)
+#   2. no direct commits on main
 #
-# AGENTS.md and docs/WORKTREES.md split the repo in two: the root checkout holds
-# the shared harness, each worktrees/<name>/ holds one implementation attempt,
-# and a session edits only its own side. Every branch carries both sets of
-# paths, so nothing but convention stopped a worktree session from "fixing" a
-# script in place, or a root session from growing an fpl/. This makes the rule
-# a symbolic gate, judged on the staged paths:
-#
-#   root checkout    (.git is a directory)  rejects implementation paths
-#   linked worktree  (.git is a file)       rejects harness paths
-#
-# Paths in neither set (README.md, .gitignore, .github/, …) pass on both sides.
-#
-#   FPL_BOUNDARY = block (default) | warn | off
-#
-# git runs pre-commit for `git commit` only — not for rebase, cherry-pick or
-# merge — so restacking a worktree onto a main whose harness moved is unaffected.
+# The harness/implementation boundary is not judged here. It is a rule on the commit, not on
+# the checkout (docs/WORKTREES.md): any checkout may hold any work, and one commit stays on
+# one side. scripts/commit-lint judges it with scripts/boundary at push and in CI, which every
+# commit reaches however it was made; a hook here would see a `git commit` only.
 
 set -euo pipefail
 
-# Gate 0 first: the repository is public, and the others let a commit through on warn.
+# Gate 1 first: the repository is public.
 # FPL_LEAK_GATE = block (default) | warn | off, read by the script.
 "$(git rev-parse --show-toplevel)/scripts/leak-check" --staged
 
-# Gate 2 lives in a function so gate 1's early exits still reach it.
-#
-# docs/WORKFLOW.md rule 6: everything lands on main through a GitHub PR. This is
+# Gate 2. docs/WORKFLOW.md rule 6: everything lands on main through a GitHub PR. This is
 # the early, friendly half of that rule: it stops a `git commit` on main before
 # the message is even written. It is NOT the enforcement. Git runs pre-commit
 # for `git commit` only, so a clean local merge into main never reaches this
@@ -51,27 +36,4 @@ main_gate() {
 	return 1
 }
 
-mode="${FPL_BOUNDARY:-block}"
-[ "$mode" = "off" ] && { main_gate; exit $?; }
-
-top="$(git rev-parse --show-toplevel)"
-if [ -f "$top/.git" ]; then
-	side="worktree"; other="the harness"; where="the root checkout"
-	forbidden='^(docs/|\.claude/|scripts/|quality/|\.githooks/|AGENTS\.md$|CLAUDE\.md$|flake\.(nix|lock)$|\.envrc$)'
-else
-	side="root"; other="an implementation"; where="a worktrees/<name>/"
-	forbidden='^(fpl/|features/|tests/|pyproject\.toml$|Makefile$|mutants\.allow$)'
-fi
-
-# --no-renames: a rename across the boundary must show both of its ends.
-bad="$(git diff --cached --name-only --no-renames | grep -E "$forbidden" || true)"
-[ -z "$bad" ] && { main_gate; exit $?; }
-
-{
-	echo "pre-commit: this is a $side checkout, but the commit touches $other:"
-	printf '%s\n' "$bad" | sed 's/^/              /'
-	echo "            make that change from $where (docs/WORKTREES.md),"
-	echo "            or FPL_BOUNDARY=warn to override."
-} >&2
-[ "$mode" = "warn" ] && { main_gate; exit $?; }
-exit 1
+main_gate
