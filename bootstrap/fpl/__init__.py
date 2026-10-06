@@ -1,1 +1,1 @@
-"""FPL. The layout is docs/CONVENTIONS.md; the stack docs/STACK.md."""
+"""FPL. The layout is .agents/CONVENTIONS.md; the stack .agents/STACK.md."""
