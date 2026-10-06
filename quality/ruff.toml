@@ -1,5 +1,5 @@
 # quality/ruff.toml — format and lint for every implementation worktree (docs/QUALITY.md).
-# Harness policy: an attempt cannot edit it; changing it takes a [policy] commit at the root.
+# Harness policy: changing it takes a harness commit with [policy], never one that changes code.
 
 target-version = "py312"
 line-length = 100
