@@ -108,6 +108,7 @@ gates: venv
 	$(BIN)/python scripts/diagrams --self-test
 	scripts/leak-check --self-test
 	scripts/pre-push-self-test
+	scripts/boundary-self-test
 	$(BIN)/python scripts/gates
 
 # Each tool syncs its own locked environment into <tool>/.venv, so its dependencies never
