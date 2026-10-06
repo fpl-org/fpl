@@ -1,6 +1,6 @@
 # The author addresses agents commit as. The local hooks (.githooks/commit-msg and
 # .githooks/pre-push) accept them for an agent commit beside .git/agent-identity
-# (docs/COMMITS.md, sections 1 and 2). In CI the trusted list is the one the commit-lint
+# (.agents/COMMITS.md, sections 1 and 2). In CI the trusted list is the one the commit-lint
 # workflow sets inline in FPL_AGENT_EMAILS: this file comes from the pull request under
 # judgment, so scripts/commit-lint never reads it there. It must be a subset of that
 # list, and scripts/commit-lint refuses, naming the address, when it lists one the

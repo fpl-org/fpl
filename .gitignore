@@ -1,4 +1,4 @@
-# Linked git worktrees live here (see docs/WORKTREES.md).
+# Linked git worktrees live here (see .agents/WORKTREES.md).
 # Ignored so they don't show as untracked content in the main tree;
 # `git worktree list` still tracks them normally.
 worktrees/
@@ -18,10 +18,10 @@ mutants/
 .hypothesis/
 .import_linter_cache/
 
-# direnv's cache of the dev shell (docs/DEVSHELL.md)
+# direnv's cache of the dev shell (.agents/DEVSHELL.md)
 .direnv/
 
 # Which dev shell direnv loads in this checkout, and a person's own additions to it
-# (docs/DEVSHELL.md). Per-checkout choices, so they must never travel with a commit.
+# (.agents/DEVSHELL.md). Per-checkout choices, so they must never travel with a commit.
 .fpl-shell
 .envrc.local
