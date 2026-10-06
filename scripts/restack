@@ -3,7 +3,7 @@
 # scripts/restack — rebase the current stack onto the latest base, moving every
 # branch ref in the stack with it.
 #
-# This is the whole "restack" step from docs/WORKFLOW.md. It relies on
+# This is the whole "restack" step from .agents/WORKFLOW.md. It relies on
 # rebase.updateRefs=true (set by scripts/setup) so intermediate branch refs that
 # point at commits in the stack are carried along instead of left behind.
 #
@@ -25,7 +25,7 @@ cur="$(git branch --show-current)"
 [ -n "$cur" ] || { echo "restack: detached HEAD; checkout your stack branch first" >&2; exit 1; }
 
 # Where the base lives is whatever the base branch tracks. Remotes are named after the place
-# (docs/WORKFLOW.md, Setup), so no remote name is assumed here.
+# (.agents/WORKFLOW.md, Setup), so no remote name is assumed here.
 upstream="$(git rev-parse --abbrev-ref --symbolic-full-name "$base@{upstream}" 2>/dev/null)" \
 	|| { echo "restack: '$base' tracks no upstream; git branch -u <remote>/$base $base" >&2; exit 1; }
 remote="$(git config "branch.$base.remote")"

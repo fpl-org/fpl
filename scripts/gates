@@ -5,19 +5,25 @@
 
 A check that passes everything looks exactly like a check that found nothing wrong. So each
 check keeps a bad example in quality/bad/<case>/: a few files laid over a small fixture
-package (quality/bad/_base/), and a case.toml that says why the example is bad, which command
+project (quality/bad/_base/), and a case.toml that says why the example is bad, which command
 must refuse it, and a piece of text the refusal must contain:
 
     why = "a branch no test takes fails the coverage gate"
     run = "coverage run ... && coverage report ..."
     expect = "Coverage failure"
 
+The fixture has the repository's own layout: the harness (quality/ and scripts/) at its root
+and the project, the package fpl with its tests and pyproject.toml, in bootstrap/, where the
+command runs, so it names the harness as ../quality/ and ../scripts/, as the lanes of
+quality/noslop.mk do. A case's own files lay over the project, except a quality/ in the case,
+which lays over the harness. It runs from anywhere: it finds the harness beside itself.
+
 For each case the command runs twice, in a fresh copy of the harness: on the fixture alone,
 where it must pass, and with the bad example laid over it, where it must fail and say
 `expect`. The first run is the control: without it, a command that fails for an unrelated
 reason (a missing module, a typo in its own flags) would count as having caught something.
 
-Runs in the worktree's .venv (make gates). Exit 0: every check refused its example; 1: not.
+Runs in the root's .venv (make gates). Exit 0: every check refused its example; 1: not.
 """
 
 import os
@@ -29,30 +35,38 @@ import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-HERE = Path.cwd()
+HERE = Path(__file__).resolve().parent.parent
 BAD = HERE / "quality" / "bad"
 
 
-def lay(case: str | None, into: Path) -> None:
-    """A fresh fixture worktree: the harness, the base package, and the case's files over it."""
+def lay(case: str | None, into: Path) -> Path:
+    """A fresh fixture of the repository: the harness at `into`, and the project, the base
+    package with the case's files over it, in `into`/bootstrap, which it returns."""
     shutil.copytree(
         HERE / "quality", into / "quality", ignore=shutil.ignore_patterns("bad", "__pycache__")
     )
     (into / "scripts").symlink_to(HERE / "scripts")
-    shutil.copytree(BAD / "_base", into, dirs_exist_ok=True)
+    project = into / "bootstrap"
+    shutil.copytree(BAD / "_base", project)
     if case:
-        shutil.copytree(
-            BAD / case, into, dirs_exist_ok=True, ignore=shutil.ignore_patterns("case.toml")
-        )
+        keep = shutil.ignore_patterns("case.toml")
+        for part in sorted((BAD / case).iterdir()):
+            home = into if part.name == "quality" else project
+            if part.is_dir():
+                shutil.copytree(part, home / part.name, dirs_exist_ok=True, ignore=keep)
+            elif part.name != "case.toml":
+                shutil.copy2(part, home / part.name)
+    return project
 
 
 def run(command: str, cwd: Path) -> tuple[int, str]:
+    """`command` in the project at `cwd`, whose parent is the fixture's root."""
     env = {
         "PATH": f"{Path(sys.executable).parent}:{os.environ.get('PATH', '')}",
-        "PYTHONPATH": f"{cwd / 'quality'}:{cwd}",
+        "PYTHONPATH": f"{cwd.parent / 'quality'}:{cwd}",
         "HOME": str(cwd),
         "HYPOTHESIS_PROFILE": "quick",
-        # CrossHair's solver needs libstdc++ on Linux; the dev shell sets this (docs/DEVSHELL.md)
+        # CrossHair's solver needs libstdc++ on Linux; the dev shell sets this (.agents/DEVSHELL.md)
         "LD_LIBRARY_PATH": os.environ.get("LD_LIBRARY_PATH", ""),
     }
     done = subprocess.run(
@@ -67,10 +81,8 @@ def trial(case: str) -> list[str]:
     spec = tomllib.loads((BAD / case / "case.toml").read_text())
     problems = []
     with tempfile.TemporaryDirectory() as tmp:
-        control = Path(tmp) / "control"
-        bad = Path(tmp) / "bad"
-        lay(None, control)
-        lay(case, bad)
+        control = lay(None, Path(tmp) / "control")
+        bad = lay(case, Path(tmp) / "bad")
         code, out = run(spec["run"], control)
         if code != 0:
             problems.append(

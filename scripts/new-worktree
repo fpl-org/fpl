@@ -2,23 +2,23 @@
 #
 # scripts/new-worktree — create an implementation worktree under worktrees/<name>/.
 #
-# The create recipe from docs/WORKTREES.md as one command, usable by any agent or
+# The create recipe from .agents/WORKTREES.md as one command, usable by any agent or
 # human (`.claude/commands/new-worktree.md` is a thin wrapper over this):
 #
 #   1. `git worktree add worktrees/<name> -b <branch> <base>`, always from the
 #      root checkout, so it works when invoked from inside another worktree.
 #      <branch> is attempt/<name>, or agent/<id>/attempt/<name> with -a: agent
-#      commits are only accepted on agent branches (docs/BRANCHES.md), so an
+#      commits are only accepted on agent branches (.agents/BRANCHES.md), so an
 #      attempt an agent will work in needs -a.
 #   2. Carries the root's agent identity into the new worktree. The file lives
 #      under the per-worktree git dir, so a fresh worktree starts without one;
-#      docs/COMMITS.md fixes the email as one constant machine-account address,
+#      .agents/COMMITS.md fixes the email as one constant machine-account address,
 #      so inheriting it is safe. Skipped when the root has none.
 #   3. Runs `scripts/setup` inside the new worktree (hooks, stacked-commit config,
 #      identity report).
 #
-# It scaffolds nothing: `fpl/` and `features/` are the first implementation
-# session's job (docs/CONVENTIONS.md).
+# It scaffolds nothing: an attempt's code and its `features/` are the first implementation
+# session's job (.agents/CONVENTIONS.md).
 #
 # Usage:
 #   scripts/new-worktree [-n] [-a <id>] <name> [base]

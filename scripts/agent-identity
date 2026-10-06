@@ -4,7 +4,7 @@
 #
 # The value lives in `.git/agent-identity` (one line, an email address). It is
 # inside .git/, so it is per-worktree and never committed. `scripts/acommit`
-# reads it to build `--author="<model display name> <email>"`; see docs/COMMITS.md.
+# reads it to build `--author="<model display name> <email>"`; see .agents/COMMITS.md.
 #
 # Only the email is stored. The author *name* is derived per-commit from the model
 # that is running, so `git shortlog -sn` distinguishes "Claude Sonnet 5" from

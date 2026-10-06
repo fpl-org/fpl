@@ -7,7 +7,7 @@
 #
 # Waits for the checks, prints the conversation, opens the diff in the browser, and then
 # stops for a keypress. Only after Enter does it approve, rebase-merge, delete the branch
-# and bring main up to date (docs/WORKFLOW.md, "Land"). A failed check ends it before
+# and bring main up to date (.agents/WORKFLOW.md, "Land"). A failed check ends it before
 # the question.
 #
 # It exists because a chain of gh commands made it easy to approve a diff that had never

@@ -5,9 +5,9 @@
 #   scripts/boundary <commit> [<branch>]          judge the commit
 #   scripts/boundary --split <commit> <branch>    split a mixed commit of <branch> in two
 #
-# AGENTS.md and docs/WORKTREES.md split the repository in two, reviewed and landed apart:
+# AGENTS.md and .agents/WORKTREES.md split the repository in two, reviewed and landed apart:
 #
-#   harness         docs/ agents/ .claude/ scripts/ quality/ .githooks/ AGENTS.md CLAUDE.md
+#   harness         docs/ .agents/ .claude/ scripts/ quality/ .githooks/ AGENTS.md CLAUDE.md
 #                   flake.nix flake.lock .envrc
 #   implementation  bootstrap/ features/ fpl/ tests/ pyproject.toml Makefile mutants.allow
 #                   (fpl/ stays implementation for good: after the move to bootstrap/ it is
@@ -27,7 +27,7 @@
 # made the commit: commit, cherry-pick, rebase, amend, --no-verify, an unwired clone, jj.
 # A merge is not judged here; commit-lint skips merges, and main's ruleset requires a linear
 # history, so a merge commit cannot land. A squash merge could fold one-sided commits into one
-# mixed commit that nothing judges; docs/WORKTREES.md says why landing is by rebase only.
+# mixed commit that nothing judges; .agents/WORKTREES.md says why landing is by rebase only.
 #
 # Rules, each printed with what clears it:
 #
@@ -72,7 +72,7 @@ shopt -u nocasematch
 export GIT_NO_REPLACE_OBJECTS=1
 
 implementation='^(bootstrap/|features/|fpl/|tests/|pyproject\.toml$|Makefile$|mutants\.allow$)'
-harness='^(docs/|agents/|\.claude/|scripts/|quality/|\.githooks/|AGENTS\.md$|CLAUDE\.md$|flake\.(nix|lock)$|\.envrc$)'
+harness='^(docs/|\.agents/|\.claude/|scripts/|quality/|\.githooks/|AGENTS\.md$|CLAUDE\.md$|flake\.(nix|lock)$|\.envrc$)'
 shown=5 # paths listed per side
 pad='          '
 tab="$(printf '\t')"
@@ -193,7 +193,7 @@ holds() {
 
 # published: the remote-tracking refs that hold the commit, one per line in $tmp/pub; then
 # warn_published says so, for a refusal or a split. Rewriting what others may have taken is
-# their business too (docs/WORKFLOW.md, rule 5).
+# their business too (.agents/WORKFLOW.md, rule 5).
 published() {
 	git_ for-each-ref --format='%(refname:lstrip=2)' --contains "$commit" refs/remotes
 	mv "$tmp/out" "$tmp/pub"
@@ -206,7 +206,7 @@ warn_published() {
 	echo "${pad}Published: ${commit:0:12} is held by ${names}${more}(remote-tracking)."
 	echo "${pad}A split rewrites it and the commits after it, and pushing the result rewrites a"
 	echo "${pad}published branch: coordinate with whoever has taken it first, and never do it to a"
-	echo "${pad}pull request that is approved (docs/WORKFLOW.md, rule 5)."
+	echo "${pad}pull request that is approved (.agents/WORKFLOW.md, rule 5)."
 }
 
 # mk <commit> <tree> [<parent>...]: a copy of <commit> with that tree and those parents, its
@@ -355,7 +355,7 @@ list() { # list <count> <words...>
 }
 {
 	echo "boundary: BOUNDARY-MIXED: ${commit:0:12} changes harness paths and implementation paths;"
-	echo "${pad}one commit stays on one side, wherever it is made (docs/WORKTREES.md)."
+	echo "${pad}one commit stays on one side, wherever it is made (.agents/WORKTREES.md)."
 	echo "${pad}harness side ($hn):"
 	list "$hn" "${h[@]}"
 	echo "${pad}implementation side ($im):"

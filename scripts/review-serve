@@ -29,7 +29,7 @@ from the page: your gh account approves it and rebase-merges it, as scripts/land
 only while the forge still has the commit you reviewed and its checks passed. The merge is
 then recorded in Radicle, the patches after it are replayed onto the new main and
 pushed as the machine account, and the landed branch is deleted. A patch whose push
-is refused, as pre-push refuses one that is approved (docs/WORKFLOW.md, rule 10), is left
+is refused, as pre-push refuses one that is approved (.agents/WORKFLOW.md, rule 10), is left
 as it is, and so is what follows it; the page says so. Your checkout's main is
 left alone.
 
