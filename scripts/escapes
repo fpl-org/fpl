@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """scripts/escapes — every way out of a check is named and says why.
 
-    scripts/escapes [path ...]            (default: fpl tests)
+    scripts/escapes [path ...]            (default: bootstrap/fpl bootstrap/tests)
     scripts/escapes --self-test
 
 Each gate has a comment that silences it for one line. Those are allowed only in the form
@@ -15,13 +15,20 @@ see what was waived and judge whether it still holds:
     # pragma: no mutate -- <reason>
 
 `# type: ignore` is mypy's; pyright is told not to honour it (quality/pyright.json), so each
-checker is waived only in its own form. Exit 0: none bare; 1: some; 2: usage.
+checker is waived only in its own form. A path that is not a directory is an error, never
+an empty scan: the defaults are the repository's, found from this file, wherever it runs.
+Exit 0: none bare; 1: some; 2: usage, or a path that is missing.
 """
 
+import contextlib
+import io
 import re
 import sys
 import tempfile
 from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+DEFAULTS = [REPO / "bootstrap" / "fpl", REPO / "bootstrap" / "tests"]
 
 RULES = [
     (
@@ -60,7 +67,11 @@ def findings(path: Path) -> list[str]:
 def main(argv: list[str]) -> int:
     if argv == ["--self-test"]:
         return self_test()
-    roots = [Path(a) for a in (argv or ["fpl", "tests"])]
+    roots = [Path(a) for a in argv] or DEFAULTS
+    absent = [f"escapes: {r} is not a directory" for r in roots if not r.is_dir()]
+    if absent:
+        print("\n".join(absent), file=sys.stderr)
+        return 2
     found = [f for root in roots for p in sorted(root.rglob("*.py")) for f in findings(p)]
     for f in found:
         print(f"escapes: {f}")
@@ -97,6 +108,9 @@ def self_test() -> int:
             checks.append(
                 (("refuses " if line in bad else "allows ") + line, flagged == (line in bad))
             )
+    with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stderr(io.StringIO()):
+        checks.append(("a missing path is refused", main([str(Path(tmp) / "gone")]) == 2))
+    checks.append(("the defaults are directories", all(r.is_dir() for r in DEFAULTS)))
     failed = [n for n, ok in checks if not ok]
     for n in failed:
         print(f"FAIL {n}", file=sys.stderr)
