@@ -5,7 +5,7 @@
 #   2. no direct commits on main
 #
 # The harness/implementation boundary is not judged here. It is a rule on the commit, not on
-# the checkout (docs/WORKTREES.md): any checkout may hold any work, and one commit stays on
+# the checkout (.agents/WORKTREES.md): any checkout may hold any work, and one commit stays on
 # one side. scripts/commit-lint judges it with scripts/boundary at push and in CI, which every
 # commit reaches however it was made; a hook here would see a `git commit` only.
 
@@ -15,7 +15,7 @@ set -euo pipefail
 # FPL_LEAK_GATE = block (default) | warn | off, read by the script.
 "$(git rev-parse --show-toplevel)/scripts/leak-check" --staged
 
-# Gate 2. docs/WORKFLOW.md rule 6: everything lands on main through a GitHub PR. This is
+# Gate 2. .agents/WORKFLOW.md rule 6: everything lands on main through a GitHub PR. This is
 # the early, friendly half of that rule: it stops a `git commit` on main before
 # the message is even written. It is NOT the enforcement. Git runs pre-commit
 # for `git commit` only, so a clean local merge into main never reaches this
@@ -30,7 +30,7 @@ main_gate() {
 	{
 		echo "pre-commit: direct commit on main. Changes land through a GitHub PR:"
 		echo "              git switch -c stack/<name>     (the staged changes come along)"
-		echo "            see docs/WORKFLOW.md, or FPL_MAIN_GATE=warn to override."
+		echo "            see .agents/WORKFLOW.md, or FPL_MAIN_GATE=warn to override."
 	} >&2
 	[ "$gate" = "warn" ] && return 0
 	return 1

@@ -11,7 +11,7 @@
 #      runs for every remote, Radicle included: publishing is publishing.
 #      FPL_LEAK_GATE = block (default) | warn | off, read by the script.
 #
-#   2. An approved pull request is frozen (docs/WORKFLOW.md rule 10). A push to GitHub that
+#   2. An approved pull request is frozen (.agents/WORKFLOW.md rule 10). A push to GitHub that
 #      would overwrite or delete the branch of an open pull request that a human approved,
 #      at whatever commit, is refused (scripts/forward-only). It reads the forge with GET
 #      requests only, with python3 and no gh, and refuses when it cannot read it. A rebase
@@ -20,7 +20,7 @@
 #      branch go that the pusher knows nobody approved.
 #
 #   3. Refuse to push to a remote branch whose name does not parse under
-#      docs/BRANCHES.md. reference-transaction stops a bad name at creation, but only in
+#      .agents/BRANCHES.md. reference-transaction stops a bad name at creation, but only in
 #      a clone whose hooks are wired (scripts/setup). This is the second local net: the
 #      name that would appear on the forge is judged right before it gets there.
 #      Deletions are let through so a non-conforming remote branch can still be cleaned
