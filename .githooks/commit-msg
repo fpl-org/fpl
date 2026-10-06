@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# .githooks/commit-msg — enforce docs/COMMITS.md.
+# .githooks/commit-msg — enforce .agents/COMMITS.md.
 #
 # Hard gates (reject on failure):
 #   1. header  <type>(<scope>)<!?>: <summary>  — type in the allowed set, scope
@@ -14,14 +14,15 @@
 #   6. unless Human-Only, the commit author email equals .git/agent-identity
 #   7. oracle guard: editing docs/DESIGN.md, docs/SPEC.md, features/*/spec.md or
 #      features/*/examples/* requires the literal marker [spec] in the message
-#  7b. policy guard: editing what sets how hard the gate judges (quality/,
-#      pyproject.toml, Makefile, mutants.allow) requires the literal marker
-#      [policy], and such a commit may not also touch fpl/ or tests/
+#  7b. policy guard: editing what sets how hard the gate judges (quality/, and the
+#      pyproject.toml, Makefile and mutants.allow of the root and of bootstrap/)
+#      requires the literal marker [policy], and such a commit may not also touch
+#      the code or tests of a project (fpl/ or tests/, at the root or in bootstrap/)
 #   8. stack record: on a stack branch, human or agent (scripts/branch-lint),
 #      the message carries 'Stack: <name>'; a Stack: value is always
 #      [a-z0-9][a-z0-9._-]*
 #   9. agent territory: a commit that is not Human-Only sits on an agent branch
-#      (agent/<id>/... or the flat vendor form <id>/<slug>, docs/BRANCHES.md).
+#      (agent/<id>/... or the flat vendor form <id>/<slug>, .agents/BRANCHES.md).
 #      The branch <id> is the lead, not an exclusive author, so it is NOT
 #      compared with Assisted-By; human commits on agent branches are legal.
 #
@@ -53,7 +54,7 @@ lint_commit="${FPL_LINT_COMMIT:-}"
 
 fail() {
 	echo "commit-msg: $1" >&2
-	echo "           see docs/COMMITS.md" >&2
+	echo "           see .agents/COMMITS.md" >&2
 	exit 1
 }
 
@@ -180,14 +181,14 @@ fi
 
 # 7b. policy guard ---------------------------------------------------------------
 # The gate's strictness lives in files an attempt could otherwise loosen in the same
-# breath as the code that needed it loosened (docs/QUALITY.md). A change to them is
+# breath as the code that needed it loosened (.agents/QUALITY.md). A change to them is
 # named as one, and travels alone, so a reviewer sees it apart from any code.
-policy='^(quality/.+|pyproject\.toml|Makefile|mutants\.allow)$'
+policy='^(quality/.+|(bootstrap/)?(pyproject\.toml|Makefile|mutants\.allow))$'
 if printf '%s\n' "$changed" | grep -Eq "$policy"; then
 	grep -Fq '[policy]' "$msg_file" \
 		|| fail "this commit changes the gate's policy ($(printf '%s\n' "$changed" | grep -E "$policy" | head -n3 | xargs)); add [policy] to the message if intentional"
-	if printf '%s\n' "$changed" | grep -Eq '^(fpl|tests)/'; then
-		fail "a [policy] commit may not also change fpl/ or tests/; split it"
+	if printf '%s\n' "$changed" | grep -Eq '^(bootstrap/)?(fpl|tests)/'; then
+		fail "a [policy] commit may not also change fpl/ or tests/ (or bootstrap/fpl/, bootstrap/tests/); split it"
 	fi
 fi
 
@@ -222,7 +223,7 @@ if [ "$branch_gate" != "off" ] && [ -n "$branch" ] \
 	case "$branch_kind" in
 	agent-*|vendor) : ;;
 	*)
-		note="agent commit on '$branch', which is not an agent branch; work on agent/<id>/${branch} (docs/BRANCHES.md)"
+		note="agent commit on '$branch', which is not an agent branch; work on agent/<id>/${branch} (.agents/BRANCHES.md)"
 		[ "$branch_gate" = "warn" ] && echo "commit-msg: $note" >&2 || fail "$note"
 		;;
 	esac

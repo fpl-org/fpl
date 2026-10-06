@@ -5,7 +5,7 @@
 # in the "prepared" state aborts the transaction, and --no-verify does not skip it.
 #
 # 1. Branch names. Refuse to CREATE a branch whose name does not parse under
-#    docs/BRANCHES.md. Git has no branch-creation hook; this catches
+#    .agents/BRANCHES.md. Git has no branch-creation hook; this catches
 #    `git switch -c`, `git branch`, `git worktree add -b` and a fetch into
 #    refs/heads/. Only creations are judged: updates and deletions of existing
 #    branches pass, so a branch that predates a grammar change keeps working.
@@ -15,7 +15,7 @@
 #    in CI.
 #      FPL_BRANCH_GATE = block (default) | warn | off
 #
-# 2. main only follows its upstream. docs/WORKFLOW.md rule 6: everything lands
+# 2. main only follows its upstream. .agents/WORKFLOW.md rule 6: everything lands
 #    on main through a pull request. So locally, refs/heads/main may move only
 #    to the commit its upstream (github/main) already points at. That admits
 #    `git pull` after a landed PR and `git reset --hard github/main`, and
@@ -63,7 +63,7 @@ for u in "${updates[@]}"; do
 			if [ -n "$want" ] && [ "$new" != "$want" ]; then
 				{
 					echo "reference-transaction: main may only move to where ${up#refs/remotes/} already is."
-					echo "    Changes land through a pull request (docs/WORKFLOW.md):"
+					echo "    Changes land through a pull request (.agents/WORKFLOW.md):"
 					echo "        git switch -c stack/<name>        # your work comes along"
 					echo "    FPL_MAIN_GATE=warn to override."
 				} >&2
