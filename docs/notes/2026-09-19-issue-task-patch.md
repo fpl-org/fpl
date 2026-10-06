@@ -1,7 +1,7 @@
 # 2026-09-19 — issue, task, patch
 
 A proposal, not a decision. None of it is implemented. If it is accepted it moves into
-`docs/TASKS.md` and this note goes away; if it is not, the note records why.
+`.agents/TASKS.md` and this note goes away; if it is not, the note records why.
 
 ## Three objects, and the work each one does
 

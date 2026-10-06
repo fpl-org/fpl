@@ -1,17 +1,17 @@
 # ROADMAP.md — milestones
 
 Direction only. Scope and ordering shift as `docs/DESIGN.md` fills in. Each milestone lands as
-a stack of small commits (`docs/WORKFLOW.md`) inside a worktree and is "done" only when
-`make check` is green (`docs/CONVENTIONS.md`).
+a stack of small commits (`.agents/WORKFLOW.md`) inside a worktree and is "done" only when
+`make check` is green (`.agents/CONVENTIONS.md`).
 
 ## Before milestone 0
 
 The table below starts at a worktree skeleton, but three phases come first and none of them is
 language work. They are listed so the roadmap does not read as though the lexer begins tomorrow.
 
-1. **The version control harness.** `scripts/`, `.githooks/`, `docs/WORKFLOW.md` and the task
-   graph of `docs/TASKS.md`. Largely built; the store exists and holds nothing yet.
-2. **The noslop harness.** `quality/` and the gate of `docs/QUALITY.md`: every check, and a
+1. **The version control harness.** `scripts/`, `.githooks/`, `.agents/WORKFLOW.md` and the task
+   graph of `.agents/TASKS.md`. Largely built; the store exists and holds nothing yet.
+2. **The noslop harness.** `quality/` and the gate of `.agents/QUALITY.md`: every check, and a
    bad example each one must refuse, built before there is code to judge, so the pressure is
    there from the first commit. Built with milestone 0's skeleton, which is its first subject.
 3. **Prototyping**, which is where milestone 0 begins.
@@ -22,7 +22,7 @@ either of them to make cheaper. That is a thing to watch, not a rule against the
 
 | # | Milestone | Done when |
 | --- | --- | --- |
-| 0 | **Worktree skeleton** — `pyproject.toml`, `Makefile` (`include quality/noslop.mk`), `fpl/` module stubs, `features/_template/`, empty conformance runner | `make ready` runs and passes with zero features |
+| 0 | **Worktree skeleton** — `bootstrap/pyproject.toml`, `bootstrap/Makefile` (`include ../quality/noslop.mk`), `bootstrap/fpl/` module stubs, `features/_template/`, empty conformance runner | `make ready` runs and passes with zero features |
 | 1 | **Lexer + parser** — `grammar.lark`, `parse.py` → surface AST with spans; `test_ambiguity.py` green | `features/arithmetic/` parses; zero Earley ambiguity |
 | 2 | **Tree-walking eval** — `ast_core.py`, `desugar.py`, `eval.py` for the arithmetic core; `python -m fpl file.fpl` runs | `features/arithmetic/` conformance passes end to end |
 | 3 | **Errors** — `errors.py`: every failure is `ERROR: <line>:<col> <message>` with a caret underline; no traceback escapes | error-case `.expected` files pass |
