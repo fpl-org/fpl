@@ -3,7 +3,7 @@
 Tasks, their order and who is on them are kept as [Radicle](https://radicle.xyz)
 collaborative objects (COBs) inside the repository, not as issues on a forge and not as a
 file in the tree. A file in the tree would need a pull request for every change of state
-(`docs/WORKFLOW.md`, rule 6); issues on a forge leave the record with the forge (rule 7). A
+(`.agents/WORKFLOW.md`, rule 6); issues on a forge leave the record with the forge (rule 7). A
 COB is a graph of signed operations under `refs/cobs/<type>/<id>`: it travels with the
 repository, and who opened, moved or blocked a task is part of the record, per actor key.
 

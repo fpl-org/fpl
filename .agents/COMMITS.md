@@ -11,7 +11,7 @@ commit independently. Each rule below is marked **[gate]** (a hook rejects viola
 **[advisory]** (documented, not machine-checkable — a hook cannot reliably tell).
 
 The hook only sees a commit made with git, in a clone whose hooks are wired.
-`git commit --no-verify`, an unwired clone and `jj` (`docs/JJ.md`) get past it. So the same
+`git commit --no-verify`, an unwired clone and `jj` (`.agents/JJ.md`) get past it. So the same
 gates run a second time where they cannot be skipped: `scripts/commit-lint <rev-range>` runs
 the hook over commits that already exist, and `.github/workflows/commit-lint.yml` does that
 for every commit of a pull request. `.githooks/pre-push` runs it too, over the commits a push
@@ -72,7 +72,7 @@ land it as it is), and the atomicity check is skipped.
 - **[gate]** lines ≤ 72 columns. Exceptions the hook allows: fenced code blocks, table rows
   (`| … |`), and a line with no break opportunity past column 72 (a long URL or path).
 - **[advisory]** content is *why*: the problem, motivation, constraints, alternatives
-  rejected — never a narration of the diff. Reference decisions by file (`docs/STACK.md`).
+  rejected — never a narration of the diff. Reference decisions by file (`.agents/STACK.md`).
 
 ### Trailer block
 
@@ -80,7 +80,7 @@ land it as it is), and the atomicity check is skipped.
 - **[gate]** `Assisted-By` **and** `Session-Id` are both present — **or** a single
   `Human-Only: true` line for a hand-made human commit.
 - **[gate]** on a stack branch — `stack/<name>[/<part>]`, or the same under `agent/<id>/`
-  (`docs/BRANCHES.md`) — the message carries `Stack: <name>`; the value is always `[a-z0-9][a-z0-9._-]*`. `scripts/acommit` derives it
+  (`.agents/BRANCHES.md`) — the message carries `Stack: <name>`; the value is always `[a-z0-9][a-z0-9._-]*`. `scripts/acommit` derives it
   from the branch (`-K <name>` overrides). Stack refs are deleted after landing and a linear
   landing leaves no merge commit, so this trailer is the in-repo record of which commits formed
   one unit: `git log --grep='^Stack: typed-let$'` recovers the stack years later, forge or no
@@ -92,8 +92,8 @@ land it as it is), and the atomicity check is skipped.
 
   | Trailer | Meaning | Example |
   | --- | --- | --- |
-  | `Refs` | path / issue / feature this commit serves (repeatable) | `Refs: docs/STACK.md` |
-  | `Stack` | the stack this commit landed as part of (`docs/WORKFLOW.md`) | `Stack: typed-let` |
+  | `Refs` | path / issue / feature this commit serves (repeatable) | `Refs: .agents/STACK.md` |
+  | `Stack` | the stack this commit landed as part of (`.agents/WORKFLOW.md`) | `Stack: typed-let` |
   | `BREAKING-CHANGE` | required iff `!` in header | `BREAKING-CHANGE: core drops Let node` |
   | `Advisor` | an external model whose output informed the change (repeatable) | `Advisor: fable-5.1` |
   | `Assisted-By` | the model that produced the change, stable slug | `Assisted-By: claude-sonnet-5` |
@@ -131,7 +131,7 @@ Two identities, deliberately kept apart.
     in `.git/agent-identity`.
 - **committer** stays whoever ran the session (their normal `git config user.*`).
 - **[gate] agent territory** — a commit that is not `Human-Only` sits on an agent branch:
-  `agent/<id>/…`, or the flat vendor form `<id>/<slug>` (`docs/BRANCHES.md`). The branch's
+  `agent/<id>/…`, or the flat vendor form `<id>/<slug>` (`.agents/BRANCHES.md`). The branch's
   `<id>` names its lead, not an exclusive author, so it is not compared with `Assisted-By`:
   a Codex commit on a Claude-led branch is legal and attributed by its own author name and
   trailers. Human commits on agent branches are legal too. `FPL_BRANCH_GATE=warn` overrides.
@@ -173,7 +173,7 @@ advisors and must survive across worktrees and sessions without being
 reopened each time. Recording the decision and its rejected alternatives
 makes "why Python and not OCaml" answerable from the log alone.
 
-Refs: docs/STACK.md
+Refs: .agents/STACK.md
 Advisor: fable-5.1
 Advisor: chatgpt
 Assisted-By: claude-sonnet-5
@@ -182,4 +182,4 @@ Session-Id: d94ffb13-ae66-411c-acd2-34b23e151b71
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
 ```
 
-See `docs/WORKFLOW.md` for how commits stack and restack.
+See `.agents/WORKFLOW.md` for how commits stack and restack.

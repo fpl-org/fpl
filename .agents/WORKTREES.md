@@ -11,6 +11,21 @@
 One repo, one `.git` object store, many working trees. In a worktree, `.git` is a *file*
 pointing back to `<root>/.git/worktrees/<name>/`.
 
+## What a checkout holds
+
+```
+.agents/      the agent docs: this file, WORKFLOW, COMMITS, BRANCHES, QUALITY, ...
+docs/         the language's own: DESIGN.md, SPEC.md, ROADMAP.md, notes/
+bootstrap/    the walker, a project of its own: its package fpl, tests, pyproject.toml,
+              Makefile, mutants.allow, HOLES.md, handoff/
+features/     the conformance suite, the maintainer's
+quality/ scripts/ .githooks/ .claude/    the harness
+Makefile      runs the noslop lanes in bootstrap/ (make check, make ready, ...)
+```
+
+Paths inside FPL source that start with `/fpl/` (`/fpl/ext/asm`, `/fpl/lib/cat`) are the
+language's namespace, not directories of the repository.
+
 ## Why children, not siblings
 
 The common convention puts worktrees *beside* the main repo (`../fpl-featureX/`). We nest them
@@ -57,7 +72,7 @@ is a thin wrapper over it.
 
 | Side | Paths |
 | --- | --- |
-| harness | `docs/`, `agents/`, `.claude/`, `scripts/`, `quality/`, `.githooks/`, `AGENTS.md`, `CLAUDE.md`, `flake.nix`, `flake.lock`, `.envrc` |
+| harness | `docs/`, `.agents/`, `.claude/`, `scripts/`, `quality/`, `.githooks/`, `AGENTS.md`, `CLAUDE.md`, `flake.nix`, `flake.lock`, `.envrc` |
 | implementation | `bootstrap/`, `features/`, `fpl/`, `tests/`, `pyproject.toml`, `Makefile`, `mutants.allow` |
 | neutral | every other path (`README.md`, `.gitignore`, `.github/`, `tools/`, `LICENSE`, ...): goes with either side |
 
@@ -114,7 +129,7 @@ that is no longer a parent. Parents are read from each commit's own header. Note
 old commits: the split names them and copies none (`git notes copy` does). If a remote-tracking
 ref holds the commit, the refusal and the split say so: the split still runs, but pushing the
 result rewrites a published branch, which wants coordination and never happens to an approved
-pull request (`docs/WORKFLOW.md`, rule 5).
+pull request (`.agents/WORKFLOW.md`, rule 5).
 
 If a git command fails inside the checker it refuses too (`BOUNDARY-TOOL`, with the command,
 git's words and a remedy line): a gate that cannot look does not pass. It judges the commit's own

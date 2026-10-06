@@ -2,8 +2,10 @@
 
 An implementation worktree is done when `make check` is green (AGENTS.md). This file says what
 that gate runs, why each check is in it, and how its strictness is kept out of reach of the
-code it judges. The harness side lives in `quality/` and `scripts/`; a worktree's `Makefile` is
-one line, `include quality/noslop.mk`.
+code it judges. The harness side lives in `quality/` and `scripts/` at the root; the project
+it judges is the walker in `bootstrap/`, whose `Makefile` is one line, `include
+../quality/noslop.mk`. The root's `Makefile` runs each lane there, so `make check` from the
+root is the gate; the lanes run in `bootstrap/` and use the one `.venv` at the root.
 
 The checks are aimed at the ways agent-written code goes wrong without failing a test: code
 nobody runs, tests that run code without checking it, branches that pile up, layers that leak
@@ -105,7 +107,7 @@ are in `quality/noslop_pytest.py`, loaded by every test run:
   2.5 s per path, so a property that runs deep into Lark costs most of the budget.
 
 On Linux, CrossHair's solver needs libstdc++ on the loader path; the dev shell sets it
-(docs/DEVSHELL.md), and `make harden` stops with a message if it does not load.
+(.agents/DEVSHELL.md), and `make harden` stops with a message if it does not load.
 
 ## Contracts
 
@@ -124,7 +126,7 @@ The predicates are named, typed functions, not lambdas: strict pyright refuses a
 unknown parameters, and a name says what is promised. icontract checks them on every call,
 so a test that reaches the function checks its contract too, and mutation testing sees a
 contract as another way a mutant gets killed. `make harden` then runs `crosshair check` over
-`fpl/` with the icontract kind: for each contract it solves for an input that breaks it, up
+the `fpl` package with the icontract kind: for each contract it solves for an input that breaks it, up
 to `CONTRACT_SECONDS` of CPU per condition, and reports the call. That is the difference
 from a property test: a property is checked on the inputs Hypothesis draws, a contract on
 the inputs a solver finds, and `where()` above was refuted at the end of a line before any
@@ -161,7 +163,7 @@ The obligations:
 - The backend, when it exists: the interpreter and the compiled program print the same
   output for every conformance example and for derived programs.
 
-These are the tests that make the layered frontend of docs/STACK.md more than a layout. The
+These are the tests that make the layered frontend of .agents/STACK.md more than a layout. The
 two that wait on a module that does not exist yet (a printer, a backend) are noted in the
 file and not owed by anyone until it does.
 
@@ -170,7 +172,7 @@ file and not owed by anyone until it does.
 `scripts/mutants` runs mutmut: it changes the code one small way at a time (`<` to `<=`, a
 string to another, an argument to `None`) and runs the tests against each change. A mutant the
 tests do not catch has survived: the line it changed runs, but nothing checks what it does.
-Every mutant that is not killed fails `make harden`, unless `mutants.allow` in the worktree names
+Every mutant that is not killed fails `make harden`, unless `bootstrap/mutants.allow` names
 it with a reason:
 
 ```
@@ -203,16 +205,17 @@ the same commit as its code can make any code pass. So:
 - `quality/` and `scripts/` are harness. A commit that touches them touches no implementation
   path (`scripts/boundary`, judged by `scripts/commit-lint` at push and in CI), so such a
   change is a commit of its own, made from any checkout.
-- `quality/`, `pyproject.toml`, `Makefile` and `mutants.allow` are policy. A commit that
-  changes one carries the marker `[policy]` in its message and touches neither `fpl/` nor
-  `tests/` (`.githooks/commit-msg`), so the change is reviewed on its own.
+- `quality/`, and the `pyproject.toml`, `Makefile` and `mutants.allow` of the root and of
+  `bootstrap/`, are policy. A commit that changes one carries the marker `[policy]` in its
+  message and touches no code or tests (the `fpl` package and its tests, at the root or in
+  `bootstrap/`; `.githooks/commit-msg`), so the change is reviewed on its own.
 - The gate judges only committed policy: `make check` stops when any policy file, or
-  `scripts/`, differs from what is committed.
+  `scripts/`, differs from what is committed, and also when git cannot say.
 - The examples under `features/*/examples/` are oracle, like `spec.md`: `[spec]` and the
   `guard-specs` hook (AGENTS.md, "The oracle rule").
 
 The tools and their versions are pinned in `quality/uv.lock`. `make` syncs them into the
-worktree's `.venv` with `uv sync --frozen` the first time and whenever the lock changes.
+root's `.venv` with `uv sync --frozen` the first time and whenever the lock changes.
 
 ## Proof that the checks bite
 
@@ -221,7 +224,7 @@ holds the harness's own Python (`scripts/crap`, `props`, `escapes`, `mutants`, `
 `forward-only`, `diagrams` and the pytest plugin) to the ruff rules it holds others to, then
 runs the self-tests of the six of those scripts that have one, of `scripts/leak-check`, of the
 pre-push hook and of `scripts/boundary`, then
-`scripts/gates`: for each case in `quality/bad/`, the check runs on a small fixture package,
-where it must pass, and then with the case's bad example laid over it, where it must fail with a
+`scripts/gates`: for each case in `quality/bad/`, the check runs on a small fixture of the
+repository (the harness at its root, a project in `bootstrap/`), where it must pass, and then with the case's bad example laid over it, where it must fail with a
 given message. The first run is the control; without it, a check that fails for an unrelated
 reason would count as having caught something. Adding a check means adding its case.

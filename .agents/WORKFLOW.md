@@ -3,7 +3,7 @@
 FPL uses a **stacked-commits** workflow (the Meta/Phabricator and Google model): a change is a
 short chain of small, individually reviewable commits, each depending on the one below. No
 extra tooling — plain git, one config flag, and `scripts/restack`. If you prefer `jj`, see
-`docs/JJ.md`; it produces the same history.
+`.agents/JJ.md`; it produces the same history.
 
 Vocabulary: **base** (the branch you'll land on, `main`) · **stack** (your ordered commits on
 top of base) · **restack** (rebase the stack when base or a lower commit changes) · **land**
@@ -11,7 +11,7 @@ top of base) · **restack** (rebase the stack when base or a lower commit change
 
 ## The rules
 
-1. **One logical change per commit.** `docs/COMMITS.md` governs the message; the
+1. **One logical change per commit.** `.agents/COMMITS.md` governs the message; the
    `atomic-check` hook blocks commits that bundle unrelated concerns.
 2. **Stage at hunk level** (`git add -p`) so unrelated edits don't ride along.
 3. **Order matters.** Put a change *below* anything that depends on it. If B needs A, commit A
@@ -31,7 +31,7 @@ top of base) · **restack** (rebase the stack when base or a lower commit change
    (or `git fetch --atomic github main:main`; without `--atomic` git moves `main` before
    `github/main`, and the gate refuses it).
 7. **The repository must stay self-sufficient.** The forge is where review happens, not where
-   the record lives: every commit carries its `Stack:` trailer (`docs/COMMITS.md`), and
+   the record lives: every commit carries its `Stack:` trailer (`.agents/COMMITS.md`), and
    anything a review changes about the *why* is folded back into the commit body before
    landing. If GitHub vanished, `git log` alone should still explain every decision.
 8. **A change to the CI goes through the maintainer's hands.** A workflow on a branch of this
@@ -61,7 +61,7 @@ top of base) · **restack** (rebase the stack when base or a lower commit change
    anything written on the forge by hand, do not pass it.
 10. **An approved pull request is frozen; fix forward.** Until the maintainer approves a pull
     request, agents rewrite it freely, in this order: the machines first (`make check` and
-    the other lanes of `docs/QUALITY.md`), then the review bots (CodeRabbit reviews each
+    the other lanes of `.agents/QUALITY.md`), then the review bots (CodeRabbit reviews each
     push; Codex review is asked for in that round, not after him), then the fixes, and only
     then his review. From his approval on, nothing is pushed to its branch: no amend, no fix
     commit, no restack, no force push, no deletion. A finding that arrives later is fixed
@@ -84,7 +84,7 @@ top of base) · **restack** (rebase the stack when base or a lower commit change
     with python3 and no `gh`, so it runs in the default dev shell, and refuses when it cannot
     read it; then it says so, and `FPL_FORWARD_ONLY_OVERRIDE="unchecked: <reason>"` lets a
     branch go that you know nobody approved. `git push --no-verify` and `jj git push`
-    (`docs/JJ.md`) skip it, and `git push --mirror` deletes a branch this clone lacks
+    (`.agents/JJ.md`) skip it, and `git push --mirror` deletes a branch this clone lacks
     without handing pre-push a line for it; that leaves only the tripwire, where it is on.
 
 ## Setup (once per clone/worktree)
@@ -126,7 +126,7 @@ Ref names: a stack is `stack/<name>` when it will be a single PR, or `stack/<nam
 numbered boundary refs when it will be several. Never both for one `<name>` — git stores refs
 as paths, so `stack/typed-let` and `stack/typed-let/1` cannot coexist (`cannot lock ref`).
 An agent's stack is the same name under `agent/<id>/`: `agent/claude/stack/typed-let/tip`. The
-full grammar, and the gates that enforce it, are in `docs/BRANCHES.md`.
+full grammar, and the gates that enforce it, are in `.agents/BRANCHES.md`.
 
 ## Restack (base moved, or you amended a lower commit)
 
@@ -199,7 +199,7 @@ stack through the API. The author of a pull request cannot approve it, which is 
 sides are two accounts.
 
 `scripts/land` needs `gh`, which is not in the default dev shell: `scripts/layer on github`
-(`docs/DEVSHELL.md`, "Forge tools are opt-in"), or land in the browser. `scripts/pr` needs
+(`.agents/DEVSHELL.md`, "Forge tools are opt-in"), or land in the browser. `scripts/pr` needs
 neither: it calls the API with python3 from the default shell.
 
 - **A stack lands as a unit.** The maintainer picks the highest pull request to land and
