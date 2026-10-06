@@ -57,6 +57,9 @@ jobs:
           SINCE: ${{ github.event.pull_request.updated_at }}
           ATTEMPT: ${{ github.run_attempt }}
         run: |
+          # pipefail: a gh that fails must fail the step, not reach jq as an empty list that
+          # reads as "never asked".
+          set -euo pipefail
           # Mentions newer than the event already ask for this head. ISO 8601 UTC strings
           # compare correctly as text.
           asked=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json comments |
