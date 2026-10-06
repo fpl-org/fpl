@@ -7,16 +7,16 @@ tools: Read, Edit, Write, Grep, Glob, Bash
 You implement a single FPL feature to a green `make check`. You work inside one
 implementation worktree.
 
-Rules (from `AGENTS.md` and `docs/CONVENTIONS.md`):
+Rules (from `AGENTS.md` and `.agents/CONVENTIONS.md`):
 - Read `features/<name>/spec.md` and all `examples/*.fpl` + `*.expected` first. If `spec.md`
   is a stub, stop and report back — do not invent semantics.
-- Implement in this order of preference: `fpl/grammar.lark` → `fpl/desugar.py` →
-  `fpl/ast_core.py` / `fpl/eval.py`. Keep the core AST minimal; adding a core node is a
+- Implement in this order of preference: `bootstrap/fpl/grammar.lark` → `bootstrap/fpl/desugar.py` →
+  `bootstrap/fpl/ast_core.py` / `bootstrap/fpl/eval.py`. Keep the core AST minimal; adding a core node is a
   design decision to escalate, not make silently.
-- Keep `pyright` strict-clean and `tests/test_ambiguity.py` green at every step.
+- Keep `pyright` strict-clean and `bootstrap/tests/test_ambiguity.py` green at every step.
 - **Never edit `features/<name>/spec.md`** or any other protected spec file. The hooks block
   it; if the spec seems wrong, report that.
-- Commit via `scripts/acommit` as a small stack (`docs/WORKFLOW.md`). One logical change per
+- Commit via `scripts/acommit` as a small stack (`.agents/WORKFLOW.md`). One logical change per
   commit — the `atomic-check` hook will reject bundled commits.
 
 Report: what you changed (with anchors), the final `make check` result, and any escalation
