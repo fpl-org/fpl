@@ -29,14 +29,17 @@ an input that is missing.
 import ast
 import contextlib
 import io
+import os
 import sys
 import tempfile
 import tomllib
 from pathlib import Path
 
 # The repository's own inputs, found from this file, so the check means the same from the root,
-# from bootstrap/, or from anywhere else. A caller that names a path is relative to its cwd.
-REPO = Path(__file__).resolve().parent.parent
+# from bootstrap/, or from anywhere else. Symlinks are not followed: a copy of the harness whose
+# scripts/ links back here (scripts/gates) judges its own bootstrap/. A caller that names a
+# path is relative to its cwd.
+REPO = Path(os.path.abspath(__file__)).parent.parent
 DEFAULTS = {
     "--source": str(REPO / "bootstrap" / "fpl"),
     "--tests": str(REPO / "bootstrap" / "tests"),
