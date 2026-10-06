@@ -4,7 +4,7 @@ argument-hint: <name>
 ---
 
 Scaffold a feature directory, then hand back to the maintainer. See the oracle rule in
-`AGENTS.md` and the layout in `docs/CONVENTIONS.md`.
+`AGENTS.md` and the layout in `.agents/CONVENTIONS.md`.
 
 Given `$1` = feature name (inside an implementation worktree):
 
