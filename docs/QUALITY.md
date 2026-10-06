@@ -200,8 +200,9 @@ each with its reason. A bare `# type: ignore` is refused.
 The gate is only as strict as the files that configure it, and an agent that can edit them in
 the same commit as its code can make any code pass. So:
 
-- `quality/` and `scripts/` are harness. A worktree commit may not touch them
-  (`.githooks/pre-commit`); they change from the root, like the rest of the harness.
+- `quality/` and `scripts/` are harness. A commit that touches them touches no implementation
+  path (`scripts/boundary`, judged by `scripts/commit-lint` at push and in CI), so such a
+  change is a commit of its own, made from any checkout.
 - `quality/`, `pyproject.toml`, `Makefile` and `mutants.allow` are policy. A commit that
   changes one carries the marker `[policy]` in its message and touches neither `fpl/` nor
   `tests/` (`.githooks/commit-msg`), so the change is reviewed on its own.
@@ -218,7 +219,8 @@ worktree's `.venv` with `uv sync --frozen` the first time and whenever the lock 
 A check that passes everything looks the same as a check that found nothing. `make gates` first
 holds the harness's own Python (`scripts/crap`, `props`, `escapes`, `mutants`, `gates`,
 `forward-only`, `diagrams` and the pytest plugin) to the ruff rules it holds others to, then
-runs the self-tests of the six of those scripts that have one and of `scripts/leak-check`, then
+runs the self-tests of the six of those scripts that have one, of `scripts/leak-check`, of the
+pre-push hook and of `scripts/boundary`, then
 `scripts/gates`: for each case in `quality/bad/`, the check runs on a small fixture package,
 where it must pass, and then with the case's bad example laid over it, where it must fail with a
 given message. The first run is the control; without it, a check that fails for an unrelated
