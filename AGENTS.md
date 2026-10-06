@@ -22,19 +22,25 @@ Keep talk about the vision sober, and the harness small: `docs/notes/2026-09-19-
 /                     the harness and the implementation, in any checkout
   AGENTS.md           this file
   CLAUDE.md           Claude Code tooling notes only
-  docs/               settled decisions and conventions (vendor-neutral)
+  .agents/            settled decisions and conventions for agents (vendor-neutral)
+  docs/               the language's own documents: DESIGN.md, SPEC.md, ROADMAP.md, notes/
+  bootstrap/          the walker: the Python implementation, a project of its own (the
+                      package fpl, its tests, pyproject.toml, Makefile, mutants.allow,
+                      HOLES.md, handoff/)
+  features/           the conformance suite: the maintainer's specs and examples
+  Makefile            runs the noslop lanes (make check, ...) in bootstrap/
   .claude/            Claude Code commands, subagents, skill, hooks
   scripts/            acommit, commit-lint, restack, setup, agent-identity, new-worktree,
                       branch-lint, forward-only, layer, pr, review, land, task,
                       rad-cob-dagtaak;
                       crap, props, escapes, mutants, gates (the noslop gate);
                       diagrams (make map: the map of the code, never committed)
-  quality/            the noslop gate's lanes, tool configs and pinned tools (docs/QUALITY.md)
-  tools/<name>/       tooling beside the language, each a uv project of its own, judged by make tools (docs/QUALITY.md)
-  flake.nix, flake.lock   the dev shell: one pinned toolchain for everyone (docs/DEVSHELL.md)
+  quality/            the noslop gate's lanes, tool configs and pinned tools (.agents/QUALITY.md)
+  tools/<name>/       tooling beside the language, each a uv project of its own, judged by make tools (.agents/QUALITY.md)
+  flake.nix, flake.lock   the dev shell: one pinned toolchain for everyone (.agents/DEVSHELL.md)
   .githooks/          pre-commit, commit-msg, atomic-check, reference-transaction, pre-push
                       (all enabled by scripts/setup)
-  worktrees/<name>/   one implementation attempt each; git-ignored; see docs/WORKTREES.md
+  worktrees/<name>/   one implementation attempt each; git-ignored; see .agents/WORKTREES.md
 ```
 
 **Worktree model.** Each attempt at implementing FPL lives in its own linked worktree at
@@ -42,17 +48,17 @@ Keep talk about the vision sober, and the harness small: `docs/notes/2026-09-19-
 made mid-attempt, in the worktree.
 
 - A session edits inside its own checkout only — never sideways into another worktree.
-- One commit changes harness paths or implementation paths, never both (`docs/WORKTREES.md`
+- One commit changes harness paths or implementation paths, never both (`.agents/WORKTREES.md`
   lists the sides). `scripts/commit-lint` judges every commit by it (`scripts/boundary`), at
   push and in CI; a refusal (`BOUNDARY-MIXED`) prints the command that splits the commit.
 - `.githooks/pre-commit` refuses a `git commit` with `main` checked out; the real gate is
   `.githooks/reference-transaction`, which lets `main` move only to where `github/main` already
-  is, so local merges are refused too. Work on a stack branch (`docs/WORKFLOW.md`).
-- Details and `git worktree` recipes: `docs/WORKTREES.md`.
+  is, so local merges are refused too. Work on a stack branch (`.agents/WORKFLOW.md`).
+- Details and `git worktree` recipes: `.agents/WORKTREES.md`.
 
 ## Settled decisions
 
-Full rationale in `docs/STACK.md`. In brief:
+Full rationale in `.agents/STACK.md`. In brief:
 
 - **Stack:** Python 3.12+ + [Lark](https://lark-parser.readthedocs.io) + frozen `@dataclass`
   nodes + structural `match` → tree-walking interpreter. Chosen for broad agent fluency.
@@ -74,7 +80,7 @@ Each worktree defines a single non-interactive check:
 
 ```
 make check   # ruff, pyright and mypy strict, 100% branch coverage, CRAP <= 8, a property test per
-             # module, layering, dependencies, dead and duplicate code (docs/QUALITY.md)
+             # module, layering, dependencies, dead and duplicate code (.agents/QUALITY.md)
 ```
 
 `make check` green ⇔ the work is done. There is no other definition of done. Do not report a
@@ -109,17 +115,17 @@ is wrong, say so and let the maintainer decide — don't route around it.
 
 - One-time per clone/worktree: **`scripts/setup`** (wires `.githooks/`, stacked-commit git
   config, checks the author identity).
-- Commit with **`scripts/acommit`** — it builds the message to `docs/COMMITS.md` and sets the
+- Commit with **`scripts/acommit`** — it builds the message to `.agents/COMMITS.md` and sets the
   machine-account author. `.githooks/commit-msg` validates every commit independently; a soft
   LLM `atomic-check` blocks commits that bundle unrelated changes.
 - Work in **stacked commits** — small, ordered, individually reviewable; **`scripts/restack`**
-  rebases the stack when the base moves. See `docs/WORKFLOW.md`. Prefer `jj`? `docs/JJ.md`.
+  rebases the stack when the base moves. See `.agents/WORKFLOW.md`. Prefer `jj`? `.agents/JJ.md`.
 - **An approved PR is frozen.** Rewrite freely until the maintainer approves; after that,
-  fix forward in a new PR on top (`docs/WORKFLOW.md` rule 10; `.githooks/pre-push` refuses).
+  fix forward in a new PR on top (`.agents/WORKFLOW.md` rule 10; `.githooks/pre-push` refuses).
 - **Land through a GitHub PR, always** (rebase-merge, never a local merge into `main`). The
   `Stack:` trailer on every commit keeps the grouping in the repo once the refs are deleted.
-- Authorship model (machine account + `claude[bot]` App): `docs/COMMITS.md`.
-- The task graph (`scripts/task`, Radicle COBs in the repository): `docs/TASKS.md`. The store
+- Authorship model (machine account + `claude[bot]` App): `.agents/COMMITS.md`.
+- The task graph (`scripts/task`, Radicle COBs in the repository): `.agents/TASKS.md`. The store
   exists; no task has been written to it yet.
 
 ## Coding standards
@@ -130,15 +136,15 @@ performance treated as a feature. (Claude sessions: load the `software-style` an
 
 ## Picking up work
 
-0. Enter the dev shell: `direnv allow` once, or `nix develop -c <command>` (`docs/DEVSHELL.md`;
+0. Enter the dev shell: `direnv allow` once, or `nix develop -c <command>` (`.agents/DEVSHELL.md`;
    a bare interactive `nix develop` is unreliable on macOS). It carries every tool below at a
    pinned version and wires the git hooks on first entry. Check: `command -v ruff` prints a
    `/nix/store/…` path. It has no forge client; `gh` is an opt-in layer, per checkout:
    `scripts/layer on github`, or `nix develop .#github -c gh …`.
-1. Read this file, `docs/STACK.md`, `docs/CONVENTIONS.md`, `docs/COMMITS.md`, `docs/WORKFLOW.md`,
-   `docs/BRANCHES.md`.
+1. Read this file, `.agents/STACK.md`, `.agents/CONVENTIONS.md`, `.agents/COMMITS.md`, `.agents/WORKFLOW.md`,
+   `.agents/BRANCHES.md`.
 2. Pick a worktree (`git worktree list`) or make one (`scripts/new-worktree <name>`; see
-   `docs/WORKTREES.md`).
+   `.agents/WORKTREES.md`).
 3. In it, find a feature whose `make check` is red — or scaffold one and stop for the
    maintainer to fill the fixtures.
 4. Implement to green.
