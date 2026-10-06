@@ -20,7 +20,7 @@
       # Opt-in layers on top of the default shell. DATA ONLY: a name (letters and digits),
       # a description, packages, and optionally `extends`, naming layers whose packages come
       # along. Today every layer is a forge client, because nothing that talks to a forge
-      # belongs in the default shell (docs/DEVSHELL.md). To add a layer, add an entry here;
+      # belongs in the default shell (.agents/DEVSHELL.md). To add a layer, add an entry here;
       # the shells and the list .envrc checks against are generated below.
       layers = pkgs: {
         github = {
@@ -108,13 +108,13 @@
             pkgs.gnused
             pkgs.gawk
             pkgs.git
-            pkgs.jujutsu # optional workflow, docs/JJ.md
+            pkgs.jujutsu # optional workflow, .agents/JJ.md
             pkgs.diff2html-cli # scripts/review renders a branch as a page
             # scripts/leak-check, which the hooks run on every commit and push: the
             # repository is public, so it cannot wait in an opt-in layer.
             pkgs.gitleaks
 
-            # The implementation stack, docs/STACK.md, and the noslop gate, docs/QUALITY.md.
+            # The implementation stack, .agents/STACK.md, and the noslop gate, .agents/QUALITY.md.
             # A bare Python 3.12, and uv, which syncs Lark and the gate's Python tools into
             # each worktree's .venv at the versions quality/uv.lock pins: several of them
             # (import-linter, deptry, CrossHair) are not in nixpkgs. pyright stays here,
