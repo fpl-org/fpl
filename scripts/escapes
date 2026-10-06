@@ -22,12 +22,13 @@ Exit 0: none bare; 1: some; 2: usage, or a path that is missing.
 
 import contextlib
 import io
+import os
 import re
 import sys
 import tempfile
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(os.path.abspath(__file__)).parent.parent
 DEFAULTS = [REPO / "bootstrap" / "fpl", REPO / "bootstrap" / "tests"]
 
 RULES = [
