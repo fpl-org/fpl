@@ -38,6 +38,11 @@ export PYTHONPATH := $(Q):$(CURDIR)
 export UV_PROJECT_ENVIRONMENT := $(VENV)
 export UV_PYTHON_DOWNLOADS := never
 
+# ruff skips what a VCS ignore file hides, and a clone whose .git/info/exclude is block-first
+# (`*`) hides every source: ruff then lints nothing and passes. The lanes name their files, so
+# it is told to look at them whatever the ignore files say.
+RUFF_ALL := --no-respect-gitignore
+
 # The tools, at the versions quality/uv.lock pins, synced into the root's .venv. The stamp
 # makes it a no-op until the lock changes.
 $(BIN)/.synced: $(Q)/uv.lock $(Q)/pyproject.toml
@@ -46,12 +51,12 @@ $(BIN)/.synced: $(Q)/uv.lock $(Q)/pyproject.toml
 venv: $(BIN)/.synced
 
 fix: venv
-	$(BIN)/ruff check --config $(Q)/ruff.toml --fix fpl tests
-	$(BIN)/ruff format --config $(Q)/ruff.toml fpl tests
+	$(BIN)/ruff check --config $(Q)/ruff.toml $(RUFF_ALL) --fix fpl tests
+	$(BIN)/ruff format --config $(Q)/ruff.toml $(RUFF_ALL) fpl tests
 
 quick: venv
-	$(BIN)/ruff check --config $(Q)/ruff.toml fpl tests
-	$(BIN)/ruff format --config $(Q)/ruff.toml --check fpl tests
+	$(BIN)/ruff check --config $(Q)/ruff.toml $(RUFF_ALL) fpl tests
+	$(BIN)/ruff format --config $(Q)/ruff.toml $(RUFF_ALL) --check fpl tests
 	$(BIN)/pytest -x -q -n auto
 
 # A gate is only as strict as its policy files, and those sit in the worktree where an
@@ -76,8 +81,8 @@ pristine:
 
 check: venv pristine
 	@mkdir -p $(OUT)
-	$(BIN)/ruff check --config $(Q)/ruff.toml fpl tests
-	$(BIN)/ruff format --config $(Q)/ruff.toml --check fpl tests
+	$(BIN)/ruff check --config $(Q)/ruff.toml $(RUFF_ALL) fpl tests
+	$(BIN)/ruff format --config $(Q)/ruff.toml $(RUFF_ALL) --check fpl tests
 	pyright --project $(Q)/pyright.json
 	$(BIN)/mypy --config-file $(Q)/mypy.ini fpl tests
 	$(BIN)/python $(S)/escapes fpl tests
@@ -88,6 +93,10 @@ check: venv pristine
 	$(BIN)/python $(S)/crap --policy $(Q)/crap.toml
 	$(BIN)/coverage report --rcfile=$(Q)/coveragerc
 	$(BIN)/lint-imports --config $(Q)/importlinter.ini --no-cache
+	@! $(BIN)/deptry . --extend-exclude 'mutants' -v 2>&1 | grep -q '^Scanning 0 file' || { \
+	  echo "check: deptry scanned 0 files: a VCS ignore file (.gitignore, .git/info/exclude) hides the sources" >&2; \
+	  echo "       from it, and deptry has no switch to look anyway; allow fpl/ and tests/ there" >&2; \
+	  exit 1; }
 	$(BIN)/deptry . --extend-exclude 'mutants'
 	$(BIN)/vulture fpl tests --min-confidence 60
 	$(BIN)/pylint --rcfile=/dev/null --persistent=n --score=n --disable=all --enable=duplicate-code \
