@@ -17,7 +17,7 @@ unless `mutants.allow` in the worktree names it with a reason, one per line:
 Some mutants are equivalent (they change nothing observable) and no test can kill them;
 that is what the file is for, not for mutants nobody got round to. An entry without a
 reason is refused, and one whose mutant no longer lives is reported so the file can shrink.
-Changing `mutants.allow` is a policy change and takes [policy] (docs/QUALITY.md).
+Changing `mutants.allow` is a policy change and takes [policy] (.agents/QUALITY.md).
 
 Runs in the worktree's .venv (make harden). Exit 0: every mutant killed or allowed; 1: not.
 """

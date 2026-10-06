@@ -198,7 +198,7 @@ change() {
 }
 
 impl=(bootstrap/a features/a fpl/a tests/a pyproject.toml Makefile mutants.allow)
-harn=(docs/a agents/a .claude/a scripts/a quality/a .githooks/a AGENTS.md CLAUDE.md flake.nix
+harn=(docs/a .agents/a .claude/a scripts/a quality/a .githooks/a AGENTS.md CLAUDE.md flake.nix
 	flake.lock .envrc)
 neutral=(README.md .gitignore .github/a tools/a LICENSE docs.md fplx/a Makefile.bak
 	.envrc.local AGENTS.md.bak xdocs/a features.txt bootstrap a/docs/x a/fpl/x xtests/a

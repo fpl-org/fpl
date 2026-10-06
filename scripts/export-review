@@ -8,7 +8,7 @@
 
 The other half of scripts/import-review. The review lives in the patch; people who found the
 project on the forge read the pull request. So what was written here and not imported from
-there goes there, once, posted by the machine account (docs/WORKFLOW.md), whose token also
+there goes there, once, posted by the machine account (.agents/WORKFLOW.md), whose token also
 does the import:
 
     a comment on lines          a review comment on those lines, where the forge accepts
@@ -92,7 +92,7 @@ def token():
                 m = re.match(r"https://[^:]+:([^@]+)@github\.com", line.strip())
                 if m:
                     return m.group(1)
-    die("no token for the machine account: see .git/agent-credentials in docs/WORKFLOW.md")
+    die("no token for the machine account: see .git/agent-credentials in .agents/WORKFLOW.md")
 
 
 class Forge:

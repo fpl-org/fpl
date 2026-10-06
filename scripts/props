@@ -4,11 +4,11 @@
     scripts/props [--source fpl] [--tests tests] [--obligations quality/obligations.toml]
     scripts/props --self-test
 
-A module of fpl/ that defines anything (a function, a class, an assignment) needs at least one
-test file that imports it and holds a Hypothesis test: a function decorated with `given`. A
-module that is only a docstring, like a stub for a stage not written yet, needs none. Which
-properties those tests state is the maintainer's to judge; that there is one is not optional
-(docs/QUALITY.md).
+A module of the fpl package that defines anything (a function, a class, an assignment) needs
+at least one test file that imports it and holds a Hypothesis test: a function decorated with
+`given`. A module that is only a docstring, like a stub for a stage not written yet, needs
+none. Which properties those tests state is the maintainer's to judge; that there is one is
+not optional (.agents/QUALITY.md).
 
 Some properties are not the maintainer's to judge but the language's to keep: desugaring
 preserves meaning, a well-typed term makes progress. Those are the module's obligations,

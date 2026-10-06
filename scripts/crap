@@ -13,7 +13,7 @@ A function whose score is above the policy's `max` fails the gate. So does a fun
 coverage report does not know, since its p cannot be measured and would otherwise be
 guessed. The report also counts wrappers, functions whose whole body is one call: a hard
 complexity limit invites splitting a function into pieces that only pass it along, and
-Martin's own experiment found exactly that. They are counted, not refused; docs/QUALITY.md.
+Martin's own experiment found exactly that. They are counted, not refused; .agents/QUALITY.md.
 
 Runs in the worktree's .venv (make check), since radon lives there. Exit 0: every function
 within the limit; 1: some not, or the coverage report is missing; 2: usage.

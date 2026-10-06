@@ -33,7 +33,7 @@ revision, and every imported comment has the same signer; the review is left fre
 verdict of whoever runs this.
 
 Needs rad (`scripts/layer on radicle`), a repository that went through `rad init`, and a
-remote on github.com. Reads the forge with the machine account's token (docs/WORKFLOW.md);
+remote on github.com. Reads the forge with the machine account's token (.agents/WORKFLOW.md);
 reading needs no particular account, only access to the repository.
 """
 
@@ -107,7 +107,7 @@ def token():
         done = run("gh", "auth", "token", ok=False)
         if done.returncode == 0 and done.stdout.strip():
             return done.stdout.strip()
-    die("no token: set FPL_FORGE_TOKEN, or see .git/agent-credentials in docs/WORKFLOW.md")
+    die("no token: set FPL_FORGE_TOKEN, or see .git/agent-credentials in .agents/WORKFLOW.md")
 
 
 def slug_of(remote):

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# scripts/acommit — make a commit that follows docs/COMMITS.md.
+# scripts/acommit — make a commit that follows .agents/COMMITS.md.
 #
 # Assembles a Conventional-Commits header and a git-trailer provenance block,
 # sets the author to "<model display name> <machine-account email>" while leaving
@@ -74,7 +74,7 @@ die() { echo "acommit: $*" >&2; exit 2; }
 case "$type" in
 feat|fix|docs|refactor|perf|test|build|ci|chore|revert) : ;;
 "") die "missing -t TYPE" ;;
-*) die "invalid type '$type' (see docs/COMMITS.md)" ;;
+*) die "invalid type '$type' (see .agents/COMMITS.md)" ;;
 esac
 [ -n "$scope" ] || die "missing -s SCOPE"
 [ -n "$summary" ] || die "missing -m SUMMARY"

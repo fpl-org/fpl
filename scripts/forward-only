@@ -4,7 +4,7 @@
     scripts/forward-only <remote> <url> < <pre-push lines>      (.githooks/pre-push)
     scripts/forward-only --self-test
 
-docs/WORKFLOW.md, rule 10: until the maintainer approves a pull request, agents rewrite it
+.agents/WORKFLOW.md, rule 10: until the maintainer approves a pull request, agents rewrite it
 freely; from his approval on its branch is frozen, and a later finding is fixed forward, in
 a new pull request on top. This is the gate on the second half.
 
@@ -23,7 +23,7 @@ Bots and the machine accounts in MACHINES are not humans here: what they find af
 approval is work for a fix on top, not a reason to reopen the approved branch.
 
 It only reads, with GET requests to the REST API, and needs nothing but python3: no gh, so
-it runs in the default dev shell (docs/DEVSHELL.md). The token is the first of GH_TOKEN,
+it runs in the default dev shell (.agents/DEVSHELL.md). The token is the first of GH_TOKEN,
 GITHUB_TOKEN, gh's for its active account if gh is there, and the one in
 .git/agent-credentials; with none it reads anonymously, which a public repository allows.
 When the forge cannot be read (no network, a refused token, an answer of the wrong shape)

@@ -7,11 +7,11 @@
 #
 # What it does:
 #   1. Points git at the tracked hooks in .githooks/ (so commit-msg / pre-commit run).
-#   2. Turns on the three settings the stacked-commit workflow in docs/WORKFLOW.md
+#   2. Turns on the three settings the stacked-commit workflow in .agents/WORKFLOW.md
 #      relies on: --update-refs by default, rerere (remember conflict resolutions),
 #      and scissors cleanup (so the commit-msg template can carry a help footer).
 #   3. Reports whether the agent author identity (.git/agent-identity) is set;
-#      see docs/COMMITS.md for why it exists and `scripts/agent-identity` to set it.
+#      see .agents/COMMITS.md for why it exists and `scripts/agent-identity` to set it.
 #
 # It never writes anything outside `git config --local` and never commits.
 
@@ -40,7 +40,7 @@ else
 
 	        scripts/agent-identity set "<id>+psjg-claude@users.noreply.github.com"
 
-	    (the noreply address of the GitHub machine account — see docs/COMMITS.md).
+	    (the noreply address of the GitHub machine account — see .agents/COMMITS.md).
 	    Human-only commits are unaffected.
 	EOF
 fi

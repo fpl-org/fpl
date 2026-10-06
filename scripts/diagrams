@@ -86,8 +86,8 @@ CONFIG = Path("quality") / "importlinter.ini"
 # Where a checkout keeps its root package: the directory, from the checkout's top, that goes
 # on the import path, as PYTHONPATH in quality/noslop.mk has it. The map's one line to change
 # when the package moves; its name comes from the contracts, its directory from Python's rule
-# that a package is a directory of its name.
-SOURCE = Path()
+# that a package is a directory of its name. Here it is bootstrap/, the walker's own project.
+SOURCE = Path("bootstrap")
 
 FENCE = "```"
 

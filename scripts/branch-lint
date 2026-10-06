@@ -2,7 +2,7 @@
 #
 # scripts/branch-lint — the branch-name grammar, as an executable.
 #
-# docs/BRANCHES.md is the prose; this file is the single parser every gate uses
+# .agents/BRANCHES.md is the prose; this file is the single parser every gate uses
 # (reference-transaction, pre-push, commit-msg, acommit, CI), so the grammar is
 # written down exactly once:
 #
@@ -21,7 +21,7 @@
 # `agent` and `vendor` cannot collide: a vendor branch has exactly one slash and
 # starts with an id; an agent branch starts with the literal "agent/". An agent
 # that can choose its branch name MUST use the agent form; the vendor form exists
-# only because some tools hard-code their prefix (docs/BRANCHES.md lists which).
+# only because some tools hard-code their prefix (.agents/BRANCHES.md lists which).
 #
 # Usage:
 #   branch-lint <name>...        exit 0 if all conform, else 1 with a reason each
@@ -142,7 +142,7 @@ case "${1:-}" in
 	for b in "$@"; do
 		if ! { parse "$b" && git check-ref-format --branch "$b" >/dev/null 2>&1; }; then
 			echo "branch-lint: '$b': $(why "$b")" >&2
-			echo "             grammar: docs/BRANCHES.md" >&2
+			echo "             grammar: .agents/BRANCHES.md" >&2
 			rc=1
 		fi
 	done

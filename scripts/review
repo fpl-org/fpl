@@ -53,7 +53,7 @@ range="$base...$branch"
 # moved, and the branch would then reach diff2html with an empty diff and fail there.
 [ "$(git rev-list --count "$base..$branch")" != 0 ] || die "$branch adds nothing to $base"
 
-command -v diff2html >/dev/null || die "diff2html not found; enter the dev shell (docs/DEVSHELL.md)"
+command -v diff2html >/dev/null || die "diff2html not found; enter the dev shell (.agents/DEVSHELL.md)"
 
 # -U is the whole point: enough context to swallow any file we are likely to write.
 # Unchanged files stay out of the diff regardless, so this only pays for what changed.

@@ -12,7 +12,7 @@
 #
 # Open pull requests form one queue, first in, first out: each is based on the one filed
 # before it, and only the head is based on main, so they merge one after another without
-# conflicts between them (docs/WORKFLOW.md). A new pull request goes on the tail: its base
+# conflicts between them (.agents/WORKFLOW.md). A new pull request goes on the tail: its base
 # is the branch of the last open pull request, and the branch must already contain it.
 # If it does not, this stops and says how to rebase onto it.
 #
@@ -24,7 +24,7 @@
 # has an open pull request, that one's URL is printed and nothing is created.
 #
 # The author of a pull request cannot approve it, so agent work is filed by the machine
-# account and the maintainer reviews it (docs/WORKFLOW.md). gh falls back to the active
+# account and the maintainer reviews it (.agents/WORKFLOW.md). gh falls back to the active
 # account without a word when a token lookup comes back empty, which would file the
 # request as the maintainer and leave nobody to approve it. So this refuses unless the
 # token belongs to the account named in .git/agent-identity, and unless the branch on the
@@ -33,7 +33,7 @@
 #
 # It talks to the forge over its API, with python3 from the default dev shell, so the
 # github layer is not needed. The token is gh's if gh has one for the machine account,
-# else the one in .git/agent-credentials (docs/WORKFLOW.md).
+# else the one in .git/agent-credentials (.agents/WORKFLOW.md).
 set -euo pipefail
 
 die() {
@@ -87,7 +87,7 @@ remote="$(git config "branch.$branch.remote" ||
 	die "cannot tell the forge: '$branch', '$base' and main track no remote, and there is more than one"
 
 # .git/agent-credentials, if it is there: a git credential-store file holding one
-# https://<login>:<token>@github.com line for the machine account (docs/WORKFLOW.md).
+# https://<login>:<token>@github.com line for the machine account (.agents/WORKFLOW.md).
 cred="$(cd "$(git rev-parse --git-common-dir)" && pwd)/agent-credentials"
 [ -r "$cred" ] || cred=""
 

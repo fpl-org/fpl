@@ -7,7 +7,7 @@
 #   scripts/layer off gitlab
 #   scripts/layer reset            no layers: back to the default shell
 #
-# Layers are declared in flake.nix (docs/DEVSHELL.md). The choice is stored in the
+# Layers are declared in flake.nix (.agents/DEVSHELL.md). The choice is stored in the
 # git-ignored file .fpl-shell at the top of the checkout, which .envrc reads; direnv
 # picks a change up at the next prompt. This script is the way to write that file: it
 # checks names against the flake before anything is stored. For one command without
