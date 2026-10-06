@@ -19,7 +19,7 @@ Keep talk about the vision sober, and the harness small: `docs/notes/2026-09-19-
 ## Repository layout
 
 ```
-/                     shared harness — edited from a root checkout
+/                     the harness and the implementation, in any checkout
   AGENTS.md           this file
   CLAUDE.md           Claude Code tooling notes only
   docs/               settled decisions and conventions (vendor-neutral)
@@ -37,14 +37,15 @@ Keep talk about the vision sober, and the harness small: `docs/notes/2026-09-19-
   worktrees/<name>/   one implementation attempt each; git-ignored; see docs/WORKTREES.md
 ```
 
-**Worktree model.** The root holds the harness. Each attempt at implementing FPL lives in its
-own linked worktree at `worktrees/<name>/` on its own branch.
+**Worktree model.** Each attempt at implementing FPL lives in its own linked worktree at
+`worktrees/<name>/` on its own branch. Any checkout may hold any work: a harness change can be
+made mid-attempt, in the worktree.
 
-- A root session edits the harness only — never files inside a `worktrees/<name>/`.
-- A worktree session edits that worktree only — never up into the harness or sideways into
-  another worktree.
-- `.githooks/pre-commit` gates both rules on the staged paths (`FPL_BOUNDARY=warn` overrides).
-  It also refuses a `git commit` with `main` checked out; the real gate is
+- A session edits inside its own checkout only — never sideways into another worktree.
+- One commit changes harness paths or implementation paths, never both (`docs/WORKTREES.md`
+  lists the sides). `scripts/commit-lint` judges every commit by it (`scripts/boundary`), at
+  push and in CI; a refusal (`BOUNDARY-MIXED`) prints the command that splits the commit.
+- `.githooks/pre-commit` refuses a `git commit` with `main` checked out; the real gate is
   `.githooks/reference-transaction`, which lets `main` move only to where `github/main` already
   is, so local merges are refused too. Work on a stack branch (`docs/WORKFLOW.md`).
 - Details and `git worktree` recipes: `docs/WORKTREES.md`.
