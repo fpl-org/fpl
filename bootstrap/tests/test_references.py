@@ -10,15 +10,18 @@ nothing, and nothing else notices. A bare name with no line is not taken as a ci
 import re
 from pathlib import Path
 
-ROOT = Path(__file__).parent.parent
-PROGRAMS = sorted(ROOT.glob("features/*/examples/*.fpl"))
+from corpus import PROGRAMS, REPO
+
+HERE = Path(__file__).parent.parent  # this project: bootstrap/, or mutmut's copy of it
 NAMES = {p.name for p in PROGRAMS}
 CITERS = sorted(
     [
-        *ROOT.glob("*.md"),
-        *ROOT.glob("docs/**/*.md"),
-        *ROOT.glob("tests/*.py"),
-        *ROOT.glob("fpl/**/*.py"),
+        *REPO.glob("*.md"),
+        *REPO.glob(".agents/*.md"),
+        *REPO.glob("docs/**/*.md"),
+        *REPO.glob("bootstrap/*.md"),
+        *HERE.glob("tests/*.py"),
+        *HERE.glob("fpl/**/*.py"),
     ]
 )
 
@@ -29,7 +32,7 @@ NAME = re.compile(r"(?:\bexamples/([\w.-]+\.fpl)\b|(?<![\w./-])([\w.-]+\.fpl):\d
 
 def dangling(text: str) -> list[str]:
     """The citations in `text` that name no example program."""
-    paths = [m for m in PATH.findall(text) if not (ROOT / m).is_file()]
+    paths = [m for m in PATH.findall(text) if not (REPO / m).is_file()]
     names = [a or b for a, b in NAME.findall(text) if (a or b) not in NAMES]
     return paths + names
 
@@ -41,5 +44,5 @@ def test_a_renamed_program_dangles() -> None:
 
 
 def test_every_citation_names_a_program() -> None:
-    found = {str(p.relative_to(ROOT)): dangling(p.read_text(encoding="utf-8")) for p in CITERS}
+    found = {str(p.relative_to(REPO)): dangling(p.read_text(encoding="utf-8")) for p in CITERS}
     assert {p: d for p, d in found.items() if d} == {}

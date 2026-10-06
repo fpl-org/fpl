@@ -1,5 +1,5 @@
 """Source text to the surface AST: pre-lex, the tab indenter, LALR over fpl/grammar.lark, then
-the affix pass on every token. No semantics live here (docs/CONVENTIONS.md)."""
+the affix pass on every token. No semantics live here (.agents/CONVENTIONS.md)."""
 
 from collections.abc import Callable, Iterator
 from functools import cache

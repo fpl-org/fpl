@@ -5,6 +5,7 @@ corpus."""
 from pathlib import Path
 
 import pytest
+from corpus import PROGRAMS
 from hypothesis import assume, given
 from hypothesis import strategies as st
 from hypothesis.extra.lark import from_lark
@@ -17,7 +18,7 @@ from fpl.parse import parse
 from fpl.print import render
 
 AT = Span(1, 1)
-CORPUS = sorted(Path(__file__).parent.parent.glob("features/*/examples/*.fpl"))
+CORPUS = PROGRAMS
 PLAIN = r"\s\[\]()“”「」⟦⟧⟨⟩{}|⍝;¶"
 TOKEN = st.from_regex(rf"[^{PLAIN}{MODS}]+[{MODS}]*|[{MODS}]+", fullmatch=True)
 PAIRS: tuple[Pair, ...] = ("quotation", "prefix", "group", "dict")

@@ -22,7 +22,7 @@ class FplError(Exception):
 
     @override
     def __str__(self) -> str:
-        """The one line an `.expected` file holds for an error case (docs/CONVENTIONS.md)."""
+        """The one line an `.expected` file holds for an error case (.agents/CONVENTIONS.md)."""
         return f"ERROR: {self.span.line}:{self.span.col} {self.message}"
 
     def render(self, source: str) -> str:

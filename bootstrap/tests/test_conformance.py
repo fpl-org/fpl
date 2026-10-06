@@ -1,17 +1,14 @@
-"""Every maintainer-written example runs to its `.expected` output (docs/CONVENTIONS.md)."""
+"""Every maintainer-written example runs to its `.expected` output (.agents/CONVENTIONS.md)."""
 
 from pathlib import Path
 
 import pytest
+from corpus import PROGRAMS
 
 from fpl.driver import run
 from fpl.errors import FplError
 
-EXAMPLES = sorted(
-    p
-    for p in Path(__file__).parent.parent.glob("features/*/examples/*.fpl")
-    if p.parts[-3] != "_template"
-)
+EXAMPLES = [p for p in PROGRAMS if p.parts[-3] != "_template"]
 
 
 def output(program: Path) -> str:

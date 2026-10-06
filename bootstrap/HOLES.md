@@ -17,9 +17,9 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 
 ## parser-algorithm
 - Depends on it: fpl/parse.py, tests/test_parse.py, tests/test_ambiguity.py, every features example
-- Default in force: LALR over fpl/grammar.lark with the tab indenter as postlex (linear, no backtracking); the pre-lexer counts strings and block comments; docs/STACK.md:27 still names Earley
-- Closes by: maintainer, a root docs change settling LALR in docs/STACK.md, or a request for Earley
-- Evidence: docs/STACK.md:27; handoff/SHAR-syntax.org:122 "The grammar"; SHAR gram/test_fpl.py:5-16 and the parser line after islands()
+- Default in force: LALR over fpl/grammar.lark with the tab indenter as postlex (linear, no backtracking); the pre-lexer counts strings and block comments; .agents/STACK.md:27 still names Earley
+- Closes by: maintainer, a root docs change settling LALR in .agents/STACK.md, or a request for Earley
+- Evidence: .agents/STACK.md:27; handoff/SHAR-syntax.org:122 "The grammar"; SHAR gram/test_fpl.py:5-16 and the parser line after islands()
 
 ## ambiguity-over-flat
 - Depends on it: tests/test_ambiguity.py ("programs derived from the grammar parse without ambiguity"), tests/test_print.py (the flat law)
@@ -299,7 +299,7 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Depends on it: fpl/ast_core.py DIGITS, fpl/desugar.py number, fpl/eval.py arithmetic, tests/test_desugar.py::test_a_numeral_longer_than_digits_is_refused_at_its_position, ::test_a_result_of_more_than_digits_digits_is_refused_at_the_word
 - Default in force: a numeral has at most 4096 digits, its sign and point not counted, the number FON's reader bounds a token by (fon.read max_token); a longer one is ERROR: <line>:<col> number too long at the numeral. 4096 is under Python's 4300-digit int/str conversion limit, so the bound is the language's, not the interpreter's setting. A result of + - times of magnitude 10^4096 or more is ERROR: <line>:<col> number too large at the word, so an integer has at most 4096 digits, written or computed, and a decimal never overflows its context; a computed decimal keeps the context's 28 significant digits and its fraction is not bounded
 - Closes by: design, naming the bound on a number, written and computed (or none, with a reader and printer that never meet the limit)
-- Evidence: a 4301-digit numeral raised ValueError from int() in fpl/desugar.py number before this entry, a traceback past the FplError boundary of fpl/__main__.py, as 10 squared 13 times did from str() in fpl/desugar.py shown and 9.9 squared 22 times did as decimal.Overflow in fpl/eval.py; docs/CONVENTIONS.md "no Python traceback ever reaches the user"
+- Evidence: a 4301-digit numeral raised ValueError from int() in fpl/desugar.py number before this entry, a traceback past the FplError boundary of fpl/__main__.py, as 10 squared 13 times did from str() in fpl/desugar.py shown and 9.9 squared 22 times did as decimal.Overflow in fpl/eval.py; .agents/CONVENTIONS.md "no Python traceback ever reaches the user"
 
 ## binder-scope
 - Depends on it: fpl/desugar.py (body, quote, scoped), fpl/eval.py (substitute), tests/test_binders.py
@@ -496,8 +496,8 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 ## repl-bare-entry
 - Depends on it: fpl/__main__.py, tests/test_main.py:70-72
 - Default in force: bare python -m fpl prints its usage line and exits 2; the loop is python -m fpl.repl
-- Closes by: maintainer, either docs/CONVENTIONS.md naming python -m fpl.repl or bare python -m fpl routed to fpl.repl.main
-- Evidence: docs/CONVENTIONS.md:21 (python -m fpl starts the REPL); tests/test_main.py:70-72; PSJ's decisions of 2026-09-29 (entry python -m fpl.repl, python -m fpl FILE unchanged)
+- Closes by: maintainer, either .agents/CONVENTIONS.md naming python -m fpl.repl or bare python -m fpl routed to fpl.repl.main
+- Evidence: .agents/CONVENTIONS.md:21 (python -m fpl starts the REPL); tests/test_main.py:70-72; PSJ's decisions of 2026-09-29 (entry python -m fpl.repl, python -m fpl FILE unchanged)
 
 ## log-layering-unchecked
 - Depends on it: fpl/multihash.py, fpl/log.py, fpl/session.py

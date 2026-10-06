@@ -1,4 +1,4 @@
-"""The grammar parses without an Earley ambiguity (docs/STACK.md). Programs Hypothesis derives
+"""The grammar parses without an Earley ambiguity (.agents/STACK.md). Programs Hypothesis derives
 from the grammar reach the corners no example was written for; they are drawn from the grammar
 with its blocks flattened, since an indenter cannot run inside a derivation (HOLES.md:
 ambiguity-over-flat). The corpus is pre-lexed and read by Earley over the whole grammar with the
@@ -7,6 +7,7 @@ tab indenter, which keeps every derivation it finds."""
 from pathlib import Path
 
 import pytest
+from corpus import PROGRAMS
 from hypothesis import given
 from hypothesis.extra.lark import from_lark
 from lark import Lark, Token, Tree
@@ -15,7 +16,7 @@ from fpl.ast_surface import Program
 from fpl.lex import prelex
 from fpl.parse import GRAMMAR, FplIndenter, parse
 
-CORPUS = sorted(Path(__file__).parent.parent.glob("features/*/examples/*.fpl"))
+CORPUS = PROGRAMS
 REWRITES = [
     ("line: frames (NOTE | DOC)? _NL block?", "line: frames (NOTE | DOC)? _NL"),
     ("block: _INDENT line+ _DEDENT\n", ""),
