@@ -6,15 +6,28 @@
 # skipped. Mark the "commit-lint" check as required in the ruleset for main to make it a
 # hard gate.
 #
+# The judge is the one on main, not the one the pull request carries: a pull request that
+# edits scripts/commit-lint, scripts/boundary, scripts/leak-check, scripts/branch-lint or
+# .githooks/commit-msg cannot loosen its own verdict. The anchor is main, not the PR base:
+# the base of a stacked PR may itself hold unreviewed script edits. By design a PR that
+# changes the gates is judged by the old gates; the owner reviews such PRs by hand.
+#
 # Refs and SHAs reach the script through environment variables, never through ${{ }}
 # interpolation into the shell: a branch name is attacker-controlled text.
 name: commit-lint
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize]
+    # "edited" is how GitHub reports a retargeted base. Retargeting a stacked PR to main
+    # makes its range larger without a new push, so it must be judged again. A title or
+    # body edit re-runs the whole lint too: the job is deterministic and cheap, and a job
+    # skipped by a condition is reported as success, so skipping would add a passing
+    # check run on the head SHA of a PR whose lint failed.
+    types: [opened, reopened, synchronize, edited]
 
-# One run per pull request; a new push cancels the run of the commit it replaces.
+# One run per pull request. Cancelling is safe because every event carries the current
+# head and base, so the newest run judges the range that will be merged and an older run
+# judges a range nobody will merge.
 concurrency:
   group: commit-lint-${{ github.event.pull_request.number }}
   cancel-in-progress: true
@@ -40,4 +53,18 @@ jobs:
             326980220+psjg-claude@users.noreply.github.com
             41898282+claude[bot]@users.noreply.github.com
             336224473+psjg-codex@users.noreply.github.com
-        run: scripts/commit-lint -b "$HEAD_REF" "$BASE_SHA..$HEAD_SHA"
+        run: |
+          # A detached worktree of main shares the object store, so the PR commits resolve.
+          git fetch --no-tags origin main
+          git worktree add --detach "$RUNNER_TEMP/trusted" FETCH_HEAD
+          cd "$RUNNER_TEMP/trusted"
+          main_sha="$(git rev-parse HEAD)"
+          # Lint only what this PR adds: not what its base holds, and not what main holds.
+          # A stacked PR that merged newer main into its head would otherwise be judged on
+          # commits that already landed. scripts/commit-lint takes one range, so build a
+          # throwaway commit with both as parents: "X..HEAD" then excludes the ancestors of
+          # each. It is never referenced and dies with the runner.
+          export GIT_AUTHOR_NAME=lint GIT_AUTHOR_EMAIL=lint@invalid
+          export GIT_COMMITTER_NAME=lint GIT_COMMITTER_EMAIL=lint@invalid
+          exclude="$(git commit-tree -m exclude -p "$BASE_SHA" -p "$main_sha" "$BASE_SHA^{tree}")"
+          scripts/commit-lint -b "$HEAD_REF" "$exclude..$HEAD_SHA"
