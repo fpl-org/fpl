@@ -5,7 +5,7 @@
 # Autofix, CI fixes and merge-conflict resolution remain disabled to avoid those
 # tools committing changes to branches owned by other agents.
 #
-# Pull requests stack on each other (docs/WORKFLOW.md), so every base branch is reviewed, not
+# Pull requests stack on each other (.agents/WORKFLOW.md), so every base branch is reviewed, not
 # only main. Reviews include draft PRs and continue on each push. The pull
 # request description is the harness's record of why; the bot does not rewrite it. The
 # repository is public: only members of the organisation may chat with the bot.

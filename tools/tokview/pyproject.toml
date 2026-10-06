@@ -1,7 +1,7 @@
 # tools/tokview — a local page that shows how tokenizers cut FPL source.
 #
 # A uv project of its own, so its dependencies never enter the language's environment;
-# judged by `make tools` (docs/QUALITY.md).
+# judged by `make tools` (.agents/QUALITY.md).
 
 [project]
 name = "fpl-tokview"
