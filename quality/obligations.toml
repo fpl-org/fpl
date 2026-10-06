@@ -1,5 +1,5 @@
 # quality/obligations.toml — what each module owes the language, as property tests
-# (scripts/props, docs/QUALITY.md "Metatheory"). An obligation is due from the moment its
+# (scripts/props, .agents/QUALITY.md "Metatheory"). An obligation is due from the moment its
 # module has code, and a test pays it by carrying @pytest.mark.obligation("<name>") next to
 # its @given. Adding one here is a policy change and takes [policy].
 

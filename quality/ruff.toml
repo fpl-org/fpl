@@ -1,4 +1,4 @@
-# quality/ruff.toml — format and lint for every implementation worktree (docs/QUALITY.md).
+# quality/ruff.toml — format and lint for every implementation worktree (.agents/QUALITY.md).
 # Harness policy: changing it takes a harness commit with [policy], never one that changes code.
 
 target-version = "py312"
