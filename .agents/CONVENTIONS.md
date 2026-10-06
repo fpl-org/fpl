@@ -1,13 +1,16 @@
-# CONVENTIONS.md — how an implementation worktree is laid out
+# CONVENTIONS.md — how the walker, the implementation, is laid out
 
 Canonical for every agent. The Claude `fpl-conventions` skill and the `.claude/commands/*`
-wrappers just point here. None of this exists yet — it is the shape a worktree session
-creates on the first real implementation pass.
+wrappers just point here. The walker, the Python implementation, is a project of its own in
+`bootstrap/`: its package is `fpl`, so `import fpl` and the module names below are what they
+were; only the directory moved, and with it the paths of its files. `features/`, the
+conformance suite, stays at the root, above the project, because it is the language's, not the
+walker's.
 
-## Source tree (`fpl/` inside a worktree)
+## Source tree (`bootstrap/fpl/`)
 
 ```
-fpl/
+bootstrap/fpl/
   grammar.lark      syntax spec; the file the maintainer edits. Declarative only.
   parse.py          grammar → Lark tree → surface AST. Dumb. No semantics here.
   ast_surface.py    frozen @dataclass nodes; every node carries a Span.
@@ -42,11 +45,10 @@ features/
     spec.md              maintainer-authored: surface syntax, desugaring, semantics
     examples/*.fpl        maintainer-authored programs
     examples/*.expected   maintainer-authored expected output
-tests/
-  conftest.py            discovers features/*/examples/*.fpl, runs the driver, diffs .expected
-  test_conformance.py
+bootstrap/tests/
+  corpus.py              finds features/ above the project: the examples every test reads
+  test_conformance.py    runs the driver on features/*/examples/*.fpl, diffs .expected
   test_ambiguity.py      asserts the grammar parses the corpus with zero Earley ambiguity
-  test_grammar_lalr.py   (optional) grammar also loads under lalr
 ```
 
 `.expected` format:
@@ -59,11 +61,12 @@ tests/
 files. The agent makes `make check` green against them. `spec.md`, the examples, `DESIGN.md`
 and `SPEC.md` are edit-protected (`[spec]` marker required).
 
-## The gate (`make check` inside a worktree)
+## The gate (`make check` at the root)
 
-A worktree's `Makefile` is `include quality/noslop.mk`. `make check` runs ruff, strict pyright
+`bootstrap/Makefile` is `include ../quality/noslop.mk`, and the root's `Makefile` runs each
+lane in `bootstrap/`, so `make check` from the root is the walker's gate. It runs ruff, strict pyright
 (`reportMatchNotExhaustive=error`) and strict mypy, the tests (unit, `test_ambiguity`, conformance) under
-100% branch coverage, and the structural checks of `docs/QUALITY.md`: CRAP, a property test
+100% branch coverage, and the structural checks of `.agents/QUALITY.md`: CRAP, a property test
 per module, the layering of the source tree above, declared dependencies, dead and duplicate
 code, and named waivers.
 

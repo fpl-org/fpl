@@ -65,7 +65,7 @@ would turn one stack into three and defeat the point of stacking.
 
 So the two questions are answered in two places. *Whose territory is this branch?* is in the
 ref: `agent/claude/…`. *Who made this change?* is in the commit, where it already lived: the
-author name carries the model and `Assisted-By` carries its slug (`docs/COMMITS.md`). A Codex
+author name carries the model and `Assisted-By` carries its slug (`.agents/COMMITS.md`). A Codex
 commit on `agent/claude/stack/typed-let/tip` is legal and fully attributed. When no single
 agent leads — a branch opened for several agents from the start — use the id `ai`.
 
@@ -107,7 +107,7 @@ The numbered `part` has the same weakness in a milder form: after a reorder `2` 
 | Gate | Where | What it stops |
 | --- | --- | --- |
 | **[gate]** `reference-transaction` | local, `.githooks/` | *creating* a branch whose name does not parse (`git switch -c`, `git branch`, `git worktree add -b`, a fetch into `refs/heads/`). Git has no branch-creation hook; this is the hook that sees every ref update, and it cannot be skipped with `--no-verify`. Known gap: `git branch -m` (git 2.34 routes only the old name's deletion through the hook); the next two gates catch a renamed branch. |
-| **[gate]** `pre-push` | local, `.githooks/` | *pushing* to a remote branch whose name does not parse. The same hook first runs `scripts/forward-only`, which refuses a push over an approved pull request (`docs/WORKFLOW.md`, rule 10); `FPL_BRANCH_GATE` does not switch that off. After it, `scripts/commit-lint -b <branch>` judges every commit the push adds, so a commit that carries another stack's `Stack:` is refused there too. |
+| **[gate]** `pre-push` | local, `.githooks/` | *pushing* to a remote branch whose name does not parse. The same hook first runs `scripts/forward-only`, which refuses a push over an approved pull request (`.agents/WORKFLOW.md`, rule 10); `FPL_BRANCH_GATE` does not switch that off. After it, `scripts/commit-lint -b <branch>` judges every commit the push adds, so a commit that carries another stack's `Stack:` is refused there too. |
 | **[gate]** `commit-msg` | local, `.githooks/` | an agent commit (no `Human-Only: true`) on a branch outside the agent namespaces (`agent/<id>/…`, `<id>/…`). It does **not** compare the commit's model with the branch's `<id>` — see below. Human commits on agent branches stay legal; review fixups are normal. |
 | **[gate]** `branch-lint` workflow | forge, `.github/workflows/` | a pull request whose head branch does not parse; make it a required status check to harden it |
 

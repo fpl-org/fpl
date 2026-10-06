@@ -35,19 +35,19 @@ started elsewhere does not: launch it from the repo directory, or wrap the comma
 | Tools | Why |
 | --- | --- |
 | `bash` 5, GNU `coreutils` `grep` `sed` `awk` | `scripts/` and `.githooks/` need bash ≥ 4 (`mapfile`) and were written against GNU userland; macOS ships bash 3.2 and BSD tools |
-| `git`, `jj` | the workflow of `docs/WORKFLOW.md`; `jj` is the optional one of `docs/JJ.md` |
-| `gitleaks` | `scripts/leak-check`, which the hooks run on every commit and push (`docs/WORKFLOW.md`, rule 9), so it cannot be an opt-in layer |
-| Python 3.12, `uv`, `ruff`, `pyright`, `make` | the implementation stack of `docs/STACK.md` and the gate of `docs/QUALITY.md`. `make` syncs Lark and the gate's Python tools into the worktree's `.venv` with `uv`, at the versions `quality/uv.lock` pins; several are not in nixpkgs. On Linux the shell also puts libstdc++ on `LD_LIBRARY_PATH`, which CrossHair's solver needs |
+| `git`, `jj` | the workflow of `.agents/WORKFLOW.md`; `jj` is the optional one of `.agents/JJ.md` |
+| `gitleaks` | `scripts/leak-check`, which the hooks run on every commit and push (`.agents/WORKFLOW.md`, rule 9), so it cannot be an opt-in layer |
+| Python 3.12, `uv`, `ruff`, `pyright`, `make` | the implementation stack of `.agents/STACK.md` and the gate of `.agents/QUALITY.md`. `make` syncs Lark and the gate's Python tools into the worktree's `.venv` with `uv`, at the versions `quality/uv.lock` pins; several are not in nixpkgs. On Linux the shell also puts libstdc++ on `LD_LIBRARY_PATH`, which CrossHair's solver needs |
 
 On first entry in a clone or worktree the shell runs `scripts/setup` (git hooks, stacked-commit
 config, identity report). It checks `core.hooksPath` first, so every later entry is silent.
 
 Not in the shell: credentials of any kind, and the `claude` CLI that the soft `atomic-check`
-gate calls when it is present (the gate fails open without it, `docs/COMMITS.md`).
+gate calls when it is present (the gate fails open without it, `.agents/COMMITS.md`).
 
 ## Forge tools are opt-in
 
-The default shell has no forge client; the harness runs on git alone (`docs/WORKFLOW.md`,
+The default shell has no forge client; the harness runs on git alone (`.agents/WORKFLOW.md`,
 rule 7). Forge clients are **layers**, declared as data in `layers` in `flake.nix`;
 `scripts/layer` lists them. Today: `github` (`gh`), `gitlab` (`glab`), `radicle` (`rad`,
 `radicle-node`, `git-remote-rad`), `radicleui`, which `extends` `radicle` with the desktop
@@ -98,7 +98,7 @@ immutable `releases.nixos.org` tarball and records that URL, the nixpkgs revisio
 content hash in `flake.lock`, so the pin is as strict as a forge input. The difference is that
 the environment keeps working when GitHub is unreachable or not allowed — a locked-down CI
 runner, an agent sandbox that only admits selected repositories — which is the same reason the
-repository keeps its records in-repo (`docs/WORKFLOW.md`, rule 7).
+repository keeps its records in-repo (`.agents/WORKFLOW.md`, rule 7).
 
 Update deliberately, as its own commit: `nix flake update`, then `make check` in a worktree.
 `nix fmt flake.nix` formats it.
