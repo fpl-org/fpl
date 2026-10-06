@@ -1,4 +1,4 @@
-# quality/crap.toml — CRAP policy (scripts/crap, docs/QUALITY.md).
+# quality/crap.toml — CRAP policy (scripts/crap, .agents/QUALITY.md).
 # CRAP(m) = C^2 (1 - p)^3 + C, with C the cyclomatic complexity of function m and p the share
 # of its lines and branches the tests run. Martin's current limit for agents is 8 (AIR-J).
 

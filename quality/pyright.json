@@ -1,7 +1,7 @@
-// quality/pyright.json — strict typing for every implementation worktree (docs/STACK.md,
-// docs/QUALITY.md). Paths are relative to this file.
+// quality/pyright.json — strict typing for the project in bootstrap/ (.agents/STACK.md,
+// .agents/QUALITY.md). Paths are relative to this file.
 {
-  "include": ["../fpl", "../tests"],
+  "include": ["../bootstrap/fpl", "../bootstrap/tests"],
   "pythonVersion": "3.12",
   "venvPath": "..",
   "venv": ".venv",
@@ -15,5 +15,5 @@
   "reportPropertyTypeMismatch": "error",
   "reportMissingSuperCall": "none",
   "reportUnusedCallResult": "none",
-  "executionEnvironments": [{ "root": "..", "extraPaths": [".."] }]
+  "executionEnvironments": [{ "root": "../bootstrap", "extraPaths": ["../bootstrap"] }]
 }

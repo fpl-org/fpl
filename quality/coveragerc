@@ -1,5 +1,5 @@
-# quality/coveragerc — coverage policy for every implementation worktree (docs/QUALITY.md).
-# Every line and every branch of fpl/ runs under the tests, or the gate is red.
+# quality/coveragerc — coverage policy for every implementation worktree (.agents/QUALITY.md).
+# Every line and every branch of the fpl package runs under the tests, or the gate is red.
 
 [run]
 branch = True
