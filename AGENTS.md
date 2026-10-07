@@ -133,7 +133,8 @@ is wrong, say so and let the maintainer decide — don't route around it.
   rebases the stack when the base moves. See `.agents/WORKFLOW.md`. Prefer `jj`? `.agents/JJ.md`.
 - **An approved PR is frozen.** Rewrite freely until the maintainer approves; after that,
   fix forward in a new PR on top (`.agents/WORKFLOW.md` rule 10; `.githooks/pre-push` refuses).
-- **Land through a GitHub PR, always** (rebase-merge, never a local merge into `main`). The
+- **Land through a GitHub PR, always**, with `scripts/land`: a fast-forward of `main` to the
+  approved head, so the SHAs stay (never the merge button, never a local merge). The
   `Stack:` trailer on every commit keeps the grouping in the repo once the refs are deleted.
 - Authorship model (machine account + `claude[bot]` App): `.agents/COMMITS.md`.
 - The task graph (`scripts/task`, Radicle COBs in the repository): `.agents/TASKS.md`. The store
