@@ -31,7 +31,9 @@
 # Leak gate (first, before any bypass: a merge message names branches): no private
 # term or secret in the message (scripts/leak-check; FPL_LEAK_GATE=warn overrides).
 #
-# Bypassed for merge/revert/fixup/squash messages.
+# Bypassed for a real merge, a real revert (see is_merge, is_revert) and, outside lint mode,
+# fixup!/squash!/amend! messages. A revert is real only when it holds the tree git revert
+# makes of the commit it names.
 #
 # Lint mode (scripts/commit-lint, CI): FPL_LINT_COMMIT=<sha> judges a commit that
 # already exists instead of the one being made. The author and the changed files
@@ -62,8 +64,85 @@ case "$first" in
 	[ -z "$lint_commit" ] || fail "'${first%% *}' commit left in the branch; autosquash before landing"
 	exit 0
 	;;
-"Merge "*|"Revert "*) exit 0 ;;
 esac
+
+# A merge and a revert are what git wrote, not what a person typed: their messages cannot
+# meet the header and trailer gates, and the diff of a merge is somebody else's work. They
+# pass unjudged. What makes one is the commit, never the word its message opens with, or
+# any commit could open with "Merge" and edit what it likes.
+#   merge   a subject "Merge ..." on a commit with more than one parent (lint mode), or
+#           with a merge in the making (MERGE_HEAD)
+#   revert  a line 'This reverts commit <id>' naming a commit that exists, under any title,
+#           over the tree git revert makes of that commit (is_revert). git writes the line in
+#           two forms: '<sha>.' under its own title Revert "..." (Reapply "..." for the revert
+#           of a revert), and, with --reference or revert.reference=true, '<abbrev>
+#           (<subject>, <date>).' under the person's title or a comment line asking for one;
+#           the person may retitle either. The revert of a merge (-m N) ends the line in
+#           ', reversing' and names the parent on the next. The text alone is a sentence anyone
+#           can type: the tree is what makes the revert.
+# Not recognised: an amend of either. git tells commit-msg nothing of it (no argument, and
+# no variable but the author's, which a plain commit has too), so the amended message of a
+# merge or revert, reworded or not, is judged as a new commit and refused (an amend with
+# nothing staged changes nothing against HEAD, so is no revert of it either). Telling the
+# two apart would be a guess, and a guess is what a forger needs. The refusal below says how
+# to get past it.
+# Measured (git 2.54): `commit --amend -m/-F` and `commit -F` on a new commit give commit-msg
+# the same arguments and GIT_* variables, and prepare-commit-msg the same source (message);
+# `commit --amend` with no message and `commit -C HEAD` both give "commit HEAD". "HEAD has
+# two parents" is no sign of an amend: it is also true of every commit made on top of a merge.
+is_merge() {
+	case "$first" in "Merge "*) ;; *) return 1 ;; esac
+	if [ -n "$lint_commit" ]; then
+		# rev-list --parents prints the commit, then each of its parents.
+		local ids
+		read -r -a ids < <(git rev-list --parents -n 1 "$lint_commit")
+		[ "${#ids[@]}" -gt 2 ]
+	else
+		git rev-parse -q --verify MERGE_HEAD >/dev/null
+	fi
+}
+
+# is_revert: whether the commit judged is the one `git revert` makes of the commit its message
+# names. That is a tree, not a diff that agrees with it: git revert merges the parent of the
+# named commit into the commit's own parent, over the named commit as the base, and the result
+# is what the revert holds. The check makes the same merge (git merge-tree, git's merge, with
+# its renames: a revert follows a file renamed since) and compares the trees, so the reverted
+# lines must come back where they were. A comparison of diffs could not: git patch-id drops
+# the line numbers, and a removed line put back at the end of a protected file read as its
+# revert. A merge is undone against one of its parents (git revert -m N): any of them will do.
+# A root commit is undone against the empty tree. Not recognised, and judged as any commit: a
+# revert that did not merge cleanly (the person resolved it), one made with -X, and one that
+# changes nothing. git merge-tree takes a tree for the empty side from git 2.45 on.
+# The reference form names the commit by an abbreviated id: it must name one commit, and an id
+# that two commits share names none. It is read as an object id only (rev-parse --disambiguate
+# lists every object it starts), never as a ref that happens to be spelt in hex.
+is_revert() {
+	local reverted ids base made want i
+	reverted="$(sed -En '/^This reverts commit [0-9a-f]{4,64}( \(.*\))?(\.|, reversing)$/{s/^This reverts commit ([0-9a-f]*).*/\1/p;q;}' "$msg_file")"
+	[ -n "$reverted" ] || return 1
+	reverted="$(git rev-parse --disambiguate="$reverted" 2>/dev/null |
+		git cat-file --batch-check='%(objecttype) %(objectname)' | sed -n 's/^commit //p')"
+	case "$reverted" in "" | *$'\n'*) return 1 ;; esac
+	# The commit judged: its one parent and its tree (lint mode), or HEAD and what is staged.
+	if [ -n "$lint_commit" ]; then
+		read -r -a ids < <(git rev-list --parents -n 1 "$lint_commit")
+		[ "${#ids[@]}" -eq 2 ] || return 1
+		base="${ids[1]}"
+		made="$(git rev-parse "$lint_commit^{tree}")"
+	else
+		base="$(git rev-parse -q --verify HEAD)" || return 1
+		made="$(git write-tree 2>/dev/null)" || return 1
+	fi
+	[ "$made" != "$(git rev-parse "$base^{tree}")" ] || return 1
+	read -r -a ids < <(git rev-list --parents -n 1 "$reverted")
+	if [ "${#ids[@]}" -eq 1 ]; then ids+=("$(git hash-object -t tree /dev/null)"); fi
+	for ((i = 1; i < ${#ids[@]}; i++)); do
+		want="$(git merge-tree --write-tree --merge-base="$reverted" "$base" "${ids[$i]}" 2>/dev/null)" || continue
+		[ "${want%%$'\n'*}" != "$made" ] || return 0
+	done
+	return 1
+}
+if is_merge || is_revert; then exit 0; fi
 
 # Who wrote it. In lint mode that is the commit's author, not the environment's.
 if [ -n "$lint_commit" ]; then
@@ -74,8 +153,15 @@ fi
 
 # 1. header ----------------------------------------------------------------
 types='feat|fix|docs|refactor|perf|test|build|ci|chore|revert'
-printf '%s' "$first" | grep -Eq "^(${types})(\([a-z0-9/._-]+\))?!?: .+" \
-	|| fail "header must be '<type>(<scope>): <summary>' — got: $first"
+if ! printf '%s' "$first" | grep -Eq "^(${types})(\([a-z0-9/._-]+\))?!?: .+"; then
+	note=""
+	case "${lint_commit:+lint}:$first" in
+	:"Merge "*|:'Revert "'*|:'Reapply "'*)
+		note=$'\n           a Merge, Revert or Reapply subject passes for a real merge or revert only; git does not tell this hook of an amend, so an amend of one, reworded or not, is judged as a new commit; to amend one: git commit --amend --no-verify'
+		;;
+	esac
+	fail "header must be '<type>(<scope>): <summary>' — got: $first$note"
+fi
 [ "${#first}" -le 72 ] || fail "header is ${#first} chars (>72)"
 summary="${first#*: }"
 case "$summary" in
