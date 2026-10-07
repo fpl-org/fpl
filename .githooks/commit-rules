@@ -93,3 +93,22 @@ commit_stack_of_branch() {
 	"$(git rev-parse --show-toplevel)/scripts/branch-lint" --parse "$1" 2>/dev/null \
 		| sed -n 's/^stack=//p' || true
 }
+
+# commit_comment_raw: what the repository sets as git's comment prefix (core.commentChar or
+# core.commentString, the last one set wins), '#' when neither is.
+commit_comment_raw() {
+	local cc
+	cc="$(git config --get-regexp '^core\.comment(char|string)$' | sed -n '$s/^[^ ]* //p')" || cc=""
+	printf '%s' "${cc:-#}"
+}
+
+# commit_comment_prefix: the prefix of the comment lines git strips from a message, which the
+# repository sets. Empty for the deprecated 'auto': git picks one of #;@!$%^&| and : by the
+# message before the editor opens, and tells no hook. The message as it comes back cannot show
+# which, since a line the person wrote may start with any of them (a guess from the last line
+# took a person's ';' line for a comment). With no prefix known, no line is taken for one.
+commit_comment_prefix() {
+	local raw
+	raw="$(commit_comment_raw)"
+	[ "$raw" = auto ] || printf '%s' "$raw"
+}
