@@ -68,6 +68,57 @@ one file, `.githooks/commit-rules`, which `commit-msg`, `scripts/acommit` and th
 all read. Names such as `COMMIT_TYPES` below are its variables; this document does not repeat
 their values, so there is one place to change a rule and no copy to forget.
 
+## Writing a message by hand
+
+A plain `git commit` opens an editor on a message that is not empty: `.githooks/prepare-commit-msg`
+fills it with the header skeleton `<type>(<scope>): <summary>`, the trailers that can be known
+(`Stack:` from the branch, derived as `scripts/acommit` derives it, and `Human-Only: true` where
+no agent identity is set), and the rules above as comment lines, also under `git commit -v`
+(the diff below the scissors line is git's, not a message). The rules do not end up in the
+commit: they are written where git strips them, whatever `core.commentChar`, `core.commentString`
+and `commit.cleanup` are (below the scissors line when git wrote one, as comments otherwise; under
+`commit.cleanup=whitespace` or `verbatim`, which keep comments, they are not written at all). A
+`--cleanup=whitespace` or `verbatim` on the command line reaches no hook, so `commit-msg` takes
+out the block `prepare-commit-msg` wrote and recorded for this commit, which ends in a marker
+line with a random id; a quotation of the rules that you write is not that block, and stays.
+git's own status comments stay, as that mode keeps them, and a commit that also skips
+`commit-msg` (`--no-verify`) keeps the rules too.
+`scripts/setup` sets `commit.cleanup=scissors`. A header that is still the skeleton is refused
+(`skeleton`), spaces around a placeholder included. The hook acts only on an empty message: `-m`,
+`-F` (which `scripts/acommit` uses), a merge, a squash and an amend carry a message already and
+are left alone.
+
+**[gate]** `commit-msg` judges the message as git will store it, so it applies git's own cleanup
+first: `commit.cleanup` if set, else strip when an editor was used and whitespace when not
+(`-m`, `-F`, `-C`), with the comment prefix git uses. The status block git appends for the
+person is not judged; the lines of a message git keeps as written are. Two things are not visible
+to a hook: a `--cleanup=` option on the command line, and an editor that is literally `:`. The hook
+reads the config, and an editor of `:` as no editor, so its comment lines are judged; the stored
+message is judged again by `commit-lint` on push. Under the deprecated `core.commentChar=auto`
+git picks the prefix before the editor opens and tells no hook: `commit-msg` knows it only where
+`prepare-commit-msg` filled an empty message and recorded it, and elsewhere takes no line for a
+comment.
+
+A refusal names the id of the rule that fired, the part that fails (`unknown type 'doc': did you
+mean 'docs'?`, `scope must be lowercase: README -> readme`, `summary must start lower-case: Upper ->
+upper`), and what to do. In hook mode it also prints the command that brings the typed message back
+into the editor. git keeps it in `COMMIT_EDITMSG` until the next commit (measured for a plain
+commit, `-a`, a pathspec, `--amend`, `-m`, `-F` and `-e -F`), so there is no copy:
+
+```
+git commit -e -F "$(git rev-parse --git-path COMMIT_EDITMSG)"
+```
+
+Where what was meant is not in doubt, the hook corrects it instead of refusing: a known trailer key
+to its canonical spelling (`Human-only` to `Human-Only`), and a type or scope to lower case when the
+result is an allowed type and a valid scope. It writes the corrected message into the file git
+commits, and **scolds** for each correction, saying how often that kind has been needed in this
+clone: tolerated input becomes a standard nobody wrote (RFC 9413), so the hook keeps count. The count
+is the log `commit-msg-tolerated.log` in the git directory (date, kind, from, to). Anything that
+needs a guess (an unknown type, a scope with a space) is refused, untouched. `commit-lint` edits
+nothing: there a trailer key that differs from the canonical one in case only is accepted as that
+key, so landed history is not refused for case alone; a type or scope in the wrong case is refused.
+
 ## Message format
 
 ```
