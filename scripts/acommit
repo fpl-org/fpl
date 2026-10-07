@@ -11,7 +11,7 @@
 # Usage:
 #   scripts/acommit -t <type> -s <scope> -m <summary> [options] [-- <git commit args>]
 #
-#   -t TYPE        feat|fix|docs|refactor|perf|test|build|ci|chore|revert   (required)
+#   -t TYPE        one of COMMIT_TYPES in .githooks/commit-rules                    (required)
 #   -s SCOPE       e.g. harness, docs, scripts, grammar, eval               (required)
 #   -m SUMMARY     imperative, lower-case, no period, <=72 with the header  (required)
 #   -b BODY        body text; repeatable (one -b per paragraph).
@@ -42,6 +42,9 @@
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
+# The types, the limits and the Stack: pattern are .githooks/commit-rules', shared with the hook.
+# shellcheck source=../.githooks/commit-rules
+. "$repo_root/.githooks/commit-rules"
 
 type=""; scope=""; summary=""; breaking=0; breaking_text=""
 human_only=0; dry=0; model_name="${FPL_MODEL:-${CLAUDE_CODE_MODEL:-}}"
@@ -71,10 +74,10 @@ done
 
 die() { echo "acommit: $*" >&2; exit 2; }
 
-case "$type" in
-feat|fix|docs|refactor|perf|test|build|ci|chore|revert) : ;;
-"") die "missing -t TYPE" ;;
-*) die "invalid type '$type' (see docs/COMMITS.md)" ;;
+[ -n "$type" ] || die "missing -t TYPE"
+case " $COMMIT_TYPES " in
+*" $type "*) : ;;
+*) die "invalid type '$type' (one of: $COMMIT_TYPES)" ;;
 esac
 [ -n "$scope" ] || die "missing -s SCOPE"
 [ -n "$summary" ] || die "missing -m SUMMARY"
@@ -82,8 +85,8 @@ esac
 # Header ---------------------------------------------------------------------
 bang=""; [ "$breaking" -eq 1 ] && bang="!"
 header="${type}(${scope})${bang}: ${summary}"
-if [ ${#header} -gt 72 ]; then
-	die "header is ${#header} chars (>72): $header"
+if [ ${#header} -gt "$COMMIT_HEADER_MAX" ]; then
+	die "header is ${#header} chars (>$COMMIT_HEADER_MAX): $header"
 fi
 
 # Body ---------------------------------------------------------------------
@@ -104,8 +107,8 @@ if [ -n "$body" ]; then
 		case "$bl" in '```'*) in_fence=$((1 - in_fence)); continue ;; esac
 		[ "$in_fence" -eq 1 ] && continue
 		case "$bl" in '|'*) continue ;; esac
-		[ ${#bl} -le 72 ] && continue
-		case "${bl:72}" in *" "*) die "body line $lineno is ${#bl} chars (>72): $bl" ;; esac
+		[ ${#bl} -le "$COMMIT_BODY_MAX" ] && continue
+		case "${bl:$COMMIT_BODY_MAX}" in *" "*) die "body line $lineno is ${#bl} chars (>$COMMIT_BODY_MAX): $bl" ;; esac
 	done <<<"$body"
 fi
 
@@ -113,15 +116,11 @@ fi
 trailers=()
 for r in "${refs[@]:-}"; do [ -n "$r" ] && trailers+=("Refs: $r"); done
 if [ -z "$stack" ]; then
-	branch="$(git branch --show-current)"
-	if [ -n "$branch" ]; then
-		stack="$("$repo_root/scripts/branch-lint" --parse "$branch" 2>/dev/null \
-			| sed -n 's/^stack=//p')" || true
-	fi
+	stack="$(commit_stack_of_branch "$(git branch --show-current)")"
 fi
 if [ -n "$stack" ]; then
-	printf '%s' "$stack" | grep -Eq '^[a-z0-9][a-z0-9._-]*$' \
-		|| die "invalid stack name '$stack' (want [a-z0-9][a-z0-9._-]*)"
+	printf '%s' "$stack" | grep -Eq "^${COMMIT_STACK_RE}\$" \
+		|| die "invalid stack name '$stack' (want $COMMIT_STACK_RE)"
 	trailers+=("Stack: $stack")
 fi
 if [ "$breaking" -eq 1 ]; then

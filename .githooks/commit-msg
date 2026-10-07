@@ -3,12 +3,12 @@
 # .githooks/commit-msg — enforce docs/COMMITS.md.
 #
 # Hard gates (reject on failure):
-#   1. header  <type>(<scope>)<!?>: <summary>  — type in the allowed set, scope
-#      [a-z0-9/._-]+ and required, summary right after ': ', starting lower-case, with no
-#      trailing period, whole header <= 72 chars; '!' iff a non-empty BREAKING-CHANGE trailer
+#   1. header  <type>(<scope>)<!?>: <summary>  — type, scope and the limits are
+#      in .githooks/commit-rules; the scope is required, the summary follows ': ' directly,
+#      starts lower-case and has no trailing period; '!' iff a non-empty BREAKING-CHANGE trailer
 #   2. line 2 blank whenever a body/trailer follows
-#   3. body lines <= 72 chars, except fenced code, table rows, and lines with no
-#      break opportunity after column 72 (a long URL or path)
+#   3. body lines <= COMMIT_BODY_MAX chars, except fenced code, table rows, and lines with no
+#      break opportunity past it (a long URL or path)
 #   4. provenance: Assisted-By: + Session-Id: together, or a lone Human-Only: true, never
 #      both; all trailers are read from the trailer block git reads (interpret-trailers)
 #   5. known trailers appear in canonical order
@@ -20,7 +20,7 @@
 #      [policy], and such a commit may not also touch fpl/ or tests/
 #   8. stack record: on a stack branch, human or agent (scripts/branch-lint),
 #      the message carries 'Stack: <name>'; a message holds at most one Stack:, whose
-#      value is always [a-z0-9][a-z0-9._-]*
+#      value always matches COMMIT_STACK_RE
 #   9. agent territory: a commit that is not Human-Only sits on an agent branch
 #      (agent/<id>/... or the flat vendor form <id>/<slug>, docs/BRANCHES.md).
 #      The branch <id> is the lead, not an exclusive author, so it is NOT
@@ -48,6 +48,9 @@ set -euo pipefail
 
 msg_file="$1"
 repo_root="$(git rev-parse --show-toplevel)"
+# The type list, the scope and Stack: patterns, the limits and the trailer order: one file.
+# shellcheck source=commit-rules
+. "$repo_root/.githooks/commit-rules"
 first="$(sed -n '1p' "$msg_file")"
 lint_commit="${FPL_LINT_COMMIT:-}"
 
@@ -218,11 +221,11 @@ else
 fi
 
 # 1. header ----------------------------------------------------------------
-types='feat|fix|docs|refactor|perf|test|build|ci|chore|revert'
+types="$(commit_types_re)"
 if printf '%s' "$first" | grep -Eq '^[^:]*: [[:space:]]'; then
 	fail "summary must follow ': ' with no space before it — got: $first"
 fi
-if ! printf '%s' "$first" | grep -Eq "^(${types})\([a-z0-9/._-]+\)!?: .+"; then
+if ! printf '%s' "$first" | grep -Eq "^(${types})\($(commit_scope_re)\)!?: .+"; then
 	note=""
 	case "${lint_commit:+lint}:$first" in
 	:"Merge "*|:'Revert "'*|:'Reapply "'*)
@@ -231,7 +234,7 @@ if ! printf '%s' "$first" | grep -Eq "^(${types})\([a-z0-9/._-]+\)!?: .+"; then
 	esac
 	fail "header must be '<type>(<scope>): <summary>' — got: $first$note"
 fi
-[ "${#first}" -le 72 ] || fail "header is ${#first} chars (>72)"
+[ "${#first}" -le "$COMMIT_HEADER_MAX" ] || fail "header is ${#first} chars (>$COMMIT_HEADER_MAX)"
 summary="${first#*: }"
 case "$summary" in
 [[:upper:]]*) fail "summary must start lower-case: $summary" ;;
@@ -270,7 +273,6 @@ n=${#lines[@]}
 trailer_start=$n
 landed=7767dd70f21308695f169b3c9c0931cc546fc09a
 spared='^([A-Za-z0-9-]+[[:space:]]*:|[[:space:]])' # a trailer, or a continuation of one
-trailer_keys="Refs Stack BREAKING-CHANGE Advisor Assisted-By Reasoning-Effort Session-Id Co-Authored-By Human-Only"
 if [ -n "$lint_commit" ] && git merge-base --is-ancestor "$lint_commit" "$landed" 2>/dev/null; then
 	trailers="$(sed -n 's/^\([A-Za-z][A-Za-z-]*\):[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1: \2/p' "$msg_file")"
 	i=$((n - 1))
@@ -286,7 +288,7 @@ if [ -n "$lint_commit" ] && git merge-base --is-ancestor "$lint_commit" "$landed
 	done
 else
 	trailers="$(git interpret-trailers --parse --no-divider <"$msg_file" |
-		awk -v keys="$trailer_keys" '
+		awk -v keys="$COMMIT_TRAILER_KEYS" '
 			BEGIN { n = split(keys, k, " "); for (i = 1; i <= n; i++) canon[tolower(k[i])] = k[i] }
 			{ c = index($0, ":"); if (c > 1 && (key = canon[tolower(substr($0, 1, c - 1))]) != "") $0 = key substr($0, c) }
 			{ print }')"
@@ -311,10 +313,10 @@ for ((k = 2; k < n; k++)); do
 	case "$line" in '```'*) in_fence=$((1 - in_fence)); continue ;; esac
 	[ "$in_fence" -eq 1 ] && continue
 	case "$line" in '|'*) continue ;; esac
-	[ "${#line}" -le 72 ] && continue
-	# allowed only if there is no space at/after column 73 (unbreakable token)
-	rest="${line:72}"
-	case "$rest" in *" "*) fail "body line $((k + 1)) is ${#line} chars (>72): $line" ;; esac
+	[ "${#line}" -le "$COMMIT_BODY_MAX" ] && continue
+	# allowed only if there is no space past the limit (an unbreakable token)
+	rest="${line:$COMMIT_BODY_MAX}"
+	case "$rest" in *" "*) fail "body line $((k + 1)) is ${#line} chars (>$COMMIT_BODY_MAX): $line" ;; esac
 done
 
 human=0
@@ -365,7 +367,7 @@ if [ "$human" -eq 0 ]; then
 fi
 
 # 5. trailer order --------------------------------------------------------------
-order="Refs Stack BREAKING-CHANGE Advisor Assisted-By Reasoning-Effort Session-Id Co-Authored-By"
+order="$COMMIT_TRAILER_ORDER"
 prev=0
 while IFS= read -r tok; do
 	rank=0 idx=0
@@ -392,8 +394,8 @@ n_stack="$(grep -c '^Stack:' <<<"$trailers" || true)"
 	|| fail "the message holds $n_stack 'Stack:' trailers; a commit belongs to one stack: keep one 'Stack:' trailer"
 stack_val="$(sed -n 's/^Stack: //p' <<<"$trailers")"
 if [ "$n_stack" -eq 1 ]; then
-	printf '%s' "$stack_val" | grep -Eq '^[a-z0-9][a-z0-9._-]*$' \
-		|| fail "Stack: value '$stack_val' must match [a-z0-9][a-z0-9._-]*"
+	printf '%s' "$stack_val" | grep -Eq "^${COMMIT_STACK_RE}\$" \
+		|| fail "Stack: value '$stack_val' must match $COMMIT_STACK_RE"
 fi
 if [ -n "$lint_commit" ]; then
 	branch="${FPL_LINT_BRANCH:-}"

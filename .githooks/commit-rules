@@ -1,0 +1,95 @@
+# shellcheck shell=bash disable=SC2034 # the variables are the interface: consumers source this file
+#
+# .githooks/commit-rules — the commit-message rules of docs/COMMITS.md, in one place.
+#
+# Sourced, never run, by .githooks/commit-msg (the gate), .githooks/prepare-commit-msg (the
+# template that tells a person the rules) and scripts/acommit (the happy path). Each of them
+# used to carry its own copy of the type list and the patterns, which is how three copies
+# drift. A rule that changes changes here, and docs/COMMITS.md cites this file instead of
+# repeating it. Plain strings and functions only: bash 3.2, still /bin/bash on a Mac, has no
+# associative arrays, and the hooks run under whatever bash git finds.
+
+# The header is  <type>(<scope>)<!?>: <summary>  and is at most COMMIT_HEADER_MAX long.
+COMMIT_TYPES="feat fix docs refactor perf test build ci chore revert"
+COMMIT_SCOPE_CHARS='a-z0-9/._-' # the inside of a bracket expression: lower-case, no spaces
+COMMIT_HEADER_MAX=72
+COMMIT_BODY_MAX=72
+# The summary starts lower-case (a class, not a range: [A-Z] collates "s" in some locales) and
+# does not end with a period.
+COMMIT_SKELETON='<type>(<scope>): <summary>'
+
+# A Stack: value, and the trailers in the order docs/COMMITS.md fixes. Human-Only stands apart
+# from the order. The spelling here is the canonical one: git reads a trailer key without
+# regard to case, this repository writes it one way.
+COMMIT_STACK_RE='[a-z0-9][a-z0-9._-]*'
+COMMIT_TRAILER_ORDER="Refs Stack BREAKING-CHANGE Advisor Assisted-By Reasoning-Effort Session-Id Co-Authored-By"
+COMMIT_TRAILER_KEYS="$COMMIT_TRAILER_ORDER Human-Only"
+
+# commit_types_re: the types as an extended-regex alternation, feat|fix|...
+commit_types_re() {
+	local t out=""
+	for t in $COMMIT_TYPES; do out="${out:+$out|}$t"; done
+	printf '%s' "$out"
+}
+
+# commit_scope_re: what one scope may be, as an extended regex.
+commit_scope_re() { printf '[%s]+' "$COMMIT_SCOPE_CHARS"; }
+
+# commit_lower <text>: the text in lower case, in any locale.
+commit_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# commit_canonical_key <key>: the canonical spelling of a known trailer key that <key> spells
+# in any case; empty when it is no known key.
+commit_canonical_key() {
+	local k want
+	want="$(commit_lower "$1")"
+	for k in $COMMIT_TRAILER_KEYS; do
+		if [ "$(commit_lower "$k")" = "$want" ]; then
+			printf '%s' "$k"
+			return 0
+		fi
+	done
+}
+
+# commit_nearest_type <word>: the allowed type <word> most likely means; empty when none is
+# close. An allowed type that starts with the word or that the word starts with (doc, feature,
+# fixes), else the one at the smallest edit distance, at most two (fxi, tets).
+commit_nearest_type() {
+	local w t
+	w="$(commit_lower "$1")"
+	[ -n "$w" ] || return 0
+	for t in $COMMIT_TYPES; do
+		case "$t" in "$w"*) printf '%s' "$t"; return 0 ;; esac
+	done
+	for t in $COMMIT_TYPES; do
+		case "$w" in "$t"*) printf '%s' "$t"; return 0 ;; esac
+	done
+	# Levenshtein distance by awk, one row at a time; the types are short.
+	printf '%s\n' "$COMMIT_TYPES" | awk -v w="$w" '
+		function lev(a, b,    i, j, la, lb, c, d, prev, cur) {
+			la = length(a); lb = length(b)
+			for (j = 0; j <= lb; j++) prev[j] = j
+			for (i = 1; i <= la; i++) {
+				cur[0] = i
+				for (j = 1; j <= lb; j++) {
+					c = (substr(a, i, 1) == substr(b, j, 1)) ? 0 : 1
+					d = prev[j - 1] + c
+					if (prev[j] + 1 < d) d = prev[j] + 1
+					if (cur[j - 1] + 1 < d) d = cur[j - 1] + 1
+					cur[j] = d
+				}
+				for (j = 0; j <= lb; j++) prev[j] = cur[j]
+			}
+			return prev[lb]
+		}
+		{ for (n = 1; n <= NF; n++) { d = lev(w, $n); if (best == "" || d < bd) { best = $n; bd = d } } }
+		END { if (best != "" && bd <= 2) printf "%s", best }'
+}
+
+# commit_stack_of_branch <branch>: the stack name a branch carries, or nothing
+# (scripts/branch-lint --parse: stack/<name>[/<part>], agent/<id>/stack/<name>[/<part>]).
+commit_stack_of_branch() {
+	[ -n "$1" ] || return 0
+	"$(git rev-parse --show-toplevel)/scripts/branch-lint" --parse "$1" 2>/dev/null \
+		| sed -n 's/^stack=//p' || true
+}
