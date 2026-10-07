@@ -61,6 +61,13 @@ names a commit of another branch, and one whose named commit a rebase has since 
 amend, so an amend of a merge or revert is refused there, reworded or not: amend one with
 `git commit --amend --no-verify` (commit-lint skips merges).
 
+## The rules file
+
+The type list, the scope and `Stack:` patterns, the length limits and the trailer order live in
+one file, `.githooks/commit-rules`, which `commit-msg`, `scripts/acommit` and the commit template
+all read. Names such as `COMMIT_TYPES` below are its variables; this document does not repeat
+their values, so there is one place to change a rule and no copy to forget.
+
 ## Message format
 
 ```
@@ -73,9 +80,9 @@ amend, so an amend of a merge or revert is refused there, reworded or not: amend
 
 ### Header — one line
 
-- **[gate] ≤ 72 characters**, whole line.
-- **[gate] type** ∈ `feat` `fix` `docs` `refactor` `perf` `test` `build` `ci` `chore` `revert`.
-- **[gate] scope** — present, in parens, `[a-z0-9/._-]+`. A noun for the touched area. Harness
+- **[gate] length** — the whole line is at most `COMMIT_HEADER_MAX` characters.
+- **[gate] type** ∈ `COMMIT_TYPES`.
+- **[gate] scope** — present, in parens, lower-case, matching `COMMIT_SCOPE_CHARS`. A noun for the touched area. Harness
   scopes: `harness` `docs` `stack` `conventions` `commits` `workflow` `worktree` `hooks`
   `commands` `agents` `skill` `scripts`. Worktree scopes: `grammar` `parser` `desugar` `core`
   `eval` `types` `errors` `driver` `repl`, or a `features/<name>` name.
@@ -86,8 +93,8 @@ amend, so an amend of a merge or revert is refused there, reworded or not: amend
 ### Body — required unless the change is trivially self-evident
 
 - **[gate]** exactly one blank line between header and body.
-- **[gate]** lines ≤ 72 columns. Exceptions the hook allows: fenced code blocks, table rows
-  (`| … |`), and a line with no break opportunity past column 72 (a long URL or path).
+- **[gate]** lines ≤ `COMMIT_BODY_MAX` columns. Exceptions the hook allows: fenced code blocks, table rows
+  (`| … |`), and a line with no break opportunity past that column (a long URL or path).
 - **[advisory]** content is *why*: the problem, motivation, constraints, alternatives
   rejected — never a narration of the diff. Reference decisions by file (`.agents/STACK.md`).
 
@@ -110,7 +117,7 @@ amend, so an amend of a merge or revert is refused there, reworded or not: amend
 - `scripts/acommit` takes the session id from `-S <id>`, else `$FPL_SESSION_ID`, else
   `$CLAUDE_CODE_SESSION_ID`, and refuses to commit when none is set — any harness can
   export `FPL_SESSION_ID`. It never invents one: a made-up id is useless for forensics.
-- **[gate]** known trailers appear in this order:
+- **[gate]** known trailers appear in the order of `COMMIT_TRAILER_ORDER`:
 
   | Trailer | Meaning | Example |
   | --- | --- | --- |
