@@ -1,0 +1,525 @@
+#!/usr/bin/env bash
+#
+# scripts/land-self-test — proof that scripts/land refuses each thing it is there to refuse,
+# and lands by fast-forward what it should. Run by `make gates`.
+#
+# The forge is a directory of JSON fixtures, served by a gh of the test's own that comes
+# first on PATH: `gh api <path>` prints the fixture named after the path, a write (-X POST,
+# PATCH, PUT) is logged and marks the forge written, after which a fixture's `.after`
+# variant is served where there is one. Git talks to a bare repository on disk: the remote
+# says https://github.com/land-test/fpl.git, and url.<path>.insteadOf sends git there, so
+# scripts/land names the repository as it does on GitHub while nothing reaches the network.
+# Git's global and system config, HOME, XDG_CONFIG_HOME and gh's config point away from the
+# maintainer's, and no token is set, so a gh that slipped past the stub could not write.
+#
+# A landing needs a terminal; those cases run under a pseudo-terminal that presses Enter
+# when the question appears. Where there is a /bin/bash, the whole run is made a second
+# time with it first on PATH: on a Mac that is bash 3.2.
+
+# The stand-ins' scripts are written in single quotes: they expand when they run.
+# shellcheck disable=SC2016
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+land="$root/scripts/land"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/land-self-test.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+: >"$tmp/gitconfig"
+export GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home" \
+	XDG_CONFIG_HOME="$tmp/xdg" GH_CONFIG_DIR="$tmp/gh" GIT_AUTHOR_NAME=t \
+	GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t \
+	GIT_COMMITTER_EMAIL=t@example.invalid FPL_LAND_WAIT=0
+unset GH_TOKEN GITHUB_TOKEN GH_HOST GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_CONFIG_COUNT
+mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$GH_CONFIG_DIR"
+
+# The repository: main at M0, which holds CODEOWNERS; the pull request #7 one commit above
+# it at H; M1, a main that moved past M0 without H; MC, a main whose CODEOWNERS has a rule
+# for part of the tree; HM, a head above M0 that merges M1 into H.
+export REMOTE="$tmp/remote.git" FORGE="$tmp/forge"
+git init -q --bare -b main "$REMOTE"
+git config --global url."$REMOTE".insteadOf https://github.com/land-test/fpl.git
+repo="$tmp/repo"
+git init -q -b main "$repo"
+cd "$repo"
+git remote add github https://github.com/land-test/fpl.git
+mkdir .github
+echo '* @psjg' >.github/CODEOWNERS
+git add -A
+git commit -q -m base
+M0="$(git rev-parse HEAD)"
+BR=agent/x/stack/feat
+git switch -q -c "$BR"
+git commit -q --allow-empty -m feature
+export HEAD_SHA
+HEAD_SHA="$(git rev-parse HEAD)"
+H="$HEAD_SHA"
+git commit -q --allow-empty -m "a fix on top"
+H2="$(git rev-parse HEAD)"
+git switch -q main
+git commit -q --allow-empty -m elsewhere
+M1="$(git rev-parse HEAD)"
+git switch -q -c merged "$H"
+git merge -q --no-ff -m "a merge" "$M1"
+HM="$(git rev-parse HEAD)"
+git switch -q main
+git reset -q --hard "$M0"
+printf '* @psjg\ndocs/ @someone\n' >.github/CODEOWNERS
+git commit -q -am "owners by path"
+MC="$(git rev-parse HEAD)"
+git reset -q --hard "$M0"
+git push -q github "$M0:refs/heads/main" "$H:refs/heads/$BR" "$M1:refs/heads/m1" \
+	"$MC:refs/heads/mc" "$H2:refs/heads/h2" "$HM:refs/heads/hm"
+
+# The stand-ins: gh serves the forge, open and xdg-open only log.
+bin="$tmp/bin"
+mkdir -p "$bin"
+cat >"$bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "gh $*" >>"$FORGE/calls"
+[ "$1" = api ] || { echo "(the conversation of the pull request)"; exit 0; }
+shift
+method=GET path=""
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-X) method="$2"; shift 2 ;;
+	-f | -F) shift 2 ;;
+	--paginate | --slurp) shift ;;
+	*) path="$1"; shift ;;
+	esac
+done
+if [ "$method" != GET ]; then
+	: >"$FORGE/written"
+	echo '{}'
+	exit 0
+fi
+name="$(printf %s "$path" | tr -c 'A-Za-z0-9._-' _)"
+file="$FORGE/$name.json"
+[ ! -e "$FORGE/written" ] || [ ! -e "$FORGE/$name.after.json" ] || file="$FORGE/$name.after.json"
+[ -e "$file" ] || { echo "gh: Not Found (HTTP 404) $path" >&2; exit 1; }
+merged=false
+if git --git-dir="$REMOTE" merge-base --is-ancestor "$HEAD_SHA" refs/heads/main 2>/dev/null; then
+	merged=true
+fi
+sed "s/@MERGED@/$merged/" "$file"
+EOF
+printf '#!/bin/sh\necho "open $*" >>"$FORGE/calls"\n' >"$bin/open"
+cp "$bin/open" "$bin/xdg-open"
+chmod +x "$bin/gh" "$bin/open" "$bin/xdg-open"
+export PATH="$bin:$PATH"
+
+# A pseudo-terminal that presses Enter once the question is asked.
+cat >"$tmp/terminal.py" <<'EOF'
+import os, pty, sys
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp(sys.argv[1], sys.argv[1:])
+seen, sent = b"", False
+while True:
+    try:
+        data = os.read(fd, 4096)
+    except OSError:
+        break
+    if not data:
+        break
+    sys.stdout.buffer.write(data)
+    seen += data
+    if not sent and b"Enter = " in seen:
+        os.write(fd, b"\n")
+        sent = True
+_, status = os.waitpid(pid, 0)
+sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1)
+EOF
+
+# The pull request's head in the fixtures that name it.
+at="$H"
+# fixture <api path> [after]: stdin becomes what gh api <path> prints.
+fixture() {
+	cat >"$FORGE/$(printf %s "$1" | tr -c 'A-Za-z0-9._-' _)${2:+.$2}.json"
+}
+pull() { # pull <state> <draft> <base> <merged>
+	fixture "repos/land-test/fpl/pulls/7" <<-EOF
+	{"number": 7, "state": "$1", "draft": $2, "merged": $4,
+	 "html_url": "https://github.com/land-test/fpl/pull/7", "user": {"login": "psjg-claude"},
+	 "base": {"ref": "$3"},
+	 "head": {"sha": "$at", "ref": "$BR", "repo": {"full_name": "land-test/fpl"}}}
+	EOF
+}
+me() { echo "{\"login\": \"$1\"}" | fixture user; }
+reviews() { echo "[[$1]]" | fixture "repos/land-test/fpl/pulls/7/reviews?per_page=100" ${2:+"$2"}; }
+review() { # review <id> <login> <state> <commit>
+	echo "{\"id\": $1, \"user\": {\"login\": \"$2\"}, \"state\": \"$3\", \"commit_id\": \"$4\"}"
+}
+threads() {
+	echo "[{\"data\": {\"repository\": {\"pullRequest\": {\"reviewThreads\": {\"nodes\": [$1],
+	  \"pageInfo\": {\"hasNextPage\": false, \"endCursor\": null}}}}}}]" | fixture graphql
+}
+thread() { # thread <resolved> <url>
+	echo "{\"isResolved\": $1, \"path\": \"a\", \"line\": 1, \"comments\": {\"nodes\": [{\"url\": \"$2\"}]}}"
+}
+rules() { # rules <required contexts as JSON objects> [approvals] [another rule]
+	fixture "repos/land-test/fpl/rules/branches/main?per_page=100" <<-EOF
+	[[{"type": "pull_request", "ruleset_id": 1,
+	   "parameters": {"required_approving_review_count": ${2:-1}}},
+	  {"type": "required_status_checks", "ruleset_id": 1,
+	   "parameters": {"required_status_checks": [$1]}},
+	  {"type": "required_linear_history", "ruleset_id": 1},
+	  {"type": "non_fast_forward", "ruleset_id": 1},
+	  {"type": "deletion", "ruleset_id": 2}${3:+, $3}]]
+	EOF
+}
+ruleset() { # ruleset <id> <current_user_can_bypass>
+	echo "{\"name\": \"set $1\", \"current_user_can_bypass\": \"$2\"}" |
+		fixture "repos/land-test/fpl/rulesets/$1?includes_parents=true"
+}
+runs() { echo "[{\"total_count\": 0, \"check_runs\": [$1]}]" |
+	fixture "repos/land-test/fpl/commits/$at/check-runs?filter=all&per_page=100"; }
+run() { # run <id> <name> <status> <conclusion> <started> [app]
+	echo "{\"id\": $1, \"name\": \"$2\", \"status\": \"$3\", \"conclusion\": \"$4\",
+	  \"started_at\": \"2026-10-07T0$5:00:00Z\", \"app\": {\"id\": ${6:-15368}}}"
+}
+children() { echo "[[$1]]" | fixture "repos/land-test/fpl/pulls?state=open&base=$BR&per_page=100"; }
+
+# forge: a fresh forge and remote where every check passes, and nothing was written.
+forge() {
+	rm -rf "$FORGE" "$REMOTE/hooks/pre-receive"
+	mkdir -p "$FORGE"
+	: >"$FORGE/calls"
+	git --git-dir="$REMOTE" update-ref refs/heads/main "$M0"
+	git --git-dir="$REMOTE" update-ref refs/pull/7/head "$at"
+	pull open false main @MERGED@
+	me psjg
+	reviews "$(review 1 psjg APPROVED "$at")"
+	threads "$(thread true https://forge/t1)"
+	rules '{"context": "commit-lint", "integration_id": 15368},
+	       {"context": "zeta-check", "integration_id": 15368}'
+	ruleset 1 always
+	ruleset 2 always
+	runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed success 1)"
+	echo '{"state": "success", "statuses": []}' | fixture "repos/land-test/fpl/commits/$at/status"
+	children ""
+}
+
+fails=0 total=0
+# expect <exit code> <description> <scripts/land arguments...>: output in $tmp/out.
+expect() {
+	local want="$1" what="$2" rc=0
+	shift 2
+	total=$((total + 1))
+	"$land" "$@" >"$tmp/out" 2>&1 </dev/null || rc=$?
+	verdict "$want" "$rc" "$what"
+}
+# landing <exit code> <description> <arguments...>: the same, in a terminal.
+landing() {
+	local want="$1" what="$2" rc=0
+	shift 2
+	total=$((total + 1))
+	python3 "$tmp/terminal.py" "$land" "$@" >"$tmp/out" 2>&1 </dev/null || rc=$?
+	verdict "$want" "$rc" "$what"
+}
+verdict() {
+	if [ "$2" -ne "$1" ]; then
+		fails=$((fails + 1))
+		echo "self-test: $3: exit $2, want $1" >&2
+		sed 's/^/    /' "$tmp/out" >&2
+	fi
+}
+# says <text> <description> / lacks: the last output holds, or lacks, the text.
+says() {
+	total=$((total + 1))
+	grep -qF -- "$1" "$tmp/out" && return
+	fails=$((fails + 1))
+	echo "self-test: $2: the output lacks '$1'" >&2
+	sed 's/^/    /' "$tmp/out" >&2
+}
+lacks() {
+	total=$((total + 1))
+	! grep -qF -- "$1" "$tmp/out" && return
+	fails=$((fails + 1))
+	echo "self-test: $2: the output holds '$1'" >&2
+}
+# main_is <sha> <description>: where main is on the remote.
+main_is() {
+	total=$((total + 1))
+	[ "$(git --git-dir="$REMOTE" rev-parse refs/heads/main)" = "$1" ] && return
+	fails=$((fails + 1))
+	echo "self-test: $2: main is not $1" >&2
+}
+called() { cp "$FORGE/calls" "$tmp/out"; }
+
+# Dry runs: every check, nothing written. ------------------------------------------------
+forge
+expect 0 "everything holds" --dry-run 7
+says "would run: git push github $H:refs/heads/main" "a dry run prints the push"
+lacks "would approve" "an approval at the head is not given again"
+main_is "$M0" "a dry run leaves main"
+called
+lacks " -X " "a dry run writes nothing to the forge"
+
+forge
+children '{"number": 8}'
+expect 0 "a pull request stacked on it" --dry-run 7
+says "gh api -X PATCH repos/land-test/fpl/pulls/8 -f base=main" "the retarget is printed"
+
+forge
+expect 0 "the pull request named by its URL" --dry-run https://github.com/land-test/fpl/pull/7
+expect 1 "a pull request in another repository" --dry-run https://github.com/other/fpl/pull/7
+says "remote 'github' is land-test/fpl" "the refusal names both repositories"
+
+forge
+echo '[[{"number": 7}]]' | fixture "repos/land-test/fpl/pulls?state=open&head=land-test:$BR&per_page=100"
+git switch -q "$BR"
+expect 0 "the pull request of the current branch" --dry-run
+git switch -q main
+
+forge
+pull closed false main false
+expect 1 "a closed pull request" --dry-run 7
+says "NO  land/open" "it names the rule"
+says "remedy:" "it says what to do"
+says "would run: git push" "a refused dry run still prints the push"
+
+forge
+pull open true main false
+expect 1 "a draft" --dry-run 7
+says "#7 is a draft" "it says why"
+
+forge
+pull open false "$BR-below" false
+expect 1 "a pull request on another base" --dry-run 7
+says "NO  land/base" "it names the rule"
+
+forge
+git --git-dir="$REMOTE" update-ref refs/pull/7/head "$M0"
+expect 1 "refs/pull/7/head is not the head the forge reports" --dry-run 7
+says "NO  land/head" "it names the rule"
+
+forge
+me psjg-claude
+expect 1 "the author lands his own pull request" --dry-run 7
+says "NO  land/author" "it names the rule"
+
+forge
+git --git-dir="$REMOTE" update-ref refs/heads/main "$MC"
+expect 1 "CODEOWNERS with a rule for part of the tree" --dry-run 7
+says "NO  land/codeowners" "it names the rule"
+says "rule for docs/ alone" "it says which rule"
+
+forge
+me someone
+reviews "$(review 1 psjg APPROVED "$M0")"
+expect 1 "the code owner approved an older commit" --dry-run 7
+says "NO  land/approved" "it names the rule"
+says "@psjg on ${M0:0:12} is not this head" "it names the approval it found"
+
+forge
+me someone
+reviews "$(review 1 psjg-codex APPROVED "$H")"
+expect 1 "the head approved by someone who owns no code" --dry-run 7
+says "no code owner approved" "it says why"
+
+forge
+reviews "$(review 1 psjg COMMENTED "$H")"
+expect 0 "no approval yet, and you are the code owner" --dry-run 7
+says "would approve $H as psjg" "it says it would approve the head"
+
+forge
+reviews "$(review 1 psjg APPROVED "$H"), $(review 2 'coderabbitai[bot]' CHANGES_REQUESTED "$M0")"
+expect 1 "a standing request for changes, from a bot too" --dry-run 7
+says "NO  land/changes-requested" "it names the rule"
+says "review 2" "it names the review to dismiss"
+reviews "$(review 1 psjg APPROVED "$H"), $(review 2 'coderabbitai[bot]' CHANGES_REQUESTED "$M0"),
+	$(review 3 'coderabbitai[bot]' DISMISSED "$M0")"
+expect 0 "a request for changes that was dismissed" --dry-run 7
+
+forge
+threads "$(thread true https://forge/t1), $(thread false https://forge/t2)"
+expect 1 "an unresolved review thread" --dry-run 7
+says "NO  land/threads" "it names the rule"
+says "https://forge/t2" "it names the thread"
+
+forge
+runs "$(run 1 commit-lint completed success 1)"
+expect 1 "a required check that never ran" --dry-run 7
+says "zeta-check has not run" "it names the check the ruleset requires"
+
+forge
+runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed success 1 999)"
+expect 1 "a required check from another app" --dry-run 7
+says "zeta-check has not run" "a run by another app does not count"
+
+forge
+rules '{"context": "omega", "integration_id": 15368}'
+expect 1 "the required checks are the ruleset's, not a list in the script" --dry-run 7
+says "omega has not run" "it reads them from the rules on main"
+
+forge
+runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed success 1),
+	$(run 3 zeta-check completed cancelled 2)"
+expect 1 "a success, then a cancelled latest run" --dry-run 7
+says "zeta-check's latest run on ${H:0:12} concluded cancelled" "the latest run decides"
+
+forge
+runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed cancelled 1),
+	$(run 3 zeta-check completed success 2)"
+expect 0 "a cancelled duplicate, then a success" --dry-run 7
+
+forge
+runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed success 1),
+	{\"id\": 3, \"name\": \"zeta-check\", \"status\": \"queued\", \"conclusion\": null,
+	 \"started_at\": null, \"app\": {\"id\": 15368}}"
+expect 1 "a rerun queued after a success" --dry-run 7
+says "zeta-check is queued" "the run made last decides, started or not"
+
+forge
+runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed skipped 1)"
+expect 1 "a skipped latest run" --dry-run 7
+says "concluded skipped" "skipped is not success"
+
+forge
+runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check in_progress null 1)"
+expect 1 "a check still running" --dry-run 7
+says "zeta-check is in_progress" "it says it is running"
+
+forge
+git --git-dir="$REMOTE" update-ref refs/heads/main "$M1"
+expect 1 "main moved past the pull request's base" --dry-run 7
+says "NO  land/ancestor" "it names the rule"
+says "restack before approval, never after" "it says when to restack"
+
+at="$HM"
+forge
+expect 1 "a merge commit between main and the head" --dry-run 7
+says "NO  land/linear" "it names the rule"
+says "1 merge commit(s)" "it counts them"
+at="$H"
+
+forge
+rules '{"context": "commit-lint", "integration_id": 15368}' 1 '{"type": "required_signatures", "ruleset_id": 2}'
+expect 1 "a rule on main that scripts/land does not judge" --dry-run 7
+says "NO  land/rules" "it names the rule"
+says "required_signatures" "it names the rule it does not judge"
+
+forge
+rules '{"context": "commit-lint", "integration_id": 15368}' 2
+expect 1 "a ruleset that wants two approvals" --dry-run 7
+says "pull_request with 2 approvals" "one code owner's approval is not enough"
+
+# An answer that says nothing is not "nothing required": it fails closed, by name.
+for empty in '[[]]' '{}' '[]' '[[{}]]' '[["x"]]'; do
+	forge
+	echo "$empty" | fixture "repos/land-test/fpl/rules/branches/main?per_page=100"
+	expect 1 "main's rules answered as $empty" --dry-run 7
+	says "NO  land/rules" "an empty or malformed rules answer is refused by name"
+	says "remedy:" "it says what to do"
+	lacks "ok  land/checks" "no check is judged against rules that are not there"
+done
+
+forge
+rules '{"context": "commit-lint", "integration_id": 15368}' 1 '{"type": "deletion"}'
+expect 1 "a rule that names no ruleset" --dry-run 7
+says "NO  land/rules" "a rule without a ruleset_id is a forge failure"
+lacks "ok  land/rules" "it is not judged as fine"
+
+forge
+for empty in '{}' '[]' '[{}]' '[{"data": null, "errors": [{}]}]'; do
+	echo "$empty" | fixture graphql
+	expect 1 "the review threads answered as $empty" --dry-run 7
+	says "NO  land/threads" "a reply that is no page of review threads is refused by name"
+	lacks "all 0 review threads resolved" "it is not read as no threads"
+done
+threads ""
+expect 0 "a page that holds no review thread" --dry-run 7
+says "all 0 review threads resolved" "an honest empty page is no thread"
+
+forge
+ruleset 2 pull_requests_only
+expect 1 "a ruleset the maintainer may bypass only for pull requests" --dry-run 7
+says "NO  land/bypass" "it names the rule"
+says "Bypass list > Repository admin > Always" "it gives the owner's one-time step"
+
+# Landings: a terminal, a keypress, a push. ----------------------------------------------
+forge
+expect 1 "a landing without a terminal" 7
+says "needs a terminal" "it says why"
+main_is "$M0" "nothing was pushed"
+
+forge
+landing 0 "everything holds" 7
+main_is "$H" "main is fast-forwarded to the head"
+says "#7 is merged; main is $H" "it checks the forge shows the merge"
+called
+lacks " -X " "an approval at the head is not given again"
+says "open https://github.com/land-test/fpl/pull/7/files" "the diff is opened"
+says "gh pr view 7 --repo land-test/fpl --comments" "the conversation is shown"
+
+forge
+children '{"number": 8}'
+landing 0 "a pull request stacked on the landed one" 7
+says "gh api -X PATCH repos/land-test/fpl/pulls/8 -f base=main" "the retarget is printed"
+
+forge
+reviews ""
+reviews "$(review 1 psjg APPROVED "$H")" after
+landing 0 "the code owner approves in this run" 7
+main_is "$H" "main is fast-forwarded to the head"
+called
+says "gh api -X POST repos/land-test/fpl/pulls/7/reviews -f commit_id=$H -f event=APPROVE" \
+	"the approval names the head"
+
+forge
+reviews ""
+landing 1 "an approval that the forge does not show afterwards" 7
+says "does not show the approval" "it says why"
+main_is "$M0" "nothing was pushed"
+
+forge
+printf '#!/bin/sh\necho "error: GH013: Repository rule violations found for refs/heads/main." >&2\nexit 1\n' \
+	>"$REMOTE/hooks/pre-receive"
+chmod +x "$REMOTE/hooks/pre-receive"
+landing 1 "the forge's rulesets refuse the push" 7
+says "Bypass list > Repository admin > Always" "it gives the owner's one-time step"
+main_is "$M0" "nothing landed"
+rm -f "$REMOTE/hooks/pre-receive"
+
+# The agent pushes a fix while the maintainer reads the diff, and it is approved and
+# checked by the time he presses Enter: he did not look at it, so it does not land.
+forge
+sed "s/$H/$H2/" "$FORGE/repos_land-test_fpl_pulls_7.json" >"$FORGE/repos_land-test_fpl_pulls_7.after.json"
+reviews "$(review 1 psjg APPROVED "$H2")" after
+cp "$FORGE/repos_land-test_fpl_commits_${H}_check-runs_filter_all_per_page_100.json" \
+	"$FORGE/repos_land-test_fpl_commits_${H2}_check-runs_filter_all_per_page_100.json"
+cp "$FORGE/repos_land-test_fpl_commits_${H}_status.json" "$FORGE/repos_land-test_fpl_commits_${H2}_status.json"
+mkdir -p "$tmp/moved"
+printf '#!/bin/sh\n: >"$FORGE/written"\ngit --git-dir="$REMOTE" update-ref refs/pull/7/head %s\n' "$H2" \
+	>"$tmp/moved/open"
+chmod +x "$tmp/moved/open"
+PATH="$tmp/moved:$PATH" landing 1 "the head moves while the diff is open" 7
+says "since you looked at $H" "it names the head that was looked at"
+main_is "$M0" "nothing landed"
+
+# Another landing moves main after the last check, right before the push: a git that does
+# so first. A forced push would still go; one that is no fast-forward must not.
+forge
+mkdir -p "$tmp/race"
+printf '#!/bin/sh\n[ "$1" != push ] || %s --git-dir="$REMOTE" update-ref refs/heads/main %s\nexec %s "$@"\n' \
+	"$(command -v git)" "$M1" "$(command -v git)" >"$tmp/race/git"
+chmod +x "$tmp/race/git"
+PATH="$tmp/race:$PATH" landing 1 "main moves between the last check and the push" 7
+says "the push was refused" "a push that is no longer a fast-forward does not go"
+main_is "$M1" "main stays where it moved"
+
+forge
+pull open false main false
+landing 1 "GitHub does not show the pull request as merged" 7
+says "does not show #7 as merged" "it says so loudly"
+main_is "$H" "main moved all the same"
+
+echo "land self-test: $fails of $total checks failed (bash $BASH_VERSION)"
+if [ -z "${LAND_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ]; then
+	mkdir -p "$tmp/shim"
+	ln -s /bin/bash "$tmp/shim/bash"
+	PATH="$tmp/shim:$PATH" LAND_SELF_TEST_SHIM=1 /bin/bash "$root/scripts/land-self-test" ||
+		fails=$((fails + 1))
+fi
+[ "$fails" -eq 0 ]
