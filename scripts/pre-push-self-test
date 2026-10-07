@@ -726,6 +726,89 @@ if grep -Eqw 'refactor|a-z0-9/\._-' "$root/docs/COMMITS.md"; then
 	echo "self-test: docs/COMMITS.md repeats the type list or the scope class; cite .githooks/commit-rules" >&2
 fi
 
+
+
+
+
+
+# ---- commit-msg and prepare-commit-msg, through git itself --------------------------------
+# A real `git commit` in the throwaway clone, with GIT_EDITOR a script that plays the person:
+# it writes ED_MSG over the top of the file git prepared (unless -e -F put a message there
+# already: then ED_SED edits it), and appends ED_TAIL below git's template.
+export FPL_ATOMIC_GATE=off
+ed="$tmp/editor"
+cat >"$ed" <<'ED'
+#!/bin/sh
+{ [ -z "${ED_MSG:-}" ] || printf '%s\n' "$ED_MSG"; sed -e "${ED_SED:-}" "$1"; printf '%s' "${ED_TAIL:-}"; } >"$1.new" &&
+	mv "$1.new" "$1"
+ED
+chmod +x "$ed"
+export GIT_EDITOR="$ed"
+ok=$'feat(x): fine\n\nStack: t\nHuman-Only: true'
+long="# Your branch is ahead of 'origin/main' by 2 commits, and this comment line is far too long"
+stored() { git log -1 --format=%B; }
+git switch -q -c agent/claude/stack/t main
+
+# Cleanup: git applies it after the hook, so the hook judges the message as git will store it.
+# Everything git adds for the person (its status block, as plain comment lines) is gone from the
+# stored message and must not be judged: a long '# Your branch is ahead of ...' line refused
+# a message the owner had fixed (git commit -e -F COMMIT_EDITMSG).
+gate 0 "an edited message with a long comment line below it (default cleanup strips)" \
+	env ED_MSG="$ok" ED_TAIL="$long"$'\n' git commit -q --allow-empty
+total=$((total + 1)); stored | grep -q '^# ' && { fails=$((fails + 1)); echo "self-test: the stored message holds a comment line" >&2; }
+gate 0 "an amend with a long comment line below the message" \
+	env ED_MSG="" ED_TAIL="$long"$'\n' git commit -q --allow-empty --amend
+gate 1 "a refused message, so that COMMIT_EDITMSG holds it" \
+	env ED_MSG=$'docs(x): bad\n\nbody\n\nStack: t' ED_TAIL="$long"$'\n' git commit -q --allow-empty
+gate 0 "the refused message reused with -e -F, its comment block long, the header fixed" \
+	env ED_SED='1s/.*/feat(x): fixed/;/^Stack: t$/a\
+Human-Only: true' git commit -q --allow-empty -e -F "$(git rev-parse --git-path COMMIT_EDITMSG)"
+
+# Where git does not strip, the line stays in the commit, and is judged.
+printf '%s\n\n%s\n\nStack: t\nHuman-Only: true\n' 'feat(x): fine' "$long" >"$tmp/with-comment"
+gate 1 "a long comment line in a message given with -F, which git keeps" \
+	git commit -q --allow-empty -F "$tmp/with-comment"
+says "body line 3 is" "the refusal names the line"
+gate 1 "the same message edited, under commit.cleanup=whitespace, which keeps comments" \
+	env ED_MSG="$ok" ED_TAIL="$long"$'\n' git -c commit.cleanup=whitespace commit -q --allow-empty
+gate 0 "the same message with -F, under commit.cleanup=strip, which strips without an editor" \
+	git -c commit.cleanup=strip commit -q --allow-empty -F "$tmp/with-comment"
+# Scissors: cut below the line when an editor was used, whitespace cleanup otherwise.
+sc='# ------------------------ >8 ------------------------'
+printf '%s\n\n%s\n%s\n\nStack: t\nHuman-Only: true\n' 'feat(x): fine' "$sc" "$long" >"$tmp/below-scissors"
+printf '%s\n\nStack: t\nHuman-Only: true\n\n%s\n%s\n' 'feat(x): fine' "$sc" "$long" >"$tmp/below-scissors2"
+gate 0 "text below the scissors line, edited, under commit.cleanup=scissors" \
+	env ED_MSG="$ok" ED_TAIL=$'\n'"$sc"$'\n'"$long"$'\n' git -c commit.cleanup=scissors commit -q --allow-empty
+gate 1 "text below the scissors line, with -F, under commit.cleanup=scissors: kept" \
+	git -c commit.cleanup=scissors commit -q --allow-empty -F "$tmp/below-scissors2"
+# The comment character: core.commentChar, and 'auto' (git picks one, the file shows which).
+gate 0 "a long ';' comment line, edited, under core.commentChar=;" \
+	env ED_MSG="$ok" ED_TAIL="${long/#\#/;}"$'\n' git -c core.commentChar=';' commit -q --allow-empty
+gate 1 "a long '#' line, edited, under core.commentChar=;: not a comment, kept" \
+	env ED_MSG="$ok" ED_TAIL=$'\n'"$long"$'\n' git -c core.commentChar=';' commit -q --allow-empty
+# Under 'auto' git picks the character before the editor opens and tells no hook; the message
+# as it comes back cannot show which, since a line the person wrote may start with any of them.
+# A guess from the last line took a person's ';' line for a comment and judged a message git
+# stores with it (GPT review of these branches, finding 9). Nothing is taken for a comment then.
+gate 1 "a long comment line, edited, under core.commentChar=auto: no prefix is known, it is judged" \
+	env ED_MSG="$ok" ED_TAIL="$long"$'\n' git -c core.commentChar=auto commit -q --allow-empty
+gate 1 "a person's ';' line last, under core.commentChar=auto: judged, so the trailers are no block" \
+	env ED_MSG=$'docs(hooks): preserve a literal line\n\nStack: t\nHuman-Only: true\n\n; do not remove this user-written line' \
+	git -c core.commentChar=auto -c commit.status=false commit -q --allow-empty
+says "missing 'Assisted-By:'" "the ';' line is judged as the message's last paragraph"
+gate 1 "the same, with -F: git strips nothing under auto without an editor" \
+	git -c core.commentChar=auto commit -q --allow-empty -F "$tmp/with-comment"
+# git commit -v: the diff below the scissors line is git's, and long lines of it are no fault.
+printf 'x%090d with a space  and more words to be long past the limit\n' 0 >wide.txt
+git add wide.txt
+gate 0 "git commit -v over a staged diff with a long line" \
+	env ED_MSG="$ok" git commit -q -v
+git reset -q --hard HEAD
+# An editor of ':' leaves nothing to tell it from -m: judged as unedited, the strict reading.
+printf '%s\n\n%s\n\nStack: t\nHuman-Only: true\n' 'feat(x): fine' "$long" >"$tmp/tmpl"
+gate 1 "an editor that is ':' (as -m runs the hook): the comment line is judged" \
+	env GIT_EDITOR=: git commit -q --allow-empty -t "$tmp/tmpl"
+
 echo "pre-push self-test: $fails of $total checks failed (bash $BASH_VERSION)"
 if [ -z "${PRE_PUSH_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ]; then
 	mkdir -p "$tmp/shim"

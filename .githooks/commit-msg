@@ -46,16 +46,92 @@
 
 set -euo pipefail
 
-msg_file="$1"
+given="$1"
 repo_root="$(git rev-parse --show-toplevel)"
 # The type list, the scope and Stack: patterns, the limits and the trailer order: one file.
 # shellcheck source=commit-rules
 . "$repo_root/.githooks/commit-rules"
-first="$(sed -n '1p' "$msg_file")"
 lint_commit="${FPL_LINT_COMMIT:-}"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
 
 # The private list is local, so there is nothing to judge a landed commit against in CI.
-[ -n "$lint_commit" ] || "$repo_root/scripts/leak-check" --message "$msg_file"
+[ -n "$lint_commit" ] || "$repo_root/scripts/leak-check" --message "$given"
+
+# effective_message <file>: the message in <file> as git will store it, on stdout.
+#
+# git runs this hook on the file the editor saw, and cleans it up afterwards (measured, git
+# 2.54): the status block it appended for the person, comment lines without a scissors line
+# unless -v or commit.cleanup=scissors asked for one, goes only after the hook. Judging the
+# file as it is refuses a message for lines the commit will not hold, and the lines of a
+# message git keeps (-F, -m, which strip nothing by default) are judged as written.
+#   commit.cleanup default   strip if an editor ran, whitespace if not
+#   strip                    comment lines out, then whitespace cleanup
+#   whitespace               blank-line and trailing-space cleanup only
+#   scissors                 whitespace, and cut at the scissors line if an editor ran
+#   verbatim                 as written
+# With -v git cuts at the scissors line it wrote, in every mode (measured, verbatim too). -v
+# does not reach this hook, so it cuts at a scissors line under 'scissors', and in any mode
+# where the first line below that line that is no comment starts 'diff --git', which is how
+# git's own verbose diff begins (its words are translated; a diff is not).
+# An editor ran unless git set GIT_EDITOR=: for this hook, as it does for -m, -F and -C. That
+# cannot be told from a person's editor named ':', which therefore reads as no editor: its
+# comment lines are judged, the reading that lets no long line into the stored message. A
+# --cleanup option on the command line is not visible here either (the config's reading
+# stands). Both are left to commit-lint on push, which reads the stored message. So is the
+# deprecated core.commentChar=auto: no hook learns which prefix git picked, so no line is taken
+# for a comment or a scissors line (commit_comment_prefix), the strict reading again.
+effective_message() {
+	local mode editor=1 prefix
+	[ "${GIT_EDITOR:-}" != : ] || editor=0
+	mode="$(git config --get commit.cleanup || true)"
+	case "$mode" in
+	"" | default) if [ "$editor" -eq 1 ]; then mode="strip"; else mode="whitespace"; fi ;;
+	esac
+	prefix="$(commit_comment_prefix)"
+	if [ "$editor" -eq 1 ]; then
+		P="$prefix" SM="$([ "$mode" = scissors ] && echo 1 || echo 0)" \
+			awk '
+			BEGIN { p0 = ENVIRON["P"]; sm = ENVIRON["SM"]
+				d = "------------------------"; t = " " d " >8 " d }
+			{ line[++n] = $0 }
+			END {
+				for (i = 1; i <= n && !cut; i++) {
+					l = line[i]; k = length(l) - length(t)
+					if (k < 1 || substr(l, k + 1) != t) continue
+					p = substr(l, 1, k)
+					if (p != p0) continue
+					if (sm) { cut = i; break }
+					for (j = i + 1; j <= n; j++) {
+						if (substr(line[j], 1, k) == p) continue
+						if (index(line[j], "diff --git ") == 1) cut = i
+						break
+					}
+				}
+				for (i = 1; i <= (cut ? cut - 1 : n); i++) print line[i]
+			}' "$1" >"$tmp/cut"
+	else
+		cp "$1" "$tmp/cut"
+	fi
+	case "$mode" in
+	verbatim) cat "$tmp/cut" ;;
+	strip)
+		P="$prefix" awk 'BEGIN { p = ENVIRON["P"] } !(length(p) && substr($0, 1, length(p)) == p)' "$tmp/cut" |
+			git stripspace
+		;;
+	*) git stripspace <"$tmp/cut" ;;
+	esac
+}
+
+# What the rest of this hook judges: the message git will store. A commit that exists
+# already (lint mode) holds the stored text, and is judged as it is.
+msg_file="$tmp/message"
+if [ -n "$lint_commit" ]; then
+	cp "$given" "$msg_file"
+else
+	effective_message "$given" >"$msg_file"
+fi
+first="$(sed -n '1p' "$msg_file")"
 
 fail() {
 	echo "commit-msg: $1" >&2
@@ -98,8 +174,7 @@ judge_paths() {
 # guard_paths: gates 7 and 7b over the paths the commit changes. Defined before the gates, as
 # it also judges a fixup!/squash!/amend! commit, which the other gates spare.
 guard_paths() {
-	paths="$(mktemp)"
-	trap 'rm -f "$paths"' EXIT
+	paths="$tmp/paths"
 	if [ -n "$lint_commit" ]; then
 		git diff-tree --no-commit-id --name-only -r -z --no-renames --root "$lint_commit" >"$paths"
 	else
@@ -292,11 +367,11 @@ else
 			BEGIN { n = split(keys, k, " "); for (i = 1; i <= n; i++) canon[tolower(k[i])] = k[i] }
 			{ c = index($0, ":"); if (c > 1 && (key = canon[tolower(substr($0, 1, c - 1))]) != "") $0 = key substr($0, c) }
 			{ print }')"
-	comment="$(git config --get core.commentChar || true)"
-	case "$comment" in "" | auto) comment="#" ;; esac
+	comment="$(commit_comment_prefix)" # empty under 'auto': no line is taken for a comment
 	blank='^[[:space:]]*$'
 	i=$((n - 1))
-	while [ "$i" -ge 0 ] && { [[ ${lines[$i]} =~ $blank ]] || [ "${lines[$i]:0:${#comment}}" = "$comment" ]; }; do
+	while [ "$i" -ge 0 ] && { [[ ${lines[$i]} =~ $blank ]] ||
+		{ [ -n "$comment" ] && [ "${lines[$i]:0:${#comment}}" = "$comment" ]; }; }; do
 		i=$((i - 1))
 	done
 	while [ "$i" -ge 0 ] && ! [[ ${lines[$i]} =~ $blank ]]; do i=$((i - 1)); done
