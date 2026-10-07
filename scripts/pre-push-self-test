@@ -275,6 +275,30 @@ git add docs/SPEC.md
 commit -m "feat(x): spec" -m "[spec]" -m "Stack: m"$'\n'"Human-Only: true"
 lint 0 "a protected file edited with [spec]"
 spec="$(git rev-parse HEAD)"
+# [A-Z] is a collation range in bash 3.2 under a UTF-8 locale, and takes "s": every summary
+# was refused as capitalised. A class does not depend on the locale.
+utf8=""
+for l in en_US.UTF-8 C.UTF-8 en_US.utf8; do
+	if locale -a 2>/dev/null | grep -x "$l" >/dev/null; then
+		utf8="$l"
+		break
+	fi
+done
+if [ -n "$utf8" ]; then
+	LC_ALL="$utf8" lint 0 "a lower-case summary, in a UTF-8 locale"
+	commit -m "feat(x): Upper"
+	LC_ALL="$utf8" lint 1 "a capitalised summary, in a UTF-8 locale"
+	says "summary must start lower-case" "the capital is what is refused"
+	git reset -q --hard "$spec"
+fi
+# The case is judged on the summary's first character, which follows ': ' directly: spaces
+# before it hid a capital from the check (GPT review of these branches, finding 6).
+for summary in Upper lower; do
+	commit -m "feat(x):  $summary" -m "Stack: m"$'\n'"Human-Only: true"
+	lint 1 "a summary after two spaces ($summary)"
+	says "summary" "the leading space is refused ($summary)"
+	git reset -q --hard "$spec"
+done
 git -c core.hooksPath=/dev/null revert --no-edit HEAD >/dev/null
 lint 0 "a real revert of that commit, though its message names no [spec]"
 git reset -q --hard "$spec"
