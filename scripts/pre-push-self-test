@@ -581,6 +581,42 @@ lint 1 "a [policy] commit among thousands of paths that also changes fpl/"
 says "may not also change fpl/ or tests/" "the separation guard saw fpl/"
 git reset -q --hard "$spec"
 
+# A path is matched as it is, not as git prints it. Without -z git quotes a name holding
+# non-ASCII, quote, backslash or control characters, in quotes and with escapes, so it starts
+# with a quote and no pattern anchored at fpl/features/ or quality/ takes it. Raw bytes that are
+# no UTF-8 escape a `.` in a UTF-8 locale. A rename shows only its new name, so a spec file
+# moved out of fpl/features/ was never seen (GPT review of the commit-lint workflow, finding 3).
+odd=(é '"q"' 'a\b' $'a\tb' $'a\nb' $'a\xffb')
+for name in "${odd[@]}"; do
+	printf -v shown '%q' "$name"
+	[ "$name" != $'a\xffb' ] || [ -n "$utf8" ] || continue
+	plant -m "feat(x): odd spec name" -m "$trail" < <(printf 'fpl/features/x/examples/%s.fpl\0' "$name")
+	LC_ALL="${utf8:-C}" lint 1 "a spec file named $shown, without [spec]"
+	says "edits a protected spec file" "the oracle guard saw $shown"
+	git reset -q --hard "$spec"
+	plant -m "feat(x): odd policy name" -m "$trail" < <(printf 'quality/%s.toml\0' "$name")
+	LC_ALL="${utf8:-C}" lint 1 "a policy file named $shown, without [policy]"
+	says "changes the gate's policy" "the policy guard saw $shown"
+	git reset -q --hard "$spec"
+	plant -m "chore(x): odd code name" -m "[policy]" -m "$trail" \
+		< <(printf 'quality/ruff.toml\0fpl/%s.py\0' "$name")
+	LC_ALL="${utf8:-C}" lint 1 "a [policy] commit that also changes a file named $shown in fpl/"
+	says "may not also change fpl/ or tests/" "the separation guard saw $shown"
+	git reset -q --hard "$spec"
+done
+plant -m "feat(x): odd spec name" -m "[spec]" -m "$trail" < <(printf 'fpl/features/x/examples/é.fpl\0')
+lint 0 "a spec file named é, with [spec]"
+git reset -q --hard "$spec"
+# Hook mode, where git diff --cached would show a moved file under its new name only.
+plant -m "feat(x): example" -m "[spec]" -m "$trail" < <(printf 'fpl/features/x/examples/a.fpl\0')
+git -c core.hooksPath=/dev/null reset -q --hard HEAD
+git mv fpl/features/x/examples/a.fpl other.fpl
+printf 'feat(x): move\n\n%s\n' "$trail" >"$tmp/move-msg"
+gate 1 "a spec file moved out of fpl/features/, without [spec]" \
+	env FPL_ATOMIC_GATE=off .githooks/commit-msg "$tmp/move-msg"
+says "edits a protected spec file" "the oracle guard saw the move"
+git reset -q --hard "$spec"
+
 echo "pre-push self-test: $fails of $total checks failed (bash $BASH_VERSION)"
 if [ -z "${PRE_PUSH_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ]; then
 	mkdir -p "$tmp/shim"
