@@ -229,7 +229,7 @@ ci="$(sed -e 's/#.*//' .github/agent-emails | xargs)"
 lint() { # lint <exit code> <description>: scripts/commit-lint over the branch, output in $tmp/out
 	local want="$1" what="$2" rc=0
 	total=$((total + 1))
-	scripts/commit-lint -b agent/claude/stack/k main..HEAD >"$tmp/out" 2>&1 || rc=$?
+	scripts/commit-lint -b "$(git branch --show-current)" main..HEAD >"$tmp/out" 2>&1 || rc=$?
 	[ "$rc" -eq 0 ] || rc=1
 	if [ "$rc" -ne "$want" ]; then
 		fails=$((fails + 1))
@@ -251,6 +251,276 @@ GIT_AUTHOR_EMAIL=326980220+psjg-claude@users.noreply.github.com commit -m "feat(
 	-m "Stack: k"$'\n'"Assisted-By: claude"$'\n'"Session-Id: s"
 FPL_AGENT_EMAILS="$ci" lint 0 "the file a subset of the workflow's list"
 lint 0 "no workflow list: the file's addresses"
+
+# What commit-msg lets through unjudged is what git wrote, not what a message says: a merge
+# is a commit with more than one parent, a revert one whose message is git's own and names a
+# commit that exists. A one-parent commit that only opens with "Merge" or "Revert" is judged
+# like any other, and changes a protected file without [spec] only where it is allowed to.
+gate() { # gate <exit code> <description> <command>...: a command's exit, output in $tmp/out
+	local want="$1" what="$2" rc=0
+	shift 2
+	total=$((total + 1))
+	"$@" >"$tmp/out" 2>&1 || rc=$?
+	[ "$rc" -eq 0 ] || rc=1
+	if [ "$rc" -ne "$want" ]; then
+		fails=$((fails + 1))
+		echo "self-test: $what: exit $rc, want $want" >&2
+		sed 's/^/    /' "$tmp/out" >&2
+	fi
+}
+git switch -q -c agent/claude/stack/m main
+mkdir -p docs
+echo spec >docs/SPEC.md
+git add docs/SPEC.md
+commit -m "feat(x): spec" -m "[spec]" -m "Stack: m"$'\n'"Human-Only: true"
+lint 0 "a protected file edited with [spec]"
+spec="$(git rev-parse HEAD)"
+git -c core.hooksPath=/dev/null revert --no-edit HEAD >/dev/null
+lint 0 "a real revert of that commit, though its message names no [spec]"
+git reset -q --hard "$spec"
+for word in Merge Revert; do
+	echo more >>docs/SPEC.md
+	git add docs/SPEC.md
+	commit -m "$word anything"
+	lint 1 "a one-parent commit that opens with '$word', editing a protected file"
+	says "header must be" "the '$word' commit is judged as any other"
+	git reset -q --hard "$spec"
+done
+echo more >>docs/SPEC.md
+git add docs/SPEC.md
+commit -m 'Revert "feat(x): spec"' -m "This reverts commit 0123456789abcdef0123456789abcdef01234567."
+lint 1 "git's revert text naming a commit that does not exist"
+git reset -q --hard "$spec"
+echo more >>docs/SPEC.md
+git add docs/SPEC.md
+commit -m 'Revert "feat(x): spec"'
+lint 1 "a revert subject with no 'This reverts commit' line"
+git reset -q --hard "$spec"
+# git's text naming a commit that exists is not yet a revert: the commit must hold the tree
+# git revert makes of that commit. A forger copies the text and edits a protected file under it.
+echo more >>docs/SPEC.md
+git add docs/SPEC.md
+commit -m 'Revert "feat(x): spec"' -m "This reverts commit $spec."
+lint 1 "git's revert text naming a real commit, over a diff that is no inverse"
+says "header must be" "the forged revert is judged as any commit"
+git reset -q --hard "$spec"
+git -c core.hooksPath=/dev/null revert --no-commit HEAD
+mkdir -p docs
+echo extra >docs/DESIGN.md
+git add docs/DESIGN.md
+commit -m 'Revert "feat(x): spec"' -m "This reverts commit $spec."
+lint 1 "a real revert with another protected file edited beside it"
+says "header must be" "the revert with a rider is judged as any commit"
+git reset -q --hard "$spec"
+echo more >>docs/SPEC.md
+git add docs/SPEC.md
+commit -m "feat(x): more spec" -m "[spec]" -m "Stack: m"$'\n'"Human-Only: true"
+more="$(git rev-parse HEAD)"
+git -c core.hooksPath=/dev/null revert --no-commit HEAD
+commit -m 'Revert "feat(x): spec"' -m "This reverts commit $spec."
+lint 1 "the inverse of one commit, under the text that names another"
+says "header must be" "the revert of the wrong commit is judged as any commit"
+git reset -q --hard "$more"
+git -c core.hooksPath=/dev/null revert --no-edit HEAD >/dev/null
+lint 0 "a real revert of the second of two commits"
+git reset -q --hard "$spec"
+# The revert is exact on the added and removed lines, not on the lines around them: a revert
+# of a commit whose neighbourhood changed since still merges cleanly, and is still a revert.
+seq 1 7 >n.txt
+git add n.txt
+commit -m "feat(x): n" -m "Stack: m"$'\n'"Human-Only: true"
+sed -i.bak 3s/3/three/ n.txt && rm n.txt.bak
+git add n.txt
+commit -m "feat(x): n3" -m "Stack: m"$'\n'"Human-Only: true"
+n3="$(git rev-parse HEAD)"
+sed -i.bak 5s/5/five/ n.txt && rm n.txt.bak
+git add n.txt
+commit -m "feat(x): n5" -m "Stack: m"$'\n'"Human-Only: true"
+git -c core.hooksPath=/dev/null revert --no-edit "$n3" >/dev/null
+lint 0 "a real revert of a commit whose neighbouring lines changed since"
+git reset -q --hard "$spec"
+# Hook mode: the revert in the making is the staged change.
+git -c core.hooksPath=/dev/null revert --no-commit HEAD
+printf 'Revert "feat(x): spec"\n\nThis reverts commit %s.\n' "$spec" >"$tmp/revert-msg"
+gate 0 "a revert in the making, judged in hook mode" .githooks/commit-msg "$tmp/revert-msg"
+mkdir -p docs
+echo extra >docs/DESIGN.md
+git add docs/DESIGN.md
+gate 1 "the same revert with another protected file staged beside it" .githooks/commit-msg "$tmp/revert-msg"
+says "header must be" "the revert with a rider is judged"
+git reset -q --hard "$spec"
+echo more >>docs/SPEC.md
+git add docs/SPEC.md
+gate 1 "revert text over a staged edit that is no inverse" .githooks/commit-msg "$tmp/revert-msg"
+says "header must be" "the forged revert is judged"
+git reset -q --hard "$spec"
+# The inverse is the tree git revert makes, not a diff that agrees with it line for line: git
+# patch-id drops the line numbers, so a line the reverted commit removed, put back elsewhere,
+# read as its revert. A forger restores the line at the end of a protected file instead of in
+# its place.
+printf '%s\n' a b c d e f >docs/DESIGN.md
+git add docs/DESIGN.md
+commit -m "feat(x): design" -m "[spec]" -m "Stack: m"$'\n'"Human-Only: true"
+sed -i.bak 3d docs/DESIGN.md && rm docs/DESIGN.md.bak
+git add docs/DESIGN.md
+commit -m "feat(x): drop c" -m "[spec]" -m "Stack: m"$'\n'"Human-Only: true"
+drop="$(git rev-parse HEAD)"
+echo c >>docs/DESIGN.md
+git add docs/DESIGN.md
+printf 'Revert "feat(x): drop c"\n\nThis reverts commit %s.\n' "$drop" >"$tmp/moved-msg"
+gate 1 "the removed line put back elsewhere, judged in hook mode" .githooks/commit-msg "$tmp/moved-msg"
+says "header must be" "the moved line is judged as any commit"
+commit -F "$tmp/moved-msg"
+lint 1 "the removed line put back elsewhere, under git's revert text"
+says "header must be" "the moved line is judged as any commit in lint mode"
+git reset -q --hard "$drop"
+git -c core.hooksPath=/dev/null revert --no-edit HEAD >/dev/null
+lint 0 "the real revert of the same commit"
+# A revert follows a rename made since, as git revert does; and git 2.43 on titles the revert
+# of a revert 'Reapply "..."', over the same 'This reverts commit' line.
+seq 1 20 >r.txt
+git add r.txt
+commit -m "feat(x): r" -m "Stack: m"$'\n'"Human-Only: true"
+sed -i.bak 4s/4/four/ r.txt && rm r.txt.bak
+git add r.txt
+commit -m "feat(x): r4" -m "Stack: m"$'\n'"Human-Only: true"
+r4="$(git rev-parse HEAD)"
+git mv r.txt r2.txt
+commit -m "feat(x): move r" -m "Stack: m"$'\n'"Human-Only: true"
+git -c core.hooksPath=/dev/null revert --no-edit "$r4" >/dev/null
+lint 0 "a real revert of a commit whose file was renamed since"
+git -c core.hooksPath=/dev/null revert --no-edit HEAD >/dev/null
+same_subject="$(git log -1 --format=%s)"
+case "$same_subject" in 'Reapply "'*) ;; *) echo "self-test: git titled the revert of a revert '$same_subject'" >&2 ;; esac
+lint 0 "a real revert of a revert, titled Reapply"
+git reset -q --hard "$spec"
+# git revert --reference (or revert.reference=true) names the commit by an abbreviated id and
+# its subject, '<abbrev> (<subject>, <date>).', and leaves the title to the person. Its tree is
+# what makes it a revert, as for git's other text (GPT review of these branches, finding 7).
+git -c core.hooksPath=/dev/null revert --no-edit --reference HEAD >/dev/null
+lint 0 "a real revert made with --reference"
+git reset -q --hard "$spec"
+GIT_EDITOR="sed -i.bak -e '1s/^#.*/revert(x): undo the spec/'" \
+	git -c core.hooksPath=/dev/null -c revert.reference=true revert HEAD >/dev/null
+lint 0 "a real revert made under revert.reference=true, titled by the person"
+git reset -q --hard "$spec"
+# Either form under any title: the person may title a reference revert 'Revert "..."', and git
+# titles one made with --no-edit with a comment line it keeps.
+GIT_EDITOR="sed -i.bak -e '1s/.*/Revert \"feat(x): spec\"/'" \
+	git -c core.hooksPath=/dev/null revert -e --reference HEAD >/dev/null
+lint 0 "a real revert made with --reference, titled Revert \"...\" by the person"
+git reset -q --hard "$spec"
+GIT_EDITOR="sed -i.bak -e '1s/.*/Revert \"feat(x): spec\"/'" \
+	git -c core.hooksPath=/dev/null -c revert.reference=true revert -e HEAD >/dev/null
+lint 0 "a real revert made under revert.reference=true, titled Revert \"...\" by the person"
+git reset -q --hard "$spec"
+# The abbreviation names one commit or none: of two commits that share it, neither is the one
+# reverted, and the commit is judged as any (a real revert of either, without [spec], is then
+# refused). git commit-tree makes candidates, the same change under other subjects, until two
+# share their first four digits (some 300 of them, by the birthday bound on 16^4).
+echo twin >docs/SPEC.md
+git add docs/SPEC.md
+twins="$(git write-tree)" twin=""
+: >"$tmp/ids"
+for ((i = 0; i < 5000 && ${#twin} == 0; i++)); do
+	git commit-tree -p "$spec" -m "feat(x): twin $i" -m "[spec]" -m "Stack: m"$'\n'"Human-Only: true" \
+		"$twins" >>"$tmp/ids"
+	if [ $((i % 50)) -eq 49 ]; then twin="$(cut -c1-4 "$tmp/ids" | sort | uniq -d | head -n1)"; fi
+done
+[ -n "$twin" ] || { fails=$((fails + 1)); echo "self-test: no two of $i commits share four digits" >&2; }
+git reset -q --hard "$(grep -m1 "^$twin" "$tmp/ids")"
+git -c core.hooksPath=/dev/null revert --no-commit HEAD
+commit -m "revert(x): undo a twin" -m "This reverts commit $twin (feat(x): twin, 2026-10-07)." -m "Stack: m"$'\n'"Human-Only: true"
+lint 1 "a real revert named by an abbreviation two commits share"
+says "edits a protected spec file" "the ambiguous reference names no commit"
+git reset -q --hard HEAD^
+git -c core.hooksPath=/dev/null revert --no-edit --reference HEAD >/dev/null
+lint 0 "the same revert named by an abbreviation of its own"
+git reset -q --hard "$spec"
+# An id is an object's: a tag spelt in hex names no commit here.
+git tag fade0fade0 "$spec"
+git -c core.hooksPath=/dev/null revert --no-commit HEAD
+commit -m "revert(x): undo the spec" -m "This reverts commit fade0fade0 (feat(x): spec, 2026-10-07)." -m "Stack: m"$'\n'"Human-Only: true"
+lint 1 "a real revert naming its commit by a tag spelt in hex"
+says "edits a protected spec file" "the tag names no commit"
+git tag -d fade0fade0 >/dev/null
+git reset -q --hard "$spec"
+echo more >>docs/SPEC.md
+git add docs/SPEC.md
+commit -m "revert(x): undo the spec" -m "This reverts commit ${spec:0:7} (feat(x): spec, 2026-10-07)." -m "Stack: m"$'\n'"Human-Only: true"
+lint 1 "the reference form naming a real commit, over a diff that is no inverse"
+says "edits a protected spec file" "the forged reference revert is judged as any commit"
+git reset -q --hard "$spec"
+git -c core.hooksPath=/dev/null revert --no-commit HEAD
+printf 'revert(x): undo the spec\n\nThis reverts commit %s (feat(x): spec, 2026-10-07).\n' "${spec:0:7}" >"$tmp/ref-msg"
+gate 0 "a reference revert in the making, judged in hook mode" .githooks/commit-msg "$tmp/ref-msg"
+git reset -q --hard "$spec"
+# An amend of a real revert is judged as a new commit even when nothing is reworded: git does
+# not say it is one. The refusal says so, and how to get past it.
+git -c core.hooksPath=/dev/null revert --no-commit HEAD
+gate 0 "a real revert made with git commit" env GIT_EDITOR=true git commit -q
+gate 1 "an amend of a real revert, not reworded" env GIT_EDITOR=true git commit -q --amend --no-edit
+says "reworded or not" "the refusal says an amend is refused unreworded too"
+says "--no-verify" "the refusal names the way out"
+git -c core.hooksPath=/dev/null reset -q --hard "$spec"
+# A real merge: judged by its parents (lint mode) or by the merge git is making (hook mode).
+git switch -q -c agent/claude/stack/m-side "$spec"
+echo side >>docs/SPEC.md
+git add docs/SPEC.md
+commit -m "feat(x): side" -m "[spec]" -m "Stack: m"$'\n'"Human-Only: true"
+git switch -q agent/claude/stack/m
+echo trunk >t.txt
+git add t.txt
+commit -m "feat(x): trunk" -m "Stack: m"$'\n'"Human-Only: true"
+git -c core.hooksPath=/dev/null merge -q --no-ff -m "Merge branch 'side'" agent/claude/stack/m-side
+git log -1 --format=%B >"$tmp/merge-msg"
+gate 0 "a merge, judged in lint mode" env FPL_LINT_COMMIT="$(git rev-parse HEAD)" .githooks/commit-msg "$tmp/merge-msg"
+merge="$(git rev-parse HEAD)"
+# git revert -m N undoes what the merge changed against its parent N.
+for m in 1 2; do
+	git -c core.hooksPath=/dev/null revert -m "$m" --no-edit "$merge" >/dev/null
+	lint 0 "a real revert of a merge, against its parent $m"
+	git reset -q --hard "$merge"
+	# --reference ends the line that names the merge in ', reversing', as the full form does.
+	git -c core.hooksPath=/dev/null revert -m "$m" --no-edit --reference "$merge" >/dev/null
+	lint 0 "a real revert of a merge made with --reference, against its parent $m"
+	git reset -q --hard "$merge"
+	GIT_EDITOR="sed -i.bak -e '1s/.*/Revert \"Merge branch side\"/'" \
+		git -c core.hooksPath=/dev/null revert -e -m "$m" --reference "$merge" >/dev/null
+	lint 0 "the same, titled Revert \"...\" by the person, against its parent $m"
+	git reset -q --hard "$merge"
+done
+git -c core.hooksPath=/dev/null revert --no-commit -m 1 "$merge"
+printf 'revert(x): back out the side\n\nThis reverts commit %s (Merge side, 2026-10-07), reversing\nchanges made to %s (feat(x): trunk, 2026-10-07).\n' \
+	"${merge:0:7}" "$(git rev-parse --short "$merge^1")" >"$tmp/ref-merge-msg"
+gate 0 "a reference revert of a merge in the making, judged in hook mode" \
+	.githooks/commit-msg "$tmp/ref-merge-msg"
+git -c core.hooksPath=/dev/null reset -q --hard "$merge"
+git reset -q --hard HEAD^
+git merge --no-ff --no-commit agent/claude/stack/m-side >/dev/null 2>&1
+gate 0 "a merge in the making, judged in hook mode" .githooks/commit-msg "$tmp/merge-msg"
+git merge --abort
+gate 1 "the same message with no merge in the making" .githooks/commit-msg "$tmp/merge-msg"
+says "header must be" "the message is judged"
+# git does not say a `git commit --amend` is one, so an amended merge is a Merge subject on a
+# commit with no merge in the making, and cannot be told from a new commit that borrows the
+# words. It is refused, and the refusal says what to do (.agents/COMMITS.md).
+git -c core.hooksPath=/dev/null reset -q --hard "$merge"
+gate 1 "an amend of a merge, which the hook cannot tell from a new commit" \
+	git commit -q --amend -F "$tmp/merge-msg"
+says "git does not tell this hook of an amend" "the refusal names the limit"
+says "--no-verify" "the refusal names the way out"
+# Why "HEAD has more than one parent" is not enough to call a commit an amend: so does the
+# parent of every plain commit made on top of a merge. A rule that took it for one would let
+# that commit borrow the word, so it stays refused.
+echo sneak >>docs/SPEC.md
+git add docs/SPEC.md
+printf 'Merge sneaky\n' >"$tmp/borrow-msg"
+gate 1 "a new commit on top of a merge that borrows the word, over a protected file" \
+	.githooks/commit-msg "$tmp/borrow-msg"
+says "header must be" "the borrowed Merge is judged as any commit"
+git -c core.hooksPath=/dev/null reset -q --hard "$merge"
+git reset -q --hard "$spec"
 
 echo "pre-push self-test: $fails of $total checks failed (bash $BASH_VERSION)"
 if [ -z "${PRE_PUSH_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ]; then
