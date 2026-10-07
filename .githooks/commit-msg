@@ -12,8 +12,8 @@
 #   4. provenance: Assisted-By: + Session-Id: together, or a lone Human-Only: true
 #   5. known trailers appear in canonical order
 #   6. unless Human-Only, the commit author email equals .git/agent-identity
-#   7. oracle guard: editing docs/DESIGN.md, docs/SPEC.md, features/*/spec.md or
-#      features/*/examples/* requires the literal marker [spec] in the message
+#   7. oracle guard: editing docs/DESIGN.md, docs/SPEC.md, fpl/features/*/spec.md or
+#      fpl/features/*/examples/* requires the literal marker [spec] in the message
 #  7b. policy guard: editing what sets how hard the gate judges (quality/, and the
 #      pyproject.toml, Makefile and mutants.allow of the root and of bootstrap/)
 #      requires the literal marker [policy], and such a commit may not also touch
@@ -168,7 +168,7 @@ while IFS= read -r tok; do
 done < <(sed -n 's/^\([A-Za-z][A-Za-z-]*\):[[:space:]].*/\1/p' "$msg_file")
 
 # 7. oracle guard --------------------------------------------------------------
-protected='^(docs/DESIGN\.md|docs/SPEC\.md|features/[^/]+/spec\.md|features/[^/]+/examples/.+)$'
+protected='^(docs/DESIGN\.md|docs/SPEC\.md|fpl/features/[^/]+/spec\.md|fpl/features/[^/]+/examples/.+)$'
 if [ -n "$lint_commit" ]; then
 	changed="$(git diff-tree --no-commit-id --name-only -r --root "$lint_commit")"
 else
