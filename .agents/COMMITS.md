@@ -76,7 +76,7 @@ an amend of a merge or revert is refused there, reworded or not: amend one with
   `commands` `agents` `skill` `scripts`. Worktree scopes: `grammar` `parser` `desugar` `core`
   `eval` `types` `errors` `driver` `repl`, or a `features/<name>` name.
 - **[gate] `!`** before the `:` iff breaking; also add a `BREAKING-CHANGE:` trailer.
-- **[gate] summary** starts lower-case, no trailing period.
+- **[gate] summary** follows `: ` directly, starts lower-case, no trailing period.
 - **[advisory] summary** in the imperative ("add", not "adds"/"added").
 
 ### Body — required unless the change is trivially self-evident

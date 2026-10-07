@@ -4,8 +4,8 @@
 #
 # Hard gates (reject on failure):
 #   1. header  <type>(<scope>)<!?>: <summary>  — type in the allowed set, scope
-#      [a-z0-9/._-]+, summary starts lower-case and has no trailing period,
-#      whole header <= 72 chars
+#      [a-z0-9/._-]+, summary right after ': ', starting lower-case, with no trailing
+#      period, whole header <= 72 chars
 #   2. line 2 blank whenever a body/trailer follows
 #   3. body lines <= 72 chars, except fenced code, table rows, and lines with no
 #      break opportunity after column 72 (a long URL or path)
@@ -154,6 +154,9 @@ fi
 
 # 1. header ----------------------------------------------------------------
 types='feat|fix|docs|refactor|perf|test|build|ci|chore|revert'
+if printf '%s' "$first" | grep -Eq '^[^:]*: [[:space:]]'; then
+	fail "summary must follow ': ' with no space before it — got: $first"
+fi
 if ! printf '%s' "$first" | grep -Eq "^(${types})(\([a-z0-9/._-]+\))?!?: .+"; then
 	note=""
 	case "${lint_commit:+lint}:$first" in
@@ -166,7 +169,7 @@ fi
 [ "${#first}" -le 72 ] || fail "header is ${#first} chars (>72)"
 summary="${first#*: }"
 case "$summary" in
-[A-Z]*) fail "summary must start lower-case: $summary" ;;
+[[:upper:]]*) fail "summary must start lower-case: $summary" ;;
 *.)     fail "summary must not end with a period: $summary" ;;
 esac
 
