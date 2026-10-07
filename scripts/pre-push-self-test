@@ -726,6 +726,22 @@ says "BREAKING-CHANGE" "an empty trailer is no description"
 msg 0 "'!' with a BREAKING-CHANGE trailer" \
 	"feat(x)!: change the interface"$'\n\n'"Stack: m"$'\n'"BREAKING-CHANGE: x goes"$'\n'"Human-Only: true"
 
+# One source of truth (.githooks/commit-rules): the type list and the scope class are written
+# once. A second copy in a consumer or in the docs is how the three drift apart.
+for f in .githooks/commit-msg .githooks/prepare-commit-msg scripts/acommit; do
+	[ -e "$f" ] || continue
+	total=$((total + 1))
+	if grep -Eqw 'refactor|a-z0-9/\._-' "$f"; then
+		fails=$((fails + 1))
+		echo "self-test: $f holds its own copy of the type list or the scope class; read it from .githooks/commit-rules" >&2
+	fi
+done
+total=$((total + 1))
+if grep -Eqw 'refactor|a-z0-9/\._-' "$root/.agents/COMMITS.md"; then
+	fails=$((fails + 1))
+	echo "self-test: .agents/COMMITS.md repeats the type list or the scope class; cite .githooks/commit-rules" >&2
+fi
+
 echo "pre-push self-test: $fails of $total checks failed (bash $BASH_VERSION)"
 if [ -z "${PRE_PUSH_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ]; then
 	mkdir -p "$tmp/shim"
