@@ -164,6 +164,7 @@ if [ -n "$lint_commit" ]; then
 else
 	effective_message "$given" >"$msg_file"
 fi
+cp "$msg_file" "$tmp/judged" # as it stands before section 0 corrects it, for section 11
 first="$(sed -n '1p' "$msg_file")"
 
 # 7. oracle guard, 7b. policy guard -------------------------------------------
@@ -327,6 +328,41 @@ else
 	author_email="${GIT_AUTHOR_EMAIL:-$(git var GIT_AUTHOR_IDENT | sed -n 's/.*<\(.*\)>.*/\1/p')}"
 fi
 
+# 0. what can be corrected with no guess -------------------------------------------
+# A type or a scope in the wrong case, a known trailer key in the wrong case: what was meant is
+# not in doubt, so in hook mode the hook writes it right, into the file git commits, and says so
+# afterwards (see the end of this file). Git reads a trailer key without regard to case, this
+# repository writes one spelling, and a reader that tolerates the other spellings quietly makes
+# them a standard (RFC 9413), hence the scold, and the count of how often. In lint mode there is
+# nothing to edit: a key that differs in case only is accepted as that key, so landed history is
+# not refused for case alone, and a type or scope in the wrong case is refused as it was.
+# Anything else (an unknown type, a scope with a space) is a guess, so it is refused below.
+shape='^([^(!: ]+)(\(([^()]*)\))?(!)?: .+$'
+norm="$tmp/normalised" # kind, from, to: one tab-separated line for each correction
+: >"$norm"
+normalised() { printf '%s\t%s\t%s\n' "$1" "$2" "$3" >>"$norm"; }
+if [ -z "$lint_commit" ] && [[ $first =~ $shape ]]; then
+	n_type="${BASH_REMATCH[1]}" n_scope="${BASH_REMATCH[3]}" n_bang="${BASH_REMATCH[4]}"
+	n_has="${BASH_REMATCH[2]}"
+	n_rest="${first:$((${#n_type} + ${#n_has} + ${#n_bang} + 2))}"
+	low="$(commit_lower "$n_type")"
+	new_type="$n_type" new_scope="$n_scope"
+	if [ "$low" != "$n_type" ]; then
+		case " $COMMIT_TYPES " in *" $low "*) new_type="$low" ;; esac
+	fi
+	low="$(commit_lower "$n_scope")"
+	if [ -n "$n_has" ] && [ "$low" != "$n_scope" ] && printf '%s' "$low" | grep -Eq "^$(commit_scope_re)\$"; then
+		new_scope="$low"
+	fi
+	if [ "$new_type" != "$n_type" ] || [ "$new_scope" != "$n_scope" ]; then
+		[ "$new_type" = "$n_type" ] || normalised type "$n_type" "$new_type"
+		[ "$new_scope" = "$n_scope" ] || normalised scope "$n_scope" "$new_scope"
+		first="$new_type${n_has:+($new_scope)}$n_bang: $n_rest"
+		{ printf '%s\n' "$first"; sed '1d' "$msg_file"; } >"$tmp/rewritten"
+		cp "$tmp/rewritten" "$msg_file"
+	fi
+fi
+
 # 1. header ----------------------------------------------------------------
 types="$(commit_types_re)"
 if printf '%s' "$first" | grep -Eq '^[^:]*: [[:space:]]'; then
@@ -335,7 +371,6 @@ if printf '%s' "$first" | grep -Eq '^[^:]*: [[:space:]]'; then
 fi
 if ! printf '%s' "$first" | grep -Eq "^(${types})\($(commit_scope_re)\)!?: .+"; then
 	# Name the part that fails: the type, then the scope, else the shape as a whole.
-	shape='^([^(!: ]+)(\(([^()]*)\))?(!)?: .+$'
 	if [[ $first =~ $shape ]]; then
 		h_type="${BASH_REMATCH[1]}" h_scope="${BASH_REMATCH[3]}" h_has_scope="${BASH_REMATCH[2]}"
 		low_type="$(commit_lower "$h_type")"
@@ -399,6 +434,14 @@ if [ -n "$(sed -n '2p' "$msg_file")" ]; then
 		"put exactly one empty line under the header"
 fi
 
+# canonical_keys: the lines of git's trailer parse on stdin, each known key in its one spelling.
+canonical_keys() {
+	awk -v keys="$COMMIT_TRAILER_KEYS" '
+		BEGIN { n = split(keys, k, " "); for (i = 1; i <= n; i++) canon[tolower(k[i])] = k[i] }
+		{ c = index($0, ":"); if (c > 1 && (key = canon[tolower(substr($0, 1, c - 1))]) != "") $0 = key substr($0, c) }
+		{ print }'
+}
+
 # The trailer block: the last paragraph, when git reads it as one (git interpret-trailers
 # --parse: one 'Key: value' a line, continuations unfolded), the block that `git log
 # --format=%(trailers)` and a changelog generator read. git takes a paragraph of trailers
@@ -426,6 +469,8 @@ n=${#lines[@]}
 trailer_start=$n
 landed=7767dd70f21308695f169b3c9c0931cc546fc09a
 spared='^([A-Za-z0-9-]+[[:space:]]*:|[[:space:]])' # a trailer, or a continuation of one
+legacy=1 comment=""
+: >"$tmp/parsed"
 if [ -n "$lint_commit" ] && git merge-base --is-ancestor "$lint_commit" "$landed" 2>/dev/null; then
 	trailers="$(sed -n 's/^\([A-Za-z][A-Za-z-]*\):[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1: \2/p' "$msg_file")"
 	i=$((n - 1))
@@ -440,11 +485,9 @@ if [ -n "$lint_commit" ] && git merge-base --is-ancestor "$lint_commit" "$landed
 		esac
 	done
 else
-	trailers="$(git interpret-trailers --parse --no-divider <"$msg_file" |
-		awk -v keys="$COMMIT_TRAILER_KEYS" '
-			BEGIN { n = split(keys, k, " "); for (i = 1; i <= n; i++) canon[tolower(k[i])] = k[i] }
-			{ c = index($0, ":"); if (c > 1 && (key = canon[tolower(substr($0, 1, c - 1))]) != "") $0 = key substr($0, c) }
-			{ print }')"
+	legacy=0
+	git interpret-trailers --parse --no-divider <"$msg_file" >"$tmp/parsed"
+	trailers="$(canonical_keys <"$tmp/parsed")"
 	comment="$(commit_comment_prefix)" # empty under 'auto': no line is taken for a comment
 	blank='^[[:space:]]*$'
 	i=$((n - 1))
@@ -457,6 +500,37 @@ else
 	[ -z "$trailers" ] || is_block=1
 fi
 [ "$is_block" -eq 1 ] && [ "$blk_start" -gt 1 ] && trailer_start=$blk_start
+
+# The keys of the trailer block, in their canonical spelling (section 0). One pass, with the
+# lookup built once: a process for each key and each known key took seconds for a hundred keys.
+# Only a line that git reads as a trailer is corrected: the trailers git parsed (the first
+# input, in order) are matched to the lines of the block by their keys, and any other line, a
+# comment line above all ('session-id: ...' under core.commentChar=s), stays as written, as
+# git stores it. Lines of a comment prefix are passed by in any case.
+awk -v from="$trailer_start" -v keys="$COMMIT_TRAILER_KEYS" -v norm="$norm" -v cp="$comment" '
+	BEGIN { n = split(keys, k, " "); for (i = 1; i <= n; i++) canon[tolower(k[i])] = k[i] }
+	FILENAME == ARGV[1] { c = index($0, ":"); if (c > 1) want[++w] = substr($0, 1, c - 1); next }
+	FNR > from && !(cp != "" && substr($0, 1, length(cp)) == cp) && match($0, /^[A-Za-z][^:]*: /) {
+		key = substr($0, 1, RLENGTH - 2)
+		if (j < w && key == want[j + 1]) {
+			j++
+			c = canon[tolower(key)]
+			if (c != "" && c != key) {
+				$0 = c substr($0, RLENGTH - 1)
+				printf "trailer-key\t%s\t%s\n", key, c >>norm
+			}
+		}
+	}
+	{ print }' "$tmp/parsed" "$msg_file" >"$tmp/keyed"
+cat "$tmp/keyed" >"$msg_file"
+# What the gates below judge is what git reads in the file as it now is: the same trailers. A
+# correction that changed the reading would be a message the person did not write.
+if [ "$legacy" -eq 0 ]; then
+	again="$(git interpret-trailers --parse --no-divider <"$msg_file" | canonical_keys)"
+	[ "$again" = "$trailers" ] \
+		|| fail trailer-rewrite "correcting the trailer keys changed the trailers git reads" \
+			"write the trailer keys in their canonical spelling yourself (Assisted-By, Session-Id, Stack, ...)"
+fi
 
 # 3. body width --------------------------------------------------------------
 in_fence=0
@@ -595,6 +669,53 @@ if [ "$branch_gate" != "off" ] && [ -n "$branch" ] && [ "$human" -eq 0 ]; then
 fi
 
 # 10. soft atomicity gate (LLM judge; fails open — see .githooks/atomic-check) ---
-[ -n "$lint_commit" ] || "$repo_root/.githooks/atomic-check" "$msg_file" || exit $?
+if [ -z "$lint_commit" ]; then
+	"$repo_root/.githooks/atomic-check" "$msg_file" || {
+		rc=$?
+		reuse_hint
+		exit "$rc"
+	}
+fi
+
+# 11. the corrections of section 0, now that nothing refuses the message: written into the
+# file git commits (git reads it again after this hook), logged, and scolded. Only the lines
+# corrected go back, each in its own place: the file still holds what git has yet to clean up
+# and every line the person wrote (a '#' line that a --cleanup option keeps, a line the
+# config's reading would strip), so the message as judged is never written over it. A line of
+# the file is the judged line it became when it equals it, trailing blanks aside (git strips
+# those); the judged lines come from the file in order, with only lines left out. The log is one
+# line each: date, kind, what was written, what it became; per clone, and kept in the git
+# directory of the worktree. Kept for the count that the scold shows, and for whoever wants to
+# know who keeps writing 'Human-only'.
+if [ -z "$lint_commit" ] && [ -s "$norm" ]; then
+	awk 'FILENAME == ARGV[1] { o[++n] = $0; next }
+		FILENAME == ARGV[2] { c[++m] = $0; next }
+		{
+			while (j < n && o[j + 1] == "") j++
+			t = $0
+			sub(/[ \t]+$/, "", t)
+			if (j < n && ($0 == o[j + 1] || t == o[j + 1])) {
+				j++
+				if (c[j] != o[j]) $0 = c[j] substr($0, length(o[j]) + 1)
+			}
+			print
+		}' "$tmp/judged" "$msg_file" "$given" >"$tmp/written"
+	cat "$tmp/written" >"$given"
+	logf="$(git rev-parse --git-path commit-msg-tolerated.log)"
+	now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+	while IFS=$'\t' read -r kind from to; do
+		printf '%s\t%s\t%s\t%s\n' "$now" "$kind" "$from" "$to" >>"$logf"
+		count="$(awk -F'\t' -v k="$kind" '$2 == k' "$logf" | wc -l | tr -d ' ')"
+		case "$count" in
+		*11 | *12 | *13) th="${count}th" ;;
+		*1) th="${count}st" ;;
+		*2) th="${count}nd" ;;
+		*3) th="${count}rd" ;;
+		*) th="${count}th" ;;
+		esac
+		echo "commit-msg [normalised]: wrote '$from' as '$to'; write the canonical spelling yourself ($th time in this clone: $kind)" >&2
+	done <"$norm"
+	echo "    (a reader that tolerates a spelling makes it the standard nobody wrote: RFC 9413)" >&2
+fi
 
 exit 0
