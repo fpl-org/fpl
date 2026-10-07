@@ -253,13 +253,16 @@ while IFS= read -r tok; do
 done < <(sed -n 's/^\([A-Za-z][A-Za-z-]*\):[[:space:]].*/\1/p' "$msg_file")
 
 # 7. oracle guard --------------------------------------------------------------
+# has <regex>: some line of stdin matches. Not grep -q: that stops at the first match, the
+# writer of a long list takes SIGPIPE, and under pipefail the match reads as no match.
+has() { grep -E "$1" >/dev/null; }
 protected='^(docs/DESIGN\.md|docs/SPEC\.md|features/[^/]+/spec\.md|features/[^/]+/examples/.+)$'
 if [ -n "$lint_commit" ]; then
 	changed="$(git diff-tree --no-commit-id --name-only -r --root "$lint_commit")"
 else
 	changed="$(git diff --cached --name-only)"
 fi
-if printf '%s\n' "$changed" | grep -Eq "$protected"; then
+if printf '%s\n' "$changed" | has "$protected"; then
 	grep -Fq '[spec]' "$msg_file" \
 		|| fail "this commit edits a protected spec file; add [spec] to the message if intentional"
 fi
@@ -269,10 +272,10 @@ fi
 # breath as the code that needed it loosened (docs/QUALITY.md). A change to them is
 # named as one, and travels alone, so a reviewer sees it apart from any code.
 policy='^(quality/.+|pyproject\.toml|Makefile|mutants\.allow)$'
-if printf '%s\n' "$changed" | grep -Eq "$policy"; then
+if printf '%s\n' "$changed" | has "$policy"; then
 	grep -Fq '[policy]' "$msg_file" \
 		|| fail "this commit changes the gate's policy ($(printf '%s\n' "$changed" | grep -E "$policy" | head -n3 | xargs)); add [policy] to the message if intentional"
-	if printf '%s\n' "$changed" | grep -Eq '^(fpl|tests)/'; then
+	if printf '%s\n' "$changed" | has '^(fpl|tests)/'; then
 		fail "a [policy] commit may not also change fpl/ or tests/; split it"
 	fi
 fi
