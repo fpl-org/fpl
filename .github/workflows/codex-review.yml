@@ -25,7 +25,7 @@ name: Codex review
 # runs read Dependabot secrets, not these.
 #
 # Once per head, not once per pull request: the mention carries no commit sha, so the job asks
-# only when no "@codex review" comment, by anyone, is newer than this event. The event's own
+# only when no "@codex review" comment by the maintainer is newer than this event. The event's own
 # updated_at is the push time for a synchronize, which a commit date is not: a commit made
 # before the previous ask and pushed after it keeps its old date and would look already asked,
 # and a rebase can keep old dates too. The payload is a snapshot, so a run that starts late
@@ -56,15 +56,20 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           SINCE: ${{ github.event.pull_request.updated_at }}
           ATTEMPT: ${{ github.run_attempt }}
+          MAINTAINER: psjg
         run: |
-          # pipefail: a gh that fails must fail the step, not reach jq as an empty list that
+          # pipefail: a gh that fails must fail the step, not reach wc as an empty list that
           # reads as "never asked".
           set -euo pipefail
           # Mentions newer than the event already ask for this head. ISO 8601 UTC strings
-          # compare correctly as text.
-          asked=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json comments |
-            jq --arg since "$SINCE" \
-              '[.comments[] | select(.body == "@codex review" and .createdAt > $since)] | length')
+          # compare correctly as text. Only the maintainer's mentions count: the connector
+          # answers a linked ChatGPT user alone, so a mention by anyone else, the machine
+          # account included, starts no review and must not suppress this one. The issue
+          # comments endpoint is paginated oldest first (`gh pr view --json comments` stops at
+          # the first 100), and `since` keeps the listing to comments touched after the event.
+          asked=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments?per_page=100&since=$SINCE" \
+            --jq '.[] | select(.body == "@codex review" and .user.login == "'"$MAINTAINER"'" and .created_at > "'"$SINCE"'") | .id' |
+            wc -l)
           if [ "$asked" -eq 0 ] || [ "$ATTEMPT" -gt 1 ]; then
             gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "@codex review"
           fi
