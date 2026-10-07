@@ -38,19 +38,6 @@ commit_scope_re() { printf '[%s]+' "$COMMIT_SCOPE_CHARS"; }
 # commit_lower <text>: the text in lower case, in any locale.
 commit_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
-# commit_canonical_key <key>: the canonical spelling of a known trailer key that <key> spells
-# in any case; empty when it is no known key.
-commit_canonical_key() {
-	local k want
-	want="$(commit_lower "$1")"
-	for k in $COMMIT_TRAILER_KEYS; do
-		if [ "$(commit_lower "$k")" = "$want" ]; then
-			printf '%s' "$k"
-			return 0
-		fi
-	done
-}
-
 # commit_nearest_type <word>: the allowed type <word> most likely means; empty when none is
 # close. An allowed type that starts with the word or that the word starts with (doc, feature,
 # fixes), else the one at the smallest edit distance, at most two (fxi, tets).

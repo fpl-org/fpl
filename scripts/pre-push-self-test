@@ -749,14 +749,17 @@ fi
 
 
 
+
 # ---- commit-msg and prepare-commit-msg, through git itself --------------------------------
 # A real `git commit` in the throwaway clone, with GIT_EDITOR a script that plays the person:
 # it writes ED_MSG over the top of the file git prepared (unless -e -F put a message there
-# already: then ED_SED edits it), and appends ED_TAIL below git's template.
+# already: then ED_SED edits it), and appends ED_TAIL below git's template. ED_ALL replaces
+# the file with that text instead.
 export FPL_ATOMIC_GATE=off
 ed="$tmp/editor"
 cat >"$ed" <<'ED'
 #!/bin/sh
+[ -z "${ED_ALL:-}" ] || { printf '%s\n' "$ED_ALL" >"$1"; exit 0; }
 { [ -z "${ED_MSG:-}" ] || printf '%s\n' "$ED_MSG"; sed -e "${ED_SED:-}" "$1"; printf '%s' "${ED_TAIL:-}"; } >"$1.new" &&
 	mv "$1.new" "$1"
 ED
@@ -921,6 +924,118 @@ reuse "a plain commit"
 printf '%s\n' $'doc(x): typed\n\nbody line\n\nStack: t\nHuman-Only: true' >"$tmp/typed"
 GIT_EDITOR=: reuse "a message given with -F" -F "$tmp/typed"
 GIT_EDITOR=: reuse "a message given with -m" -m $'doc(x): typed\n\nbody line\n\nStack: t\nHuman-Only: true'
+
+# Tolerance, counted. Git reads a trailer key without regard to case; this repository writes
+# one spelling. Where a message can be corrected with no doubt about what was meant, the hook
+# corrects it, in the file git commits, and says so, with how often it had to: a reader that
+# tolerates a spelling quietly makes that spelling a standard (RFC 9413). A message that cannot
+# be corrected without a guess is refused. In lint mode nothing can be edited: a key that differs
+# only in case is accepted as that key, so landed history is not refused for case alone.
+logf="$(git rev-parse --git-path commit-msg-tolerated.log)"
+rm -f "$logf"
+same() { # same <description> <expected> <actual>
+	total=$((total + 1))
+	[ "$2" = "$3" ] || {
+		fails=$((fails + 1))
+		echo "self-test: $1:" >&2
+		printf '%s\n' "--- want" "$2" "--- got" "$3" | sed 's/^/    /' >&2
+	}
+}
+canon=$'docs(readme): fine\n\nStack: t\nHuman-Only: true'
+sloppy=$'Docs(README): fine\n\nStack: t\nHuman-only: true'
+gate 0 "a capitalised type, a capitalised scope and a trailer key in the wrong case, edited" \
+	env ED_ALL="$sloppy" git commit -q --allow-empty
+says "wrote 'Docs' as 'docs'" "the scold names the type"
+says "wrote 'README' as 'readme'" "the scold names the scope"
+says "wrote 'Human-only' as 'Human-Only'" "the scold names the key"
+says "1st time" "the scold counts"
+same "the edit sticks in a plain commit" "$canon" "$(stored)"
+same "each tolerance is logged: kind, from, to" $'type\tDocs\tdocs\nscope\tREADME\treadme\ntrailer-key\tHuman-only\tHuman-Only' \
+	"$(cut -f2- "$logf")"
+total=$((total + 1))
+grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+Z	' "$logf" || { fails=$((fails + 1)); echo "self-test: the log line has no date" >&2; }
+gate 0 "a trailer key in the wrong case, with -m" \
+	env GIT_EDITOR=: git commit -q --allow-empty -m $'docs(readme): fine\n\nStack: t\nhuman-only: true'
+says "wrote 'human-only' as 'Human-Only'" "the scold names the key"
+says "2nd time in this clone" "the count of that kind goes up"
+same "the edit sticks with -m" "$canon" "$(stored)"
+printf '%s\n' "$sloppy" >"$tmp/sloppy"
+gate 0 "the same with -F" env GIT_EDITOR=: git commit -q --allow-empty -F "$tmp/sloppy"
+says "3rd time in this clone" "the count of trailer keys is 3"
+same "the edit sticks with -F" "$canon" "$(stored)"
+gate 0 "the same with -e -F" env ED_MSG= git commit -q --allow-empty -e -F "$tmp/sloppy"
+same "the edit sticks with -e -F" "$canon" "$(stored)"
+gate 0 "the same in an amend" env ED_ALL="$sloppy" git commit -q --allow-empty --amend
+same "the edit sticks in an amend" "$canon" "$(stored)"
+gate 0 "the same in an amend with -m" env GIT_EDITOR=: git commit -q --allow-empty --amend -m "$sloppy"
+same "the edit sticks in an amend with -m" "$canon" "$(stored)"
+# The block corrected is the one git reads, prose and all: a key in it is a trailer to git.
+sobbed=$'docs(readme): fine\n\nSigned-off-by: t <t@example.invalid>\na line of prose in the block\nStack: t\n'
+gate 0 "a trailer key in the wrong case, in a block with prose git reads" \
+	env GIT_EDITOR=: git commit -q --allow-empty -m "${sobbed}human-only: true"
+same "the edit sticks in that block" "${sobbed}Human-Only: true" "$(stored)"
+# Only what git reads as a trailer is corrected: a comment line is the person's, whatever its
+# words (GPT final round). Git's trailer parser skips a line that opens with the comment prefix, so
+# 'session-id: ...' under core.commentChar=s, or '# assisted-by: ...' under the default, is a comment
+# in the stored message; written as 'Session-Id:' it became a trailer, beside Human-Only.
+for c in "an 's' comment|-c core.commentChar=s|session-id: this is a literal comment" \
+	"a '#' comment|-c core.commentChar=#|# assisted-by: this is a literal comment"; do
+	IFS='|' read -r cname cflag cline <<<"$c"
+	# shellcheck disable=SC2086 # $cflag is a git option and its value, split on purpose
+	gate 0 "$cname line last that looks like a trailer ($cflag), -m" \
+		env GIT_EDITOR=: git $cflag commit -q --allow-empty -m $'docs(x): a comment\n\nStack: t\nHuman-Only: true\n'"$cline"
+	never "wrote" "a comment line is not corrected ($cflag)"
+	same "a comment line last that looks like a trailer is stored as written ($cflag)" \
+		$'docs(x): a comment\n\nStack: t\nHuman-Only: true\n'"$cline" "$(stored)"
+done
+gate 0 "a comment line between trailers, one trailer key in the wrong case" \
+	env GIT_EDITOR=: git commit -q --allow-empty -m $'docs(x): a comment\n\nStack: t\n# session-id: not a trailer\nhuman-only: true'
+says "wrote 'human-only' as 'Human-Only'" "the trailer beside the comment is corrected"
+same "only the trailer is corrected, the comment stays as written" \
+	$'docs(x): a comment\n\nStack: t\n# session-id: not a trailer\nHuman-Only: true' "$(stored)"
+# No guess, no edit: a refused message is left as typed, and nothing is logged.
+before="$(cat "$logf")"
+gate 1 "an unknown type with a key in the wrong case" env ED_ALL=$'doc(x): a\n\nStack: t\nhuman-only: true' git commit -q --allow-empty
+says "did you mean 'docs'?" "the refusal offers the type"
+never "wrote" "a refused message is not corrected"
+same "a refusal leaves the log alone" "$before" "$(cat "$logf")"
+same "a refusal leaves the typed message in COMMIT_EDITMSG" "human-only: true" "$(grep -o 'human-only: true' "$(git rev-parse --git-path COMMIT_EDITMSG)")"
+# A type that is no type in any case, a scope that is none in any case: refused, not guessed.
+refuse hook type-unknown "unknown type 'Doc'" "Doc(x): y"$'\n\n'"$tr"
+refuse hook scope-chars "scope 'READ ME' may hold only" "docs(READ ME): y"$'\n\n'"$tr"
+# Lint mode: nothing to edit, and a key in the wrong case is that key.
+printf '%s\n' $'docs(x): fine\n\nStack: t\nHuman-only: true' >"$tmp/m"
+cp "$tmp/m" "$tmp/m.orig"
+gate 0 "lint mode: a trailer key in the wrong case is accepted" env FPL_LINT_COMMIT="$(git rev-parse HEAD)" .githooks/commit-msg "$tmp/m"
+never "wrote" "lint mode does not scold"
+same "lint mode leaves the message alone" "$(cat "$tmp/m.orig")" "$(cat "$tmp/m")"
+same "lint mode logs nothing" "$before" "$(cat "$logf")"
+# acommit's own messages are canonical: the hook has nothing to correct.
+"$root/scripts/agent-identity" set t@example.invalid >/dev/null
+printf -v want '%s' "$(scripts/acommit -n -M "Claude Test 1" -S sess -t feat -s x -m "made by acommit" </dev/null | sed '1d;/^--- command ---$/,$d')"
+gate 0 "a commit made by scripts/acommit" sh -c 'scripts/acommit "$@" </dev/null' acommit -M "Claude Test 1" -S sess -t feat -s x -m "made by acommit" -- --allow-empty -q
+never "wrote" "acommit's message needs no correction"
+same "acommit's message is stored as it was made" "$want" "$(stored)"
+same "acommit logs no tolerance" "$before" "$(cat "$logf")"
+rm -f "$(git rev-parse --git-path agent-identity)"
+# A correction touches the header and the trailer keys it corrects, in the file git commits,
+# and nothing else: the body stays as the person wrote it. A --cleanup option on the command
+# line keeps what the config's reading strips, and a correction that wrote back the message as
+# judged dropped a '#' line git was told to keep (GPT review of these branches, finding 9).
+gate 0 "a correction under --cleanup=whitespace, with a '#' line in the body" \
+	env ED_ALL=$'Docs(x): keep\n\n# a line the person wrote\n\nStack: t\nHuman-only: true' \
+	git commit -q --allow-empty --cleanup=whitespace
+same "the correction leaves the body as written" \
+	$'docs(x): keep\n\n# a line the person wrote\n\nStack: t\nHuman-Only: true' "$(stored)"
+# One pass over the trailer keys: each key not known cost a process for every known key, and
+# 100 of them took seconds (finding 10).
+keys="$(for i in $(seq 1 400); do printf 'X-Key-%d: v\n' "$i"; done)"
+SECONDS=0
+gate 0 "a message with 400 trailers of keys not known" env GIT_EDITOR=: git commit -q --allow-empty \
+	-m "docs(x): many keys"$'\n\n'"Stack: t"$'\n'"Human-Only: true"$'\n'"$keys"
+took=$SECONDS
+total=$((total + 1))
+[ "$took" -le 4 ] || { fails=$((fails + 1)); echo "self-test: 400 trailer keys not known took ${took}s, want 4 or less" >&2; }
 
 echo "pre-push self-test: $fails of $total checks failed (bash $BASH_VERSION)"
 if [ -z "${PRE_PUSH_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ]; then
