@@ -487,6 +487,16 @@ gate 1 "an amend of a real revert, not reworded" env GIT_EDITOR=true git commit 
 says "reworded or not" "the refusal says an amend is refused unreworded too"
 says "--no-verify" "the refusal names the way out"
 git -c core.hooksPath=/dev/null reset -q --hard "$spec"
+# A fixup!, squash! or amend! commit is spared the header and trailer gates while it waits
+# for an autosquash, but not the path guards: what it changes lands with the commit it folds
+# into, and the guards judge the message it carries now.
+echo fix >>docs/SPEC.md
+git add docs/SPEC.md
+gate 1 "a fixup commit that edits a protected file, without [spec]" \
+	git commit -q --fixup=HEAD
+says "edits a protected spec file" "the oracle guard judges a fixup"
+gate 0 "the same fixup with [spec]" git commit -q --fixup=HEAD -m "[spec]"
+git -c core.hooksPath=/dev/null reset -q --hard "$spec"
 # A real merge: judged by its parents (lint mode) or by the merge git is making (hook mode).
 git switch -q -c agent/claude/stack/m-side "$spec"
 echo side >>docs/SPEC.md

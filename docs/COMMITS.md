@@ -42,7 +42,9 @@ lacks. Add an address to the workflow first (an agent's token cannot push
 `.github/workflows/`, so the owner does), then to the file.
 
 Judged after the fact, a `fixup!`, `squash!` or `amend!` commit fails (a rebase-merge would
-land it as it is), and the atomicity check is skipped.
+land it as it is), and the atomicity check is skipped. When it is made, such a commit is
+spared every gate but the path guards: one that edits a protected spec or policy file carries
+its own marker (`git commit --fixup=<commit> -m "[spec]"`).
 
 A real merge and a real revert pass unjudged, since git wrote their messages. A merge is a
 `Merge ...` commit with more than one parent (or one in the making); a revert is a commit,
