@@ -99,7 +99,8 @@ an amend of a merge or revert is refused there, reworded or not: amend one with
 - **[gate]** `Assisted-By` **and** `Session-Id` are both present — **or** a single
   `Human-Only: true` line for a hand-made human commit, never both.
 - **[gate]** on a stack branch — `stack/<name>[/<part>]`, or the same under `agent/<id>/`
-  (`.agents/BRANCHES.md`) — the message carries `Stack: <name>`; the value is always `[a-z0-9][a-z0-9._-]*`. `scripts/acommit` derives it
+  (`.agents/BRANCHES.md`) — the message carries `Stack: <name>`; a message holds at most one
+  `Stack:`, and its value is always `[a-z0-9][a-z0-9._-]*`. `scripts/acommit` derives it
   from the branch (`-K <name>` overrides). Stack refs are deleted after landing and a linear
   landing leaves no merge commit, so this trailer is the in-repo record of which commits formed
   one unit: `git log --grep='^Stack: typed-let$'` recovers the stack years later, forge or no

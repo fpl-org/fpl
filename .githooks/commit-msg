@@ -20,8 +20,8 @@
 #      requires the literal marker [policy], and such a commit may not also touch
 #      the code or tests of a project (fpl/ or tests/, at the root or in bootstrap/)
 #   8. stack record: on a stack branch, human or agent (scripts/branch-lint),
-#      the message carries 'Stack: <name>'; a Stack: value is always
-#      [a-z0-9][a-z0-9._-]*
+#      the message carries 'Stack: <name>'; a message holds at most one Stack:, whose
+#      value is always [a-z0-9][a-z0-9._-]*
 #   9. agent territory: a commit that is not Human-Only sits on an agent branch
 #      (agent/<id>/... or the flat vendor form <id>/<slug>, .agents/BRANCHES.md).
 #      The branch <id> is the lead, not an exclusive author, so it is NOT
@@ -374,8 +374,13 @@ guard_paths
 # The refs of a landed stack get deleted and a linear landing leaves no merge
 # commit, so the trailer is the only in-repo record of which commits formed one
 # unit. Detached HEAD (mid-rebase) has no branch and is not judged.
-stack_val="$(sed -n 's/^Stack: //p' <<<"$trailers" | head -n1)"
-if [ -n "$stack_val" ]; then
+# One stack a commit, so one Stack: trailer: a second, even of the same name, is a record that
+# reads two ways.
+n_stack="$(grep -c '^Stack:' <<<"$trailers" || true)"
+[ "$n_stack" -le 1 ] \
+	|| fail "the message holds $n_stack 'Stack:' trailers; a commit belongs to one stack: keep one 'Stack:' trailer"
+stack_val="$(sed -n 's/^Stack: //p' <<<"$trailers")"
+if [ "$n_stack" -eq 1 ]; then
 	printf '%s' "$stack_val" | grep -Eq '^[a-z0-9][a-z0-9._-]*$' \
 		|| fail "Stack: value '$stack_val' must match [a-z0-9][a-z0-9._-]*"
 fi

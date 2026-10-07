@@ -680,6 +680,21 @@ says "Human-Only: true beside" "lower-case keys are the same trailers"
 GIT_AUTHOR_EMAIL=$claude msg 1 "the same, in a block with prose git reads" \
 	"feat(x): a"$'\n\n'"$sob"$'\n'"Stack: m"$'\n'"assisted-by: claude"$'\n'"session-id: s"$'\n'"Human-Only: true"
 says "Human-Only: true beside" "the prose line does not hide the block"
+# One Stack: trailer, and a valid one (finding 4).
+msg 1 "a second Stack: trailer with an invalid value" \
+	"feat(x): a"$'\n\n'"Stack: m"$'\n'"Stack: INVALID"$'\n'"Human-Only: true"
+says "Stack:" "the second Stack: is judged"
+msg 1 "the same Stack: trailer twice" \
+	"feat(x): a"$'\n\n'"Stack: m"$'\n'"Stack: m"$'\n'"Human-Only: true"
+says "one 'Stack:' trailer" "a repeated Stack: is refused"
+msg 1 "a second Stack: trailer with a lower-case key" \
+	"feat(x): a"$'\n\n'"Stack: m"$'\n'"stack: y"$'\n'"Human-Only: true"
+says "one 'Stack:' trailer" "a lower-case key is a Stack: too"
+msg 1 "the same, in a block with prose git reads" \
+	"feat(x): a"$'\n\n'"$sob"$'\n'"Stack: m"$'\n'"stack: y"$'\n'"Human-Only: true"
+says "one 'Stack:' trailer" "the prose line does not hide the block"
+msg 1 "an empty Stack: trailer" "feat(x): a"$'\n\n'"Stack:"$'\n'"Human-Only: true"
+says "must match" "an empty Stack: value is refused"
 
 echo "pre-push self-test: $fails of $total checks failed (bash $BASH_VERSION)"
 if [ -z "${PRE_PUSH_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ]; then
