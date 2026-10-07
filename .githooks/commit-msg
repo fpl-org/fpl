@@ -56,8 +56,40 @@ lint_commit="${FPL_LINT_COMMIT:-}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+# A refusal names the rule that fired (the id is stable: it is what a self-test and a review
+# cite), the part that fails, and what to do about it. In hook mode it also says how to get the
+# typed message back: git keeps it in COMMIT_EDITMSG until the next commit, whether the message
+# came from an editor, -m, -F, a pathspec or an amend (measured, git 2.54), so there is no copy
+# to make and none to lose.
+reuse_hint() {
+	# shellcheck disable=SC2016 # the command is shown, for the person to run, not run here
+	local f='"$(git rev-parse --git-path COMMIT_EDITMSG)"'
+	[ -z "$lint_commit" ] || return 0
+	case "$given" in */COMMIT_EDITMSG | COMMIT_EDITMSG) ;; *) f="\"$given\"" ;; esac
+	{
+		echo "    your message is kept; to correct it in your editor:"
+		echo "        git commit -e -F $f"
+		echo "    (add --amend, -a or the paths if you meant them)"
+	} >&2
+}
+fail() { # fail <rule id> <what is wrong> <what to do>
+	{
+		echo "commit-msg [$1]: $2"
+		echo "    remedy: $3"
+		echo "    see .agents/COMMITS.md"
+	} >&2
+	reuse_hint
+	exit 1
+}
+
 # The private list is local, so there is nothing to judge a landed commit against in CI.
-[ -n "$lint_commit" ] || "$repo_root/scripts/leak-check" --message "$given"
+if [ -z "$lint_commit" ]; then
+	"$repo_root/scripts/leak-check" --message "$given" || {
+		rc=$?
+		reuse_hint
+		exit "$rc"
+	}
+fi
 
 # effective_message <file>: the message in <file> as git will store it, on stdout.
 #
@@ -134,12 +166,6 @@ else
 fi
 first="$(sed -n '1p' "$msg_file")"
 
-fail() {
-	echo "commit-msg: $1" >&2
-	echo "           see .agents/COMMITS.md" >&2
-	exit 1
-}
-
 # 7. oracle guard, 7b. policy guard -------------------------------------------
 # One pass over the paths the commit changes. They are read raw and NUL-separated: without
 # -z git quotes a name holding non-ASCII, quote, backslash or control characters, in quotes
@@ -185,7 +211,7 @@ guard_paths() {
 
 	if [ "$touches_spec" -eq 1 ]; then
 		grep -Fq '[spec]' "$msg_file" \
-			|| fail "this commit edits a protected spec file; add [spec] to the message if intentional"
+			|| fail spec-guard "this commit edits a protected spec file" "add the marker [spec] to the message if the edit is intended"
 	fi
 
 	# 7b. The gate's strictness lives in files an attempt could otherwise loosen in the same
@@ -193,16 +219,16 @@ guard_paths() {
 	# named as one, and travels alone, so a reviewer sees it apart from any code.
 	if [ "$touches_policy" -eq 1 ]; then
 		grep -Fq '[policy]' "$msg_file" \
-			|| fail "this commit changes the gate's policy ($policy_names); add [policy] to the message if intentional"
+			|| fail policy-guard "this commit changes the gate's policy ($policy_names)" "add the marker [policy] to the message if the change is intended"
 		if [ "$touches_code" -eq 1 ]; then
-			fail "a [policy] commit may not also change fpl/ or tests/ (or bootstrap/fpl/, bootstrap/tests/); split it"
+			fail policy-split "a [policy] commit may not also change fpl/ or tests/ (or bootstrap/fpl/, bootstrap/tests/)" "split it: the policy change in one commit, the code in another"
 		fi
 	fi
 }
 
 case "$first" in
 "fixup! "*|"squash! "*|"amend! "*)
-	[ -z "$lint_commit" ] || fail "'${first%% *}' commit left in the branch; autosquash before landing"
+	[ -z "$lint_commit" ] || fail fixup-left "'${first%% *}' commit left in the branch; autosquash before landing" "run git rebase -i --autosquash, so the fixup is folded into the commit it amends"
 	# Spared the header and trailer gates while it waits for an autosquash, not the path
 	# guards: what it changes lands in the commit it folds into, and its message is the one
 	# place a [spec] or [policy] for it can be written now.
@@ -304,27 +330,73 @@ fi
 # 1. header ----------------------------------------------------------------
 types="$(commit_types_re)"
 if printf '%s' "$first" | grep -Eq '^[^:]*: [[:space:]]'; then
-	fail "summary must follow ': ' with no space before it — got: $first"
+	fail summary-space "summary must follow ': ' with no space before it — got: $first" \
+		"write the summary right after the ': '"
 fi
 if ! printf '%s' "$first" | grep -Eq "^(${types})\($(commit_scope_re)\)!?: .+"; then
+	# Name the part that fails: the type, then the scope, else the shape as a whole.
+	shape='^([^(!: ]+)(\(([^()]*)\))?(!)?: .+$'
+	if [[ $first =~ $shape ]]; then
+		h_type="${BASH_REMATCH[1]}" h_scope="${BASH_REMATCH[3]}" h_has_scope="${BASH_REMATCH[2]}"
+		low_type="$(commit_lower "$h_type")"
+		case " $COMMIT_TYPES " in
+		*" $h_type "*) ;;
+		*" $low_type "*)
+			fail type-case "type must be lowercase: $h_type -> $low_type" "write the type in lower case: $low_type"
+			;;
+		*)
+			near="$(commit_nearest_type "$h_type")"
+			guess="" eg=""
+			if [ -n "$near" ]; then
+				guess=": did you mean '$near'?"
+				eg=" (for example $near($h_scope): ...)"
+			fi
+			fail type-unknown "unknown type '$h_type'$guess" "use one of: $COMMIT_TYPES$eg"
+			;;
+		esac
+		if [ -z "$h_has_scope" ]; then
+			fail scope-missing "the header has no scope: $first" \
+				"name the touched area in parentheses after the type, for example $h_type(hooks): ..."
+		fi
+		if ! printf '%s' "$h_scope" | grep -Eq "^$(commit_scope_re)\$"; then
+			low_scope="$(commit_lower "$h_scope")"
+			if [ -n "$h_scope" ] && printf '%s' "$low_scope" | grep -Eq "^$(commit_scope_re)\$"; then
+				fail scope-case "scope must be lowercase: $h_scope -> $low_scope" "write the scope in lower case: $low_scope"
+			fi
+			what="scope is empty"
+			[ -z "$h_scope" ] || what="scope '$h_scope' may hold only [$COMMIT_SCOPE_CHARS]"
+			fail scope-chars "$what" \
+				"name the touched area with lower-case letters, digits and / . _ - (for example hooks)"
+		fi
+	fi
 	note=""
 	case "${lint_commit:+lint}:$first" in
 	:"Merge "*|:'Revert "'*|:'Reapply "'*)
-		note=$'\n           a Merge, Revert or Reapply subject passes for a real merge or revert only; git does not tell this hook of an amend, so an amend of one, reworded or not, is judged as a new commit; to amend one: git commit --amend --no-verify'
+		note=$'\n    a Merge, Revert or Reapply subject passes for a real merge or revert only; git does not tell this hook of an amend, so an amend of one, reworded or not, is judged as a new commit; to amend one: git commit --amend --no-verify'
 		;;
 	esac
-	fail "header must be '<type>(<scope>): <summary>' — got: $first$note"
+	fail header-shape "header must be '$COMMIT_SKELETON' — got: $first$note" \
+		"write the first line as <type>(<scope>): <summary>, for example fix(hooks): name the failing part"
 fi
-[ "${#first}" -le "$COMMIT_HEADER_MAX" ] || fail "header is ${#first} chars (>$COMMIT_HEADER_MAX)"
+if [ "${#first}" -gt "$COMMIT_HEADER_MAX" ]; then
+	fail header-length "header is ${#first} chars (>$COMMIT_HEADER_MAX)" \
+		"shorten the summary by $((${#first} - COMMIT_HEADER_MAX)) characters; the body is for the detail"
+fi
 summary="${first#*: }"
 case "$summary" in
-[[:upper:]]*) fail "summary must start lower-case: $summary" ;;
-*.)     fail "summary must not end with a period: $summary" ;;
+[[:upper:]]*)
+	fail summary-case "summary must start lower-case: $summary -> $(commit_lower "${summary:0:1}")${summary:1}" \
+		"start the summary with a lower-case letter"
+	;;
+*.)
+	fail summary-period "summary must not end with a period: $summary" "drop the final period of the summary"
+	;;
 esac
 
 # 2. blank line 2 --------------------------------------------------------------
 if [ -n "$(sed -n '2p' "$msg_file")" ]; then
-	fail "line 2 must be blank (one blank line between header and body)"
+	fail blank-line-2 "line 2 must be blank (one blank line between header and body)" \
+		"put exactly one empty line under the header"
 fi
 
 # The trailer block: the last paragraph, when git reads it as one (git interpret-trailers
@@ -397,7 +469,11 @@ for ((k = 2; k < n; k++)); do
 	[ "${#line}" -le "$COMMIT_BODY_MAX" ] && continue
 	# allowed only if there is no space past the limit (an unbreakable token)
 	rest="${line:$COMMIT_BODY_MAX}"
-	case "$rest" in *" "*) fail "body line $((k + 1)) is ${#line} chars (>$COMMIT_BODY_MAX): $line" ;; esac
+	case "$rest" in *" "*)
+		fail body-width "body line $((k + 1)) is ${#line} chars (>$COMMIT_BODY_MAX): $line" \
+			"wrap it at $COMMIT_BODY_MAX columns (fenced code, table rows and a long URL or path are exempt)"
+		;;
+	esac
 done
 
 human=0
@@ -409,10 +485,12 @@ bang=0 breaking=0
 case "${first%%: *}" in *!) bang=1 ;; esac
 if grep -Eq '^BREAKING-CHANGE: [^[:space:]]' <<<"$trailers"; then breaking=1; fi
 if [ "$bang" -eq 1 ] && [ "$breaking" -eq 0 ]; then
-	fail "'!' marks a breaking change: add a 'BREAKING-CHANGE: <what breaks>' trailer"
+	fail breaking-trailer "'!' marks a breaking change, and the message has no BREAKING-CHANGE trailer" \
+		"add a 'BREAKING-CHANGE: <what breaks>' trailer, or drop the '!'"
 fi
 if [ "$bang" -eq 0 ] && grep -q '^BREAKING-CHANGE:' <<<"$trailers"; then
-	fail "a BREAKING-CHANGE trailer needs '!' before the ':' of the header"
+	fail breaking-bang "a BREAKING-CHANGE trailer, and no '!' in the header" \
+		"put '!' before the ':' of the header, or drop the trailer"
 fi
 
 # 4. provenance --------------------------------------------------------------
@@ -420,13 +498,16 @@ fi
 # never both. Human-Only switches off the author and territory gates, so beside an agent's
 # trailers it would let an agent commit claim to be a hand-made one.
 if [ "$human" -eq 1 ] && grep -Eq '^(Assisted-By|Session-Id): ' <<<"$trailers"; then
-	fail "Human-Only: true beside Assisted-By or Session-Id; a commit is an agent's or a person's: keep one form"
+	fail provenance-mixed "Human-Only: true beside Assisted-By or Session-Id; a commit is an agent's or a person's" \
+		"keep one form: drop 'Human-Only: true' from an agent's commit, or the agent trailers from yours"
 fi
 if [ "$human" -eq 0 ]; then
 	grep -Eq '^Assisted-By: [^[:space:]]' <<<"$trailers" \
-		|| fail "missing 'Assisted-By:' trailer (or 'Human-Only: true')"
+		|| fail provenance-assisted "missing 'Assisted-By:' trailer (or 'Human-Only: true')" \
+			"commit with scripts/acommit, or add the line 'Human-Only: true' to a commit you wrote yourself"
 	grep -Eq '^Session-Id: [^[:space:]]' <<<"$trailers" \
-		|| fail "missing 'Session-Id:' trailer (or 'Human-Only: true')"
+		|| fail provenance-session "missing 'Session-Id:' trailer (or 'Human-Only: true')" \
+			"commit with scripts/acommit -S <session id>, or add 'Human-Only: true' to a commit you wrote yourself"
 
 	# 6. author identity ----------------------------------------------------
 	id_file="$(git rev-parse --git-dir)/agent-identity"
@@ -435,7 +516,8 @@ if [ "$human" -eq 0 ]; then
 	[ -z "$lint_commit" ] || want="$want ${FPL_AGENT_EMAILS:-}"
 	want="$(printf '%s' "$want" | xargs)" # trim
 	[ -n "$want" ] \
-		|| fail "agent identity unset; run scripts/agent-identity set <email> (or commit with 'Human-Only: true')"
+		|| fail agent-identity-unset "agent identity unset" \
+			"run scripts/agent-identity set <email> (or commit with 'Human-Only: true')"
 	known=0
 	# An array, not an unquoted $want: the shell would glob an address such as
 	# 41898282+claude[bot]@users.noreply.github.com against the working directory.
@@ -444,7 +526,8 @@ if [ "$human" -eq 0 ]; then
 		[ "$author_email" = "$w" ] && known=1
 	done
 	[ "$known" -eq 1 ] \
-		|| fail "author email is '$author_email', expected the machine account '$want' (use acommit, or -H for a human commit)"
+		|| fail author-email "author email is '$author_email', expected the machine account '$want'" \
+			"commit with scripts/acommit, or -H for a human commit"
 fi
 
 # 5. trailer order --------------------------------------------------------------
@@ -457,7 +540,7 @@ while IFS= read -r tok; do
 		[ "$tok" = "$known" ] && rank=$idx
 	done
 	[ "$rank" -eq 0 ] && continue
-	[ "$rank" -ge "$prev" ] || fail "trailer '$tok' is out of order (expected: $order)"
+	[ "$rank" -ge "$prev" ] || fail trailer-order "trailer '$tok' is out of order" "write the trailers in this order: $order"
 	prev=$rank
 done < <(sed -n 's/^\([A-Za-z][A-Za-z-]*\):.*/\1/p' <<<"$trailers")
 
@@ -472,11 +555,12 @@ guard_paths
 # reads two ways.
 n_stack="$(grep -c '^Stack:' <<<"$trailers" || true)"
 [ "$n_stack" -le 1 ] \
-	|| fail "the message holds $n_stack 'Stack:' trailers; a commit belongs to one stack: keep one 'Stack:' trailer"
+	|| fail stack-many "the message holds $n_stack 'Stack:' trailers; a commit belongs to one stack" \
+		"keep one 'Stack:' trailer"
 stack_val="$(sed -n 's/^Stack: //p' <<<"$trailers")"
 if [ "$n_stack" -eq 1 ]; then
 	printf '%s' "$stack_val" | grep -Eq "^${COMMIT_STACK_RE}\$" \
-		|| fail "Stack: value '$stack_val' must match $COMMIT_STACK_RE"
+		|| fail stack-value "Stack: value '$stack_val' must match $COMMIT_STACK_RE" "name the stack in lower case, as the branch does"
 fi
 if [ -n "$lint_commit" ]; then
 	branch="${FPL_LINT_BRANCH:-}"
@@ -488,7 +572,8 @@ parsed=""
 want_stack="$(printf '%s\n' "$parsed" | sed -n 's/^stack=//p')"
 if [ -n "$want_stack" ]; then
 	[ "$stack_val" = "$want_stack" ] \
-		|| fail "on branch $branch the message needs 'Stack: $want_stack' (got '${stack_val:-none}'; acommit adds it)"
+		|| fail stack-missing "on branch $branch the message needs 'Stack: $want_stack' (got '${stack_val:-none}')" \
+			"add the line 'Stack: $want_stack' to the trailers (scripts/acommit does)"
 fi
 
 # 9. agent territory ------------------------------------------------------------
@@ -500,7 +585,11 @@ if [ "$branch_gate" != "off" ] && [ -n "$branch" ] && [ "$human" -eq 0 ]; then
 	agent-*|vendor) : ;;
 	*)
 		note="agent commit on '$branch', which is not an agent branch; work on agent/<id>/${branch} (.agents/BRANCHES.md)"
-		[ "$branch_gate" = "warn" ] && echo "commit-msg: $note" >&2 || fail "$note"
+		if [ "$branch_gate" = "warn" ]; then
+			echo "commit-msg [agent-territory]: $note" >&2
+		else
+			fail agent-territory "$note" "switch to an agent branch, or mark a hand-made commit with 'Human-Only: true'"
+		fi
 		;;
 	esac
 fi
