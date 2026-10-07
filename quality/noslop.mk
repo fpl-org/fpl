@@ -7,7 +7,8 @@
 #
 #   make fix      rewrite what can be rewritten: ruff's safe fixes, then the formatter
 #   make quick    the inner loop, seconds: lint, format, and the tests, stopping at the first
-#   make check    the one gate; green here means done (AGENTS.md)
+#   make check    the one gate; green here means done (AGENTS.md); its last step runs one
+#                 example from the root, through the entry a README points to (make run)
 #   make harden   the long search: 20x the examples, CrossHair on every property and every
 #                 contract, mutants
 #   make ready    check + harden + gates + a known-vulnerability audit; before a PR leaves draft
@@ -21,7 +22,7 @@
 #                 committed; no other lane runs it (scripts/diagrams)
 
 .DEFAULT_GOAL := check
-.PHONY: fix quick check harden ready gates tools map venv pristine clean-noslop
+.PHONY: fix quick check harden ready gates tools map venv pristine clean-noslop rootrun
 
 # The root is where this file's directory sits one level down. It is read before anything
 # else is included, so it is this file's, wherever make runs and whatever includes it.
@@ -79,6 +80,25 @@ pristine:
 	  exit 1; \
 	fi
 
+# The walker's entry from the root, `make run` (the root's Makefile), run on one real example
+# and compared with its .expected, from the root and with the lanes' own PYTHONPATH taken away:
+# the lanes run inside bootstrap/, where the package is found, so only this step notices that
+# the entry itself broke (it did, in the move to bootstrap/). A missing example, or an empty
+# .expected that would match an entry that prints nothing, is refused.
+ROOT_EXAMPLE := features/draft2/examples/01-frames
+
+rootrun:
+	@test -s $(ROOT)/$(ROOT_EXAMPLE).fpl -a -s $(ROOT)/$(ROOT_EXAMPLE).expected || { \
+	  echo "check: the example the root's entry is run on, $(ROOT_EXAMPLE), or its .expected is missing" >&2; \
+	  echo "       or empty; name another in ROOT_EXAMPLE (quality/noslop.mk)" >&2; exit 1; }
+	@cd $(ROOT) && env -u PYTHONPATH $(MAKE) --no-print-directory run FILE=$(ROOT_EXAMPLE).fpl \
+	  > $(CURDIR)/$(OUT)/rootrun.out 2> $(CURDIR)/$(OUT)/rootrun.err || { \
+	  echo "check: make run FILE=$(ROOT_EXAMPLE).fpl, run from the root, failed:" >&2; \
+	  sed 's/^/         /' $(CURDIR)/$(OUT)/rootrun.err >&2; exit 1; }
+	@diff -u $(ROOT)/$(ROOT_EXAMPLE).expected $(OUT)/rootrun.out || { \
+	  echo "check: make run FILE=$(ROOT_EXAMPLE).fpl, run from the root, printed other than its .expected" >&2; \
+	  exit 1; }
+
 check: venv pristine
 	@mkdir -p $(OUT)
 	$(BIN)/ruff check --config $(Q)/ruff.toml $(RUFF_ALL) fpl tests
@@ -101,6 +121,7 @@ check: venv pristine
 	$(BIN)/vulture fpl tests --min-confidence 60
 	$(BIN)/pylint --rcfile=/dev/null --persistent=n --score=n --disable=all --enable=duplicate-code \
 	  --min-similarity-lines=6 --ignore-imports=yes --ignore-signatures=yes fpl
+	$(MAKE) --no-print-directory rootrun
 
 harden: check
 	@$(BIN)/python -c 'import z3' 2>/dev/null || { echo 'harden: z3 does not load, so CrossHair cannot run;' \
