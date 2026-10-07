@@ -1,9 +1,9 @@
 """Every citation of an example program names one that exists.
 
 The harness cites the maintainer's examples by name: HOLES.md, the docs and the test
-docstrings point at a program as a path under `features/`, as `examples/<name>` or, with a
-line, as `<name>:<line>`. A rename under `features/` leaves those citations pointing at
-nothing, and nothing else notices. A bare name with no line is not taken as a citation:
+docstrings point at a program as a path under `fpl/features/`, as `examples/<name>` or, with
+a line, as `<name>:<line>`. A rename under `fpl/features/` leaves those citations pointing
+at nothing, and nothing else notices. A bare name with no line is not taken as a citation:
 `python -m fpl file.fpl` and a test's `tmp_path / "p.fpl"` name no example.
 """
 
@@ -26,7 +26,7 @@ CITERS = sorted(
 )
 
 # A full path, `examples/<name>`, or `<name>:<line>`; a glob or a brace never matches.
-PATH = re.compile(r"\bfeatures/[\w.-]+/examples/[\w.-]+\.fpl\b")
+PATH = re.compile(r"\b(?:fpl/)?features/[\w.-]+/examples/[\w.-]+\.fpl\b")
 NAME = re.compile(r"(?:\bexamples/([\w.-]+\.fpl)\b|(?<![\w./-])([\w.-]+\.fpl):\d)")
 
 
@@ -39,7 +39,7 @@ def dangling(text: str) -> list[str]:
 
 def test_a_renamed_program_dangles() -> None:
     name = "gone.fpl"
-    path = f"features/draft1/examples/{name}"
+    path = f"fpl/features/draft1/examples/{name}"
     assert dangling(f"{path}:3, {name}:3 and draft1.fpl:2") == [path, name, name]
 
 

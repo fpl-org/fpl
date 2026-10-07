@@ -8,7 +8,7 @@ tokens, characters, lines and bytes per token updates as you type.
     uv run --project tools/tokview tokview            # then open http://127.0.0.1:8765/
     uv run --project tools/tokview tokview --port 9000 --root .
 
-The snippet menu lists `features/*/examples/*.fpl` of the checkout the tool sits in (or of
+The snippet menu lists `fpl/features/*/examples/*.fpl` of the checkout the tool sits in (or of
 `--root`).
 
 Controls:
