@@ -72,7 +72,7 @@ request that moves the package is drawn where the package was.
 | `deptry` | an import of a package `pyproject.toml` does not declare, or a declared one nobody imports |
 | `vulture` | code nothing uses |
 | `pylint` duplicate-code | six or more lines repeated |
-| `make run` from the root | the entry a README points to failing, or printing other than the `.expected` of `features/draft2/examples/01-frames` (the lanes run in `bootstrap/`, so only this step runs the walker from the root) |
+| `make run` from the root | the entry a README points to failing, or printing other than the `.expected` of `fpl/features/draft2/examples/01-frames` (the lanes run in `bootstrap/`, so only this step runs the walker from the root) |
 
 On the milestone-0 skeleton `make check` takes about 6 seconds and `make harden` about 3
 minutes, almost all of it CrossHair.
