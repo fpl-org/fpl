@@ -5,20 +5,40 @@ name: Codex review
 # mentions `@codex review` on it, and the maintainer's plan pays for it. Its automatic mode
 # covers only pull requests he opens himself, while agent work is opened by the machine
 # account, and reviewing every pull request needs a higher plan. So this posts the mention
-# for him, once per pull request, when there is something to judge: opened as ready,
-# reopened, or taken out of draft. Not on every push; a re-review is one more mention by hand.
+# for him.
 #
-# The token is the maintainer's fine-grained personal access token for this repository
-# alone, Pull requests read/write, stored as the secret CODEX_REVIEW_TOKEN: Codex answers a
-# mention by its author. Pull requests from forks get no secrets, so they are skipped, and so
-# are Dependabot's, whose runs read Dependabot secrets, not these.
+# When: once per head of a ready pull request. That is on opened as ready, reopened, taken out
+# of draft, and after every push (synchronize), so a re-review after fixes needs nobody to
+# ask by hand. The cost is one Codex review per push to a ready pull request, on the
+# maintainer's plan; the concurrency group below makes a burst of pushes ask once, for the
+# last head.
+#
+# Drafts are skipped. The order here is bots first: CodeRabbit reads the draft, and Codex and
+# Claude read it once it is ready, so a draft that is still changing every few minutes does
+# not spend reviews.
+#
+# Why the maintainer's token: the Codex connector refuses a mention from the machine account
+# (psjg-claude) and answers only a linked ChatGPT user. The token is the maintainer's
+# fine-grained personal access token for this repository alone, Pull requests read/write,
+# stored as the secret CODEX_REVIEW_TOKEN: Codex answers a mention by its author. Pull
+# requests from forks get no secrets, so they are skipped, and so are Dependabot's, whose
+# runs read Dependabot secrets, not these.
+#
+# Once per head, not once per pull request: the mention carries no commit sha, so the job asks
+# only when no "@codex review" comment, by anyone, is newer than this event. The event's own
+# updated_at is the push time for a synchronize, which a commit date is not: a commit made
+# before the previous ask and pushed after it keeps its old date and would look already asked,
+# and a rebase can keep old dates too. The payload is a snapshot, so a run that starts late
+# still compares against the push that caused it. A manual mention from the maintainer after
+# a push therefore also counts as the ask. Re-running the job (run attempt 2 or later) always
+# asks, which is the route for a second look at an unchanged head.
 on:
   pull_request:
-    types: [opened, ready_for_review, reopened]
+    types: [opened, ready_for_review, reopened, synchronize]
 
 concurrency:
   group: codex-review-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions: {}
 
@@ -34,10 +54,17 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.CODEX_REVIEW_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
+          SINCE: ${{ github.event.pull_request.updated_at }}
+          ATTEMPT: ${{ github.run_attempt }}
         run: |
-          # The concurrency group above serialises this check with the post.
-          asked=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json comments \
-            --jq '[.comments[] | select(.body == "@codex review")] | length')
-          if [ "$asked" -eq 0 ]; then
+          # pipefail: a gh that fails must fail the step, not reach jq as an empty list that
+          # reads as "never asked".
+          set -euo pipefail
+          # Mentions newer than the event already ask for this head. ISO 8601 UTC strings
+          # compare correctly as text.
+          asked=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json comments |
+            jq --arg since "$SINCE" \
+              '[.comments[] | select(.body == "@codex review" and .createdAt > $since)] | length')
+          if [ "$asked" -eq 0 ] || [ "$ATTEMPT" -gt 1 ]; then
             gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "@codex review"
           fi
