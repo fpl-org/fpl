@@ -49,7 +49,7 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Depends on it: fpl/lex.py (_special, _brackets), tests/test_parse.py
 - Default in force: a ; or ⍝ line comment is copied through untouched: quotes and brackets in it are not counted, as the grammar's LCOMMENT swallows them
 - Closes by: design, by confirming a line comment is opaque to the pre-lexer
-- Evidence: SHAR gram/test_fpl.py:18-38 and :40-67 count inside comments; features/match/examples/04-4-list-patterns.fpl:16
+- Evidence: SHAR gram/test_fpl.py:18-38 and :40-67 count inside comments; fpl/features/match/examples/04-4-list-patterns.fpl:16
 
 ## block-comment-at-line-start
 - Depends on it: fpl/lex.py (_pair)
@@ -100,7 +100,7 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Evidence: SHAR gram/test_fpl.py:34 (elif ch in CLOSE and stack: stack.pop()), :45-46 (only openers are special)
 
 ## snippet-split
-- Depends on it: features/{draft1,draft2,draft3,server,sketch,match}/examples/*.fpl; tests/test_conformance.py::test_example[*]; tests/test_ambiguity.py::test_no_ambiguity_in_the_corpus[*]
+- Depends on it: fpl/features/{draft1,draft2,draft3,server,sketch,match}/examples/*.fpl; tests/test_conformance.py::test_example[*]; tests/test_ambiguity.py::test_no_ambiguity_in_the_corpus[*]
 - Default in force: one .fpl per snippet set, cut at ;;; lines where the section parses alone, else joined to the part before (draft1, draft3 and server stay whole; draft2 is split 11 ways, sketch 7, match 7); the parts are byte copies of the tangled hand-off and concatenate to the snippet byte for byte
 - Closes by: maintainer or design side, re-cutting the fixtures or confirming the rule
 - Evidence: decision (b); the fixture commits 42a7b7c, f30b1ef, e04a708, b75ee2f, 4b8213b, 3302d19, each section parsing alone; handoff/SHAR-syntax.org:828 "The snippet corpus"
@@ -109,22 +109,22 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Depends on it: fpl/driver.py, fpl/desugar.py listing, tests/test_desugar.py, every .expected that is not an error line
 - Default in force: each top-level line that is not a definition runs on a fresh stack and prints one line, the stack it leaves as fpl/print.py writes the items that push it, with a bar between two literals that would otherwise strand; a definition prints nothing; a program with no line to run prints nothing. A section prints in the printer's spelling, [ 1 2 3 + ] for the Draft's [1‿2‿3 +]
 - Closes by: design side, a Draft statement of what a program prints
-- Evidence: decision (d); draft2 §frames, features/draft2/examples/01-frames.fpl:2-4 (one result per line; line 3 has nothing below after line 2 left 2 3 4); claims D2.1-D2.3
+- Evidence: decision (d); draft2 §frames, fpl/features/draft2/examples/01-frames.fpl:2-4 (one result per line; line 3 has nothing below after line 2 left 2 3 4); claims D2.1-D2.3
 
 ## expected-evolution
-- Depends on it: every features/*/examples/*.expected (28, _template aside); tests/test_conformance.py::test_example[*]; tests/test_main.py::test_a_file_that_cannot_run_prints_one_error_line
+- Depends on it: every fpl/features/*/examples/*.expected (28, _template aside); tests/test_conformance.py::test_example[*]; tests/test_main.py::test_a_file_that_cannot_run_prints_one_error_line
 - Default in force: every .expected starts as the one line ERROR: 1:1 no evaluator yet; a step-3 PR replaces one in its own [spec] commit with a value transcribed from the example's trailing ; comments or a Draft claim, source lines named, never from the implementation's output; the maintainer did not write these values
 - Closes by: maintainer, reviewing each [spec] commit; each step-3 PR closes it per example
-- Evidence: decisions (b) and (c); AGENTS.md "The oracle rule"; features/*/examples/*.expected at 3302d197
+- Evidence: decisions (b) and (c); AGENTS.md "The oracle rule"; fpl/features/*/examples/*.expected at 3302d197
 
 ## unimplemented-words
-- Depends on it: fpl/desugar.py unimplemented; the 23 of 28 examples still at ERROR: 1:1 no evaluator yet, each named with the first thing desugar refuses: features/draft1/examples/draft1.fpl (newline), features/draft2/examples/03-operatives-thunks.fpl (debug), features/draft2/examples/04-effects-holes-ascription.fpl (shape), features/draft2/examples/05-the-dictionary-is.fpl (words), features/draft2/examples/06-constructors-run-backwards.fpl (unpair), features/draft2/examples/08-objects-are-directories.fpl (dict), features/draft2/examples/10-quasiquote-inside.fpl ($q, an unquote), features/draft2/examples/11-laziness.fpl (curry), features/draft3/examples/paths.fpl (shape), features/match/examples/01-1-constructors-run.fpl (pos), features/match/examples/02-2-the-same.fpl (a pattern on the effect line), features/match/examples/03-3-multiple-dispatch.fpl (Asteroid), features/match/examples/04-4-list-patterns.fpl (false), features/match/examples/05-5-prolog-s-family.fpl (x in mother's body), features/match/examples/06-6-python-s-keywords.fpl (a record pattern on the effect line), features/server/examples/server.fpl (+in/data on the effect line), features/sketch/examples/05-5-multiple-dispatch.fpl (shape/r), and features/sketch/examples/01, 02, 03, 04, 06 and 07 (seam ∈ … in a directory, no definition nor bind)
+- Depends on it: fpl/desugar.py unimplemented; the 23 of 28 examples still at ERROR: 1:1 no evaluator yet, each named with the first thing desugar refuses: fpl/features/draft1/examples/draft1.fpl (newline), fpl/features/draft2/examples/03-operatives-thunks.fpl (debug), fpl/features/draft2/examples/04-effects-holes-ascription.fpl (shape), fpl/features/draft2/examples/05-the-dictionary-is.fpl (words), fpl/features/draft2/examples/06-constructors-run-backwards.fpl (unpair), fpl/features/draft2/examples/08-objects-are-directories.fpl (dict), fpl/features/draft2/examples/10-quasiquote-inside.fpl ($q, an unquote), fpl/features/draft2/examples/11-laziness.fpl (curry), fpl/features/draft3/examples/paths.fpl (shape), fpl/features/match/examples/01-1-constructors-run.fpl (pos), fpl/features/match/examples/02-2-the-same.fpl (a pattern on the effect line), fpl/features/match/examples/03-3-multiple-dispatch.fpl (Asteroid), fpl/features/match/examples/04-4-list-patterns.fpl (false), fpl/features/match/examples/05-5-prolog-s-family.fpl (x in mother's body), fpl/features/match/examples/06-6-python-s-keywords.fpl (a record pattern on the effect line), fpl/features/server/examples/server.fpl (+in/data on the effect line), fpl/features/sketch/examples/05-5-multiple-dispatch.fpl (shape/r), and fpl/features/sketch/examples/01, 02, 03, 04, 06 and 07 (seam ∈ … in a directory, no definition nor bind)
 - Default in force: desugar refuses, before anything runs, all but: decimal numbers, strings without islands, [ ], ( ) of one cell, ⟨ ⟩ of literals, bars, tabs, blocks, name : ins -- outs definitions (each slot a name or name: Type), →x and ->x of a plain name or a path, #name symbols, { } of plain keys each with one item pushing one value, name/ heads with a block of definitions, subdirectories and #name bind lines, paths a/b and ../x that name a defined word, w/history, w/doc, w/effect, a match line with its block of rows in a definition's body, clauses of one word whose typed inputs cross only where their meet is a clause or two builtin type words make them disjoint, and the words of fpl/ast_core.py EFFECTS (+ - times swap dup drop enclose , pair cons ! if swap-args repeat each scan fold, and ? and _ in a term), with ERROR: 1:1 no evaluator yet (the skeleton's message and position, reused)
 - Closes by: each step-3 part, shrinking the set
 - Evidence: fpl/driver.py (skeleton); fpl/ast_core.py EFFECTS; each example run through fpl.driver.run at 203e0ba, the refusal traced to its caller in fpl/desugar.py (resolve, origin, effect_line, mount)
 
 ## doc-absent
-- Depends on it: fpl/desugar.py (Catalog.enter, DOC), fpl/eval.py (evaluate), tests/test_comments.py, features/draft3/examples/paths.fpl:10
+- Depends on it: fpl/desugar.py (Catalog.enter, DOC), fpl/eval.py (evaluate), tests/test_comments.py, fpl/features/draft3/examples/paths.fpl:10
 - Default in force: every word w has w/doc, as it has w/history; the doc goes with the definition in force (Define.doc), so a word with no doc, or shadowed by a definition with none, pushes the empty string
 - Closes by: design, saying what an undocumented word's doc is (a refusal, the empty string, or no such word)
 - Evidence: claim D3.2 (draft-3.md:13); paths.fpl:10 asks math/mean/doc of a mean with no ;; line
@@ -133,10 +133,10 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Depends on it: fpl/trivia.py (docstrings, _aimed), tests/test_trivia.py, tests/test_comments.py
 - Default in force: a ;; is a doc when the next code line is a head (winning over a body it opens), or when it opens a head's body before any of its code, as SHAR comments() reads it; else it is before the next code line; a head is a line whose first cell's second item is the plain word :; a docstring is each doc's text, marks and the whitespace around it dropped, those above the head first, joined by newlines; ;;; and ;;;; stay bound to their level wherever they stand (hole comment-levels), where the SHAR reads them at column 0 only
 - Closes by: design, fixing a docstring's text and whether both places may hold one
-- Evidence: SHAR gram/test_fpl.py:255-281; features/draft2/examples/04-effects-holes-ascription.fpl:3
+- Evidence: SHAR gram/test_fpl.py:255-281; fpl/features/draft2/examples/04-effects-holes-ascription.fpl:3
 
 ## fresh-unify-space
-- Depends on it: features/match (Prolog's family), features/sketch (logic tree)
+- Depends on it: fpl/features/match (Prolog's family), fpl/features/sketch (logic tree)
 - Default in force: not implemented; a program using fresh, unify or space reports ERROR: 1:1 no evaluator yet
 - Closes by: maintainer, scheduling two-way unification
 - Evidence: campaign scope, step 3
@@ -145,7 +145,7 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Depends on it: fpl/types.py filled, wanted, reported; fpl/driver.py run; fpl/__main__.py; fpl/eval.py unfilled; tests/test_types.py test_a_goal_is_reported_with_the_effect_that_fills_it, test_a_goal_run_is_refused_where_it_stands; tests/test_main.py test_a_goal_goes_to_stderr_before_the_program_runs; tests/test_match.py test_a_wildcard_row_whose_body_is_a_goal_is_reported
 - Default in force: ? is a word of no fixed effect (a Call, no core node; desugar balances it as taking and leaving nothing); elaboration reports it as data, GOAL <line>:<col> ? : <ins> -- <outs>, the driver handing each line to a reporter the command line points at stderr, before any line runs; the goal takes the whole stack under it and leaves what the code after it takes, or, when nothing follows, what the effect line promises (none on a top-level line); an input of the body prints as t and its index, a sort as its name; elaboration goes on with values of no known sort; running it is ERROR: <line>:<col> unfilled goal; a goal under a control word, in a quotation or a { } value, or in a body a control word leaves untyped is not reported
 - Closes by: design side, the report's form and destination and a goal's extent (the whole stack, or what it is ascribed)
-- Evidence: handoff/SHAR-syntax.org:906 and :1016 (S40); claims D2.7 (features/draft2/examples/04-effects-holes-ascription.fpl:5, grade and pick not builtins, so it cannot evaluate yet) and D4.3, features/match/examples/01-1-constructors-run.fpl:15
+- Evidence: handoff/SHAR-syntax.org:906 and :1016 (S40); claims D2.7 (fpl/features/draft2/examples/04-effects-holes-ascription.fpl:5, grade and pick not builtins, so it cannot evaluate yet) and D4.3, fpl/features/match/examples/01-1-constructors-run.fpl:15
 
 ## print-obligation-unlisted
 - Depends on it: tests/test_print.py, scripts/props
@@ -176,14 +176,14 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Evidence: session grammar-fix/proof2.log; tests/test_parse.py::test_a_comment_is_held_by_its_line, tests/test_trivia.py
 
 ## comment-levels-vs-corpus
-- Depends on it: fpl/parse.py (_Build.comment), features/match/examples
-- Default in force: a ; with no code before it that continues no note is kept as a note line (one empty frame and its note), not refused as the rule says, because the corpus has four: features/match/examples/04-4-list-patterns.fpl:15-16, 07-7-abc-s-keywords.fpl:2-3; no ;; is after code
+- Depends on it: fpl/parse.py (_Build.comment), fpl/features/match/examples
+- Default in force: a ; with no code before it that continues no note is kept as a note line (one empty frame and its note), not refused as the rule says, because the corpus has four: fpl/features/match/examples/04-4-list-patterns.fpl:15-16, 07-7-abc-s-keywords.fpl:2-3; no ;; is after code
 - Closes by: PSJ or Caesura rewriting those lines (as ;; or as notes after code); then the builder refuses the standalone ;
 - Evidence: session grammar-fix/measure.log, proof2.log
 
 ## note-alignment
 - Depends on it: fpl/parse.py (_Build.comment), fpl/print.py (_Out.column, comment)
-- Default in force: PSJ's decision of 2026-09-29: a continuation line of a note carries as many tabs before its ; as the code line has before its own ; (elastic tabstops), and a continued note stands in its own cell; the printer sets every note in its own cell and aligns its continuations; the builder does not refuse a misaligned continuation, since the corpus has two: features/match/examples/03-3-multiple-dispatch.fpl:8 (1 tab, note at 5), 06-6-python-s-keywords.fpl:6 (0 tabs, note at 1)
+- Default in force: PSJ's decision of 2026-09-29: a continuation line of a note carries as many tabs before its ; as the code line has before its own ; (elastic tabstops), and a continued note stands in its own cell; the printer sets every note in its own cell and aligns its continuations; the builder does not refuse a misaligned continuation, since the corpus has two: fpl/features/match/examples/03-3-multiple-dispatch.fpl:8 (1 tab, note at 5), 06-6-python-s-keywords.fpl:6 (0 tabs, note at 1)
 - Closes by: Caesura folding the rule into the hand-off; PSJ or Caesura realigning those lines; then the builder refuses with "a continued note aligns with the note above: N tabs"
 - Evidence: session grammar-fix/proof2.log (note alignment section)
 
@@ -227,7 +227,7 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Depends on it: fpl/desugar.py desugar, fpl/eval.py evaluate, tests/test_desugar.py test_lcurry_puts_a_swap_between
 - Default in force: definitions are global to the program; a word may be used above its definition; a later definition of a name shadows an earlier one for every line, builtins included
 - Closes by: design side, with bind's ordered log (decision f) once 03-binders lands
-- Evidence: features/draft2/examples/02-currying.fpl:4-5 (lcurry uses curry); decision (f) "later shadows earlier"
+- Evidence: fpl/features/draft2/examples/02-currying.fpl:4-5 (lcurry uses curry); decision (f) "later shadows earlier"
 
 ## pervasive-arithmetic
 - Depends on it: fpl/eval.py arithmetic, tests/test_desugar.py
@@ -239,23 +239,23 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Depends on it: fpl/desugar.py enclosure, element
 - Default in force: ⟨ ⟩ holds literals only (numbers, strings, quotations, lists), each item one element, nothing strands inside; , joins two lists
 - Closes by: design side, what a ⟨ ⟩ body may compute
-- Evidence: features/draft2/examples/08-objects-are-directories.fpl:7 (⟨⟩ as an empty accumulator)
+- Evidence: fpl/features/draft2/examples/08-objects-are-directories.fpl:7 (⟨⟩ as an empty accumulator)
 
 ## number-glyphs
 - Depends on it: fpl/desugar.py atom
 - Default in force: ∞ and π, which the affix pass reads as numbers, are refused as unimplemented; numbers are integers and decimals, a decimal kept exact as written
 - Closes by: implementer, once an example that uses them evaluates
-- Evidence: fpl/lex.py NUMBER; features/draft1/examples/draft1.fpl:29-32
+- Evidence: fpl/lex.py NUMBER; fpl/features/draft1/examples/draft1.fpl:29-32
 
 ## effect-query
 - Depends on it: claim D3.4
 - Default in force: each effect line is kept as declared data (fpl/ast_core.py Effect, on Define; EFFECTS for builtins); w/effect pushes a defined word's effect as a list of strings, ins, "--", outs, then "+fail" when a match in its body is partial (tests/test_match.py); the query words/*/effect is not implemented
 - Closes by: the part that implements directories and paths
-- Evidence: claim D3.4 (features/draft3/examples/paths.fpl)
+- Evidence: claim D3.4 (fpl/features/draft3/examples/paths.fpl)
 
 ## stack-claims-deferred
 - Depends on it: claims D1.6, D1.9, D1.10, D2.8, D2.10, D2.14, D2.15, D2.16 (part 02-stack)
-- Default in force: open, their examples at no evaluator yet (D2.9 is paid by features/draft2/examples/07-scope-follows-the.expected, 2 4 6): D2.8 and D2.10 symbols, pair, dict, method, inverse; D2.14 and D2.15 unquote; D2.16 laziness; D1.6 apply, whose two-child if is refused (hole if-valence); D1.9 and D1.10 ∞, inner, log, repeat and a block of literals under a head that is not a definition
+- Default in force: open, their examples at no evaluator yet (D2.9 is paid by fpl/features/draft2/examples/07-scope-follows-the.expected, 2 4 6): D2.8 and D2.10 symbols, pair, dict, method, inverse; D2.14 and D2.15 unquote; D2.16 laziness; D1.6 apply, whose two-child if is refused (hole if-valence); D1.9 and D1.10 ∞, inner, log, repeat and a block of literals under a head that is not a definition
 - Closes by: the parts that implement those words, each with a test named by its claim id
 - Evidence: design/claims.jsonl rows with part 02-stack
 
@@ -273,15 +273,15 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 
 ## quotation-slot-words
 - Depends on it: fpl/ast_core.py EFFECTS; tests/test_desugar.py test_join_takes_code_and_enclose_a_value, test_a_block_is_one_node_per_head (D1.4), test_children_are_quotations_before_the_head (D1.5)
-- Default in force: , takes two code slots (it joins quotations as data, never runs them); enclose takes a value; curry and lcurry, defined in features/draft2/examples/02-currying.fpl with bare names, take values
+- Default in force: , takes two code slots (it joins quotations as data, never runs them); enclose takes a value; curry and lcurry, defined in fpl/features/draft2/examples/02-currying.fpl with bare names, take values
 - Closes by: design side (question to Caesura: are , enclose and curry code, thunk or polymorphic; , also joins lists, and curry takes a thunk in 11-laziness.fpl:3)
-- Evidence: features/draft2/examples/02-currying.fpl:2-5; features/draft2/examples/11-laziness.fpl:3; claims D1.4, D1.5
+- Evidence: fpl/features/draft2/examples/02-currying.fpl:2-5; fpl/features/draft2/examples/11-laziness.fpl:3; claims D1.4, D1.5
 
 ## bare-slot-names
-- Depends on it: fpl/desugar.py typed; every effect line in features/ and tests/
+- Depends on it: fpl/desugar.py typed; every effect line in fpl/features/ and tests/
 - Default in force: a bare name on an effect line stays legal, an untyped value slot; only `name: Type` declares a thunk or code slot
 - Closes by: design side (question to Caesura: do bare names stay, and do the old bracket slots `or : [ p ] [ q ]` survive)
-- Evidence: design doc FON tab S49 item 1; features/sketch/examples/01-1-a-logic.fpl:12-13
+- Evidence: design doc FON tab S49 item 1; fpl/features/sketch/examples/01-1-a-logic.fpl:12-13
 
 ## thunk-type-dropped
 - Depends on it: fpl/desugar.py slot, declaration; tests/test_desugar.py test_core_without_sugar_writes_back_as_its_source
@@ -290,10 +290,10 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Evidence: design doc FON tab S49 item 1 (`f : x: Int  y: Int -- z: Int`)
 
 ## double-use-refusal
-- Depends on it: features/server/examples/server.fpl:21 (a ;; comment, not run)
+- Depends on it: fpl/features/server/examples/server.fpl:21 (a ;; comment, not run)
 - Default in force: not refused in this part: a quotation both forced and inspected needs a kind on each stack cell through dup, which desugar does not track
 - Closes by: fpl/types.py (#59, types), carrying thunk and code kinds through the stack and refusing the double use
-- Evidence: features/server/examples/server.fpl:19-21; design doc FON tab S49 rule 5
+- Evidence: fpl/features/server/examples/server.fpl:19-21; design doc FON tab S49 rule 5
 
 ## number-bound
 - Depends on it: fpl/ast_core.py DIGITS, fpl/desugar.py number, fpl/eval.py arithmetic, tests/test_desugar.py::test_a_numeral_longer_than_digits_is_refused_at_its_position, ::test_a_result_of_more_than_digits_digits_is_refused_at_the_word
@@ -305,40 +305,40 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Depends on it: fpl/desugar.py (body, quote, scoped), fpl/eval.py (substitute), tests/test_binders.py
 - Default in force: →x names the top for the rest of the sequence it is written in: a definition's body across its lines and the blocks under them, one top-level line, one child line under a thunk or code slot, one quotation or section; a child under a value slot runs in place, so its binder lives on in the sequence the child runs in, like a frame's (hole child-slots); eval substitutes the value for the name there (lexical, a nested binder of the name shadows, nothing mutates); past it the name is no word; the printer writes → for both spellings
 - Closes by: design, by saying where a binder's scope ends at top level and in a child line
-- Evidence: decision (f); features/server/examples/server.fpl:3-4 (p bound on one body line, read on the next); features/draft2/examples/07-scope-follows-the.fpl:3-5; features/draft2/examples/08-objects-are-directories.fpl:6-10 rebinds acc and s in a repeat child and reads acc after it, which shadowing cannot give
+- Evidence: decision (f); fpl/features/server/examples/server.fpl:3-4 (p bound on one body line, read on the next); fpl/features/draft2/examples/07-scope-follows-the.fpl:3-5; fpl/features/draft2/examples/08-objects-are-directories.fpl:6-10 rebinds acc and s in a repeat child and reads acc after it, which shadowing cannot give
 
 ## dict-values
 - Depends on it: fpl/desugar.py (dict), fpl/eval.py (gathered), tests/test_binders.py
 - Default in force: { } pairs a plain name key with the next item, which must push exactly one value (a literal, symbol, list, quotation, dict, bound name or a word taking none); each value runs on a fresh stack when the dict is reached; ( ) as a value, a strand, an odd count and a path key are refused as unimplemented; a repeated key is refused where it repeats with fpl/fon.py's message; symbols do not strand
 - Closes by: design, by saying what a dict value may be and where one ends
-- Evidence: features/match/examples/06-6-python-s-keywords.fpl:2-5; fpl/fon.py dict; features/draft2/examples/08-objects-are-directories.fpl:3 (#x #y swap)
+- Evidence: fpl/features/match/examples/06-6-python-s-keywords.fpl:2-5; fpl/fon.py dict; fpl/features/draft2/examples/08-objects-are-directories.fpl:3 (#x #y swap)
 
 ## require-ensure-rescue
 - Depends on it: nothing yet
 - Default in force: no example uses require, ensure or rescue; they are unknown words, refused as unimplemented
 - Closes by: design, with an example of f/require
-- Evidence: grep -l over features/*/examples/*.fpl finds none; decision (f)
+- Evidence: grep -l over fpl/features/*/examples/*.fpl finds none; decision (f)
 
 ## directory-log
-- Depends on it: fpl/desugar.py (Catalog, directory, mount, _Desugar.call, origin), tests/test_binders.py; features/draft3/examples/paths.fpl:1-9, features/match/examples/05-5-prolog-s-family.fpl:2, features/server/examples/server.fpl:4
+- Depends on it: fpl/desugar.py (Catalog, directory, mount, _Desugar.call, origin), tests/test_binders.py; fpl/features/draft3/examples/paths.fpl:1-9, fpl/features/match/examples/05-5-prolog-s-family.fpl:2, fpl/features/server/examples/server.fpl:4
 - Default in force: a head name/ with a block is a directory; its definitions, subdirectories and #name bind mounts form one ordered log, read whole before any line runs (the rule top-level definitions already follow), where the latest entry holding a name wins; a word is a directory holding its history; a name resolves at desugar time from the word's own directory outward, ../x from the directory holding the word; a mount sees only the words its directory defines, never its mounts; a second head of the same name appends to the same log; a name/ head without a block, a deeper a/b/ head, any other line in a directory, bind of anything but a literal #name, a #name that is no directory and ../x on a top-level line are refused as unimplemented
 - Closes by: design, by saying whether a log entry is visible above the line that adds it, whether mounts chain, and what a directory holds besides definitions and binds
-- Evidence: claims D3.1 (paths.fpl:7 "ordered log append (§5.2): later shadows earlier"), D3.5 (paths.fpl:13 "takes ../io lexically"); decision (f) f/require; features/sketch/examples/07-7-facts-signed.fpl:18 binds a quotation of paths, which this default refuses
+- Evidence: claims D3.1 (paths.fpl:7 "ordered log append (§5.2): later shadows earlier"), D3.5 (paths.fpl:13 "takes ../io lexically"); decision (f) f/require; fpl/features/sketch/examples/07-7-facts-signed.fpl:18 binds a quotation of paths, which this default refuses
 
 ## history-shape
-- Depends on it: fpl/eval.py (evaluate), fpl/desugar.py (HISTORY), tests/test_binders.py; features/draft3/examples/paths.fpl:11
+- Depends on it: fpl/eval.py (evaluate), fpl/desugar.py (HISTORY), tests/test_binders.py; fpl/features/draft3/examples/paths.fpl:11
 - Default in force: w/history pushes a ⟨ ⟩ list of the definitions of w that a later one shadows, oldest first, each its body as a quotation; the one in force is not in it; one definition gives ⟨⟩
 - Closes by: design, by saying what a history entry is (body, effect, source) and whether the one in force belongs to it
 - Evidence: claim D3.3 (paths.fpl:11 "shadowed definitions")
 
 ## effect-sugar-io
-- Depends on it: features/draft3/examples/paths.fpl:13, features/server/examples/server.fpl:2 and 10
+- Depends on it: fpl/features/draft3/examples/paths.fpl:13, fpl/features/server/examples/server.fpl:2 and 10
 - Default in force: only the lexical half of D3.5 is in force (../x resolves from the directory holding the word); an effect line naming +io or any +effect is refused as unimplemented, so nothing threads an effect linearly
 - Closes by: the effects part, with the design saying what +io desugars to
 - Evidence: claim D3.5 (paths.fpl:13 "sugar: takes ../io lexically, threads it linearly (§4.3 answer)")
 
 ## with-record-union
-- Depends on it: features/match/examples/06-6-python-s-keywords.fpl:5
+- Depends on it: fpl/features/match/examples/06-6-python-s-keywords.fpl:5
 - Default in force: with is no word and is refused as unimplemented; it needs record patterns in a head (06-6-python-s-keywords.fpl:2), which no part implements yet
 - Closes by: implementer of 06-match, after record-pattern heads
 - Evidence: claim D4.12 ("with: curry-with-union; later calls still override")
@@ -362,13 +362,13 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Evidence: combined-draft.md:134; draft-2.md:17-18 (my-if forces c before if)
 
 ## if-valence
-- Depends on it: features/draft1/examples/draft1.fpl:16-18 (apply), tests/test_control.py
+- Depends on it: fpl/features/draft1/examples/draft1.fpl:16-18 (apply), tests/test_control.py
 - Default in force: if : c t e -- with c a value; a block under if gives t and e, children first, so the form works where c is already below, as in a body; draft1's two-child apply, a condition quotation and one branch, meets a non-0/1 condition and is refused; there is no when
 - Closes by: syntax author, rewriting draft1's apply with when : c t -- as combined-draft row 14 says
 - Evidence: combined-draft.md:134; draft-1.md:20-22
 
 ## step-stack
-- Depends on it: fpl/eval.py single, each, scan, fold; features/draft2/examples/07-scope-follows-the, 09-rotates
+- Depends on it: fpl/eval.py single, each, scan, fold; fpl/features/draft2/examples/07-scope-follows-the, 09-rotates
 - Default in force: each runs its quotation on a fresh stack holding one item, scan and fold on one holding the result so far and the next item; a step leaves one value or is refused with "each step leaves one value"; the first item starts scan and fold, and fold over nothing is refused (ERROR at fold, "fold over nothing"), so draft-2's mean, whose comment says empty input gives ∞, cannot reach ∞ through [+] fold; the mechanism is gathered's fresh stack for a dict value
 - Closes by: design side, if a step may reach below its item, and whether fold takes a seed or mean is rewritten
 - Evidence: claim D2.13; draft-1.md:6; draft-2.md:23-25 (mean)
@@ -380,7 +380,7 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Evidence: combined-draft.md:44 (the one carrier is the nested array)
 
 ## text-as-array
-- Depends on it: claims D1.1, D1.2, D1.3; features/draft1/examples/draft1.fpl:1-5
+- Depends on it: claims D1.1, D1.2, D1.3; fpl/features/draft1/examples/draft1.fpl:1-5
 - Default in force: tab = and trim space split pair are no words and each over a string is refused, so draft1's read stays at no evaluator yet; D1.2's scan then fold is tested on a strand of 0 and 1, times standing for and
 - Closes by: a later part, adding characters and the text words
 - Evidence: draft-1.md:4-8
@@ -389,37 +389,37 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Depends on it: fpl/eval.py pair, unpair; tests/test_match.py
 - Default in force: a b pair is the two-item list ⟨ a b ⟩, so a pair prints as a list and ( cons x xs ) matches it; cons : x xs -- ys puts x before a list's items, the order ( cons x xs ) gives
 - Closes by: design, saying what a pair is and cons's argument order
-- Evidence: features/match/examples/01-1-constructors-run.fpl:5-8; features/match/examples/04-4-list-patterns.fpl:5,8 (x y pair cons after xs ys zip reads cons as xs x -- ys)
+- Evidence: fpl/features/match/examples/01-1-constructors-run.fpl:5-8; fpl/features/match/examples/04-4-list-patterns.fpl:5,8 (x y pair cons after xs ys zip reads cons as xs x -- ys)
 
 ## match-arity
 - Depends on it: fpl/desugar.py _Desugar.match, row; tests/test_match.py
 - Default in force: a match line takes the values the body's balance counts where it stands (the effect line's inputs, less what binders took), and leaves the balance at 0; a row is that many pattern cells then at most a body cell, else refused at the row; match outside a definition's body is an unknown word
 - Closes by: design, saying what a match takes and whether code may follow it
-- Evidence: claim D4.7; features/match/examples/05-5-prolog-s-family.fpl:3-8
+- Evidence: claim D4.7; fpl/features/match/examples/05-5-prolog-s-family.fpl:3-8
 
 ## match-consumes
 - Depends on it: fpl/eval.py matching; tests/test_match.py test_a_symmetric_case_delegates
 - Default in force: a match takes its values; a row's body sees only the names its patterns bind, so _ leaves nothing behind
 - Closes by: design, for claim D4.4, whose row body swap collide reads the values the match took
-- Evidence: claim D4.4; features/match/examples/03-3-multiple-dispatch.fpl:5; :4 and :7 leave one value only if the match takes its arguments
+- Evidence: claim D4.4; fpl/features/match/examples/03-3-multiple-dispatch.fpl:5; :4 and :7 leave one value only if the match takes its arguments
 
 ## pin-scope
 - Depends on it: fpl/desugar.py _Desugar.simple, local; tests/test_match.py
 - Default in force: $x pins a name bound by a binder or by an earlier pattern of the row; effect-line names are no locals (as in every body), so $x of one is refused as unimplemented
 - Closes by: design, saying whether an effect line's names are bound in its body
-- Evidence: claim D4.6; features/match/examples/04-4-list-patterns.fpl:13-14 (pins x, the effect line's name)
+- Evidence: claim D4.6; fpl/features/match/examples/04-4-list-patterns.fpl:13-14 (pins x, the effect line's name)
 
 ## guard-test
 - Depends on it: fpl/eval.py matched; tests/test_match.py
 - Default in force: p ∈ test matches when p does and the word test, run on the value alone, leaves just 1; types are not implemented, so pos, Ship and Asteroid are unknown words, refused as unimplemented
 - Closes by: fpl/types.py (07-goals and types), ascription to a type
-- Evidence: claims D4.1, D4.4; features/match/examples/01-1-constructors-run.fpl:12
+- Evidence: claims D4.1, D4.4; fpl/features/match/examples/01-1-constructors-run.fpl:12
 
 ## exhaustive-by-catch-all
 - Depends on it: fpl/desugar.py fallible, catches; tests/test_match.py test_a_match_is_exhaustive_exactly_when_its_effect_has_no_fail
 - Default in force: a match is exhaustive when some row's patterns are all _ or names; ⟨⟩ then ( cons x xs ) is partial and carries +fail; a written +fail on an effect line is not read
 - Closes by: fpl/types.py, exhaustiveness over a type's constructors
-- Evidence: claim D4.5; features/match/examples/04-4-list-patterns.fpl:3-5
+- Evidence: claim D4.5; fpl/features/match/examples/04-4-list-patterns.fpl:3-5
 
 ## fail-raises
 - Depends on it: fpl/eval.py matching
@@ -440,10 +440,10 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Evidence: fpl/desugar.py listing, written
 
 ## effect-head-defaults
-- Depends on it: fpl/desugar.py effect_line; features/match/examples/06-6-python-s-keywords.fpl; tests/test_match.py test_a_record_pattern_in_a_head_waits_for_defaults
+- Depends on it: fpl/desugar.py effect_line; fpl/features/match/examples/06-6-python-s-keywords.fpl; tests/test_match.py test_a_record_pattern_in_a_head_waits_for_defaults
 - Default in force: an effect line is plain names only; a record pattern in the head (claim D4.11, S39: sep and end bound by the pattern, the caller's record unioned over the defaults) is refused as unimplemented, ERROR: 1:1 no evaluator yet
 - Closes by: the part that implements records as signatures and with (S39), outside 06-match's scope; design, saying where a head's defaults bind
-- Evidence: claim D4.11; features/match/examples/06-6-python-s-keywords.fpl:2-3; fpl/desugar.py effect_line
+- Evidence: claim D4.11; fpl/features/match/examples/06-6-python-s-keywords.fpl:2-3; fpl/desugar.py effect_line
 
 ## typed-fragment
 - Depends on it: fpl/types.py Kind, ARROWS, met, matched, agreed; tests/test_types.py test_a_well_typed_program_runs_to_a_value and test_a_step_keeps_the_sorts_a_state_leaves (the obligations of [fpl.types]), test_an_input_a_row_does_arithmetic_on_is_a_number_for_its_word, test_rows_agree_on_the_sort_a_later_row_finds, test_a_dead_row_counts_for_the_sorts_its_word_leaves
@@ -455,7 +455,7 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Depends on it: fpl/types.py filled; fpl/eval.py nothing; tests/test_types.py test_a_hole_in_a_term_is_inferred_as_nothing, test_a_hole_that_is_not_nothing_is_refused_at_its_span; tests/test_match.py test_what_is_no_pattern_is_refused (_ as a row's body)
 - Default in force: _ in a term is inferred only as nothing: accepted when the code after it takes the stack as it stands (and, at the end of a body, the effect line's count), run as a no-op; otherwise ERROR: <line>:<col> cannot infer _ : <ins> -- <outs>, the shape a goal there would report; no code is synthesised; a _ in code elaboration does not type runs as nothing
 - Closes by: design side, what the elaborator may infer for _ (D2.7 "_ would ask it to infer"), and whether a _ in untyped code is refused
-- Evidence: claim D2.7 (features/draft2/examples/04-effects-holes-ascription.fpl:5); handoff/SHAR-syntax.org:1016 (S40: "_ is inferred by the elaborator (or a wildcard, or absence)")
+- Evidence: claim D2.7 (fpl/features/draft2/examples/04-effects-holes-ascription.fpl:5); handoff/SHAR-syntax.org:1016 (S40: "_ is inferred by the elaborator (or a wildcard, or absence)")
 
 ## symbolic-lane-unbounded
 - Depends on it: make harden and make ready (quality/noslop.mk:81, HYPOTHESIS_PROFILE=symbolic pytest); every unit's gate.ready

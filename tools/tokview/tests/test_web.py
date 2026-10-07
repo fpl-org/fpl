@@ -47,7 +47,7 @@ class FakeOpener:
 
 @pytest.fixture
 def root(tmp_path: Path) -> Path:
-    examples = tmp_path / "features" / "x" / "examples"
+    examples = tmp_path / "fpl" / "features" / "x" / "examples"
     examples.mkdir(parents=True)
     (examples / "a.fpl").write_text("1 2 +\n\n")
     (examples / "a.expected").write_text("3\n")
