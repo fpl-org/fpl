@@ -28,7 +28,8 @@ Keep talk about the vision sober, and the harness small: `docs/notes/2026-09-19-
                       package fpl, its tests, pyproject.toml, Makefile, mutants.allow,
                       HOLES.md, handoff/)
   features/           the conformance suite: the maintainer's specs and examples
-  Makefile            runs the noslop lanes (make check, ...) in bootstrap/
+  Makefile            runs the noslop lanes (make check, ...) in bootstrap/, and the walker from
+                      the root: make run FILE=<file.fpl>, make repl
   .claude/            Claude Code commands, subagents, skill, hooks
   scripts/            acommit, commit-lint, restack, setup, agent-identity, new-worktree,
                       branch-lint, forward-only, layer, pr, review, land, task,
@@ -86,6 +87,11 @@ make check   # ruff, pyright and mypy strict, 100% branch coverage, CRAP <= 8, a
 `make check` green ⇔ the work is done. There is no other definition of done. Do not report a
 feature complete on a red or unrun `make check`. Before a PR leaves draft, `make ready` adds
 the long search: more examples, CrossHair, and mutation testing.
+
+To run the walker, from the root of any checkout: `make run FILE=path/to/p.fpl` runs a file
+and `make repl` starts the REPL (`make repl ARGS='--session s.log'`). The package is
+`bootstrap/fpl`, so a bare `python -m fpl` from the root finds no module; `make check` ends by
+running one example through `make run` and diffing it with its `.expected`.
 
 The gate's configuration is policy: it lives in the harness (`quality/`), a change to it
 carries `[policy]` and no code, and `make check` refuses to run against an uncommitted one.

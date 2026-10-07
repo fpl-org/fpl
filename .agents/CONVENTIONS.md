@@ -22,6 +22,8 @@ bootstrap/fpl/
   driver.py         parse → desugar → (typecheck) → eval. Shared by CLI and tests.
   repl.py           interactive loop.
   __main__.py       `python -m fpl file.fpl` runs a file; `python -m fpl` starts the REPL.
+                    From the root: `make run FILE=file.fpl`, `make repl` (the package is
+                    bootstrap/fpl, so `python -m fpl` runs only inside bootstrap/).
 ```
 
 Hard rules:
@@ -53,7 +55,8 @@ bootstrap/tests/
 
 `.expected` format:
 
-- Normal case: exact stdout of `python -m fpl <file>`.
+- Normal case: exact stdout of `python -m fpl <file>`, which `make run FILE=<file>` prints
+  from the root.
 - Error case: a single line `ERROR: <line>:<col> <message>` — no Python traceback ever reaches
   the user.
 
