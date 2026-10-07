@@ -18,7 +18,7 @@ pointing back to `<root>/.git/worktrees/<name>/`.
 docs/         the language's own: DESIGN.md, SPEC.md, ROADMAP.md, notes/
 bootstrap/    the walker, a project of its own: its package fpl, tests, pyproject.toml,
               Makefile, mutants.allow, HOLES.md, handoff/
-features/     the conformance suite, the maintainer's
+fpl/           FPL's own tree: so far fpl/features/, the conformance suite, the maintainer's
 quality/ scripts/ .githooks/ .claude/    the harness
 Makefile      runs the noslop lanes in bootstrap/ (make check, make ready, ...)
 ```
@@ -73,7 +73,7 @@ is a thin wrapper over it.
 | Side | Paths |
 | --- | --- |
 | harness | `docs/`, `.agents/`, `.claude/`, `scripts/`, `quality/`, `.githooks/`, `AGENTS.md`, `CLAUDE.md`, `flake.nix`, `flake.lock`, `.envrc` |
-| implementation | `bootstrap/`, `features/`, `fpl/`, `tests/`, `pyproject.toml`, `Makefile`, `mutants.allow` |
+| implementation | `bootstrap/`, `fpl/` (with `fpl/features/`), `tests/`, `pyproject.toml`, `Makefile`, `mutants.allow` |
 | neutral | every other path (`README.md`, `.gitignore`, `.github/`, `tools/`, `LICENSE`, ...): goes with either side |
 
 `fpl/` stays implementation after the move to `bootstrap/`: it becomes FPL's own tree.

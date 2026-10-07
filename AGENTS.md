@@ -27,7 +27,8 @@ Keep talk about the vision sober, and the harness small: `docs/notes/2026-09-19-
   bootstrap/          the walker: the Python implementation, a project of its own (the
                       package fpl, its tests, pyproject.toml, Makefile, mutants.allow,
                       HOLES.md, handoff/)
-  features/           the conformance suite: the maintainer's specs and examples
+  fpl/                FPL's own tree, the language written in itself; so far it holds
+                      fpl/features/, the conformance suite: the maintainer's specs and examples
   Makefile            runs the noslop lanes (make check, ...) in bootstrap/, and the walker from
                       the root: make run FILE=<file.fpl>, make repl
   .claude/            Claude Code commands, subagents, skill, hooks
@@ -102,16 +103,16 @@ Do not loosen a check to get to green; say which check is wrong and why.
 Conformance is driven by human-authored fixtures:
 
 ```
-features/<name>/spec.md               surface syntax, desugaring, semantics
-features/<name>/examples/*.fpl        programs exercising the feature
-features/<name>/examples/*.expected   expected stdout, or `ERROR: <line>:<col> <message>`
+fpl/features/<name>/spec.md               surface syntax, desugaring, semantics
+fpl/features/<name>/examples/*.fpl        programs exercising the feature
+fpl/features/<name>/examples/*.expected   expected stdout, or `ERROR: <line>:<col> <message>`
 ```
 
 **The maintainer writes `spec.md`, the `.fpl` examples, and the `.expected` files.** An
 agent's job is to make `make check` green against them. If an agent writes both a feature and
 its own oracle, the oracle proves nothing.
 
-`features/*/spec.md`, `features/*/examples/*`, `docs/DESIGN.md`, and `docs/SPEC.md` are
+`fpl/features/*/spec.md`, `fpl/features/*/examples/*`, `docs/DESIGN.md`, and `docs/SPEC.md` are
 protected two ways: `.githooks/commit-msg` rejects a commit touching them without the literal
 `[spec]` marker in the message, and the Claude `guard-specs` hook blocks the edit unless the
 session sets `FPL_SPEC_EDIT=1`. Other harnesses honour the `[spec]` rule by convention. If you think a spec

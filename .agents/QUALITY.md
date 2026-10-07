@@ -224,7 +224,7 @@ the same commit as its code can make any code pass. So:
   `bootstrap/`; `.githooks/commit-msg`), so the change is reviewed on its own.
 - The gate judges only committed policy: `make check` stops when any policy file, or
   `scripts/`, differs from what is committed, and also when git cannot say.
-- The examples under `features/*/examples/` are oracle, like `spec.md`: `[spec]` and the
+- The examples under `fpl/features/*/examples/` are oracle, like `spec.md`: `[spec]` and the
   `guard-specs` hook (AGENTS.md, "The oracle rule").
 
 The tools and their versions are pinned in `quality/uv.lock`. `make` syncs them into the
