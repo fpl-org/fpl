@@ -3,9 +3,10 @@
 Canonical for every agent. The Claude `fpl-conventions` skill and the `.claude/commands/*`
 wrappers just point here. The walker, the Python implementation, is a project of its own in
 `bootstrap/`: its package is `fpl`, so `import fpl` and the module names below are what they
-were; only the directory moved, and with it the paths of its files. `features/`, the
-conformance suite, stays at the root, above the project, because it is the language's, not the
-walker's.
+were; only the directory moved, and with it the paths of its files. `fpl/features/`,
+the conformance suite, stays above the project, in the language's own tree `fpl/` at the root,
+because it is the language's, not the walker's: FPL can later test itself against it, and the
+walker is one implementation tested against it.
 
 ## Source tree (`bootstrap/fpl/`)
 
@@ -38,7 +39,7 @@ Hard rules:
 ## Features and conformance
 
 ```
-features/
+fpl/features/
   _template/
     spec.md
     examples/hello.fpl
@@ -48,8 +49,8 @@ features/
     examples/*.fpl        maintainer-authored programs
     examples/*.expected   maintainer-authored expected output
 bootstrap/tests/
-  corpus.py              finds features/ above the project: the examples every test reads
-  test_conformance.py    runs the driver on features/*/examples/*.fpl, diffs .expected
+  corpus.py              finds fpl/features/ above the project: the examples every test reads
+  test_conformance.py    runs the driver on fpl/features/*/examples/*.fpl, diffs .expected
   test_ambiguity.py      asserts the grammar parses the corpus with zero Earley ambiguity
 ```
 
@@ -77,7 +78,7 @@ Green ⇔ done. A feature with a red or unrun `make check` is not done.
 
 ## Adding a feature — the loop
 
-1. `features/<name>/` scaffolded from `_template/` (`/new-feature` does this, then stops).
+1. `fpl/features/<name>/` scaffolded from `_template/` (`/new-feature` does this, then stops).
 2. Maintainer fills `spec.md` + `examples/*.fpl` + `*.expected`.
 3. Agent: `make check` is now red. Implement across `grammar.lark` → `desugar.py` →
    (rarely) `ast_core.py`/`eval.py` until green. Never touch `spec.md`.

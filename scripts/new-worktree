@@ -17,7 +17,7 @@
 #   3. Runs `scripts/setup` inside the new worktree (hooks, stacked-commit config,
 #      identity report).
 #
-# It scaffolds nothing: an attempt's code and its `features/` are the first implementation
+# It scaffolds nothing: an attempt's code and its `fpl/features/` are the first implementation
 # session's job (.agents/CONVENTIONS.md).
 #
 # Usage:

@@ -13,4 +13,4 @@ Run the FPL vision interview. This is the one process allowed to write `docs/DES
 5. When §§1–6 hold real content, offer to promote the settled semantics into `docs/SPEC.md`.
 6. Commit with `scripts/acommit -t docs -s design -m "…" ` and `[spec]` in the body.
 
-Do not touch `bootstrap/` or `features/` here. This command only produces the vision doc.
+Do not touch `bootstrap/` or `fpl/features/` here. This command only produces the vision doc.

@@ -16,7 +16,7 @@ Read it first. This file only covers Claude Code tooling that lives under `.clau
   skill is just a trigger.
 - **Hooks** (`.claude/settings.json`):
   - `PreToolUse(Edit|Write)` → `.claude/hooks/guard-specs.sh`: blocks edits to
-    `features/*/spec.md` / `features/*/examples/*` / `docs/DESIGN.md` / `docs/SPEC.md`
+    `fpl/features/*/spec.md` / `fpl/features/*/examples/*` / `docs/DESIGN.md` / `docs/SPEC.md`
     unless the session sets `FPL_SPEC_EDIT=1`. Mirrors the `[spec]`-marker check in `.githooks/commit-msg`.
   - `Stop` → `.claude/hooks/stop-check.sh`: in an implementation worktree, best-effort
     `make fix` + `make quick`; no-op at the harness root.

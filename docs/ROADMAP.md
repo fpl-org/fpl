@@ -22,9 +22,9 @@ either of them to make cheaper. That is a thing to watch, not a rule against the
 
 | # | Milestone | Done when |
 | --- | --- | --- |
-| 0 | **Worktree skeleton** — `bootstrap/pyproject.toml`, `bootstrap/Makefile` (`include ../quality/noslop.mk`), `bootstrap/fpl/` module stubs, `features/_template/`, empty conformance runner | `make ready` runs and passes with zero features |
-| 1 | **Lexer + parser** — `grammar.lark`, `parse.py` → surface AST with spans; `test_ambiguity.py` green | `features/arithmetic/` parses; zero Earley ambiguity |
-| 2 | **Tree-walking eval** — `ast_core.py`, `desugar.py`, `eval.py` for the arithmetic core; `python -m fpl file.fpl` runs | `features/arithmetic/` conformance passes end to end |
+| 0 | **Worktree skeleton** — `bootstrap/pyproject.toml`, `bootstrap/Makefile` (`include ../quality/noslop.mk`), `bootstrap/fpl/` module stubs, `fpl/features/_template/`, empty conformance runner | `make ready` runs and passes with zero features |
+| 1 | **Lexer + parser** — `grammar.lark`, `parse.py` → surface AST with spans; `test_ambiguity.py` green | `fpl/features/arithmetic/` parses; zero Earley ambiguity |
+| 2 | **Tree-walking eval** — `ast_core.py`, `desugar.py`, `eval.py` for the arithmetic core; `python -m fpl file.fpl` runs | `fpl/features/arithmetic/` conformance passes end to end |
 | 3 | **Errors** — `errors.py`: every failure is `ERROR: <line>:<col> <message>` with a caret underline; no traceback escapes | error-case `.expected` files pass |
 | 4 | **Desugar layer proven** — a second feature (e.g. `let`, `if`) added as grammar + desugar only, core AST unchanged | new feature green without touching `eval.py` |
 | 5 | **Types** — `types.py`: a real check over core AST; type-error `.expected` cases | typed conformance passes; pyright still strict-clean |
