@@ -9,7 +9,8 @@
 #   2. line 2 blank whenever a body/trailer follows
 #   3. body lines <= 72 chars, except fenced code, table rows, and lines with no
 #      break opportunity after column 72 (a long URL or path)
-#   4. provenance: Assisted-By: + Session-Id: together, or a lone Human-Only: true
+#   4. provenance: Assisted-By: + Session-Id: together, or a lone Human-Only: true, never
+#      both; all trailers are read from the trailer block git reads (interpret-trailers)
 #   5. known trailers appear in canonical order
 #   6. unless Human-Only, the commit author email equals .git/agent-identity
 #   7. oracle guard: editing docs/DESIGN.md, docs/SPEC.md, features/*/spec.md or
@@ -320,6 +321,12 @@ human=0
 if grep -q '^Human-Only: true$' <<<"$trailers"; then human=1; fi
 
 # 4. provenance --------------------------------------------------------------
+# One of two forms: an agent's (Assisted-By and Session-Id) or a person's (Human-Only: true),
+# never both. Human-Only switches off the author and territory gates, so beside an agent's
+# trailers it would let an agent commit claim to be a hand-made one.
+if [ "$human" -eq 1 ] && grep -Eq '^(Assisted-By|Session-Id): ' <<<"$trailers"; then
+	fail "Human-Only: true beside Assisted-By or Session-Id; a commit is an agent's or a person's: keep one form"
+fi
 if [ "$human" -eq 0 ]; then
 	grep -Eq '^Assisted-By: [^[:space:]]' <<<"$trailers" \
 		|| fail "missing 'Assisted-By:' trailer (or 'Human-Only: true')"
