@@ -698,7 +698,7 @@ says "must match" "an empty Stack: value is refused"
 # The header: a scope is required, and '!' goes with a BREAKING-CHANGE trailer and only with
 # one (finding 5).
 msg 1 "a header without a scope" "feat: omit the scope"$'\n\n'"$trail"
-says "header must be" "the missing scope is refused"
+says "has no scope" "the missing scope is refused"
 msg 1 "'!' without a BREAKING-CHANGE trailer" "feat(x)!: change the interface"$'\n\n'"$trail"
 says "BREAKING-CHANGE" "the refusal names the trailer"
 msg 1 "a BREAKING-CHANGE trailer without '!'" \
@@ -725,6 +725,8 @@ if grep -Eqw 'refactor|a-z0-9/\._-' "$root/docs/COMMITS.md"; then
 	fails=$((fails + 1))
 	echo "self-test: docs/COMMITS.md repeats the type list or the scope class; cite .githooks/commit-rules" >&2
 fi
+
+
 
 
 
@@ -808,6 +810,101 @@ git reset -q --hard HEAD
 printf '%s\n\n%s\n\nStack: t\nHuman-Only: true\n' 'feat(x): fine' "$long" >"$tmp/tmpl"
 gate 1 "an editor that is ':' (as -m runs the hook): the comment line is judged" \
 	env GIT_EDITOR=: git commit -q --allow-empty -t "$tmp/tmpl"
+
+# A refusal names its rule, the part that fails, and what to do about it. Judged in hook mode
+# (the message of the commit in the making) and, where the rule differs, in lint mode (a commit
+# that exists, as commit-lint runs it).
+refuse() { # refuse <hook|lint> <rule> <text> <message>
+	printf '%s\n' "$4" >"$tmp/m"
+	if [ "$1" = lint ]; then
+		gate 1 "$2 ($1)" env FPL_LINT_COMMIT="$(git rev-parse HEAD)" .githooks/commit-msg "$tmp/m"
+	else
+		gate 1 "$2 ($1)" .githooks/commit-msg "$tmp/m"
+	fi
+	says "[$2]" "the refusal names its rule"
+	says "$3" "the refusal names the failing part"
+	says "remedy:" "the refusal says what to do"
+	if [ "$1" = hook ]; then
+		says "git commit -e -F" "a refusal in hook mode says how to reuse the message"
+	else
+		never "git commit -e -F" "a refusal in lint mode has no message to reuse"
+	fi
+}
+tr="Stack: t"$'\n'"Human-Only: true"
+refuse hook header-shape "header must be '<type>(<scope>): <summary>'" "just some words"
+refuse hook type-unknown "unknown type 'doc': did you mean 'docs'?" "doc(readme): x"$'\n\n'"$tr"
+refuse hook type-unknown "unknown type 'feature': did you mean 'feat'?" "feature(x): y"$'\n\n'"$tr"
+refuse hook type-unknown "unknown type 'wibble'" "wibble(x): y"$'\n\n'"$tr"
+never "did you mean" "a type nothing is near suggests nothing"
+refuse lint type-case "type must be lowercase: Docs -> docs" "Docs(x): y"$'\n\n'"$tr"
+refuse lint scope-case "scope must be lowercase: README -> readme" "docs(README): y"$'\n\n'"$tr"
+refuse hook scope-chars "scope 'a b' may hold only" "docs(a b): y"$'\n\n'"$tr"
+refuse hook scope-chars "scope is empty" "docs(): y"$'\n\n'"$tr"
+refuse hook header-length "header is 80 chars (>72)" "docs(x): $(printf 'w%.0s' $(seq 1 71))"$'\n\n'"$tr"
+refuse hook summary-case "summary must start lower-case: Upper -> upper" "docs(x): Upper"$'\n\n'"$tr"
+refuse hook summary-period "summary must not end with a period: done." "docs(x): done."$'\n\n'"$tr"
+refuse hook blank-line-2 "line 2 must be blank" "docs(x): a"$'\n'"body"
+refuse hook body-width "body line 3 is 81 chars (>72)" "docs(x): a"$'\n\n'"$(printf 'word %.0s' $(seq 1 16))x"$'\n\n'"$tr"
+refuse hook provenance-assisted "missing 'Assisted-By:'" "docs(x): a"$'\n\n'"Stack: t"
+refuse hook provenance-session "missing 'Session-Id:'" "docs(x): a"$'\n\n'"Stack: t"$'\n'"Assisted-By: claude"
+refuse hook agent-identity-unset "agent identity unset" "docs(x): a"$'\n\n'"Stack: t"$'\n'"Assisted-By: claude"$'\n'"Session-Id: s"
+printf '%s\n' "other@example.invalid" >"$(git rev-parse --git-path agent-identity)"
+refuse hook author-email "author email is 't@example.invalid'" "docs(x): a"$'\n\n'"Stack: t"$'\n'"Assisted-By: claude"$'\n'"Session-Id: s"
+rm -f "$(git rev-parse --git-path agent-identity)"
+refuse hook trailer-order "trailer 'Refs' is out of order" "docs(x): a"$'\n\n'"Stack: t"$'\n'"Refs: x"$'\n'"Human-Only: true"
+refuse hook stack-value "Stack: value 'Bad' must match" "docs(x): a"$'\n\n'"Stack: Bad"$'\n'"Human-Only: true"
+refuse hook stack-missing "on branch agent/claude/stack/t the message needs 'Stack: t'" "docs(x): a"$'\n\n'"Human-Only: true"
+refuse hook stack-many "holds 2 'Stack:' trailers" "docs(x): a"$'\n\n'"Stack: t"$'\n'"Stack: t"$'\n'"Human-Only: true"
+refuse hook scope-missing "the header has no scope" "docs: a"$'\n\n'"$tr"
+refuse hook summary-space "summary must follow ': '" "docs(x):  a"$'\n\n'"$tr"
+refuse hook breaking-trailer "no BREAKING-CHANGE trailer" "docs(x)!: a"$'\n\n'"$tr"
+refuse hook breaking-bang "no '!' in the header" "docs(x): a"$'\n\n'"Stack: t"$'\n'"BREAKING-CHANGE: b"$'\n'"Human-Only: true"
+refuse hook provenance-mixed "Human-Only: true beside" "docs(x): a"$'\n\n'"Stack: t"$'\n'"Assisted-By: claude"$'\n'"Session-Id: s"$'\n'"Human-Only: true"
+mkdir -p docs
+echo spec >docs/SPEC.md
+git add docs/SPEC.md
+refuse hook spec-guard "edits a protected spec file" "docs(x): a"$'\n\n'"$tr"
+git reset -q
+: >Makefile
+git add -f Makefile
+refuse hook policy-guard "changes the gate's policy" "docs(x): a"$'\n\n'"$tr"
+mkdir -p fpl
+: >fpl/x.py
+git add -f fpl/x.py
+refuse hook policy-split "may not also change fpl/ or tests/" "docs(x): a [policy]"$'\n\n'"$tr"
+git reset -q
+rm -rf docs/SPEC.md Makefile fpl
+git -c core.hooksPath=/dev/null switch -q -c plain-branch
+printf '%s\n' "t@example.invalid" >"$(git rev-parse --git-path agent-identity)"
+refuse hook agent-territory "agent commit on 'plain-branch'" "docs(x): a"$'\n\n'"Assisted-By: claude"$'\n'"Session-Id: s"
+rm -f "$(git rev-parse --git-path agent-identity)"
+git switch -q agent/claude/stack/t
+git -c core.hooksPath=/dev/null branch -q -D plain-branch
+# fixup left in a branch (lint mode only: made now, it is an autosquash to come)
+refuse lint fixup-left "'fixup!' commit left in the branch" "fixup! docs(x): a"
+gate 0 "a fixup in the making is no refusal" .githooks/commit-msg "$tmp/m"
+
+# The reuse remedy, through git: the refused message is still in COMMIT_EDITMSG, whatever the
+# message came from, and the command the refusal prints brings it back into the editor.
+reuse() { # reuse <description> <git commit arguments for the refused attempt>
+	gate 1 "$1: refused" env ED_MSG=$'doc(x): typed\n\nbody line\n\nStack: t\nHuman-Only: true' git commit -q --allow-empty "${@:2}"
+	says "did you mean 'docs'?" "$1: the refusal names the type"
+	# shellcheck disable=SC2016 # the text git prints, not to be expanded
+	says 'git commit -e -F "$(git rev-parse --git-path COMMIT_EDITMSG)"' "$1: the refusal prints the reuse command"
+	local cmd
+	cmd="$(sed -n 's/^ *\(git commit -e -F .*\)$/\1/p' "$tmp/out")"
+	gate 0 "$1: the printed command, with the header fixed" env GIT_EDITOR="$ed" ED_MSG= ED_SED='1s/^doc(/docs(/' sh -c "$cmd --allow-empty -q"
+	total=$((total + 1))
+	[ "$(stored | sed -n '1p;3p')" = $'docs(x): typed\nbody line' ] || {
+		fails=$((fails + 1))
+		echo "self-test: $1: the stored message is not the typed one:" >&2
+		stored | sed 's/^/    /' >&2
+	}
+}
+reuse "a plain commit"
+printf '%s\n' $'doc(x): typed\n\nbody line\n\nStack: t\nHuman-Only: true' >"$tmp/typed"
+GIT_EDITOR=: reuse "a message given with -F" -F "$tmp/typed"
+GIT_EDITOR=: reuse "a message given with -m" -m $'doc(x): typed\n\nbody line\n\nStack: t\nHuman-Only: true'
 
 echo "pre-push self-test: $fails of $total checks failed (bash $BASH_VERSION)"
 if [ -z "${PRE_PUSH_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ]; then
