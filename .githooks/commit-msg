@@ -243,35 +243,71 @@ if [ -n "$(sed -n '2p' "$msg_file")" ]; then
 	fail "line 2 must be blank (one blank line between header and body)"
 fi
 
-# Split body / trailer block. The trailer block is the last paragraph when every
-# one of its lines looks like  Token: value  (or a folded continuation).
+# The trailer block: the last paragraph, when git reads it as one (git interpret-trailers
+# --parse: one 'Key: value' a line, continuations unfolded), the block that `git log
+# --format=%(trailers)` and a changelog generator read. git takes a paragraph of trailers
+# alone, or one of at least a quarter trailers with one that git writes itself (Signed-off-by)
+# beside lines of prose; it skips trailing blank and comment lines to find it. Gates 4, 5, 8
+# and 9 judge its trailers and only those: a line that looks like a trailer anywhere else is
+# body text, which neither provides a trailer nor breaks the order. The width gate spares the
+# trailers of the block (a line git splits at a ':' after a key, or a continuation), not a
+# line of prose or a comment line beside them, which git keeps in the message. --no-divider:
+# a '---' line is text in a commit message, as git log has it.
+#
+# git reads a key without regard to case (`%(trailers:key=Stack)` finds 'stack:' too), so the
+# known keys are read in their one spelling, and every gate below sees what git sees: an
+# 'assisted-by' is Assisted-By, and a 'session-id' above it is out of order.
+#
+# Lint mode reads the commits main held before this rule (at 7767dd7) as they were read when
+# they landed, every line that looks like a trailer, keys as written, the block being a last
+# paragraph of such lines alone, spared whole: one of them, 2843d5b, keeps its trailers in the
+# paragraph above a lone Signed-off-by.
 # Not mapfile: bash 3.2, still /bin/bash on macOS, lacks it, and pre-push reaches this hook
 # through scripts/commit-lint wherever a push is made.
 lines=()
 while IFS= read -r line || [ -n "$line" ]; do lines+=("$line"); done <"$msg_file"
 n=${#lines[@]}
 trailer_start=$n
-if [ "$n" -gt 0 ]; then
+landed=7767dd70f21308695f169b3c9c0931cc546fc09a
+spared='^([A-Za-z0-9-]+[[:space:]]*:|[[:space:]])' # a trailer, or a continuation of one
+trailer_keys="Refs Stack BREAKING-CHANGE Advisor Assisted-By Reasoning-Effort Session-Id Co-Authored-By Human-Only"
+if [ -n "$lint_commit" ] && git merge-base --is-ancestor "$lint_commit" "$landed" 2>/dev/null; then
+	trailers="$(sed -n 's/^\([A-Za-z][A-Za-z-]*\):[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1: \2/p' "$msg_file")"
 	i=$((n - 1))
-	# skip trailing blank lines
 	while [ "$i" -ge 0 ] && [ -z "${lines[$i]}" ]; do i=$((i - 1)); done
 	end=$i
 	while [ "$i" -ge 0 ] && [ -n "${lines[$i]}" ]; do i=$((i - 1)); done
-	blk_start=$((i + 1))
-	is_block=1
+	blk_start=$((i + 1)) is_block=1 spared='.'
 	for ((j = blk_start; j <= end; j++)); do
 		case "${lines[$j]}" in
-		[A-Za-z]*:\ *|[[:space:]]*) : ;;   # trailer or folded continuation
+		[A-Za-z]*:\ * | [[:space:]]*) : ;; # trailer or folded continuation
 		*) is_block=0; break ;;
 		esac
 	done
-	[ "$is_block" -eq 1 ] && [ "$blk_start" -gt 1 ] && trailer_start=$blk_start
+else
+	trailers="$(git interpret-trailers --parse --no-divider <"$msg_file" |
+		awk -v keys="$trailer_keys" '
+			BEGIN { n = split(keys, k, " "); for (i = 1; i <= n; i++) canon[tolower(k[i])] = k[i] }
+			{ c = index($0, ":"); if (c > 1 && (key = canon[tolower(substr($0, 1, c - 1))]) != "") $0 = key substr($0, c) }
+			{ print }')"
+	comment="$(git config --get core.commentChar || true)"
+	case "$comment" in "" | auto) comment="#" ;; esac
+	blank='^[[:space:]]*$'
+	i=$((n - 1))
+	while [ "$i" -ge 0 ] && { [[ ${lines[$i]} =~ $blank ]] || [ "${lines[$i]:0:${#comment}}" = "$comment" ]; }; do
+		i=$((i - 1))
+	done
+	while [ "$i" -ge 0 ] && ! [[ ${lines[$i]} =~ $blank ]]; do i=$((i - 1)); done
+	blk_start=$((i + 1)) is_block=0
+	[ -z "$trailers" ] || is_block=1
 fi
+[ "$is_block" -eq 1 ] && [ "$blk_start" -gt 1 ] && trailer_start=$blk_start
 
 # 3. body width --------------------------------------------------------------
 in_fence=0
-for ((k = 2; k < trailer_start; k++)); do
+for ((k = 2; k < n; k++)); do
 	line="${lines[$k]:-}"
+	if [ "$k" -ge "$trailer_start" ] && [[ $line =~ $spared ]]; then continue; fi
 	case "$line" in '```'*) in_fence=$((1 - in_fence)); continue ;; esac
 	[ "$in_fence" -eq 1 ] && continue
 	case "$line" in '|'*) continue ;; esac
@@ -281,11 +317,14 @@ for ((k = 2; k < trailer_start; k++)); do
 	case "$rest" in *" "*) fail "body line $((k + 1)) is ${#line} chars (>72): $line" ;; esac
 done
 
+human=0
+if grep -q '^Human-Only: true$' <<<"$trailers"; then human=1; fi
+
 # 4. provenance --------------------------------------------------------------
-if ! grep -Eq '^Human-Only:[[:space:]]*true[[:space:]]*$' "$msg_file"; then
-	grep -Eq '^Assisted-By:[[:space:]]*\S' "$msg_file" \
+if [ "$human" -eq 0 ]; then
+	grep -Eq '^Assisted-By: [^[:space:]]' <<<"$trailers" \
 		|| fail "missing 'Assisted-By:' trailer (or 'Human-Only: true')"
-	grep -Eq '^Session-Id:[[:space:]]*\S' "$msg_file" \
+	grep -Eq '^Session-Id: [^[:space:]]' <<<"$trailers" \
 		|| fail "missing 'Session-Id:' trailer (or 'Human-Only: true')"
 
 	# 6. author identity ----------------------------------------------------
@@ -319,7 +358,7 @@ while IFS= read -r tok; do
 	[ "$rank" -eq 0 ] && continue
 	[ "$rank" -ge "$prev" ] || fail "trailer '$tok' is out of order (expected: $order)"
 	prev=$rank
-done < <(sed -n 's/^\([A-Za-z][A-Za-z-]*\):[[:space:]].*/\1/p' "$msg_file")
+done < <(sed -n 's/^\([A-Za-z][A-Za-z-]*\):.*/\1/p' <<<"$trailers")
 
 # 7. oracle guard, 7b. policy guard (guard_paths, above) ---------------------------
 guard_paths
@@ -328,7 +367,7 @@ guard_paths
 # The refs of a landed stack get deleted and a linear landing leaves no merge
 # commit, so the trailer is the only in-repo record of which commits formed one
 # unit. Detached HEAD (mid-rebase) has no branch and is not judged.
-stack_val="$(sed -n 's/^Stack:[[:space:]]*//p' "$msg_file" | head -n1)"
+stack_val="$(sed -n 's/^Stack: //p' <<<"$trailers" | head -n1)"
 if [ -n "$stack_val" ]; then
 	printf '%s' "$stack_val" | grep -Eq '^[a-z0-9][a-z0-9._-]*$' \
 		|| fail "Stack: value '$stack_val' must match [a-z0-9][a-z0-9._-]*"
@@ -349,8 +388,7 @@ fi
 # 9. agent territory ------------------------------------------------------------
 # FPL_BRANCH_GATE = block (default) | warn | off, shared with the ref-name hooks.
 branch_gate="${FPL_BRANCH_GATE:-block}"
-if [ "$branch_gate" != "off" ] && [ -n "$branch" ] \
-	&& ! grep -Eq '^Human-Only:[[:space:]]*true[[:space:]]*$' "$msg_file"; then
+if [ "$branch_gate" != "off" ] && [ -n "$branch" ] && [ "$human" -eq 0 ]; then
 	branch_kind="$(printf '%s\n' "$parsed" | sed -n 's/^kind=//p')"
 	case "$branch_kind" in
 	agent-*|vendor) : ;;
