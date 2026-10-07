@@ -695,6 +695,20 @@ msg 1 "the same, in a block with prose git reads" \
 says "one 'Stack:' trailer" "the prose line does not hide the block"
 msg 1 "an empty Stack: trailer" "feat(x): a"$'\n\n'"Stack:"$'\n'"Human-Only: true"
 says "must match" "an empty Stack: value is refused"
+# The header: a scope is required, and '!' goes with a BREAKING-CHANGE trailer and only with
+# one (finding 5).
+msg 1 "a header without a scope" "feat: omit the scope"$'\n\n'"$trail"
+says "header must be" "the missing scope is refused"
+msg 1 "'!' without a BREAKING-CHANGE trailer" "feat(x)!: change the interface"$'\n\n'"$trail"
+says "BREAKING-CHANGE" "the refusal names the trailer"
+msg 1 "a BREAKING-CHANGE trailer without '!'" \
+	"feat(x): change the interface"$'\n\n'"Stack: m"$'\n'"BREAKING-CHANGE: x goes"$'\n'"Human-Only: true"
+says "BREAKING-CHANGE" "the refusal names the trailer"
+msg 1 "'!' with an empty BREAKING-CHANGE trailer" \
+	"feat(x)!: change the interface"$'\n\n'"Stack: m"$'\n'"BREAKING-CHANGE:"$'\n'"Human-Only: true"
+says "BREAKING-CHANGE" "an empty trailer is no description"
+msg 0 "'!' with a BREAKING-CHANGE trailer" \
+	"feat(x)!: change the interface"$'\n\n'"Stack: m"$'\n'"BREAKING-CHANGE: x goes"$'\n'"Human-Only: true"
 
 echo "pre-push self-test: $fails of $total checks failed (bash $BASH_VERSION)"
 if [ -z "${PRE_PUSH_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ]; then

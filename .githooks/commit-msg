@@ -4,8 +4,8 @@
 #
 # Hard gates (reject on failure):
 #   1. header  <type>(<scope>)<!?>: <summary>  — type in the allowed set, scope
-#      [a-z0-9/._-]+, summary right after ': ', starting lower-case, with no trailing
-#      period, whole header <= 72 chars
+#      [a-z0-9/._-]+ and required, summary right after ': ', starting lower-case, with no
+#      trailing period, whole header <= 72 chars; '!' iff a non-empty BREAKING-CHANGE trailer
 #   2. line 2 blank whenever a body/trailer follows
 #   3. body lines <= 72 chars, except fenced code, table rows, and lines with no
 #      break opportunity after column 72 (a long URL or path)
@@ -222,7 +222,7 @@ types='feat|fix|docs|refactor|perf|test|build|ci|chore|revert'
 if printf '%s' "$first" | grep -Eq '^[^:]*: [[:space:]]'; then
 	fail "summary must follow ': ' with no space before it — got: $first"
 fi
-if ! printf '%s' "$first" | grep -Eq "^(${types})(\([a-z0-9/._-]+\))?!?: .+"; then
+if ! printf '%s' "$first" | grep -Eq "^(${types})\([a-z0-9/._-]+\)!?: .+"; then
 	note=""
 	case "${lint_commit:+lint}:$first" in
 	:"Merge "*|:'Revert "'*|:'Reapply "'*)
@@ -319,6 +319,18 @@ done
 
 human=0
 if grep -q '^Human-Only: true$' <<<"$trailers"; then human=1; fi
+
+# 1b. a breaking change is marked twice, by '!' before the ':' and by a BREAKING-CHANGE trailer
+# that says what breaks: one without the other is a reader told half.
+bang=0 breaking=0
+case "${first%%: *}" in *!) bang=1 ;; esac
+if grep -Eq '^BREAKING-CHANGE: [^[:space:]]' <<<"$trailers"; then breaking=1; fi
+if [ "$bang" -eq 1 ] && [ "$breaking" -eq 0 ]; then
+	fail "'!' marks a breaking change: add a 'BREAKING-CHANGE: <what breaks>' trailer"
+fi
+if [ "$bang" -eq 0 ] && grep -q '^BREAKING-CHANGE:' <<<"$trailers"; then
+	fail "a BREAKING-CHANGE trailer needs '!' before the ':' of the header"
+fi
 
 # 4. provenance --------------------------------------------------------------
 # One of two forms: an agent's (Assisted-By and Session-Id) or a person's (Human-Only: true),
