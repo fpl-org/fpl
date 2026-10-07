@@ -33,7 +33,7 @@
 # term or secret in the message (scripts/leak-check; FPL_LEAK_GATE=warn overrides).
 #
 # Bypassed for a real merge, a real revert (see is_merge, is_revert) and, outside lint mode,
-# fixup!/squash!/amend! messages. A revert is real only when it holds the tree git revert
+# fixup!/squash!/amend! messages, which gates 7 and 7b still judge. A revert is real only when it holds the tree git revert
 # makes of the commit it names.
 #
 # Lint mode (scripts/commit-lint, CI): FPL_LINT_COMMIT=<sha> judges a commit that
@@ -60,9 +60,74 @@ fail() {
 	exit 1
 }
 
+# 7. oracle guard, 7b. policy guard -------------------------------------------
+# One pass over the paths the commit changes. They are read raw and NUL-separated: without
+# -z git quotes a name holding non-ASCII, quote, backslash or control characters, in quotes
+# and with escapes, so it starts with a quote and no pattern anchored at fpl/features/
+# or quality/ takes it. --no-renames: a rename would show its new name only, and a spec file
+# moved out of fpl/features/ would go unseen.
+protected='^(docs/DESIGN\.md|docs/SPEC\.md|fpl/features/[^/]+/spec\.md|fpl/features/[^/]+/examples/.+)$'
+policy='^(quality/.+|(bootstrap/)?(pyproject\.toml|Makefile|mutants\.allow))$'
+code='^(bootstrap/)?(fpl|tests)/'
+
+# judge_paths: NUL-separated paths on stdin. Sets
+#   touches_spec    1 if one is a protected spec file
+#   touches_policy  1 if one sets the gate's policy; policy_names holds the first three
+#   touches_code    1 if one is under fpl/ or tests/, at the root or in bootstrap/
+# It reads every path: a match must stay a match however long the list is (grep -q stops at
+# the first one, the writer takes SIGPIPE, and under pipefail the match reads as none). It
+# matches bytes: in a UTF-8 locale a byte that is no UTF-8 is not a character that `.` or
+# [^/] can match, and a name with one would slip past.
+judge_paths() {
+	local LC_ALL=C path n=0
+	touches_spec=0 touches_policy=0 touches_code=0 policy_names=""
+	while IFS= read -r -d '' path || [ -n "$path" ]; do
+		if [[ $path =~ $protected ]]; then touches_spec=1; fi
+		if [[ $path =~ $code ]]; then touches_code=1; fi
+		if [[ $path =~ $policy ]]; then
+			touches_policy=1
+			if [ "$n" -lt 3 ]; then policy_names="${policy_names:+$policy_names }$path"; fi
+			n=$((n + 1))
+		fi
+	done
+}
+
+# guard_paths: gates 7 and 7b over the paths the commit changes. Defined before the gates, as
+# it also judges a fixup!/squash!/amend! commit, which the other gates spare.
+guard_paths() {
+	paths="$(mktemp)"
+	trap 'rm -f "$paths"' EXIT
+	if [ -n "$lint_commit" ]; then
+		git diff-tree --no-commit-id --name-only -r -z --no-renames --root "$lint_commit" >"$paths"
+	else
+		git diff --cached --name-only -z --no-renames >"$paths"
+	fi
+	judge_paths <"$paths"
+
+	if [ "$touches_spec" -eq 1 ]; then
+		grep -Fq '[spec]' "$msg_file" \
+			|| fail "this commit edits a protected spec file; add [spec] to the message if intentional"
+	fi
+
+	# 7b. The gate's strictness lives in files an attempt could otherwise loosen in the same
+	# breath as the code that needed it loosened (.agents/QUALITY.md). A change to them is
+	# named as one, and travels alone, so a reviewer sees it apart from any code.
+	if [ "$touches_policy" -eq 1 ]; then
+		grep -Fq '[policy]' "$msg_file" \
+			|| fail "this commit changes the gate's policy ($policy_names); add [policy] to the message if intentional"
+		if [ "$touches_code" -eq 1 ]; then
+			fail "a [policy] commit may not also change fpl/ or tests/ (or bootstrap/fpl/, bootstrap/tests/); split it"
+		fi
+	fi
+}
+
 case "$first" in
 "fixup! "*|"squash! "*|"amend! "*)
 	[ -z "$lint_commit" ] || fail "'${first%% *}' commit left in the branch; autosquash before landing"
+	# Spared the header and trailer gates while it waits for an autosquash, not the path
+	# guards: what it changes lands in the commit it folds into, and its message is the one
+	# place a [spec] or [policy] for it can be written now.
+	guard_paths
 	exit 0
 	;;
 esac
@@ -256,61 +321,8 @@ while IFS= read -r tok; do
 	prev=$rank
 done < <(sed -n 's/^\([A-Za-z][A-Za-z-]*\):[[:space:]].*/\1/p' "$msg_file")
 
-# 7. oracle guard, 7b. policy guard -------------------------------------------
-# One pass over the paths the commit changes. They are read raw and NUL-separated: without
-# -z git quotes a name holding non-ASCII, quote, backslash or control characters, in quotes
-# and with escapes, so it starts with a quote and no pattern anchored at fpl/features/
-# or quality/ takes it. --no-renames: a rename would show its new name only, and a spec file
-# moved out of fpl/features/ would go unseen.
-protected='^(docs/DESIGN\.md|docs/SPEC\.md|fpl/features/[^/]+/spec\.md|fpl/features/[^/]+/examples/.+)$'
-policy='^(quality/.+|(bootstrap/)?(pyproject\.toml|Makefile|mutants\.allow))$'
-code='^(bootstrap/)?(fpl|tests)/'
-
-# judge_paths: NUL-separated paths on stdin. Sets
-#   touches_spec    1 if one is a protected spec file
-#   touches_policy  1 if one sets the gate's policy; policy_names holds the first three
-#   touches_code    1 if one is under fpl/ or tests/, at the root or in bootstrap/
-# It reads every path: a match must stay a match however long the list is (grep -q stops at
-# the first one, the writer takes SIGPIPE, and under pipefail the match reads as none). It
-# matches bytes: in a UTF-8 locale a byte that is no UTF-8 is not a character that `.` or
-# [^/] can match, and a name with one would slip past.
-judge_paths() {
-	local LC_ALL=C path n=0
-	touches_spec=0 touches_policy=0 touches_code=0 policy_names=""
-	while IFS= read -r -d '' path || [ -n "$path" ]; do
-		if [[ $path =~ $protected ]]; then touches_spec=1; fi
-		if [[ $path =~ $code ]]; then touches_code=1; fi
-		if [[ $path =~ $policy ]]; then
-			touches_policy=1
-			if [ "$n" -lt 3 ]; then policy_names="${policy_names:+$policy_names }$path"; fi
-			n=$((n + 1))
-		fi
-	done
-}
-paths="$(mktemp)"
-trap 'rm -f "$paths"' EXIT
-if [ -n "$lint_commit" ]; then
-	git diff-tree --no-commit-id --name-only -r -z --no-renames --root "$lint_commit" >"$paths"
-else
-	git diff --cached --name-only -z --no-renames >"$paths"
-fi
-judge_paths <"$paths"
-
-if [ "$touches_spec" -eq 1 ]; then
-	grep -Fq '[spec]' "$msg_file" \
-		|| fail "this commit edits a protected spec file; add [spec] to the message if intentional"
-fi
-
-# 7b. The gate's strictness lives in files an attempt could otherwise loosen in the same
-# breath as the code that needed it loosened (.agents/QUALITY.md). A change to them is
-# named as one, and travels alone, so a reviewer sees it apart from any code.
-if [ "$touches_policy" -eq 1 ]; then
-	grep -Fq '[policy]' "$msg_file" \
-		|| fail "this commit changes the gate's policy ($policy_names); add [policy] to the message if intentional"
-	if [ "$touches_code" -eq 1 ]; then
-		fail "a [policy] commit may not also change fpl/ or tests/ (or bootstrap/fpl/, bootstrap/tests/); split it"
-	fi
-fi
+# 7. oracle guard, 7b. policy guard (guard_paths, above) ---------------------------
+guard_paths
 
 # 8. stack record ------------------------------------------------------------
 # The refs of a landed stack get deleted and a linear landing leaves no merge
