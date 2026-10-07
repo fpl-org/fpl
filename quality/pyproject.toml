@@ -3,8 +3,8 @@
 # Not a package: a pinned set of the language's runtime stack (docs/STACK.md) and of every
 # tool the noslop gate runs (docs/QUALITY.md). `make` in a worktree syncs it into that
 # worktree's .venv with `uv sync --frozen`, so every attempt judges its code with the same
-# tools at the same versions. It lives in the harness, where an attempt cannot edit it:
-# changing a tool or a version is a policy change, made from the root, with [policy].
+# tools at the same versions. It lives in the harness: changing a tool or a version is a policy
+# change, a harness commit with [policy], never one that changes code.
 
 [project]
 name = "fpl-noslop"

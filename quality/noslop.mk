@@ -57,7 +57,7 @@ pristine:
 	  echo "check: the gate's policy files differ from what is committed:" >&2; \
 	  echo "$$dirty" | sed 's/^/         /' >&2; \
 	  echo "       the gate judges only committed policy; commit the change with [policy]," >&2; \
-	  echo "       from the root for quality/ and scripts/ (docs/QUALITY.md)" >&2; \
+	  echo "       in a harness commit for quality/ and scripts/ (docs/WORKTREES.md)" >&2; \
 	  exit 1; \
 	fi
 
@@ -108,6 +108,7 @@ gates: venv
 	$(BIN)/python scripts/diagrams --self-test
 	scripts/leak-check --self-test
 	scripts/pre-push-self-test
+	scripts/boundary-self-test
 	$(BIN)/python scripts/gates
 
 # Each tool syncs its own locked environment into <tool>/.venv, so its dependencies never

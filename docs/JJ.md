@@ -33,8 +33,9 @@ hook**, and `jj git push` does not run `pre-push`. So none of these act on a `jj
 | Gate | Hook it lives in | Who judges a `jj` commit instead |
 | --- | --- | --- |
 | message format, provenance, `Stack:`, agent territory | `commit-msg`, `pre-push` | `scripts/commit-lint`, and the `commit-lint` check on the pull request |
+| one commit on one side of the harness/implementation boundary | `pre-push` (`scripts/commit-lint`) | `scripts/commit-lint`, and the `commit-lint` check on the pull request: CI's commit-lint is jj's gate |
 | atomicity | `atomic-check` | nobody; keep commits atomic by hand |
-| harness/worktree boundary, no commit on `main` | `pre-commit` | review; the ruleset on `main` (`docs/WORKFLOW.md`, rule 6) |
+| no commit on `main` | `pre-commit` | the ruleset on `main` (`docs/WORKFLOW.md`, rule 6) |
 | branch names | `reference-transaction`, `pre-push` | the `branch-lint` check on the pull request |
 | an approved pull request is frozen (`docs/WORKFLOW.md`, rule 10) | `pre-push` | nobody; dismiss-stale-reviews on the forge, where the ruleset turns it on |
 

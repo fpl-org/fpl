@@ -1,0 +1,375 @@
+#!/usr/bin/env bash
+#
+# scripts/boundary — one commit holds harness paths or implementation paths, never both.
+#
+#   scripts/boundary <commit> [<branch>]          judge the commit
+#   scripts/boundary --split <commit> <branch>    split a mixed commit of <branch> in two
+#
+# AGENTS.md and docs/WORKTREES.md split the repository in two, reviewed and landed apart:
+#
+#   harness         docs/ agents/ .claude/ scripts/ quality/ .githooks/ AGENTS.md CLAUDE.md
+#                   flake.nix flake.lock .envrc
+#   implementation  bootstrap/ features/ fpl/ tests/ pyproject.toml Makefile mutants.allow
+#                   (fpl/ stays implementation for good: after the move to bootstrap/ it is
+#                   FPL's own tree)
+#
+# Every other path (README.md, .gitignore, .github/, tools/, LICENSE, ...) is neutral and goes
+# with either side. Any checkout may hold any work; what is judged is the commit.
+#
+# The commit is compared with its parent, a root commit with the empty tree, with rename
+# detection; both paths of a rename count. So fpl/x -> bootstrap/fpl/x stays on one side and
+# docs/x -> bootstrap/x is mixed. As both ends count, the verdict is the same whether git finds
+# the rename or shows a delete and an add.
+#
+# scripts/commit-lint runs this for every non-merge commit of a range, with the checker of the
+# checkout that runs it, never the judged commit's, so a range from before this script existed
+# is judged too. commit-lint runs in pre-push and in CI, which makes the rule bind whatever
+# made the commit: commit, cherry-pick, rebase, amend, --no-verify, an unwired clone, jj.
+# A merge is not judged here; commit-lint skips merges, and main's ruleset requires a linear
+# history, so a merge commit cannot land. A squash merge could fold one-sided commits into one
+# mixed commit that nothing judges; docs/WORKTREES.md says why landing is by rebase only.
+#
+# Rules, each printed with what clears it:
+#
+#   BOUNDARY-MIXED  the commit changes harness and implementation paths       exit 1
+#   BOUNDARY-TOOL   a git command failed, the arguments are wrong, or the     exit 2
+#                   history cannot be trusted (shallow, grafts, a symbolic branch,
+#                   a mergetag to rebuild): refused, never read as clean
+#
+# The refusal lists a few paths of each side and a count, and prints the --split command for
+# the commit and <branch>: the given branch, else the checked-out one, if it holds the commit.
+# Every argument is printed with printf %q. Paths are read NUL-separated and judged with
+# bash's own regex in the C locale: a name holding a newline is one name, and a name that is
+# not UTF-8 is judged by its bytes. The commit's own bytes are judged, never a replacement
+# object's, and a caller's nocasematch is switched off. Parents are read from the commit's own
+# header, and a shallow repository or a grafts file is refused: git would show the commit
+# another ancestry than the one it holds.
+#
+# --split builds the two halves from trees, never from a checkout: the harness half is the
+# commit's tree with the implementation paths of its parent, the implementation half is the
+# commit's tree. Both carry the commit's author, committer and message. Each later commit of
+# <branch> is rebuilt on the new parents with its own tree, author, committer and message, so
+# merges, evil ones included, stay as they were, and the branch's tree does not change. Then
+# <branch>, and only <branch>, moves by compare-and-swap; the work tree, the index and every
+# other ref (a branch stacked on the commit too) are left alone, so ignored and uncommitted
+# local files stay. A neutral path that collides with an implementation path of the parent (a
+# file tests replacing the directory tests/) goes with the implementation half. A signature
+# is not carried over: it no longer matches. A symbolic <branch> is refused (update-ref would
+# move the branch it points at; the move and the printed undo use --no-deref), and so is a
+# history in which a rebuilt commit carries a mergetag header, which would name a commit that
+# is no longer a parent. Notes on rewritten commits stay where they are: the split names them
+# and copies none. When a remote-tracking ref holds the commit, the refusal and the split both
+# say that pushing the result rewrites a published branch. scripts/boundary-self-test proves
+# each case, under bash 3.2 and 5.
+
+set -euo pipefail
+# Bytes, not characters: under a UTF-8 locale bash's regex fails on a name that is not valid
+# UTF-8, and a failed match reads as no match, so such a path would count as neutral.
+export LC_ALL=C
+# A nocasematch handed down through BASHOPTS would make DOCS/ harness.
+shopt -u nocasematch
+# git replace can put another commit's bytes in place of the one named.
+export GIT_NO_REPLACE_OBJECTS=1
+
+implementation='^(bootstrap/|features/|fpl/|tests/|pyproject\.toml$|Makefile$|mutants\.allow$)'
+harness='^(docs/|agents/|\.claude/|scripts/|quality/|\.githooks/|AGENTS\.md$|CLAUDE\.md$|flake\.(nix|lock)$|\.envrc$)'
+shown=5 # paths listed per side
+pad='          '
+tab="$(printf '\t')"
+q() { printf ' %q' "$@"; }
+invocation="$(q "$0" "$@")"
+again="fix what the lines above name (a revision or branch that does not exist, a repository"
+again="$again git cannot read, a TMPDIR where no directory can be made), then run again:$invocation"
+usage="run it as: scripts/boundary <commit> [<branch>], or scripts/boundary --split <commit> <branch>"
+
+# tool <exit code> <remedy> <cause> <command...>: refuse with the command, its words and what
+# clears it.
+tool() {
+	local rc="$1" fix="$2" cause="$3"
+	shift 3
+	{
+		echo "boundary: BOUNDARY-TOOL: the boundary check could not judge the commit, so it is"
+		echo "${pad}refused: a gate that cannot look does not pass. Exit $rc from:"
+		echo "${pad}   $(q "$@")"
+		[ -z "$cause" ] || printf '%s\n' "$cause" | sed "s/^/$pad    /"
+		echo "${pad}Remedy: $fix"
+	} >&2
+	exit 2
+}
+
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/boundary.XXXXXX" 2>&1)" ||
+	tool 2 "$again" "$tmp" mktemp -d "${TMPDIR:-/tmp}/boundary.XXXXXX"
+trap 'rm -rf "$tmp"' EXIT
+
+# git_ <command...>: git's output in $tmp/out, or a BOUNDARY-TOOL refusal.
+git_() {
+	local rc=0
+	git "$@" >"$tmp/out" 2>"$tmp/err" || rc=$?
+	[ "$rc" -eq 0 ] || tool "$rc" "$again" "$(cat "$tmp/err")" git "$@"
+}
+
+split=0
+if [ "${1:-}" = --split ]; then
+	split=1
+	shift
+	[ $# -eq 2 ] || tool 2 "$usage" "--split takes a commit and a branch" scripts/boundary --split "$@"
+else
+	[ $# -ge 1 ] && [ $# -le 2 ] || tool 2 "$usage" "" scripts/boundary "$@"
+fi
+given="${2:-}"
+
+# Ancestry is read as the commits record it. A shallow clone makes its boundary commit a root,
+# and a grafts file gives a commit parents it never had: git would diff, and the split would
+# rebuild, another history than the one the commit holds.
+git_ rev-parse --is-shallow-repository
+read -r shallow <"$tmp/out"
+[ "$shallow" = false ] || tool 2 "git fetch --unshallow, then run again:$invocation" \
+	"the repository is shallow: its boundary commits would read as root commits" git rev-parse --is-shallow-repository
+git_ rev-parse --git-path info/grafts
+read -r grafts <"$tmp/out"
+if [ -e "$grafts" ] || [ -n "${GIT_GRAFT_FILE:-}${GIT_SHALLOW_FILE:-}" ]; then
+	tool 2 "remove $(printf '%q' "$grafts"), unset GIT_GRAFT_FILE and GIT_SHALLOW_FILE, then run again:$invocation" \
+		"a grafts or shallow file would give commits parents they do not have" git rev-parse --git-path info/grafts
+fi
+
+# parents_of <commit>: the parent ids of its own header, in $pars.
+parents_of() {
+	local p
+	git_ cat-file commit "$1"
+	sed -n '/^$/q; s/^parent //p' "$tmp/out" >"$tmp/pars"
+	pars=()
+	while read -r p; do pars+=("$p"); done <"$tmp/pars"
+}
+
+git_ rev-list --no-walk -n 1 "$1^{commit}" --
+read -r commit <"$tmp/out" || :
+[ -n "$commit" ] || tool 2 "$again" "no commit" git rev-list --no-walk -n 1 "$1^{commit}" --
+parents_of "$commit"
+if [ "${#pars[@]}" -gt 1 ]; then
+	tool 2 "judge the commits it brings instead, as commit-lint does: scripts/commit-lint $commit^1..$commit" \
+		"$commit is a merge; merges are not judged (commit-lint skips them)" scripts/boundary "$1"
+fi
+parent="${pars[0]:-}"
+
+# -M: renames found; --root: a root commit against the empty tree. One record per change:
+# "<status> NUL <path> NUL", and a rename or copy carries a second path.
+git_ diff-tree -r -M --root --no-commit-id --name-status -z --no-ext-diff "$commit" --
+h=() i=() hn=0 im=0
+side() {
+	if [[ $1 =~ $harness ]]; then
+		hn=$((hn + 1))
+		[ "$hn" -gt "$shown" ] || h+=("$(printf '%q' "$1")")
+	elif [[ $1 =~ $implementation ]]; then
+		im=$((im + 1))
+		[ "$im" -gt "$shown" ] || i+=("$(printf '%q' "$1")")
+	fi
+}
+while IFS= read -r -d '' status; do
+	IFS= read -r -d '' path || tool 2 "$again" "a record without a path" git diff-tree "$commit"
+	side "$path"
+	case "$status" in
+	R* | C*)
+		IFS= read -r -d '' path || tool 2 "$again" "a rename without a target" git diff-tree "$commit"
+		side "$path"
+		;;
+	esac
+done <"$tmp/out"
+if [ "$hn" -eq 0 ] || [ "$im" -eq 0 ]; then
+	[ "$split" -eq 0 ] || echo "boundary: ${commit:0:12} is on one side already; nothing to split"
+	exit 0
+fi
+
+# holds <branch>: <branch> names a local branch that holds the commit. A pattern also matches
+# the refs below it (refs/heads/a/1 for a), so the exact one is kept.
+holds() {
+	local ref found=1
+	[ -n "$1" ] || return 1
+	git_ for-each-ref --format='%(refname)' --contains "$commit" -- "refs/heads/$1"
+	while IFS= read -r ref; do
+		[ "$ref" != "refs/heads/$1" ] || found=0
+	done <"$tmp/out"
+	return "$found"
+}
+
+# published: the remote-tracking refs that hold the commit, one per line in $tmp/pub; then
+# warn_published says so, for a refusal or a split. Rewriting what others may have taken is
+# their business too (docs/WORKFLOW.md, rule 5).
+published() {
+	git_ for-each-ref --format='%(refname:lstrip=2)' --contains "$commit" refs/remotes
+	mv "$tmp/out" "$tmp/pub"
+}
+warn_published() {
+	local names more=""
+	[ -s "$tmp/pub" ] || return 0
+	names="$(head -n 3 "$tmp/pub" | tr '\n' ' ')"
+	[ "$(wc -l <"$tmp/pub")" -le 3 ] || more="and more "
+	echo "${pad}Published: ${commit:0:12} is held by ${names}${more}(remote-tracking)."
+	echo "${pad}A split rewrites it and the commits after it, and pushing the result rewrites a"
+	echo "${pad}published branch: coordinate with whoever has taken it first, and never do it to a"
+	echo "${pad}pull request that is approved (docs/WORKFLOW.md, rule 5)."
+}
+
+# mk <commit> <tree> [<parent>...]: a copy of <commit> with that tree and those parents, its
+# id in $made. The signature goes, as it no longer matches; the rest of the header and the
+# message are kept byte for byte.
+mk() {
+	local src="$1" tree="$2" line n=0 skip=0 p
+	shift 2
+	git_ cat-file commit "$src"
+	mv "$tmp/out" "$tmp/src"
+	{
+		echo "tree $tree"
+		for p in "$@"; do echo "parent $p"; done
+		while IFS= read -r line; do
+			n=$((n + ${#line} + 1))
+			[ -n "$line" ] || break
+			case "$line" in
+			"tree "* | "parent "*) continue ;;
+			"mergetag "*)
+				tool 2 "make that merge again from the commit the tag names, without the tag, then run again:$invocation" \
+					"$src carries a mergetag header; it would name a commit that is no longer a parent, so the split does not rebuild it" \
+					git cat-file commit "$src"
+				;;
+			"gpgsig "* | "gpgsig-sha256 "*) skip=1 && continue ;;
+			" "*) [ "$skip" -eq 0 ] || continue ;;
+			*) skip=0 ;;
+			esac
+			printf '%s\n' "$line"
+		done <"$tmp/src"
+		echo
+		tail -c "+$((n + 1))" "$tmp/src"
+	} >"$tmp/obj"
+	git_ hash-object -t commit -w --stdin <"$tmp/obj"
+	read -r made <"$tmp/out"
+}
+
+if [ "$split" -eq 1 ]; then
+	branch="$given"
+	holds "$branch" || tool 2 "name a branch that holds it (git branch --contains ${commit:0:12})" \
+		"no branch $branch holds ${commit:0:12}" scripts/boundary --split "$1" "$branch"
+	# update-ref would follow a symbolic ref and move the branch it points at.
+	if git symbolic-ref -q "refs/heads/$branch" >/dev/null 2>&1; then
+		tool 2 "name the branch it points at (git symbolic-ref refs/heads/$(printf '%q' "$branch") shows which)" \
+			"refs/heads/$branch is a symbolic ref" git symbolic-ref -q "refs/heads/$branch"
+	fi
+	git_ rev-parse --verify "refs/heads/$branch^{commit}"
+	read -r tip <"$tmp/out"
+
+	# The harness half: the commit's tree, with the implementation paths of its parent. A
+	# collision (the parent's tests/a, the commit's file tests) keeps the parent's entry
+	# (--replace), so the neutral file moves to the implementation half.
+	git_ ls-tree -r -z --full-tree "$commit"
+	while IFS= read -r -d '' line; do
+		if ! [[ ${line#*"$tab"} =~ $implementation ]]; then printf '%s\0' "$line"; fi
+	done <"$tmp/out" >"$tmp/entries"
+	if [ -n "$parent" ]; then
+		git_ ls-tree -r -z --full-tree "$parent"
+		while IFS= read -r -d '' line; do
+			if [[ ${line#*"$tab"} =~ $implementation ]]; then printf '%s\0' "$line"; fi
+		done <"$tmp/out" >>"$tmp/entries"
+	fi
+	export GIT_INDEX_FILE="$tmp/index"
+	git_ update-index --replace -z --index-info <"$tmp/entries"
+	git_ write-tree
+	unset GIT_INDEX_FILE
+	read -r tree <"$tmp/out"
+	if [ -n "$parent" ]; then mk "$commit" "$tree" "$parent"; else mk "$commit" "$tree"; fi
+	first="$made"
+	git_ rev-parse "$commit^{tree}"
+	read -r tree <"$tmp/out"
+	mk "$commit" "$tree" "$first"
+	second="$made"
+
+	# Every later commit on the new parents, with its own tree: $tmp/map/<old> holds <new>.
+	mkdir "$tmp/map"
+	echo "$second" >"$tmp/map/$commit"
+	git_ rev-list --reverse --topo-order "$commit..$tip" --
+	mv "$tmp/out" "$tmp/todo"
+	rebuilt=0
+	while read -r old <&3; do
+		parents_of "$old"
+		parents=() moved=0
+		for p in ${pars[@]+"${pars[@]}"}; do
+			if [ -f "$tmp/map/$p" ]; then
+				read -r p <"$tmp/map/$p"
+				moved=1
+			fi
+			parents+=("$p")
+		done
+		[ "$moved" -eq 1 ] || continue
+		git_ rev-parse "$old^{tree}"
+		read -r tree <"$tmp/out"
+		mk "$old" "$tree" "${parents[@]}"
+		echo "$made" >"$tmp/map/$old"
+		rebuilt=$((rebuilt + 1))
+	done 3<"$tmp/todo"
+	read -r new <"$tmp/map/$tip"
+
+	git_ rev-parse "$new^{tree}" "$tip^{tree}"
+	{ read -r a && read -r b; } <"$tmp/out"
+	[ "$a" = "$b" ] || tool 2 "nothing moved; report this as a bug in scripts/boundary" \
+		"the rebuilt branch's tree $a is not the old tip's $b" scripts/boundary --split "$1" "$branch"
+
+	# Notes stay on the old commits; say which, and copy nothing.
+	git_ for-each-ref --format='%(refname)' refs/notes/
+	mv "$tmp/out" "$tmp/notesrefs"
+	: >"$tmp/noted"
+	while read -r ref <&3; do
+		git_ notes --ref="$ref" list
+		while read -r _ obj; do
+			[ ! -f "$tmp/map/$obj" ] || echo "${obj:0:12} in $ref" >>"$tmp/noted"
+		done <"$tmp/out"
+	done 3<"$tmp/notesrefs"
+
+	published
+	warn_published
+	git_ update-ref --no-deref -m "boundary: split ${commit:0:12}" "refs/heads/$branch" "$new" "$tip"
+	echo "boundary: split ${commit:0:12} on $(printf '%q' "$branch"): ${first:0:12} (harness and neutral"
+	echo "${pad}paths), then ${second:0:12} (implementation), and $rebuilt later commits rebuilt with their"
+	echo "${pad}own trees. Nothing was checked out; only this branch moved, and other branches that"
+	echo "${pad}hold ${commit:0:12} still do. Both halves carry the old message: give each its own before"
+	echo "${pad}the push."
+	if [ -s "$tmp/noted" ]; then
+		echo "${pad}Notes stay on the old commits and were not copied (git notes copy does it):"
+		sed "s/^/$pad    /" "$tmp/noted"
+	fi
+	echo "${pad}To undo:"
+	echo "${pad}    git$(q update-ref --no-deref "refs/heads/$branch" "$tip" "$new")"
+	exit 0
+fi
+
+# Mixed: refuse, with the split for the branch given, else the one checked out.
+branch=""
+git_ rev-parse --symbolic-full-name HEAD
+read -r current <"$tmp/out" || :
+for b in "$given" "${current#refs/heads/}"; do
+	if [ -z "$branch" ] && holds "$b"; then branch="$b"; fi
+done
+published
+list() { # list <count> <words...>
+	local n="$1"
+	shift
+	local w
+	for w in "$@"; do echo "${pad}    $w"; done
+	[ "$n" -le "$shown" ] || echo "${pad}    ... and $((n - shown)) more"
+}
+{
+	echo "boundary: BOUNDARY-MIXED: ${commit:0:12} changes harness paths and implementation paths;"
+	echo "${pad}one commit stays on one side, wherever it is made (docs/WORKTREES.md)."
+	echo "${pad}harness side ($hn):"
+	list "$hn" "${h[@]}"
+	echo "${pad}implementation side ($im):"
+	list "$im" "${i[@]}"
+	warn_published
+	echo "${pad}Split it: a harness commit (with the neutral paths), then an implementation"
+	echo "${pad}commit, both with this commit's message (give each its own after), and the later"
+	echo "${pad}commits of the branch rebuilt on top with their own trees. Nothing is checked"
+	echo "${pad}out and no other ref moves:"
+	if [ -n "$branch" ]; then
+		echo "${pad}   $(q "$0" --split "$commit" "$branch")"
+	else
+		echo "${pad}   $(q "$0" --split "$commit") <branch>"
+		echo "${pad}with <branch> the local branch that holds it (git branch --contains ${commit:0:12})."
+	fi
+} >&2
+exit 1

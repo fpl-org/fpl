@@ -1,0 +1,825 @@
+#!/usr/bin/env bash
+#
+# scripts/boundary-self-test — proof that scripts/boundary judges one commit by its own paths,
+# and that scripts/commit-lint, and so pre-push, applies it to every commit however it was
+# made. Run by `make gates`.
+#
+#   judged directly   either side alone, neutral paths with either, the near misses of each
+#                     root, renames within and across, deletions, a root commit, names with
+#                     [x], *, a blank, a leading dash and a newline, and names that are not
+#                     UTF-8 under a UTF-8 locale, an inherited nocasematch, a replacement
+#                     object: pure passes, mixed is refused (BOUNDARY-MIXED) with a bounded
+#                     list of each side
+#   the remedy        run as printed, for a tip, a deeper commit, a root commit, odd names, a
+#                     rename across, a merge after it, an evil merge, an implementation
+#                     directory replaced by a neutral file and 2000 paths: two one-sided
+#                     commits, the mixed commit's tree, the branch's tree, merges and checkout
+#                     unchanged; staged, unstaged and ignored local files kept; a stacked
+#                     branch left where it was under rebase.updateRefs, and given the same
+#                     commits when split the same way; the printed undo puts the branch back
+#   fails closed      a git that exits 2, a diff-tree that fails, a bad revision, a merge,
+#                     no arguments, a TMPDIR that takes no directory, a --split without a
+#                     branch or with one that lacks the commit, a branch that moves during the
+#                     split (left where it moved to), a shallow clone, a grafts file, a symbolic
+#                     branch (and one that turns symbolic during the split: the branch it points
+#                     at does not move), a merge carrying a mergetag header: BOUNDARY-TOOL, a
+#                     remedy line and exit 2
+#   warns             notes on rewritten commits are named and not copied; a commit a
+#                     remote-tracking ref holds is called published, in the refusal and in the
+#                     split, which still runs
+#   commit-lint       a range that starts before scripts/boundary existed
+#   pre-push          a mixed commit made by commit (no gate at commit time), --no-verify,
+#                     cherry-pick and commit --amend is refused, as is a name that is not
+#                     UTF-8 pushed under a UTF-8 locale; pure ones go; the remedy
+#                     printed by the refused push, run as printed, lets the push go
+#
+# Each run counts the pure cases refused (wanted: none) and the mixed cases refused (wanted:
+# all). Everything happens in throwaway repositories, with Git's global and system config,
+# HOME and XDG_CONFIG_HOME pointed away from the maintainer's; the leak gate (a self-test of
+# its own) and the LLM atomicity gate are off there.
+#
+# The suite runs once per bash: a bash >= 5 first on PATH (the dev shell's, CI's), and on a
+# Mac also /bin/bash 3.2, which a push from outside the dev shell gets. Either missing fails
+# the test; on Linux, 3.2 is not covered, and the run says so.
+
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+
+# --- the driver -----------------------------------------------------------------------------
+if [ -z "${BOUNDARY_SELF_TEST_RUN:-}" ]; then
+	tmp="$(mktemp -d "${TMPDIR:-/tmp}/boundary-self-test.XXXXXX")"
+	trap 'rm -rf "$tmp"' EXIT
+	# shellcheck disable=SC2016 # expanded by the bash asked, not by this one
+	major() { "$1" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null || echo 0; }
+	bashes="" missing=0
+	b5="$(command -v bash || :)"
+	if [ -n "$b5" ] && [ "$(major "$b5")" -ge 5 ]; then
+		bashes="$b5"
+	else
+		echo "boundary self-test: needs a bash >= 5 first on PATH (nix develop); found ${b5:-none}" >&2
+		missing=1
+	fi
+	case "$(uname -s)" in
+	Darwin)
+		if [ -x /bin/bash ] && [ "$(major /bin/bash)" -eq 3 ]; then
+			bashes="$bashes /bin/bash"
+		else
+			echo "boundary self-test: needs /bin/bash 3.2 on a Mac, the bash a push outside the dev shell gets" >&2
+			missing=1
+		fi
+		;;
+	*) echo "boundary self-test: bash 3.2 is not covered on $(uname -s); a run on a Mac covers it" ;;
+	esac
+	[ "$missing" -eq 0 ] || exit 1
+	runs=0 failed=0
+	for b in $bashes; do
+		runs=$((runs + 1))
+		# The hooks and scripts start with `#!/usr/bin/env bash`: this bash goes first on PATH.
+		mkdir -p "$tmp/bin-$runs"
+		ln -s "$b" "$tmp/bin-$runs/bash"
+		PATH="$tmp/bin-$runs:$PATH" BOUNDARY_SELF_TEST_RUN=1 "$b" "$0" || failed=$((failed + 1))
+	done
+	echo "boundary self-test: $failed of $runs runs failed"
+	[ "$failed" -eq 0 ]
+	exit
+fi
+
+# --- the suite ------------------------------------------------------------------------------
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/boundary-self-test.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+: >"$tmp/gitconfig"
+export GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home" \
+	XDG_CONFIG_HOME="$tmp/xdg" GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid \
+	GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid FPL_LEAK_GATE=off \
+	FPL_ATOMIC_GATE=off
+unset FPL_BRANCH_GATE FPL_MAIN_GATE FPL_AGENT_EMAILS FPL_LINT_BRANCH FPL_LINT_COMMIT \
+	GIT_EDITOR GIT_SEQUENCE_EDITOR
+# Every repository-local variable git itself lists (object stores, config injected by
+# `git -c`, replace refs, grafts, shallow files...): a hook or worktree sets some of them.
+# shellcheck disable=SC2046 # one variable name per line, no spaces
+unset $(git rev-parse --local-env-vars)
+mkdir -p "$HOME" "$XDG_CONFIG_HOME"
+checker="$root/scripts/boundary"
+nl='
+'
+
+fails=0 total=0 pure=0 pure_refused=0 mixed=0 mixed_refused=0
+fail() {
+	fails=$((fails + 1))
+	echo "self-test: $*" >&2
+	sed 's/^/    /' "$tmp/out" >&2
+}
+# says <text> <description>: the last output contains text.
+says() {
+	total=$((total + 1))
+	grep -Fq -- "$1" "$tmp/out" || fail "$2: output lacks '$1'"
+}
+# judge <pure|mixed> <description> [<commit>]: scripts/boundary on the commit (HEAD), output
+# in $tmp/out. A pure commit passes silently; a mixed one is refused with BOUNDARY-MIXED.
+judge() {
+	local rc=0
+	total=$((total + 1))
+	"$checker" "${3:-HEAD}" >"$tmp/out" 2>&1 || rc=$?
+	if [ "$1" = pure ]; then
+		pure=$((pure + 1))
+		[ "$rc" -eq 0 ] || pure_refused=$((pure_refused + 1))
+		[ "$rc" -eq 0 ] && [ ! -s "$tmp/out" ] || fail "$2: exit $rc, want a silent 0"
+	else
+		mixed=$((mixed + 1))
+		[ "$rc" -eq 0 ] || mixed_refused=$((mixed_refused + 1))
+		if [ "$rc" -ne 1 ] || ! grep -q 'BOUNDARY-MIXED' "$tmp/out"; then
+			fail "$2: exit $rc, want BOUNDARY-MIXED"
+		fi
+	fi
+}
+# tool <description> [<arguments>...]: scripts/boundary fails closed, with BOUNDARY-TOOL.
+tool() {
+	local what="$1" rc=0
+	shift
+	total=$((total + 1))
+	"$checker" "$@" >"$tmp/out" 2>&1 || rc=$?
+	if [ "$rc" -ne 2 ] || ! grep -q 'BOUNDARY-TOOL' "$tmp/out" || ! grep -q 'Remedy: ' "$tmp/out"; then
+		fail "$what: exit $rc, want BOUNDARY-TOOL, a remedy and 2"
+	fi
+}
+# remedy <file>: the split command a refusal printed.
+remedy() { sed -n 's/^ *\([^ ].* --split .*\)$/\1/p' "$1"; }
+# undo <file>: the command a split printed to put the branch back.
+undo() { sed -n 's/^ *\(git update-ref .*\)$/\1/p' "$1"; }
+# split <description> <branch> <commit>: run the remedy printed for <commit> on <branch>, as
+# printed; then <branch> holds one commit more, all of them one-sided, one of them with the
+# mixed commit's tree, the branch's tree and merges are what they were, and so is the
+# checkout: the same branch, nothing staged or changed.
+split() {
+	local what="$1" b="$2" c="$3" before tree merges n rc=0 r
+	total=$((total + 1))
+	"$checker" "$c" >"$tmp/refusal" 2>&1 || :
+	before="$(git rev-list --count "$b")" tree="$(git rev-parse "$b^{tree}")"
+	merges="$(git rev-list --count --merges "$b")"
+	bash -c "$(remedy "$tmp/refusal")" >"$tmp/split" 2>&1 || rc=$?
+	cp "$tmp/split" "$tmp/out"
+	[ "$rc" -eq 0 ] || { fail "$what: the remedy exits $rc"; return; }
+	[ "$(git rev-parse "$b^{tree}")" = "$tree" ] || fail "$what: the branch's tree changed"
+	[ "$(git rev-list --count --merges "$b")" = "$merges" ] || fail "$what: the merges changed"
+	[ -z "$(git status --porcelain)" ] || fail "$what: the checkout is not clean after"
+	n="$(git rev-list --count "$b")"
+	[ "$n" -eq $((before + 1)) ] || fail "$what: $n commits, want $((before + 1))"
+	git log --format=%T "$b" >"$tmp/trees"
+	grep -qx "$(git rev-parse "$c^{tree}")" "$tmp/trees" || fail "$what: no commit has the mixed tree"
+	for r in $(git rev-list --no-merges "$b" --not main); do
+		"$checker" "$r" >"$tmp/out" 2>&1 || fail "$what: $r is still mixed"
+	done
+	[ "$(git branch --show-current)" = "$b" ] || fail "$what: $b is not checked out after"
+}
+
+# --- judged directly ------------------------------------------------------------------------
+direct="$tmp/direct"
+git init -q -b main "$direct"
+cd "$direct"
+mkdir docs fpl
+echo base >docs/base
+echo base >fpl/base
+echo base >README.md
+git add -A
+git commit -q -m base
+# change <path>...: a commit on branch t, from main, that writes each path.
+n=0
+change() {
+	local p
+	git switch -q -f -C t main
+	for p in "$@"; do
+		n=$((n + 1))
+		case "$p" in */*) mkdir -p "${p%/*}" ;; esac
+		echo "$n" >"$p"
+	done
+	git add -A
+	git commit -q -m change
+}
+
+impl=(bootstrap/a features/a fpl/a tests/a pyproject.toml Makefile mutants.allow)
+harn=(docs/a agents/a .claude/a scripts/a quality/a .githooks/a AGENTS.md CLAUDE.md flake.nix
+	flake.lock .envrc)
+neutral=(README.md .gitignore .github/a tools/a LICENSE docs.md fplx/a Makefile.bak
+	.envrc.local AGENTS.md.bak xdocs/a features.txt bootstrap a/docs/x a/fpl/x xtests/a
+	x.envrc)
+for p in "${impl[@]}"; do
+	change "$p" && judge pure "implementation $p alone"
+	change "$p" docs/a && judge mixed "implementation $p with docs/a"
+done
+for p in "${harn[@]}"; do
+	change "$p" && judge pure "harness $p alone"
+	change "$p" fpl/a && judge mixed "harness $p with fpl/a"
+done
+change "${impl[@]}" && judge pure "every implementation root"
+change "${harn[@]}" && judge pure "every harness root"
+for p in "${neutral[@]}"; do
+	change "$p" && judge pure "neutral $p alone"
+	change "$p" fpl/a && judge pure "neutral $p with an implementation path"
+	change "$p" docs/a && judge pure "neutral $p with a harness path"
+done
+change docs/a fpl/a
+judge mixed "the listing"
+says "harness side (1):" "the refusal lists the harness side"
+says "implementation side (1):" "the refusal lists the implementation side"
+says "    docs/a" "the harness path is listed"
+says "    fpl/a" "the implementation path is listed"
+
+# Renames: both ends count.
+git switch -q -f -C t main
+mkdir -p bootstrap/fpl
+git mv fpl/base bootstrap/fpl/base
+git commit -q -m within
+judge pure "a rename within the implementation, fpl/ to bootstrap/fpl/"
+git switch -q -f -C t main
+mkdir -p bootstrap
+git mv docs/base bootstrap/base
+git commit -q -m across
+judge mixed "a rename across, docs/ to bootstrap/"
+says "docs/base" "the rename's harness end is listed"
+says "bootstrap/base" "the rename's implementation end is listed"
+
+# Deletions.
+git switch -q -f -C t main
+git rm -q docs/base
+git commit -q -m del
+judge pure "a harness deletion"
+git switch -q -f -C t main
+git rm -q fpl/base
+git commit -q -m del
+judge pure "an implementation deletion"
+git rm -q docs/base
+git commit -q --amend -m del
+judge mixed "deletions on both sides"
+
+# Odd names: each is one name, judged by its first characters, and listed as one shell word.
+odd=("fpl/[x].py" "docs/*" "docs/a b" "-dash" "docs/q${nl}fpl/fake" "fpl/it's")
+for p in "${odd[@]}"; do
+	change "$p" && judge pure "the odd name $(printf '%q' "$p") alone"
+done
+change "docs/q${nl}fpl/fake" "fpl/[x].py" "docs/*" "-dash"
+judge mixed "odd names on both sides"
+says "$(printf '%q' "docs/q${nl}fpl/fake")" "a name holding a newline is listed as one word"
+says "fpl/\[x\].py" "a name holding [x] is listed quoted"
+
+# A name that is not UTF-8, judged under a UTF-8 locale. There bash's regex fails on the byte,
+# which reads as no match, so the path would count as neutral. A file system may refuse such a
+# name; git takes it into the index all the same, so raw puts it there directly.
+utf8=""
+for l in C.UTF-8 en_US.UTF-8; do
+	# shellcheck disable=SC2016 # expanded by the bash started here
+	LC_ALL="$l" bash -c '[[ $(printf "fpl/\377") =~ ^fpl/ ]]' 2>/dev/null || { utf8="$l" && break; }
+done
+[ -n "$utf8" ] || echo "boundary self-test: no UTF-8 locale here bends bash's regex; the" \
+	"non-UTF-8 cases run, but would pass without the fix too"
+raw() { # raw <path>...: a commit on branch t, from main, that adds each path to the index only
+	local p blob
+	git switch -q -f -C t main
+	blob="$(echo raw | git hash-object -w --stdin)"
+	for p in "$@"; do git update-index --add --cacheinfo "100644,$blob,$p"; done
+	git commit -q -m raw
+}
+badi="$(printf 'fpl/\377bad')" badh="$(printf 'docs/\377bad')"
+raw "$badi" && LC_ALL="$utf8" judge pure "an implementation name that is not UTF-8, alone"
+raw "$badh" && LC_ALL="$utf8" judge pure "a harness name that is not UTF-8, alone"
+raw "$badi" docs/a && LC_ALL="$utf8" judge mixed "an implementation name that is not UTF-8, with docs/a"
+raw "$badh" fpl/a && LC_ALL="$utf8" judge mixed "a harness name that is not UTF-8, with fpl/a"
+
+# A caller's nocasematch, handed down through BASHOPTS (bash >= 4.1), does not bend the
+# match: DOCS/ is neutral, not harness. Into the index directly, as a Mac's file system would
+# fold DOCS/a into docs/a.
+printf '#!/bin/sh\nexec env BASHOPTS=nocasematch %q "$@"\n' "$checker" >"$tmp/nocase"
+chmod +x "$tmp/nocase"
+raw DOCS/a fpl/a && checker="$tmp/nocase" judge pure "DOCS/a with fpl/a, under an inherited nocasematch"
+
+# A replacement object does not change what is judged: the commit's own bytes are.
+change docs/a fpl/a
+replaced="$(git rev-parse HEAD)"
+change fpl/a
+git replace "$replaced" HEAD
+judge mixed "a mixed commit that a pure one replaces" "$replaced"
+git replace -d "$replaced" >/dev/null
+
+# The listing is bounded.
+change docs/a fpl/1 fpl/2 fpl/3 fpl/4 fpl/5 fpl/6 fpl/7 fpl/8 fpl/9 fpl/10 fpl/11 fpl/12
+judge mixed "twelve implementation paths"
+says "implementation side (12):" "the count is the whole side"
+says "... and 7 more" "the listing stops after five"
+total=$((total + 1))
+# git sorts by byte: fpl/1 fpl/10 fpl/11 fpl/12 fpl/2 come first, so count the listed lines.
+[ "$(grep -c '^ *fpl/[0-9]*$' "$tmp/out")" -eq 5 ] || fail "the listing does not stop at five paths"
+
+# The remedy, run as printed.
+change docs/a fpl/a README.md
+split "the tip" t HEAD
+change docs/a fpl/a
+c="$(git rev-parse HEAD)"
+echo later >docs/later
+git add -A
+git commit -q -m later
+split "a commit below the tip" t "$c"
+change "docs/q${nl}fpl/fake" "fpl/[x].py" "docs/*" "-dash" "docs/a b"
+split "odd names" t HEAD
+# A branch name is printed as one shell word: one holding ; and > does not run.
+git switch -q -f -C 't;>pwned' main
+echo q >docs/q
+echo q >fpl/q
+git add -A
+git commit -q -m inject
+split "a branch name holding ; and >" 't;>pwned' HEAD
+total=$((total + 1))
+if [ -e pwned ]; then fail "a branch name ran as a command"; fi
+# On an unclean tree the split runs all the same and leaves the staged and the unstaged work
+# as they were: it never touches the index or the work tree.
+change docs/a fpl/a
+before="$(git rev-list --count t)"
+"$checker" HEAD >"$tmp/refusal" 2>&1 || :
+echo unstaged >fpl/a
+echo staged >docs/a
+git add docs/a
+total=$((total + 1)) rc=0
+bash -c "$(remedy "$tmp/refusal")" >"$tmp/out" 2>&1 || rc=$?
+if [ "$rc" -ne 0 ] || [ "$(git rev-list --count t)" -ne $((before + 1)) ] ||
+	[ "$(git branch --show-current)" != t ] || [ "$(cat fpl/a)" != unstaged ] ||
+	[ "$(git diff --cached --name-only)" != docs/a ] || [ "$(git show :docs/a)" != staged ]; then
+	fail "the split on an unclean tree: exit $rc, want a split that keeps the staged and unstaged work"
+fi
+git reset -q --hard
+git switch -q -f -C t main
+mkdir -p bootstrap
+git mv docs/base bootstrap/base
+git commit -q -m across
+split "a rename across" t HEAD
+# A branch that merges after the mixed commit keeps its merge.
+change docs/a fpl/a
+c="$(git rev-parse HEAD)"
+git switch -q -f -C merged main
+echo side >docs/side
+git add -A
+git commit -q -m side
+git switch -q t
+git merge -q --no-edit merged
+echo later >docs/later
+git add -A
+git commit -q -m later
+split "a merge after the mixed commit" t "$c"
+total=$((total + 1))
+[ "$(git rev-list --count --merges t)" -eq 1 ] || fail "the replay flattened the merge"
+# A merge that changes something of its own (an evil merge) keeps it: every later commit is
+# rebuilt with its own tree.
+change docs/a fpl/a
+c="$(git rev-parse HEAD)"
+git switch -q -f -C merged main
+echo side >docs/side
+git add -A
+git commit -q -m side
+git switch -q t
+git merge -q --no-commit merged >/dev/null 2>&1
+echo evil >docs/evil
+git add -A
+git commit -q --no-edit
+split "a merge with changes of its own after the mixed commit" t "$c"
+total=$((total + 1))
+git cat-file -e t:docs/evil 2>/dev/null || fail "the merge lost its own change"
+# A path the mixed commit tracks and a later commit ignores holds local work: the split never
+# writes it.
+change docs/a fpl/gen
+c="$(git rev-parse HEAD)"
+git rm -q fpl/gen
+echo fpl/gen >.gitignore
+git add -A
+git commit -q -m ignore
+echo precious >fpl/gen
+split "an ignored local file at a path the mixed commit tracks" t "$c"
+total=$((total + 1))
+[ "$(cat fpl/gen 2>/dev/null)" = precious ] || fail "the split wrote over an ignored local file"
+rm -f fpl/gen
+# With rebase.updateRefs (scripts/setup sets it), the split moves the one branch it names; a
+# branch stacked on the mixed commit stays, and the undo it prints puts the branch back.
+git config rebase.updateRefs true
+change docs/a fpl/a
+c="$(git rev-parse HEAD)"
+echo mid >docs/mid
+git add -A
+git commit -q -m mid
+git branch -f stacked
+mid="$(git rev-parse HEAD)"
+echo top >docs/top
+git add -A
+git commit -q -m top
+head="$(git rev-parse HEAD)"
+split "a branch stacked below the tip, with rebase.updateRefs" t "$c"
+total=$((total + 1))
+[ "$(git rev-parse stacked)" = "$mid" ] || fail "the split moved another branch, stacked"
+cp "$tmp/split" "$tmp/split-t"
+total=$((total + 1)) rc=0
+"$checker" --split "$c" stacked >"$tmp/out" 2>&1 || rc=$?
+[ "$rc" -eq 0 ] && [ "$(git rev-parse stacked)" = "$(git rev-parse t~1)" ] ||
+	fail "the stacked branch, split the same way (exit $rc), does not get the same commits"
+cp "$tmp/split-t" "$tmp/split"
+total=$((total + 1)) rc=0
+bash -c "$(undo "$tmp/split")" >"$tmp/out" 2>&1 || rc=$?
+[ "$rc" -eq 0 ] && [ "$(git rev-parse t)" = "$head" ] || fail "the printed undo (exit $rc) does not put t back"
+git config --unset rebase.updateRefs
+# An implementation directory replaced by a neutral file of the same name: the file goes with
+# the implementation half, as the directory it replaces must stay in the harness half.
+git switch -q -f -C t main
+mkdir tests
+echo a >tests/a
+git add -A
+git commit -q -m tests
+git rm -q -r tests
+echo f >tests
+echo x >docs/a
+git add -A
+git commit -q -m df
+judge mixed "an implementation directory replaced by a neutral file"
+split "an implementation directory replaced by a neutral file" t HEAD
+git switch -q -f -C t main
+mkdir -p fpl/many
+i=0
+while [ "$i" -lt 2000 ]; do
+	i=$((i + 1))
+	echo "$i" >"fpl/many/$i"
+done
+echo many >docs/many
+git add -A
+git commit -q -m many
+judge mixed "2000 implementation paths"
+says "... and 1995 more" "2000 paths are listed as five and a count"
+split "2000 paths" t HEAD
+cp "$tmp/split" "$tmp/out" # the split's words, not the checks after it
+total=$((total + 1))
+if grep -Eq 'notes|published' "$tmp/out"; then fail "the split warns of notes or publication where there are none"; fi
+
+# Ancestry is read as the commits record it. A shallow clone makes its boundary commit a root, and
+# a grafts file gives a commit parents it never had: either way the diff, and the parents of a
+# split, would be another history's. The checker refuses, and says how to clear it.
+change README.md
+git clone -q --depth 1 --branch t "file://$direct" "$tmp/shallow" 2>/dev/null
+cd "$tmp/shallow"
+tool "a shallow clone, judging" HEAD
+says "git fetch --unshallow" "the shallow refusal names the remedy"
+tool "a shallow clone, splitting" --split HEAD t
+cd "$direct"
+git switch -q -f -C gp main
+echo g >docs/a
+git add -A
+git commit -q -m graft-parent
+git switch -q -f -C t main
+echo g >docs/a
+echo g >fpl/a
+git add -A
+git commit -q -m mixed-by-graft
+gc="$(git rev-parse HEAD)"
+git clone -q "$direct" "$tmp/grafted" 2>/dev/null
+cd "$tmp/grafted"
+echo "$gc $(git -C "$direct" rev-parse gp)" >.git/info/grafts
+tool "a grafts file that hides half of a mixed commit" "$gc"
+says "info/grafts" "the grafts refusal names the file"
+cd "$direct"
+
+# A symbolic branch: update-ref would follow it and move another branch. Refused; the printed
+# undo of a split never follows one either.
+change docs/a fpl/a
+git symbolic-ref refs/heads/alias refs/heads/t
+before="$(git rev-parse t)"
+tool "a symbolic branch" --split HEAD alias
+says "symbolic" "the symbolic refusal says why"
+total=$((total + 1))
+[ "$(git rev-parse t)" = "$before" ] || fail "the split moved the branch a symbolic ref points at"
+git symbolic-ref -d refs/heads/alias || :
+split "a branch to undo" t HEAD
+cp "$tmp/split" "$tmp/out" # the split's words, not the checks after it
+total=$((total + 1))
+grep -q -- '--no-deref' "$tmp/out" || fail "the printed undo follows symbolic refs"
+
+# A branch that turns into a symbolic ref while the split runs: the branch it now points at
+# does not move (--no-deref).
+change docs/a fpl/a
+git branch -f other
+before="$(git rev-parse t)"
+mkdir -p "$tmp/stubsym"
+# shellcheck disable=SC2016 # the stub's own $1 and $@
+printf '#!/bin/sh\n[ "$1" = update-ref ] && %q symbolic-ref refs/heads/t refs/heads/other\nexec %q "$@"\n' \
+	"$(command -v git)" "$(command -v git)" >"$tmp/stubsym/git"
+chmod +x "$tmp/stubsym/git"
+PATH="$tmp/stubsym:$PATH" "$checker" --split HEAD t >"$tmp/out" 2>&1 || :
+total=$((total + 1))
+[ "$(git rev-parse other)" = "$before" ] || fail "the split moved the branch a symbolic ref turned to"
+git branch -D other >/dev/null || : # a failed split may leave it checked out
+
+# A merge that carries a mergetag header: the split would leave it naming a commit that is no
+# longer a parent. Refused, nothing moved.
+change docs/a fpl/a
+c="$(git rev-parse HEAD)"
+git tag -a -m tag tagc "$c"
+git switch -q -f -C x main
+echo x >docs/x
+git add -A
+git commit -q -m x
+git merge -q --no-edit tagc >/dev/null 2>&1
+# git records a mergetag header only for a signed tag, and no key is at hand: put the tag object
+# in the merge by hand, as git writes it (each line of the tag, the first after "mergetag ").
+{
+	git cat-file commit HEAD | sed -n '1,/^committer /p'
+	git cat-file tag tagc | sed '1s/^/mergetag /; 2,$s/^/ /'
+	git cat-file commit HEAD | sed '1,/^committer /d'
+} >"$tmp/mergetag"
+git reset -q --hard "$(git hash-object -t commit -w "$tmp/mergetag")"
+total=$((total + 1))
+git cat-file commit HEAD | grep -q '^mergetag ' || fail "the fixture merge carries no mergetag header"
+before="$(git rev-parse x)"
+tool "a merge carrying a mergetag header" --split "$c" x
+says "mergetag" "the mergetag refusal names the header"
+total=$((total + 1))
+[ "$(git rev-parse x)" = "$before" ] || fail "the split moved a branch it refused"
+git tag -d tagc >/dev/null
+
+# Notes stay keyed to the old commits: the split says which, and does not copy them.
+change docs/a fpl/a
+c="$(git rev-parse HEAD)"
+echo later >docs/later
+git add -A
+git commit -q -m later
+later="$(git rev-parse HEAD)"
+git notes add -m "on the mixed commit" "$c"
+git notes --ref=other add -m "on the later commit" "$later"
+split "a branch with notes on rewritten commits" t "$c"
+cp "$tmp/split" "$tmp/out" # the split's words, not the checks after it
+says "notes" "the split names the notes it leaves"
+says "${c:0:12}" "the note on the mixed commit is named"
+says "${later:0:12}" "the note on the later commit is named"
+says "refs/notes/other" "the notes ref is named"
+total=$((total + 1))
+if git notes list "$(git rev-parse t)" >/dev/null 2>&1; then fail "the split copied a note"; fi
+git update-ref -d refs/notes/commits
+git update-ref -d refs/notes/other
+
+# Published history: a remote-tracking ref holds the commit. The split still runs; it says
+# plainly that pushing the result rewrites a published branch, and so does the refusal.
+change docs/a fpl/a
+judge mixed "an unpublished mixed commit"
+total=$((total + 1))
+if grep -qi 'published' "$tmp/out"; then fail "the refusal calls an unpublished commit published"; fi
+git init -q --bare -b main "$tmp/pub.git"
+git remote add origin "$tmp/pub.git"
+git switch -q -f -C pubbr main
+echo p >docs/p
+echo p >fpl/p
+git add -A
+git commit -q -m published
+git push -q origin pubbr 2>/dev/null
+judge mixed "a published mixed commit"
+says "origin/pubbr" "the refusal names the remote-tracking ref"
+says "published" "the refusal calls the commit published"
+split "a published mixed commit" pubbr HEAD
+cp "$tmp/split" "$tmp/out" # the split's words, not the checks after it
+says "origin/pubbr" "the split names the remote-tracking ref"
+says "published branch: coordinate" "the split warns that a push rewrites published history"
+git remote remove origin
+
+# A root commit, judged against the empty tree.
+rooted="$tmp/rooted"
+git init -q -b main "$rooted"
+cd "$rooted"
+mkdir docs fpl
+echo a >docs/a
+echo a >README.md
+git add -A
+git commit -q -m root
+judge pure "a pure root commit"
+git switch -q --orphan r
+mkdir -p docs fpl
+echo a >docs/a
+echo a >fpl/a
+git add -A
+git commit -q -m root
+judge mixed "a mixed root commit"
+split "a mixed root commit" r HEAD
+
+# Fails closed.
+cd "$direct"
+git switch -q -f -C t main
+git switch -q -c side
+echo side >docs/side
+git add -A
+git commit -q -m side
+git switch -q t
+echo t >fpl/t
+git add -A
+git commit -q -m t
+git merge -q --no-edit side
+tool "a merge" HEAD
+says "is a merge" "a merge is named"
+git switch -q -f -C t main
+change docs/a fpl/a
+tool "no arguments"
+tool "a bad revision" nosuch
+mkdir -p "$tmp/stub2" "$tmp/stubdt"
+printf '#!/bin/sh\necho "stub: git fails" >&2\nexit 2\n' >"$tmp/stub2/git"
+# shellcheck disable=SC2016 # the stub's own $1 and $@
+printf '#!/bin/sh\n[ "$1" = diff-tree ] && { echo "stub: diff-tree fails" >&2; exit 2; }\nexec %q "$@"\n' \
+	"$(command -v git)" >"$tmp/stubdt/git"
+chmod +x "$tmp/stub2/git" "$tmp/stubdt/git"
+PATH="$tmp/stub2:$PATH" tool "a git that exits 2" HEAD
+says "stub: git fails" "the cause is printed"
+PATH="$tmp/stubdt:$PATH" tool "a diff-tree that fails" HEAD
+says "stub: diff-tree fails" "the diff-tree cause is printed"
+change README.md
+PATH="$tmp/stubdt:$PATH" tool "a failing diff-tree, on a commit that would pass" HEAD
+TMPDIR="$tmp/none" tool "a TMPDIR where no directory can be made" HEAD
+change docs/a fpl/a
+# A branch that moves while the split runs is not overwritten: the compare-and-swap refuses.
+moved="$(git rev-parse main)"
+mkdir -p "$tmp/stubmove"
+# shellcheck disable=SC2016 # the stub's own $1 and $@
+printf '#!/bin/sh\n[ "$1" = update-ref ] && %q update-ref refs/heads/t %q\nexec %q "$@"\n' \
+	"$(command -v git)" "$moved" "$(command -v git)" >"$tmp/stubmove/git"
+chmod +x "$tmp/stubmove/git"
+PATH="$tmp/stubmove:$PATH" tool "a branch that moves during the split" --split HEAD t
+total=$((total + 1))
+[ "$(git rev-parse t)" = "$moved" ] || fail "the split overwrote a branch that moved under it"
+change docs/a fpl/a
+tool "a --split without a branch" --split HEAD
+tool "a --split on a branch that lacks the commit" --split HEAD main
+total=$((total + 1)) rc=0
+change README.md
+"$checker" --split HEAD t >"$tmp/out" 2>&1 || rc=$?
+[ "$rc" -eq 0 ] && [ "$(git rev-list --count t)" -eq 2 ] || fail "a --split of a one-sided commit: exit $rc, or t moved"
+says "nothing to split" "a --split of a one-sided commit says so"
+
+# --- commit-lint over a range from before scripts/boundary ----------------------------------
+early="$tmp/early"
+git init -q -b main "$early"
+cd "$early"
+mkdir docs fpl
+echo a >docs/a
+git add -A
+git commit -q -m "docs(x): pure, before the checker" -m "Human-Only: true"
+echo a >fpl/a
+echo b >docs/b
+git add -A
+git commit -q -m "feat(x): mixed, before the checker" -m "Human-Only: true"
+cp -R "$root/.githooks" "$root/scripts" "$root/.github" .
+git add -A
+git commit -q -m "chore(harness): the checker arrives" -m "Human-Only: true"
+total=$((total + 1)) pure=$((pure + 2)) mixed=$((mixed + 1)) rc=0
+scripts/commit-lint HEAD >"$tmp/out" 2>&1 || rc=$?
+[ "$rc" -eq 1 ] || fail "commit-lint over a range from before the checker: exit $rc, want 1"
+grep -q "FAIL .* feat(x): mixed, before the checker" "$tmp/out" && mixed_refused=$((mixed_refused + 1))
+grep -q "FAIL .* docs(x): pure" "$tmp/out" && pure_refused=$((pure_refused + 1))
+grep -q "FAIL .* chore(harness)" "$tmp/out" && pure_refused=$((pure_refused + 1))
+says "commit-lint: 1 of 3 commits failed" "only the mixed commit fails"
+says "BOUNDARY-MIXED" "commit-lint names the rule"
+# commit-lint judges a commit's own bytes, not a replacement's.
+echo r >fpl/r
+echo r >docs/r
+git add -A
+git commit -q -m "feat(x): mixed, replaced" -m "Human-Only: true"
+replaced="$(git rev-parse HEAD)"
+git reset -q --hard HEAD~1
+echo r >fpl/r
+git add -A
+git commit -q -m "feat(x): pure, the replacement" -m "Human-Only: true"
+git replace "$replaced" HEAD
+total=$((total + 1)) mixed=$((mixed + 1)) rc=0
+scripts/commit-lint "$replaced~1..$replaced" >"$tmp/out" 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || mixed_refused=$((mixed_refused + 1))
+[ "$rc" -eq 1 ] || fail "commit-lint over a replaced mixed commit: exit $rc, want 1"
+says "BOUNDARY-MIXED" "commit-lint judges the replaced commit's own paths"
+git replace -d "$replaced" >/dev/null
+# The same for the message: a bad one stays bad under a replacement with a good one.
+git reset -q --hard HEAD~1
+echo s >fpl/s
+git add -A
+git commit -q -m "Not a conventional header" -m "Human-Only: true"
+replaced="$(git rev-parse HEAD)"
+git commit -q --amend -m "feat(x): the replacement" -m "Human-Only: true"
+git replace "$replaced" HEAD
+total=$((total + 1)) rc=0
+scripts/commit-lint "$replaced~1..$replaced" >"$tmp/out" 2>&1 || rc=$?
+[ "$rc" -eq 1 ] || fail "commit-lint over a replaced bad message: exit $rc, want 1"
+git replace -d "$replaced" >/dev/null
+
+# --- pre-push -------------------------------------------------------------------------------
+remote="$tmp/remote.git"
+git init -q --bare -b main "$remote"
+repo="$tmp/repo"
+git init -q -b main "$repo"
+cd "$repo"
+cp -R "$root/.githooks" "$root/scripts" "$root/.github" .
+git add -A
+git -c core.hooksPath=/dev/null commit -q -m "chore(harness): base" -m "Human-Only: true"
+git remote add origin "$remote"
+git push -q --no-verify origin main
+git config core.hooksPath .githooks
+# put <path>...: write each path, its directory made first (a switch takes empty ones away).
+put() {
+	local p
+	for p in "$@"; do
+		mkdir -p "${p%/*}"
+		echo "$p" >"$p"
+	done
+}
+
+# push <pure|mixed> <description> <git push arguments...>: output in $tmp/out.
+push() {
+	local want="$1" what="$2" rc=0
+	shift 2
+	total=$((total + 1))
+	git push --porcelain origin "$@" >"$tmp/out" 2>&1 || rc=$?
+	if [ "$want" = pure ]; then
+		pure=$((pure + 1))
+		[ "$rc" -eq 0 ] || { pure_refused=$((pure_refused + 1)) && fail "$what: refused"; }
+	else
+		mixed=$((mixed + 1))
+		[ "$rc" -eq 0 ] || mixed_refused=$((mixed_refused + 1))
+		if [ "$rc" -eq 0 ] || ! grep -q BOUNDARY-MIXED "$tmp/out"; then
+			fail "$what: exit $rc, want BOUNDARY-MIXED"
+		fi
+	fi
+}
+msg() { printf '%s\n\nStack: %s\nHuman-Only: true\n' "$1" "$2"; }
+made() { # made <description> <git commit arguments...>: the commit is made
+	local what="$1" rc=0
+	shift
+	total=$((total + 1))
+	git commit -q "$@" >"$tmp/out" 2>&1 || rc=$?
+	[ "$rc" -eq 0 ] || fail "$what: the commit is refused (exit $rc)"
+}
+
+git switch -q -c agent/claude/stack/h main
+put docs/h
+git add -A
+made "a harness commit" -m "$(msg "docs(x): harness" h)"
+push pure "a harness commit" agent/claude/stack/h
+git switch -q -c agent/claude/stack/i main
+put fpl/i
+git add -A
+made "an implementation commit" -m "$(msg "feat(x): implementation" i)"
+push pure "an implementation commit" agent/claude/stack/i
+
+git switch -q -c agent/claude/stack/c main
+put docs/c
+put fpl/c
+git add -A
+made "a mixed commit, with the hooks" -m "$(msg "feat(x): mixed" c)"
+push mixed "a mixed commit, made with the hooks" agent/claude/stack/c
+says "commit-lint: 1 of 1 commits failed" "the refusal is commit-lint's"
+
+git switch -q -c agent/claude/stack/n main
+put docs/n
+put fpl/n
+git add -A
+made "a mixed commit with --no-verify" --no-verify -m "$(msg "feat(x): mixed" n)"
+push mixed "a mixed commit made with --no-verify" agent/claude/stack/n
+
+git switch -q -c agent/claude/stack/p main
+put docs/p
+put fpl/p
+git add -A
+git -c core.hooksPath=/dev/null commit -q -m "$(msg "feat(x): picked" q)"
+git switch -q -c agent/claude/stack/q main
+git cherry-pick agent/claude/stack/p >/dev/null
+push mixed "a mixed commit brought by cherry-pick" agent/claude/stack/q
+
+git switch -q -c agent/claude/stack/m main
+put fpl/m
+git add -A
+made "an implementation commit, to amend" -m "$(msg "feat(x): to amend" m)"
+push pure "the commit before the amend" agent/claude/stack/m
+put docs/m
+git add -A
+made "an amend that adds a harness path" --amend --no-edit
+push mixed "a mixed commit made by commit --amend" --force agent/claude/stack/m
+cp "$tmp/out" "$tmp/refusal"
+total=$((total + 1)) rc=0
+bash -c "$(remedy "$tmp/refusal")" >"$tmp/out" 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || fail "the remedy pre-push printed: exit $rc"
+push pure "the amend, split by the remedy pre-push printed" --force agent/claude/stack/m
+scripts/commit-lint -b agent/claude/stack/m main..agent/claude/stack/m >"$tmp/out" 2>&1 || :
+says "commit-lint: 0 of 2 commits failed" "the split holds two passing commits"
+
+# A mixed commit whose only implementation path is not UTF-8, pushed under a UTF-8 locale.
+git switch -q -c agent/claude/stack/u main
+put docs/u
+git add -A
+git update-index --add --cacheinfo "100644,$(echo u | git hash-object -w --stdin),$badi"
+made "a mixed commit with a name that is not UTF-8" -m "$(msg "feat(x): not UTF-8" u)"
+LC_ALL="$utf8" push mixed "a name that is not UTF-8, pushed under $utf8" agent/claude/stack/u
+
+# An amend that takes one side out and puts the other in leaves a one-sided commit: it goes.
+git switch -q -c agent/claude/stack/r main
+put fpl/r
+git add -A
+made "an implementation commit, to reshape" -m "$(msg "feat(x): to reshape" r)"
+git rm -q fpl/r
+put docs/r
+git add -A
+made "an amend that swaps the side" --amend --no-edit
+push pure "an amend that leaves one side only" agent/claude/stack/r
+
+echo "boundary self-test: $fails failures in $total checks (bash $BASH_VERSION); refused:" \
+	"$pure_refused of $pure pure, $mixed_refused of $mixed mixed"
+[ "$fails" -eq 0 ] && [ "$pure_refused" -eq 0 ] && [ "$mixed_refused" -eq "$mixed" ]
