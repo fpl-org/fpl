@@ -92,6 +92,10 @@ an amend of a merge or revert is refused there, reworded or not: amend one with
 ### Trailer block
 
 - **[gate]** one blank line before it; each line `Token: value`, tokens use `-` for spaces.
+  It is the message's last paragraph, read as `git interpret-trailers --parse` reads it (all
+  trailers, or a quarter of them beside prose when one is a `Signed-off-by:`); a line that
+  looks like a trailer anywhere else is body text, and counts for no gate below. Keys are read
+  without regard to case, as git reads them: `stack:` is a `Stack:`.
 - **[gate]** `Assisted-By` **and** `Session-Id` are both present — **or** a single
   `Human-Only: true` line for a hand-made human commit.
 - **[gate]** on a stack branch — `stack/<name>[/<part>]`, or the same under `agent/<id>/`

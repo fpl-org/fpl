@@ -627,6 +627,50 @@ gate 1 "a spec file moved out of features/, without [spec]" \
 says "edits a protected spec file" "the oracle guard saw the move"
 git reset -q --hard "$spec"
 
+# The message: what git reads as its trailers is the last paragraph alone (git
+# interpret-trailers --parse), so a trailer-like line in the body is text, and one block holds
+# the provenance (GPT review of these branches, findings 2 to 5).
+msg() { # msg <exit code> <description> <message>: a commit of that message on $spec, linted
+	commit -m "$3"
+	lint "$1" "$2"
+	git reset -q --hard "$spec"
+}
+claude=326980220+psjg-claude@users.noreply.github.com
+msg 1 "trailers in a paragraph the body continues after" \
+	"feat(x): explain provenance"$'\n\n'"Stack: m"$'\n'"Human-Only: true"$'\n\n'"This paragraph follows the supposed trailers."
+says "missing 'Assisted-By:'" "trailers in the body are no provenance"
+GIT_AUTHOR_EMAIL=$claude msg 1 "agent trailers in a paragraph the body continues after" \
+	"feat(x): explain provenance"$'\n\n'"Stack: m"$'\n'"Assisted-By: claude"$'\n'"Session-Id: example"$'\n\n'"This paragraph follows the supposed trailers."
+says "missing 'Assisted-By:'" "agent trailers in the body are no provenance"
+msg 0 "a trailer-like example in the body, before a well-ordered block" \
+	"feat(x): explain sessions"$'\n\n'"Session-Id: example"$'\n\n'"The line above is an example."$'\n\n'"Refs: x"$'\n'"Stack: m"$'\n'"Human-Only: true"
+# git reads a trailer key without regard to case, in a last paragraph it takes for the block:
+# all trailers, or a quarter of them with one git writes itself (Signed-off-by), prose beside.
+# The gates read the keys as git does.
+sob="Signed-off-by: t <t@example.invalid>"$'\n'"a line of prose in the block"
+GIT_AUTHOR_EMAIL=$claude msg 0 "agent trailers with lower-case keys, in a block with prose git reads" \
+	"feat(x): a"$'\n\n'"$sob"$'\n'"Stack: m"$'\n'"assisted-by: claude"$'\n'"session-id: s"
+GIT_AUTHOR_EMAIL=$claude msg 1 "trailers with lower-case keys, out of order" \
+	"feat(x): a"$'\n\n'"Stack: m"$'\n'"session-id: s"$'\n'"assisted-by: claude"
+says "out of order" "a lower-case key is ranked as its key"
+# The width gate spares that block, and only it: a last paragraph of lines with a colon is
+# prose to git when a key holds a space, so its long line is judged.
+long="Note the cause: the old reader took this paragraph for trailers, and spared this line"
+msg 1 "a long line in a last paragraph git reads as prose" \
+	"feat(x): a"$'\n\n'"Stack: m"$'\n'"Human-Only: true"$'\n\n'"$long"
+says "body line" "the long prose line is judged"
+# Within the block only the trailers are spared: a comment line, which git skips there and
+# keeps in the message (-m and -F strip none), and a prose line beside a Signed-off-by are text.
+msg 1 "a long '#' line in the trailer block, which git keeps" \
+	"feat(x): a"$'\n\n'"Stack: m"$'\n'"Human-Only: true"$'\n'"# $long"
+says "body line" "the long comment line is judged"
+msg 1 "a long prose line in a block with a Signed-off-by" \
+	"feat(x): a"$'\n\n'"$sob"$'\n'"$long"$'\n'"Stack: m"$'\n'"Human-Only: true"
+says "body line" "the long prose line in the block is judged"
+msg 1 "the branch's Stack: in the body only" \
+	"feat(x): a"$'\n\n'"Stack: m"$'\n\n'"prose"$'\n\n'"Human-Only: true"
+says "needs 'Stack: m'" "a Stack: line in the body is no stack record"
+
 echo "pre-push self-test: $fails of $total checks failed (bash $BASH_VERSION)"
 if [ -z "${PRE_PUSH_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ]; then
 	mkdir -p "$tmp/shim"
