@@ -83,9 +83,11 @@ pristine:
 # The walker's entry from the root, `make run` (the root's Makefile), run on one real example
 # and compared with its .expected, from the root and with the lanes' own PYTHONPATH taken away:
 # the lanes run inside bootstrap/, where the package is found, so only this step notices that
-# the entry itself broke (it did, in the move to bootstrap/). A missing example, or an empty
-# .expected that would match an entry that prints nothing, is refused.
-ROOT_EXAMPLE := features/draft2/examples/01-frames
+# the entry itself broke (it did, in the move to bootstrap/). The root's own fpl/ directory
+# (FPL's tree, with no __init__) sits beside the package bootstrap/fpl, and the example lives in
+# it; the entry has to find the package past it. A missing example, or an empty .expected that
+# would match an entry that prints nothing, is refused.
+ROOT_EXAMPLE := fpl/features/draft2/examples/01-frames
 
 rootrun:
 	@test -s $(ROOT)/$(ROOT_EXAMPLE).fpl -a -s $(ROOT)/$(ROOT_EXAMPLE).expected || { \
