@@ -81,6 +81,22 @@ commit_stack_of_branch() {
 		| sed -n 's/^stack=//p' || true
 }
 
+# commit_rules_text: the rules a person is shown above an empty message, one per line, without
+# a comment prefix. .githooks/prepare-commit-msg writes them as comment lines, with a marker line
+# of its own after them, and records the block; commit-msg takes out that block, and nothing that
+# merely reads like it, where a --cleanup option would keep comment lines.
+commit_rules_text() {
+	printf '%s\n' \
+		"Commit message rules (.githooks/commit-rules, docs/COMMITS.md):" \
+		"  header   $COMMIT_SKELETON, at most $COMMIT_HEADER_MAX characters in all" \
+		"  type     one of: $COMMIT_TYPES" \
+		"  scope    lower-case, only [$COMMIT_SCOPE_CHARS]: the area touched, such as hooks or docs" \
+		"  summary  starts lower-case, imperative, no period at the end" \
+		"  body     under the header, after one blank line; lines at most $COMMIT_BODY_MAX columns; say why" \
+		"  trailers last, after one blank line: the lines above are filled in for you" \
+		"A header that is still the skeleton is refused. These lines are not part of the message."
+}
+
 # commit_comment_raw: what the repository sets as git's comment prefix (core.commentChar or
 # core.commentString, the last one set wins), '#' when neither is.
 commit_comment_raw() {
@@ -94,8 +110,17 @@ commit_comment_raw() {
 # message before the editor opens, and tells no hook. The message as it comes back cannot show
 # which, since a line the person wrote may start with any of them (a guess from the last line
 # took a person's ';' line for a comment). With no prefix known, no line is taken for one.
+# COMMIT_PICKED_PREFIX, when set, is git's pick as .githooks/prepare-commit-msg saw it before
+# the editor opened (commit_template_state).
 commit_comment_prefix() {
 	local raw
 	raw="$(commit_comment_raw)"
-	[ "$raw" = auto ] || printf '%s' "$raw"
+	if [ "$raw" = auto ]; then printf '%s' "${COMMIT_PICKED_PREFIX:-}"; else printf '%s' "$raw"; fi
 }
+
+# commit_template_state: the file in which .githooks/prepare-commit-msg leaves .githooks/commit-msg
+# what it wrote for the commit in the making: the comment prefix git picked (line 1), then the
+# rules block exactly as written into the message, marker line last, when it wrote one. It is
+# removed by prepare-commit-msg as it starts and by commit-msg once read, so it belongs to one
+# commit; it lives in the git directory, where no message can put it.
+commit_template_state() { git rev-parse --git-path commit-msg-template; }
