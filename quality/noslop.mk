@@ -154,6 +154,7 @@ gates: venv
 	$(S)/leak-check --self-test
 	$(S)/pre-push-self-test
 	$(S)/boundary-self-test
+	$(S)/spec-guard-self-test
 	$(BIN)/python $(S)/gates
 
 # Each tool syncs its own locked environment into <tool>/.venv, so its dependencies never
