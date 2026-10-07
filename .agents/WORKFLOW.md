@@ -21,7 +21,8 @@ top of base) · **restack** (rebase the stack when base or a lower commit change
 5. **Never rewrite a commit that others have based work on** without telling them — restacking
    rewrites SHAs.
 6. **Everything lands through a GitHub pull request** — harness changes included. No local
-   merge into `main`, no direct push to it. See [Land](#land--through-github-for-now).
+   merge into `main`, and no push to it but the one `scripts/land` makes: the fast-forward
+   to the head of an approved pull request. See [Land](#land--through-github-for-now).
    **[gate]** `.githooks/reference-transaction` lets local `main` move only to the commit
    `github/main` already points at: `git pull` after a landed PR passes; a commit, a merge
    (fast-forward or not) and a rebase on `main` are refused, and `--no-verify` does not skip
@@ -181,46 +182,68 @@ gh pr create --base stack/typed-let/1 --head stack/typed-let/2
 For agent work there are two scripts, one for each side of the review:
 
 ```
-scripts/pr [<branch>]      # the agent's side: file the branch as the machine account,
-                           # on the tail of the queue
-scripts/land [<number>]    # the maintainer's side: checks, conversation, diff, then decide
+scripts/pr [<branch>]          # the agent's side: file the branch as the machine account,
+                               # on the tail of the queue
+scripts/land [<number>]        # the maintainer's side: check, look, decide, fast-forward main
+scripts/land --dry-run <number>  # every check and the push it would make; changes nothing
 ```
 
 `scripts/pr` refuses unless the token it uses belongs to the machine account of
 `.git/agent-identity` and the branch on the forge is the commit you have; it does not push.
 It files the pull request on the tail of the queue, and refuses a branch that is not built
 on that tail, with the rebase that puts it there; `-B <base>` overrides the choice.
-`scripts/land` waits for the checks, prints the conversation, opens the diff in the browser,
-and only after Enter approves, rebase-merges, deletes the branch and updates `main`. It lands
-the one pull request you name, with `gh pr merge --rebase`, which suits the bottom of a stack
-landed alone. A stack up to a higher pull request lands from the merge box (below) until
-`scripts/land` learns the asynchronous merge endpoint, which GitHub requires for merging a
-stack through the API. The author of a pull request cannot approve it, which is why the two
-sides are two accounts.
+
+`scripts/land` lands by **fast-forward**: it pushes the pull request's head to `main`
+without force, `git push github <head>:refs/heads/main`. The commits on `main` are the
+commits that were reviewed, SHAs, committer and all, and GitHub shows the pull request as
+merged once its head is on its base. Before it asks anything it refuses, naming the rule
+and the remedy, unless the pull request is open, not a draft and based on `main`; the head
+the forge reports is the commit it fetched; the active gh account did not write it; a code
+owner's standing verdict approves that exact head (or you are the code owner, and it
+approves the head for you after the keypress); nobody's standing verdict requests changes;
+every review thread is resolved; every check the rulesets on `main` require concluded
+success on the head, judged by its latest run; `main` is an ancestor of the head, and no
+merge commit lies between them; every rule on `main` is one it judges; and you may push past
+the rulesets on `main`. Then it prints the conversation, opens the diff in
+the browser and waits for Enter; after it, it checks everything again, pushes, checks that
+`main` is the head and that GitHub shows the merge, and prints the command that retargets
+to `main` each pull request based on the landed branch. The author of a pull request cannot
+approve it, which is why the two sides are two accounts.
+
+**The merge button is not used for our pull requests**, nor `gh pr merge`. GitHub's merge
+methods all write new commits: rebase-merge gives every commit a new SHA and committer, so
+each pull request stacked on the landed one has to be rebased and pushed again, its approval
+is dismissed, and rule 10 needs an override for the push (fpl-org/fpl#129, #132 and #133
+went through that). A fast-forward moves nothing that was reviewed. Squash and merge commits are refused anyway:
+`main` is linear and keeps the atomic commits with their trailers.
+
+**The owner's one-time step.** A push to `main` is refused by the rulesets on it unless the
+pusher may bypass them always: in Settings > Rules > Rulesets, in each ruleset on `main`,
+Bypass list > Repository admin > **Always**, not "For pull requests only".
+`scripts/land --dry-run` says, as `land/bypass`, whether that is done; a push the forge
+refuses for it gets the same remedy. With it an admin's push skips the rulesets entirely,
+force included, so the checks the rulesets made are the ones `scripts/land` makes before it
+pushes, and it never forces. Pushing `main` by hand stays what rule 6 forbids.
 
 `scripts/land` needs `gh`, which is not in the default dev shell: `scripts/layer on github`
-(`.agents/DEVSHELL.md`, "Forge tools are opt-in"), or land in the browser. `scripts/pr` needs
-neither: it calls the API with python3 from the default shell.
+(`.agents/DEVSHELL.md`, "Forge tools are opt-in"). `scripts/pr` needs neither: it calls the API
+with python3 from the default shell. `scripts/land-self-test` (`make gates`) runs it against
+a forge in fixtures and a bare repository on disk.
 
-- **A stack lands as a unit.** The maintainer picks the highest pull request to land and
-  merges it from its merge box on the forge, with the rebase method. In a GitHub stack (one
-  the forge knows as such: the merge box shows the stack map) that lands it and every
-  unmerged pull request below it on `main` together, in order, in one operation, and GitHub
-  rebases the pull requests above it onto `main` itself. Landing them one by one would put
-  a bug that is already fixed further up on `main` until the fix lands too. When he stops
-  below such a fix, the pull request that lands without it names the bug under "Still
-  waiting" in its "What merging this changes for FPL" section. A chain of pull requests
-  that the forge does not know as a stack has no such merge: it lands one pull request at a
-  time, bottom first, and nothing moves the approved ones above it. Rebase-merge puts every
-  commit on `main` individually, message and trailers intact, with no merge commit —
-  history stays linear and bisectable.
+- **A stack lands bottom first, one pull request at a time.** Land the bottom one, run the
+  printed retarget for the one above it, land that, and so on. Nothing above a landed pull
+  request is rebased or pushed: it keeps its commits, and its diff against `main` is the
+  diff that was approved. GitHub may dismiss its approval when the base changes (community
+  reports say it does, and that this is by design); `land/approved` then says so, and
+  `scripts/land` approves the same head again after the keypress, with no rebase and no
+  override. `main` must be an ancestor of the head when it is
+  approved (`land/ancestor`): restack before approval, never after. A pull request that
+  lands while a fix for a bug it carries waits further up names the bug under "Still
+  waiting" in its "What merging this changes for FPL" section.
 - **Never squash a multi-commit PR.** Squashing collapses the atomic commits, and their
   bodies and trailers, into one. (A one-commit PR is the only case where it is harmless.)
-- GitHub's rebase-merge always rewrites the SHAs and the committer, and in a stack GitHub
-  rebases the pull requests left open itself. So after a landing, build on what the forge has
-  (`git fetch github`, then `git branch -f <branch> github/<branch>`), not on a local
-  restack: that would differ from the forge's, and an approved branch is not pushed again
-  (rule 10).
+- After a landing, `git fetch github`: `github/main` is the landed head, and the branches of
+  the pull requests above it are unchanged, so a local stack needs no restack.
 - When the stack is empty, delete the `stack/…` refs, locally and on `github`. Nothing is lost:
   the grouping lives in each commit's `Stack:` trailer, the discussion in the PRs.
 
@@ -340,9 +363,10 @@ comment. The first line names the writer and the key that signed it; the last is
 comment with the Radicle id, which is how a second run skips it and how scripts/import-review
 leaves it out. So a conversation can run in both places and each comment keeps one home.
 
-The page also lands, one pull request at a time, as scripts/land does. A patch from a pull
-request at the bottom of its stack has an "approve and merge" button: your gh account
-approves and rebase-merges it, but only while the forge still has the commit you reviewed
+The page also lands, one pull request at a time, but not yet as scripts/land does: it still
+rebase-merges, which gives the commits new SHAs (see Land), so land with scripts/land
+instead. A patch from a pull request at the bottom of its stack has an "approve and merge"
+button: your gh account approves and rebase-merges it, but only while the forge still has the commit you reviewed
 and its checks passed. The merge is then recorded in Radicle, the patches stacked on it
 are replayed onto the new main and pushed as the machine account, and the landed branch is
 deleted. An approved pull request among them is frozen (rule 10): pre-push refuses to move
