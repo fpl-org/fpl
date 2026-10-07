@@ -27,6 +27,18 @@ make tools    the tooling beside the language, tools/<name>/, judged as strictly
 make map      the map of the code, never committed (below); no other lane runs it
 ```
 
+Beside the lanes, the root's `Makefile` has the walker's entry, which is not a gate:
+
+```
+make run FILE=f   run the file f, a path from the root
+make repl ARGS=a  the REPL (python -m fpl.repl a)
+```
+
+The package is `bootstrap/fpl`, so a bare `python -m fpl` from the root finds no module; both
+targets put `bootstrap/` on the path of the one `.venv`'s python. A console script was
+weighed and left: it needs a build backend in `bootstrap/pyproject.toml` and the walker
+installed into `quality/`'s locked environment, a policy change for the same reach.
+
 The same lanes run on the forge (`.github/workflows/noslop.yml`): `make check` on every push
 to a pull request, `make ready` once it is out of draft and on every push to `main`. A
 harness-only branch, which has no code to judge, runs `make gates` from the root instead:
@@ -60,6 +72,7 @@ request that moves the package is drawn where the package was.
 | `deptry` | an import of a package `pyproject.toml` does not declare, or a declared one nobody imports |
 | `vulture` | code nothing uses |
 | `pylint` duplicate-code | six or more lines repeated |
+| `make run` from the root | the entry a README points to failing, or printing other than the `.expected` of `features/draft2/examples/01-frames` (the lanes run in `bootstrap/`, so only this step runs the walker from the root) |
 
 On the milestone-0 skeleton `make check` takes about 6 seconds and `make harden` about 3
 minutes, almost all of it CrossHair.
