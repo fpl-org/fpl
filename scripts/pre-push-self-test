@@ -522,6 +522,41 @@ says "header must be" "the borrowed Merge is judged as any commit"
 git -c core.hooksPath=/dev/null reset -q --hard "$merge"
 git reset -q --hard "$spec"
 
+# A match must stay a match however long the list of paths is. `printf | grep -q` stops
+# reading at the first match, a long enough remainder gives printf SIGPIPE, and under
+# pipefail the condition reads false: a commit that changes thousands of files could carry a
+# protected one past [spec] and [policy] (GPT review of the commit-lint workflow, finding 4).
+empty="$(git hash-object -w --stdin </dev/null)"
+plant() { # plant <commit-tree args>: paths NUL-separated on stdin; a commit on HEAD holding them, empty
+	local idx="$tmp/plant-index" tree new p
+	GIT_INDEX_FILE="$idx" git read-tree HEAD
+	while IFS= read -r -d '' p; do
+		printf '100644 %s 0\t%s\0' "$empty" "$p"
+	done | GIT_INDEX_FILE="$idx" git update-index -z --add --index-info
+	tree="$(GIT_INDEX_FILE="$idx" git write-tree)"
+	new="$(git commit-tree "$tree" -p HEAD "$@")"
+	git -c core.hooksPath=/dev/null update-ref HEAD "$new"
+	rm -f "$idx"
+}
+many() { # many <count>: that many long paths, NUL-separated
+	local i
+	for ((i = 0; i < $1; i++)); do printf 'g/a-path-long-enough-to-fill-the-pipe-%06d\0' "$i"; done
+}
+trail="Stack: m"$'\n'"Human-Only: true"
+plant -m "feat(x): wide policy" -m "$trail" < <(printf 'Makefile\0'; many 8000)
+lint 1 "a Makefile edit among thousands of paths, without [policy]"
+says "changes the gate's policy" "the policy guard saw the Makefile"
+git reset -q --hard "$spec"
+plant -m "feat(x): wide spec" -m "$trail" < <(printf 'docs/DESIGN.md\0'; many 8000)
+lint 1 "a spec edit among thousands of paths, without [spec]"
+says "edits a protected spec file" "the oracle guard saw the spec"
+git reset -q --hard "$spec"
+plant -m "chore(x): wide mix" -m "[policy]" -m "$trail" \
+	< <(printf 'fpl/code.py\0'; many 8000; printf 'quality/ruff.toml\0')
+lint 1 "a [policy] commit among thousands of paths that also changes fpl/"
+says "may not also change fpl/ or tests/" "the separation guard saw fpl/"
+git reset -q --hard "$spec"
+
 echo "pre-push self-test: $fails of $total checks failed (bash $BASH_VERSION)"
 if [ -z "${PRE_PUSH_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ]; then
 	mkdir -p "$tmp/shim"
