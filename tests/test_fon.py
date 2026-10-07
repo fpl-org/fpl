@@ -157,6 +157,7 @@ def test_fon_ids(i: Multihash, h: Multihash) -> None:
         ("0x1p-2000", "ERROR: 1:1 non-canonical number 0x1p-2000"),
         ("0x0p5", "ERROR: 1:1 non-canonical number 0x0p5"),
         ("-0x0p-0", "ERROR: 1:1 non-canonical number -0x0p-0"),
+        ("0x0.0000000000001p-1022", "ERROR: 1:1 non-canonical number 0x0.0000000000001p-1022"),
         ("⟨ 0x1p2000 ⟩", "ERROR: 1:3 float out of range 0x1p2000"),
         ("“a", "ERROR: 1:1 “ never closed"),
         ("⟨ a }\n⟩", "ERROR: 1:5 unexpected input"),
@@ -188,7 +189,7 @@ def test_a_sigil_alone_is_a_symbol(sigil: str) -> None:
     [
         (12.0, "0x1.8p3"),
         (-0.0, "-0x0p0"),
-        (5e-324, "0x0.0000000000001p-1022"),
+        (5e-324, "0x1p-1074"),
         (math.inf, "∞"),
         (-math.inf, "-∞"),
         (math.nan, "nan"),
@@ -198,6 +199,37 @@ def test_a_sigil_alone_is_a_symbol(sigil: str) -> None:
 def test_a_float_is_its_bits(x: float, spelled: str) -> None:
     assert write(Flt.of(x)) == spelled
     assert read(spelled) == Flt.of(x)
+
+
+@pytest.mark.parametrize(
+    ("subnormal", "spelled"),
+    [
+        ("0x0.0000000000001p-1022", "0x1p-1074"),
+        ("-0x0.0000000000001p-1022", "-0x1p-1074"),
+        ("0x0.0000000000003p-1022", "0x1.8p-1073"),
+        ("0x0.0123456789abcp-1022", "0x1.23456789abcp-1030"),
+        ("0x0.8p-1022", "0x1p-1023"),
+        ("0x0.fffffffffffffp-1022", "0x1.ffffffffffffep-1023"),
+    ],
+)
+def test_a_subnormal_is_written_normalised(subnormal: str, spelled: str) -> None:
+    """A subnormal is written 0x1[.hex]p<exp> like every other nonzero float, its exponent
+    below binary64's -1022, and reads back as exactly the float it was written from."""
+    x = float.fromhex(subnormal)
+    assert write(Flt.of(x)) == spelled
+    back = read(spelled)
+    assert isinstance(back, Flt)
+    assert back.value.hex() == x.hex()
+    assert back == Flt.of(x)
+
+
+@given(st.floats(allow_nan=False, allow_subnormal=True))
+def test_a_float_has_one_spelling(x: float) -> None:
+    """Over the whole binary64 range, subnormals included, the written spelling reads back as
+    the float and writes again as itself."""
+    spelled = write(Flt.of(x))
+    assert read(spelled) == Flt.of(x)
+    assert write(read(spelled)) == spelled
 
 
 @given(st.from_regex(HEXFLT, fullmatch=True))
