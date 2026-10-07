@@ -750,17 +750,30 @@ fi
 
 
 
+
+
+
 # ---- commit-msg and prepare-commit-msg, through git itself --------------------------------
 # A real `git commit` in the throwaway clone, with GIT_EDITOR a script that plays the person:
-# it writes ED_MSG over the top of the file git prepared (unless -e -F put a message there
-# already: then ED_SED edits it), and appends ED_TAIL below git's template. ED_ALL replaces
-# the file with that text instead.
+# it writes ED_MSG in place of the message in the file git prepared and keeps git's comment
+# lines (when there is none: ED_SED edits the file, as -e -F needs), and appends ED_TAIL. ED_ALL replaces
+# the file with that text instead; ED_COPY saves what the editor was shown, ED_KEEP leaves it.
 export FPL_ATOMIC_GATE=off
 ed="$tmp/editor"
 cat >"$ed" <<'ED'
 #!/bin/sh
+[ -z "${ED_COPY:-}" ] || cp "$1" "$ED_COPY"
+[ -z "${ED_KEEP:-}" ] || exit 0
 [ -z "${ED_ALL:-}" ] || { printf '%s\n' "$ED_ALL" >"$1"; exit 0; }
-{ [ -z "${ED_MSG:-}" ] || printf '%s\n' "$ED_MSG"; sed -e "${ED_SED:-}" "$1"; printf '%s' "${ED_TAIL:-}"; } >"$1.new" &&
+{
+	if [ -n "${ED_MSG:-}" ]; then
+		printf '%s\n' "$ED_MSG"
+		grep -E '^[#;]' "$1" || true
+	else
+		sed -e "${ED_SED:-}" "$1"
+	fi
+	printf '%s' "${ED_TAIL:-}"
+} >"$1.new" &&
 	mv "$1.new" "$1"
 ED
 chmod +x "$ed"
@@ -811,8 +824,11 @@ gate 1 "a long '#' line, edited, under core.commentChar=;: not a comment, kept" 
 # as it comes back cannot show which, since a line the person wrote may start with any of them.
 # A guess from the last line took a person's ';' line for a comment and judged a message git
 # stores with it (GPT review of these branches, finding 9). Nothing is taken for a comment then.
-gate 1 "a long comment line, edited, under core.commentChar=auto: no prefix is known, it is judged" \
+gate 0 "a long comment line, edited, under core.commentChar=auto: prepare-commit-msg kept git's pick" \
 	env ED_MSG="$ok" ED_TAIL="$long"$'\n' git -c core.commentChar=auto commit -q --allow-empty
+printf '%s\n' "$ok" >"$tmp/ok-msg"
+gate 1 "the same with -e -F, where no hook learns git's pick: the line is judged" \
+	env ED_MSG= ED_TAIL="$long"$'\n' git -c core.commentChar=auto commit -q --allow-empty -e -F "$tmp/ok-msg"
 gate 1 "a person's ';' line last, under core.commentChar=auto: judged, so the trailers are no block" \
 	env ED_MSG=$'docs(hooks): preserve a literal line\n\nStack: t\nHuman-Only: true\n\n; do not remove this user-written line' \
 	git -c core.commentChar=auto -c commit.status=false commit -q --allow-empty
@@ -1036,6 +1052,130 @@ gate 0 "a message with 400 trailers of keys not known" env GIT_EDITOR=: git comm
 took=$SECONDS
 total=$((total + 1))
 [ "$took" -le 4 ] || { fails=$((fails + 1)); echo "self-test: 400 trailer keys not known took ${took}s, want 4 or less" >&2; }
+
+# The template: git opens an editor on an empty message, and the hook fills it with the header
+# skeleton, the trailers that can be known (Stack: from the branch as acommit derives it,
+# Human-Only: where no agent identity is set) and the rules, as comments git strips.
+seen="$tmp/seen"
+want_stack="$(scripts/acommit -n -H -t feat -s x -m x </dev/null | sed -n 's/^Stack: /Stack: /p')"
+gate 1 "a message left as the skeleton is refused" env ED_COPY="$seen" ED_KEEP=1 git commit -q --allow-empty
+says "[skeleton]" "the refusal names its rule"
+says "<type>(<scope>): <summary>" "the refusal shows the skeleton"
+says "remedy:" "the refusal says what to do"
+same "the header the editor is shown is the skeleton" "<type>(<scope>): <summary>" "$(sed -n 1p "$seen")"
+same "the trailers it is shown are the branch's stack and a human commit" $'Stack: t\nHuman-Only: true' "$(grep -E '^(Stack|Human-Only):' "$seen")"
+same "the stack is the one acommit derives" "$want_stack" "$(grep '^Stack:' "$seen")"
+for want in "feat fix docs refactor perf test build ci chore revert" "[a-z0-9/._-]" "lower-case" "72" ".agents/COMMITS.md"; do
+	total=$((total + 1))
+	grep -Fq -- "$want" "$seen" || { fails=$((fails + 1)); echo "self-test: the template lacks '$want'" >&2; }
+done
+total=$((total + 1))
+rules="$(grep -c '^# ' "$seen" || true)"
+[ "$rules" -ge 6 ] || { fails=$((fails + 1)); echo "self-test: the template explains the rules in $rules comment lines, want 6 or more" >&2; }
+fixed='1s/.*/feat(x): templated/'
+stored_want=$'feat(x): templated\n\nStack: t\nHuman-Only: true'
+gate 0 "the template, with its header filled in, commits" env ED_SED="$fixed" git commit -q --allow-empty
+same "the rules are not in the commit" "$stored_want" "$(stored)"
+gate 0 "the same under commit.cleanup=scissors, where the rules sit below the scissors line" \
+	env ED_COPY="$seen" ED_SED="$fixed" git -c commit.cleanup=scissors commit -q --allow-empty
+same "scissors: the rules are not in the commit" "$stored_want" "$(stored)"
+total=$((total + 1))
+# The rules are in the template, and below the scissors line, where git drops them.
+awk '/>8/ { cut = 1 } /feat fix docs/ { if (cut) below = 1; else bad = 1 } END { exit bad || !below }' "$seen" ||
+	{ fails=$((fails + 1)); echo "self-test: scissors: the rules are missing, or sit above the scissors line where git keeps them" >&2; }
+gate 0 "the same with git commit -v" env ED_SED="$fixed" git commit -q -v --allow-empty
+same "-v: the rules are not in the commit" "$stored_want" "$(stored)"
+# git commit -v over a staged change: the diff below the scissors line is no message, so the
+# skeleton and the rules are still written, above it and below git's own comment lines.
+printf 'staged\n' >staged.txt
+git add staged.txt
+rm -f "$seen"
+gate 1 "git commit -v over a staged change: the skeleton is refused" \
+	env ED_COPY="$seen" ED_KEEP=1 git commit -q -v
+same "-v over a staged change: the editor is shown the skeleton" "<type>(<scope>): <summary>" "$(sed -n 1p "$seen" 2>/dev/null)"
+total=$((total + 1))
+awk '/>8/ { cut = 1 } /feat fix docs/ { if (cut) below = 1 } /^diff --git/ { if (!below) bad = 1 } END { exit bad || !below }' "$seen" 2>/dev/null ||
+	{ fails=$((fails + 1)); echo "self-test: -v over a staged change: the rules are missing, or not between the scissors line and the diff" >&2; }
+gate 0 "the same with its header filled in" env ED_SED="$fixed" git commit -q -v
+same "-v over a staged change: the rules are not in the commit" "$stored_want" "$(stored)"
+gate 0 "the same under core.commentChar=;" env ED_COPY="$seen" ED_SED="$fixed" git -c core.commentChar=';' commit -q --allow-empty
+same "commentChar: the rules are not in the commit" "$stored_want" "$(stored)"
+total=$((total + 1))
+grep -q '^; .*feat fix docs' "$seen" || { fails=$((fails + 1)); echo "self-test: the rules are not written with the comment character" >&2; }
+gate 0 "the same under core.commentChar=auto" env ED_COPY="$seen" ED_SED="$fixed" git -c core.commentChar=auto commit -q --allow-empty
+same "auto: the rules are not in the commit" "$stored_want" "$(stored)"
+# Where comments are kept (whitespace, verbatim) the rules cannot be hidden, so they are not written.
+gate 1 "under commit.cleanup=whitespace the skeleton is refused, with no rules written into it" \
+	env ED_COPY="$seen" ED_KEEP=1 git -c commit.cleanup=whitespace commit -q --allow-empty
+total=$((total + 1))
+! grep -Fq "feat fix docs" "$seen" || { fails=$((fails + 1)); echo "self-test: whitespace cleanup: the rules were written where git keeps comments" >&2; }
+# A --cleanup option on the command line reaches neither hook: the rules are written, as for
+# the config's strip, and commit-msg takes them out again before git stores what it keeps.
+for mode in whitespace verbatim; do
+	gate 0 "the template filled in, with --cleanup=$mode on the command line" \
+		env ED_SED="$fixed" git commit -q --allow-empty --cleanup="$mode"
+	total=$((total + 1))
+	! stored | grep -Fq "Commit message rules" || { fails=$((fails + 1)); echo "self-test: --cleanup=$mode: the rules reached the commit" >&2; }
+	same "--cleanup=$mode: the header and trailers are stored" $'feat(x): templated\n\nStack: t\nHuman-Only: true' "$(stored | sed -n '1,2p;/^Stack:/p;/^Human-Only:/p')"
+done
+# The rules are taken out by the block prepare-commit-msg wrote and recorded for this commit,
+# its marker line last, never by their text: a person who quotes them keeps the quotation
+# (GPT review of these branches, finding 8).
+quoted="$(. .githooks/commit-rules && commit_rules_text | sed 's/^/> /')"
+printf '%s\n' "docs(x): quote the rules" "" '```' "$quoted" '```' "" "Stack: t" "Human-Only: true" >"$tmp/quote-msg"
+gate 0 "a message given with -F that quotes the rules" env GIT_EDITOR=: git commit -q --allow-empty -F "$tmp/quote-msg"
+same "-F: the quotation of the rules is stored" "$(cat "$tmp/quote-msg")" "$(stored)"
+gate 0 "the rules quoted in an edited template, with --cleanup=whitespace" \
+	env ED_MSG="$(cat "$tmp/quote-msg")" \
+	git commit -q --allow-empty --cleanup=whitespace
+total=$((total + 1))
+stored | grep -Fq "> Commit message rules" || { fails=$((fails + 1)); echo "self-test: the quoted rules were taken out of an edited message" >&2; }
+total=$((total + 1))
+! stored | grep -q "^# Commit message rules" || { fails=$((fails + 1)); echo "self-test: the template's rules reached the commit beside a quotation" >&2; }
+# An agent identity set: no Human-Only line to claim. A branch with no stack: no Stack line.
+printf '%s\n' t@example.invalid >"$(git rev-parse --git-path agent-identity)"
+gate 1 "the skeleton with an agent identity set" env ED_COPY="$seen" ED_KEEP=1 git commit -q --allow-empty
+same "no Human-Only line where an agent identity is set" "Stack: t" "$(grep -E '^(Stack|Human-Only):' "$seen")"
+rm -f "$(git rev-parse --git-path agent-identity)"
+git -c core.hooksPath=/dev/null switch -q -c plain-branch
+gate 1 "the skeleton on a branch with no stack" env ED_COPY="$seen" ED_KEEP=1 git commit -q --allow-empty
+same "no Stack line on a branch that has none" "Human-Only: true" "$(grep -E '^(Stack|Human-Only):' "$seen")"
+git switch -q agent/claude/stack/t
+git -c core.hooksPath=/dev/null branch -q -D plain-branch
+# Not an empty message: an amend, a template with text, -m, -F.
+rm -f "$seen"
+gate 0 "a human commit to amend" env GIT_EDITOR=: git commit -q --allow-empty -m "$ok"
+gate 0 "an amend is not given the skeleton" env ED_COPY="$seen" ED_KEEP=1 git commit -q --allow-empty --amend
+total=$((total + 1))
+! grep -Fq "<summary>" "$seen" || { fails=$((fails + 1)); echo "self-test: an amend was given the skeleton" >&2; }
+printf '%s\n' $'feat(x): from a template\n\nStack: t\nHuman-Only: true' >"$tmp/tmpl2"
+gate 0 "a template with text is left as it is" env ED_COPY="$seen" ED_SED='1s/template/templ/' git commit -q --allow-empty -t "$tmp/tmpl2"
+same "the template's header is what the editor is shown" "feat(x): from a template" "$(sed -n 1p "$seen")"
+# The skeleton, or one of its three placeholders in its own place, is no message (lint mode too).
+refuse hook skeleton "the header is still the skeleton" "<type>(<scope>): <summary>"$'\n\n'"$tr"
+refuse hook skeleton "the header is still the skeleton" "feat(x): <summary>"$'\n\n'"$tr"
+refuse lint skeleton "the header is still the skeleton" "<type>(<scope>): <summary>"$'\n\n'"$tr"
+# Spaces around a placeholder do not make it a summary.
+refuse hook skeleton "the header is still the skeleton" "chore(x):  <summary>"$'\n\n'"$tr"
+printf '%s\n' "chore(x):  <summary>" "" "$tr" >"$tmp/m2"
+gate 1 "a skeleton summary after two spaces, through git commit -F" \
+	env GIT_EDITOR=: git commit -q --allow-empty -F "$tmp/m2"
+says "[skeleton]" "the two-space skeleton is refused as one"
+gate 0 "a summary that merely mentions a placeholder" env GIT_EDITOR=: git commit -q --allow-empty -m $'docs(x): explain <type> in <scope>\n\nStack: t\nHuman-Only: true'
+
+# scripts/setup wires .githooks/ through core.hooksPath, so a hook is wired when it is there and
+# executable; it says which git will run, and says so of one that is not executable.
+total=$((total + 1))
+[ -x "$root/.githooks/prepare-commit-msg" ] || { fails=$((fails + 1)); echo "self-test: .githooks/prepare-commit-msg is not executable" >&2; }
+gate 0 "scripts/setup wires the hooks" scripts/setup
+says "    prepare-commit-msg" "setup reports the template hook"
+says "    commit-msg" "setup reports the gate"
+same "core.hooksPath points at the tracked hooks" ".githooks" "$(git config --local core.hooksPath)"
+chmod -x .githooks/prepare-commit-msg
+gate 0 "scripts/setup with a hook that is not executable" scripts/setup
+says "prepare-commit-msg is not executable" "setup says git will ignore it"
+chmod +x .githooks/prepare-commit-msg
+git config --local --unset commit.cleanup
 
 echo "pre-push self-test: $fails of $total checks failed (bash $BASH_VERSION)"
 if [ -z "${PRE_PUSH_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ]; then

@@ -156,6 +156,35 @@ effective_message() {
 	esac
 }
 
+# The rules .githooks/prepare-commit-msg writes above an empty message are comment lines, which
+# git strips by the config's reading. A --cleanup option on the command line (whitespace,
+# verbatim) keeps comment lines and reaches no hook, so the rules are taken out here, from the
+# file git stores: the block prepare-commit-msg recorded for this commit (commit_template_state),
+# exactly as written, its marker line with a random id last. Text that only reads like the rules
+# (a person quoting them, under any prefix) is the person's, and stays; so do git's own comment
+# lines, as git keeps them. The record also holds the comment prefix git picked under 'auto'.
+COMMIT_PICKED_PREFIX=""
+if [ -z "$lint_commit" ]; then
+	state="$(commit_template_state)"
+	if [ -f "$state" ]; then
+		COMMIT_PICKED_PREFIX="$(sed -n '1p' "$state")"
+		sed '1d' "$state" >"$tmp/rules"
+		rm -f "$state"
+		if [ -s "$tmp/rules" ] && awk 'NR == FNR { r[++n] = $0; next } { l[++m] = $0 }
+			END {
+				for (i = 1; i <= m; i++) {
+					ok = !cut && i + n - 1 <= m
+					for (j = 1; ok && j <= n; j++) ok = l[i + j - 1] == r[j]
+					if (ok) { i += n - 1; cut = 1; continue }
+					print l[i]
+				}
+				exit !cut
+			}' "$tmp/rules" "$given" >"$tmp/unruled"; then
+			cat "$tmp/unruled" >"$given"
+		fi
+	fi
+fi
+
 # What the rest of this hook judges: the message git will store. A commit that exists
 # already (lint mode) holds the stored text, and is judged as it is.
 msg_file="$tmp/message"
@@ -361,6 +390,17 @@ if [ -z "$lint_commit" ] && [[ $first =~ $shape ]]; then
 		{ printf '%s\n' "$first"; sed '1d' "$msg_file"; } >"$tmp/rewritten"
 		cp "$tmp/rewritten" "$msg_file"
 	fi
+fi
+
+# The skeleton that .githooks/prepare-commit-msg writes for a person to complete is no header,
+# nor is one of its three placeholders left in its own place. Elsewhere they are only words
+# (a summary may speak of <type>): the type, the scope and the whole summary are what is judged.
+# Spaces around the summary's placeholder do not make it a summary.
+placeholder='^[[:space:]]*<summary>[[:space:]]*$'
+if [[ $first =~ $shape ]] \
+	&& { [ "${BASH_REMATCH[1]}" = "<type>" ] || [ "${BASH_REMATCH[3]}" = "<scope>" ] || [[ ${first#*: } =~ $placeholder ]]; }; then
+	fail skeleton "the header is still the skeleton: $first" \
+		"write a real type, scope and summary where <type>, <scope> and <summary> stand"
 fi
 
 # 1. header ----------------------------------------------------------------
