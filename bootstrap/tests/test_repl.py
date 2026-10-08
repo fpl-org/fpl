@@ -451,7 +451,8 @@ def test_a_definition_at_a_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
         return line
 
     monkeypatch.setattr(builtins, "input", typed)
-    monkeypatch.setattr(readline, "parse_and_bind", lambda _: None)
+    bindings: list[str] = []
+    monkeypatch.setattr(readline, "parse_and_bind", bindings.append)
     out, err = StringIO(), StringIO()
     assert main([], Terminal(), out, err, {}) == 0
     assert (out.getvalue(), err.getvalue()) == ("2 3 4\n", "")
