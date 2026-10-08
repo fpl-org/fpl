@@ -864,6 +864,18 @@ PATH="$tmp/race:$PATH" landing 1 "main moves between the last check and the push
 says "the push was refused" "a push that is no longer a fast-forward does not go"
 main_is "$M1" "main stays where it moved"
 
+# Git refuses an update of main that is not a fast-forward, and only that: a main that
+# moved to another ancestor of the head since it was read still takes the push.
+at="$H2" HEAD_SHA="$H2"
+forge
+mkdir -p "$tmp/advance"
+printf '#!/bin/sh\n[ "$1" != push ] || %s --git-dir="$REMOTE" update-ref refs/heads/main %s\nexec %s "$@"\n' \
+	"$(command -v git)" "$H" "$(command -v git)" >"$tmp/advance/git"
+chmod +x "$tmp/advance/git"
+PATH="$tmp/advance:$PATH" landing 0 "main moves to another ancestor of the head before the push" 7
+main_is "$H2" "the push goes: git refuses what is no fast-forward, not a main that moved"
+at="$H" HEAD_SHA="$H"
+
 forge
 pull open false main false
 landing 1 "GitHub does not show the pull request as merged" 7

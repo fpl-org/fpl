@@ -217,6 +217,24 @@ the browser and waits for Enter; after it, it checks everything again, pushes, c
 to `main` each pull request based on the landed branch. The author of a pull request cannot
 approve it, which is why the two sides are two accounts.
 
+**What a landing guarantees, and what it does not.** The push names the head's SHA, so what
+lands is exactly the commit that was judged, approved and looked at, and it goes to the URL
+`land/remote` checked. Git refuses an update of `main` that is not a fast-forward, since
+nothing forces, and refuses nothing else: a `main` that moved since it was read to another
+ancestor of the head (a pull request lower in the stack, landed by someone else) still takes
+the push. With the bypass the rulesets do not judge the push, so what the script read
+decides, and GitHub has no call that judges a pull request and moves `main` in one step.
+After the keypress the script reads everything again, the approvals and then the rules
+last, and checks `land/remote` again right before the push. A change after a read and
+before the push goes unseen: an approval dismissed, a request for changes, a rule changed, a
+thread reopened, a check rerun, the pull request closed, retargeted or made a draft. After
+the push it reads `main`, the merge, the approvals, the rules and the checks on the head
+again, and says LOUD when `main` is not the head, GitHub does not show the merge, no code
+owner's approval of the head stands, changes are requested, the rules differ in any way from
+the ones judged, or a check they require did not succeed on the head. That detects; it
+cannot undo. The review threads, and the pull request's state beyond the merge, are not read
+again.
+
 **The merge button is not used for our pull requests**, nor `gh pr merge`. GitHub's merge
 methods all write new commits: rebase-merge gives every commit a new SHA and committer, so
 each pull request stacked on the landed one has to be rebased and pushed again, its approval
