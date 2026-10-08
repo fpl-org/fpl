@@ -171,3 +171,11 @@ commit_comment_prefix() {
 # removed by prepare-commit-msg as it starts and by commit-msg once read, so it belongs to one
 # commit; it lives in the git directory, where no message can put it.
 commit_template_state() { git rev-parse --git-path commit-msg-template; }
+
+# commit_cut_state: the file in which .githooks/prepare-commit-msg leaves .githooks/commit-msg the
+# scissors line git wrote above the diff of git commit -v (or commit.verbose), exactly as written,
+# when the file held one before the editor opened. git cuts the message at its first scissors
+# line under -v, and -v reaches no hook; what the message holds after the editor cannot show it,
+# since a person may type a scissors line and a quoted diff (Codex review of #138, round 2).
+# Like commit_template_state it belongs to one commit and lives in the git directory.
+commit_cut_state() { git rev-parse --git-path commit-msg-cut; }
