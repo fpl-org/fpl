@@ -195,27 +195,27 @@ on that tail, with the rebase that puts it there; `-B <base>` overrides the choi
 
 `scripts/land` lands by **fast-forward**: it pushes the pull request's head to `main`
 without force, `git push <url> <head>:refs/heads/main`, to the URL `land/remote` checked.
-The commits on `main` are the
-commits that were reviewed, SHAs, committer and all, and GitHub shows the pull request as
-merged once its head is on its base. Before it asks anything it refuses, naming the rule
-and the remedy, unless the pull request is open, not a draft and based on `main`; the head
-the forge reports is the commit it fetched; the active gh account did not write it; a code
-owner's standing verdict approves that exact head (or you are the code owner, and it
-approves the head for you after the keypress); nobody's standing verdict requests changes;
-every review thread is resolved; every check the rulesets on `main` require concluded
-success on the head, judged by its latest run; `main` is an ancestor of the head, and no
-merge commit lies between them; every rule on `main` is one it judges; and you may push past
-the rulesets on `main`. Before it reads anything it refuses, as `land/remote`, a remote that
-pushes anywhere but where it fetches from (a `pushurl`, a second URL, a
-`url.<base>.pushInsteadOf`), or that git sends anywhere but the GitHub repository it names,
-on GitHub or off it (a `url.<base>.insteadOf`). Every fetch and the push name that URL, not
-the remote, and git would rewrite even that, so a `url.<base>.insteadOf` or `pushInsteadOf`
-that matches the URL itself, or a remote section named by it, is refused too; the check is
-made again right before the push. Then it prints the conversation, opens the diff in
-the browser and waits for Enter; after it, it checks everything again, pushes, checks that
-`main` is the head and that GitHub shows the merge, and prints the command that retargets
-to `main` each pull request based on the landed branch. The author of a pull request cannot
-approve it, which is why the two sides are two accounts.
+The commits on `main` are the commits that were reviewed, SHAs, committer and all, and
+GitHub shows the pull request as merged once its head is on its base. Before it asks
+anything it refuses, naming the rule and the remedy, unless the pull request is open, not a
+draft and based on `main`; the head the forge reports is the commit it fetched; the active
+gh account did not write it; a code owner's standing verdict approves that exact head (or
+you are the code owner, and it approves the head for you after the keypress); nobody's
+standing verdict requests changes; every review thread is resolved; every check the rulesets
+on `main` require concluded success on the head, judged by its latest run; `main` is an
+ancestor of the head, and no merge commit lies between them; every rule on `main` is one it
+judges; and you may push past the rulesets on `main`. Before it reads anything it refuses,
+as `land/remote`, a remote that pushes anywhere but where it fetches from (a `pushurl`, a
+second URL, a `url.<base>.pushInsteadOf`), or that git sends anywhere but the GitHub
+repository it names, on GitHub or off it (a `url.<base>.insteadOf`). Every fetch and the
+push name that URL, not the remote, and git would rewrite even that, so a
+`url.<base>.insteadOf` or `pushInsteadOf` that matches the URL itself, or a remote section
+named by it, is refused too; the check is made again right before the push. Then it prints
+the conversation, opens the diff in the browser and waits for Enter; after it, it checks
+everything again, pushes, prints the command that retargets to `main` each pull request
+based on the landed branch, and then checks that `main` is the head and that GitHub shows
+the merge. The author of a pull request cannot approve it, which is why the two sides are
+two accounts.
 
 **What a landing guarantees, and what it does not.** The push names the head's SHA, so what
 lands is exactly the commit that was judged, approved and looked at, and it goes to the URL
@@ -231,8 +231,12 @@ thread reopened, a check rerun, the pull request closed, retargeted or made a dr
 the push it reads `main`, the merge, the approvals, the rules and the checks on the head
 again, and says LOUD when `main` is not the head, GitHub does not show the merge, no code
 owner's approval of the head stands, changes are requested, the rules differ in any way from
-the ones judged, or a check they require did not succeed on the head. That detects; it
-cannot undo. The review threads, and the pull request's state beyond the merge, are not read
+the ones judged, or a check they require did not succeed on the head. The checks are judged
+on the check runs and commit statuses there were when they were judged before the push: the
+push to `main` starts runs of its own on the head (noslop runs on a push to `main`), and a
+run or a status made after that read, the push's or a rerun's, is not judged. The retarget
+commands come before any of it, so a LOUD exit still prints them. That detects; it cannot
+undo. The review threads, and the pull request's state beyond the merge, are not read
 again.
 
 **The merge button is not used for our pull requests**, nor `gh pr merge`. GitHub's merge
