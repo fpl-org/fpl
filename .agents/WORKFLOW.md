@@ -194,7 +194,8 @@ It files the pull request on the tail of the queue, and refuses a branch that is
 on that tail, with the rebase that puts it there; `-B <base>` overrides the choice.
 
 `scripts/land` lands by **fast-forward**: it pushes the pull request's head to `main`
-without force, `git push github <head>:refs/heads/main`. The commits on `main` are the
+without force, `git push <url> <head>:refs/heads/main`, to the URL `land/remote` checked.
+The commits on `main` are the
 commits that were reviewed, SHAs, committer and all, and GitHub shows the pull request as
 merged once its head is on its base. Before it asks anything it refuses, naming the rule
 and the remedy, unless the pull request is open, not a draft and based on `main`; the head
@@ -206,8 +207,11 @@ success on the head, judged by its latest run; `main` is an ancestor of the head
 merge commit lies between them; every rule on `main` is one it judges; and you may push past
 the rulesets on `main`. Before it reads anything it refuses, as `land/remote`, a remote that
 pushes anywhere but where it fetches from (a `pushurl`, a second URL, a
-`url.<base>.pushInsteadOf`), or that git sends to another GitHub repository than the one it
-names. Then it prints the conversation, opens the diff in
+`url.<base>.pushInsteadOf`), or that git sends anywhere but the GitHub repository it names,
+on GitHub or off it (a `url.<base>.insteadOf`). Every fetch and the push name that URL, not
+the remote, and git would rewrite even that, so a `url.<base>.insteadOf` or `pushInsteadOf`
+that matches the URL itself, or a remote section named by it, is refused too; the check is
+made again right before the push. Then it prints the conversation, opens the diff in
 the browser and waits for Enter; after it, it checks everything again, pushes, checks that
 `main` is the head and that GitHub shows the merge, and prints the command that retargets
 to `main` each pull request based on the landed branch. The author of a pull request cannot
