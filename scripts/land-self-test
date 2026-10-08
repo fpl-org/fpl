@@ -8,8 +8,8 @@
 # PATCH, PUT) is logged and marks the forge written, after which a fixture's `.after`
 # variant is served where there is one. Git talks to a bare repository on disk: the remote
 # says https://github.com/land-test/fpl.git, and a git of the test's own, first on PATH,
-# sends a fetch, push or ls-remote of that URL (or of git@github.com:land-test/fpl.git)
-# there. The rewrite is not in git's configuration, where scripts/land refuses any that
+# sends a fetch, push or ls-remote of that URL (or of land-test's URL in GitHub's ssh and
+# scp-like spellings, the host an ssh alias or not) there. The rewrite is not in git's configuration, where scripts/land refuses any that
 # sends git off GitHub, so it names the repository as it does on GitHub while nothing
 # reaches the network: GIT_ALLOW_PROTOCOL=file refuses every transport but the disk.
 # Git's global and system config, HOME, XDG_CONFIG_HOME and gh's config point away from the
@@ -94,7 +94,10 @@ fetch | push | ls-remote)
 	for a in "$@"; do
 		case "$a" in
 		https://github.com/land-test/*) a="$REPOS/${a#https://github.com/land-test/}" ;;
+		ssh://git@github.com/land-test/*) a="$REPOS/${a#ssh://git@github.com/land-test/}" ;;
+		ssh://git@github.com-*/land-test/*) a="$REPOS/${a#ssh://git@github.com-*/land-test/}" ;;
 		git@github.com:land-test/*) a="$REPOS/${a#git@github.com:land-test/}" ;;
+		git@github.com-*:land-test/*) a="$REPOS/${a#git@github.com-*:land-test/}" ;;
 		esac
 		args+=("$a")
 	done
@@ -654,6 +657,36 @@ landing 1 "a landing whose remote git sends off GitHub" 7
 git config --unset-all url."$MIRROR".insteadOf
 untouched "$MIRROR" "nothing was pushed off GitHub"
 main_is "$M0" "nothing landed"
+# A GitHub repository's URL is one of GitHub's three spellings; over ssh, and only there,
+# the host may be an alias, github.com-<alias>, which the ssh config resolves.
+for url in ssh://git@github.com/land-test/fpl.git git@github.com:land-test/fpl \
+	git@github.com-work:land-test/fpl.git ssh://git@github.com-work/land-test/fpl.git \
+	https://github.com/land-test/fpl; do
+	forge
+	git config remote.github.url "$url"
+	expect 0 "the remote is $url" --dry-run 7
+	says "would run: git push $url $H:refs/heads/main" "it pushes to $url"
+done
+for url in https://github.com-evil.example/land-test/fpl.git file://github.com/land-test/fpl.git \
+	github.com/land-test/fpl.git ./github.com/land-test/fpl.git http://github.com/land-test/fpl.git \
+	git://github.com/land-test/fpl.git https://www.github.com/land-test/fpl.git \
+	https://someone@github.com/land-test/fpl.git ssh://someone@github.com/land-test/fpl.git \
+	ssh://git@github.com:22/land-test/fpl.git github.com:land-test/fpl.git \
+	https://github.com/land-test/fpl.git/extra https://github.com/land-test/..; do
+	forge
+	git config remote.github.url "$url"
+	expect 1 "the remote is $url" --dry-run 7
+	says "land/remote: remote 'github' is $url, not a GitHub repository's URL" "it names the rule"
+	lacks "would run: git push" "nothing is judged"
+	called
+	lacks "gh api" "the forge is not read for $url"
+done
+git config remote.github.url https://github.com/land-test/fpl.git
+# The review's case: an insteadOf to a host that merely begins with github.com.
+remote_case "an insteadOf to a host named github.com-<something>, over https" \
+	url.https://github.com-evil.example/.insteadOf https://github.com/
+says "git goes to https://github.com-evil.example/land-test/fpl.git, not GitHub" "it says where git goes"
+git config --unset-all url.https://github.com-evil.example/.insteadOf
 forge
 expect 0 "the remote as it should be, after each case" --dry-run 7
 
