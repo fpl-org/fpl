@@ -22,7 +22,7 @@
 #                 committed; no other lane runs it (scripts/diagrams)
 
 .DEFAULT_GOAL := check
-.PHONY: fix quick check harden ready gates tools map venv pristine clean-noslop rootrun
+.PHONY: fix quick check harden ready gates tools map venv ruff-limits pristine clean-noslop rootrun
 
 # The root is where this file's directory sits one level down. It is read before anything
 # else is included, so it is this file's, wherever make runs and whatever includes it.
@@ -49,7 +49,12 @@ RUFF_ALL := --no-respect-gitignore
 $(BIN)/.synced: $(Q)/uv.lock $(Q)/pyproject.toml
 	uv sync --project $(Q) --frozen --python python3.12 --quiet
 	@touch $@
-venv: $(BIN)/.synced
+
+# Every lane that runs ruff needs the venv, so the venv is where ruff's width is checked: an
+# empty quality/ruff-limits.toml is valid TOML and silently gives ruff its default of 88.
+ruff-limits: $(BIN)/.synced
+	$(BIN)/python $(S)/ruff-limits
+venv: $(BIN)/.synced ruff-limits
 
 fix: venv
 	$(BIN)/ruff check --config $(Q)/ruff.toml $(RUFF_ALL) --fix fpl tests
@@ -139,7 +144,7 @@ ready: harden gates
 	$(BIN)/pip-audit --progress-spinner off --requirement $(OUT)/requirements.txt --disable-pip
 
 # The harness's own Python, judged by the same ruff it judges others with.
-HARNESS := $(addprefix $(S)/,crap props escapes mutants gates forward-only diagrams) \
+HARNESS := $(addprefix $(S)/,crap props escapes mutants gates forward-only diagrams ruff-limits) \
            $(Q)/noslop_pytest.py
 
 gates: venv
@@ -151,6 +156,7 @@ gates: venv
 	$(BIN)/python $(S)/forward-only --self-test
 	$(BIN)/python $(S)/mutants --self-test
 	$(BIN)/python $(S)/diagrams --self-test
+	$(BIN)/python $(S)/ruff-limits --self-test
 	$(S)/leak-check --self-test
 	$(S)/pre-push-self-test
 	$(S)/boundary-self-test
