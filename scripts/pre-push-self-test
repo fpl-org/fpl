@@ -857,6 +857,23 @@ gate 1 "the same, with -F: git strips nothing under auto without an editor" \
 # The same separators, set for one command: git hands them to the hook (GIT_CONFIG_PARAMETERS).
 gate 0 "a valid message, committed under git -c trailer.separators='='" \
 	git -c trailer.separators='=' commit -q --allow-empty -F "$tmp/ok-msg"
+# core.commentString (git 2.45 on) sets the same prefix as core.commentChar: the two are
+# aliases, the one set last wins, and it may be more than one character. git skips a comment line
+# after the trailer block, so the scan for the block must skip it too, or the block it finds is
+# the comment's paragraph and a long trailer is judged as body text (Codex review of #138: the
+# hook read core.commentChar alone). With -F git keeps the comment line in the commit.
+cotrailer="$(overlong "Co-Authored-By: A Person <a.person@example.invalid>")"
+printf '%s\n\n%s\n%s\n%s\n\n%s\n' 'feat(x): fine' 'Stack: t' 'Human-Only: true' "$cotrailer" \
+	'// a note after the trailers' >"$tmp/slash-comment"
+gate 0 "a '//' line after a long trailer, under core.commentString=//" \
+	git -c core.commentString=// commit -q --allow-empty -F "$tmp/slash-comment"
+gate 0 "the same under core.commentChar=; then core.commentString=//: the last set wins" \
+	git -c core.commentChar=';' -c core.commentString=// commit -q --allow-empty -F "$tmp/slash-comment"
+gate 1 "the same under core.commentString=// then core.commentChar=;: the '//' line is text" \
+	git -c core.commentString=// -c core.commentChar=';' commit -q --allow-empty -F "$tmp/slash-comment"
+says "body line" "the trailers above a paragraph of text are no block, so the long one is judged"
+gate 0 "a long '//' comment line, edited, under core.commentString=//" \
+	env ED_MSG="$ok" ED_TAIL="//${long#\#}"$'\n' git -c core.commentString=// commit -q --allow-empty
 # git commit -v: the diff below the scissors line is git's, and long lines of it are no fault.
 printf '%s\n' "$(overlong "x$(printf '%0*d' "$COMMIT_BODY_MAX" 0) with a space")" >wide.txt
 git add wide.txt
