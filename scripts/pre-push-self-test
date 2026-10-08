@@ -697,6 +697,14 @@ says "body line" "the long prose line in the block is judged"
 msg 1 "the branch's Stack: in the body only" \
 	"feat(x): a"$'\n\n'"Stack: m"$'\n\n'"prose"$'\n\n'"Human-Only: true"
 says "needs 'Stack: m'" "a Stack: line in the body is no stack record"
+# git splits a trailer at the separators trailer.separators names, ':' by default. A person's
+# '=' (git config --global trailer.separators =) left git reading no trailers at all, and a valid
+# message was refused for its missing Assisted-By (Codex review of #138). The rules write ':'
+# and the forge reads with git's default, so the gates read with ':' whatever is configured.
+git config --global trailer.separators '='
+msg 0 "a valid message, linted under a global trailer.separators of '='" \
+	"feat(x): a"$'\n\n'"Stack: m"$'\n'"Human-Only: true"
+git config --global --unset trailer.separators
 # Provenance is one of two forms, never both (finding 3).
 GIT_AUTHOR_EMAIL=$claude msg 1 "Human-Only: true beside agent trailers" \
 	"feat(x): a"$'\n\n'"Stack: m"$'\n'"Assisted-By: claude"$'\n'"Session-Id: s"$'\n'"Human-Only: true"
@@ -846,6 +854,9 @@ gate 1 "a person's ';' line last, under core.commentChar=auto: judged, so the tr
 says "missing 'Assisted-By:'" "the ';' line is judged as the message's last paragraph"
 gate 1 "the same, with -F: git strips nothing under auto without an editor" \
 	git -c core.commentChar=auto commit -q --allow-empty -F "$tmp/with-comment"
+# The same separators, set for one command: git hands them to the hook (GIT_CONFIG_PARAMETERS).
+gate 0 "a valid message, committed under git -c trailer.separators='='" \
+	git -c trailer.separators='=' commit -q --allow-empty -F "$tmp/ok-msg"
 # git commit -v: the diff below the scissors line is git's, and long lines of it are no fault.
 printf '%s\n' "$(overlong "x$(printf '%0*d' "$COMMIT_BODY_MAX" 0) with a space")" >wide.txt
 git add wide.txt

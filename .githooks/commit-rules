@@ -124,6 +124,14 @@ commit_rules_text() {
 		"A header that is still the skeleton is refused. These lines are not part of the message."
 }
 
+# commit_trailers: the trailers git reads in the message on stdin (git interpret-trailers --parse,
+# one 'Key: value' a line), split at ':' alone. git splits at the characters trailer.separators
+# names, ':' by default, and a person's '=' there left it reading none: a valid message was
+# refused for a missing Assisted-By. The rules write ':' and the forge reads with git's default,
+# so the gates read the same trailers under any configuration. The '-c' given here comes after
+# one a person gives git (GIT_CONFIG_PARAMETERS reaches the hook), so it wins.
+commit_trailers() { git -c trailer.separators=: interpret-trailers --parse --no-divider; }
+
 # commit_comment_raw: what the repository sets as git's comment prefix (core.commentChar or
 # core.commentString, the last one set wins), '#' when neither is.
 commit_comment_raw() {
