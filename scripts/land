@@ -56,6 +56,17 @@
 # and that GitHub shows the pull request as merged, says so loudly when not, and prints the
 # command that retargets to main each open pull request based on the landed branch.
 #
+# Known limit: the window between the last read and the push. GitHub has no call that
+# judges a pull request and moves main in one step, and with the bypass the rulesets do not
+# judge the push, so what this script read decides. The pinned head guarantees that what
+# lands is exactly the commit that was judged and approved, and a push without force means
+# git refuses it when main moved since it was read. It cannot see an approval dismissed, a
+# request for changes, a rule added, a thread reopened or the pull request closed between
+# its last read and the push. On the second look it reads the approvals and then the rules
+# last, right before the push, so the window is the time it takes to judge them; after the
+# push it reads both again and says LOUD when either changed. That detects; it cannot undo.
+# Closing the window needs the landing on the server's side, which GitHub does not offer.
+#
 # --dry-run makes every check, prints what it would approve and push, and changes nothing on
 # the forge; it needs no terminal. A landing needs one: it is for a person. It is a rail, not
 # a lock: whoever can push to main as an admin can do so without it.
@@ -211,16 +222,22 @@ def judge_pull(v, pr, me, fetched, repo):
         v.ok("land/author", f"you are {me}; {author} wrote it")
 
 
+def standing(d):
+    """Each reviewer's standing verdict: a comment leaves it standing."""
+    last = {}
+    for r in pages(f"{d}/reviews.json"):
+        who = (r.get("user") or {}).get("login")
+        if who and r.get("state") in VERDICTS:
+            last[who] = r
+    return last
+
+
 def judge_reviews(v, d, pr, me, repo):
     """land/codeowners, land/approved and land/changes-requested. True when the approval
     is yours to give in this run."""
     n, head = pr["number"], pr["head"]["sha"]
     h = head[:12]
-    last = {}  # each reviewer's standing verdict: a comment leaves it standing
-    for r in pages(f"{d}/reviews.json"):
-        who = (r.get("user") or {}).get("login")
-        if who and r.get("state") in VERDICTS:
-            last[who] = r
+    last = standing(d)
     asking = [(w, r) for w, r in last.items() if r["state"] == "CHANGES_REQUESTED"]
     if asking:
         v.no("land/changes-requested", "changes requested by "
@@ -536,6 +553,29 @@ def judge(d, repo, fetched, main, ancestor, merges):  # noqa: PLR0913, PLR0917
     return 3 if approve else 0
 
 
+def still(d, head):
+    """After the push: a code owner's approval of the head still stands, nobody's standing
+    verdict requests changes, and every rule on main is still one judged here. Prints a
+    LOUD line for each that fails and returns 1 when any does."""
+    loud = []
+    last = standing(d)
+    with open(f"{d}/codeowners") as f:
+        owners = codeowners(f.read())[0] or set()
+    if not any(w.lower() in owners and r["state"] == "APPROVED" and r.get("commit_id") == head
+               for w, r in last.items()):
+        loud.append(f"no code owner's approval of {head[:12]} stands any more")
+    asking = sorted(w for w, r in last.items() if r["state"] == "CHANGES_REQUESTED")
+    if asking:
+        loud.append("changes are requested by " + ", ".join(f"@{w}" for w in asking))
+    rules = pages(f"{d}/rules.json")
+    why = rules_fault(rules) or ", ".join(sorted({u for r in rules for u in unenforced(r)}))
+    if why:
+        loud.append(f"the rules on main are not the ones judged: {why}")
+    for line in loud:
+        print(f"land: LOUD: {line}")
+    return 1 if loud else 0
+
+
 def main(cmd, *args):
     if cmd == "slug":
         slug(*args)
@@ -555,6 +595,8 @@ def main(cmd, *args):
         print(BYPASS_REMEDY)
     elif cmd == "judge":
         sys.exit(judge(*args))
+    elif cmd == "still":
+        sys.exit(still(*args))
 
 
 main(*sys.argv[1:])
@@ -644,18 +686,9 @@ esac
 gather() {
 	gh api "repos/$slug/pulls/$n" >"$tmp/pr.json" || die "cannot read #$n"
 	gh api user >"$tmp/me.json" || die "cannot read who you are"
-	gh api --paginate --slurp "repos/$slug/pulls/$n/reviews?per_page=100" >"$tmp/reviews.json" ||
-		die "cannot read the reviews of #$n"
 	gh api graphql --paginate --slurp -F owner="${slug%%/*}" -F name="${slug#*/}" \
 		-F number="$n" -f query="$THREADS" >"$tmp/threads.json" ||
 		die "cannot read the review threads of #$n"
-	gh api --paginate --slurp "repos/$slug/rules/branches/main?per_page=100" >"$tmp/rules.json" ||
-		die "cannot read the rules on main"
-	local id
-	for id in $(py rulesets "$tmp/rules.json"); do
-		gh api "repos/$slug/rulesets/$id?includes_parents=true" >"$tmp/ruleset-$id.json" ||
-			die "cannot read ruleset $id"
-	done
 	{ read -r head; read -r headref; read -r headrepo; read -r html; } <<<"$(
 		py fields "$tmp/pr.json" head.sha head.ref head.repo.full_name html_url
 	)"
@@ -677,6 +710,23 @@ gather() {
 	for f in .github/CODEOWNERS CODEOWNERS docs/CODEOWNERS; do
 		git show "$main:$f" >"$tmp/codeowners" 2>/dev/null && break
 		: >"$tmp/codeowners"
+	done
+	# The approvals, then the rules, last: on the second look the push follows them by the
+	# time it takes to judge, the shortest the window can be made (the known limit above).
+	read_reviews
+	read_rules
+}
+read_reviews() {
+	gh api --paginate --slurp "repos/$slug/pulls/$n/reviews?per_page=100" >"$tmp/reviews.json" ||
+		die "cannot read the reviews of #$n"
+}
+read_rules() {
+	gh api --paginate --slurp "repos/$slug/rules/branches/main?per_page=100" >"$tmp/rules.json" ||
+		die "cannot read the rules on main"
+	local id
+	for id in $(py rulesets "$tmp/rules.json"); do
+		gh api "repos/$slug/rulesets/$id?includes_parents=true" >"$tmp/ruleset-$id.json" ||
+			die "cannot read ruleset $id"
 	done
 }
 
@@ -770,5 +820,10 @@ while :; do
 	waited=$((waited + 3))
 done
 echo "land: #$n is merged; main is $head"
+# The window, seen from the other side: what the push relied on, read again.
+read_reviews
+read_rules
+py still "$tmp" "$head" ||
+	die "LOUD: main is $head, but what it was landed on changed during the push; look at #$n before anything else lands"
 kids="$(children)"
 [ -z "$kids" ] || printf 'land: retarget what is stacked on %s to main:\n%s\n' "$headref" "$kids"

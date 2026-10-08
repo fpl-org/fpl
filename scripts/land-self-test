@@ -102,6 +102,10 @@ fi
 name="$(printf %s "$path" | tr -c 'A-Za-z0-9._-' _)"
 file="$FORGE/$name.json"
 [ ! -e "$FORGE/written" ] || [ ! -e "$FORGE/$name.after.json" ] || file="$FORGE/$name.after.json"
+# The k-th read of a path is served its `.read<k>` variant where there is one.
+reads=$(($(cat "$FORGE/$name.reads" 2>/dev/null || echo 0) + 1))
+echo "$reads" >"$FORGE/$name.reads"
+[ ! -e "$FORGE/$name.read$reads.json" ] || file="$FORGE/$name.read$reads.json"
 [ -e "$file" ] || { echo "gh: Not Found (HTTP 404) $path" >&2; exit 1; }
 merged=false
 if git --git-dir="$REMOTE" merge-base --is-ancestor "$HEAD_SHA" refs/heads/main 2>/dev/null; then
@@ -636,6 +640,44 @@ landing 1 "the forge's rulesets refuse the push" 7
 says "Bypass list > Repository admin > Always" "it gives the owner's one-time step"
 main_is "$M0" "nothing landed"
 rm -f "$REMOTE/hooks/pre-receive"
+
+# The window between the last read and the push cannot be closed from here: the approvals
+# and then the rules are the last reads before the push, and are read again after it.
+forge
+printf '#!/bin/sh\necho "git push" >>"$FORGE/calls"\n' >"$REMOTE/hooks/pre-receive"
+chmod +x "$REMOTE/hooks/pre-receive"
+landing 0 "the approvals and the rules are read last before the push" 7
+rm -f "$REMOTE/hooks/pre-receive"
+total=$((total + 1))
+# What is read after the last read of the reviews and before the push: the rules alone.
+after="$(awk '/^git push$/ { exit } /pulls\/7\/reviews/ { a = ""; next } { a = a $0 "\n" }
+	END { printf "%s", a }' "$FORGE/calls")"
+case "$after" in *rules/branches/main*) ;; *) after="$after(no read of the rules)" ;; esac
+if printf '%s\n' "$after" | grep -v 'rules/branches/main\|rulesets/' | grep -q .; then
+	fails=$((fails + 1))
+	echo "self-test: read after the reviews, before the push, besides the rules:" >&2
+	printf '%s\n' "$after" | sed 's/^/    /' >&2
+fi
+
+forge
+reviews "$(review 1 psjg APPROVED "$H"), $(review 2 psjg DISMISSED "$H")" read3
+landing 1 "the approval is dismissed while the push goes" 7
+says "LOUD: no code owner's approval of ${H:0:12} stands any more" "it says so loudly"
+main_is "$H" "main moved all the same: this detects, it cannot undo"
+
+forge
+reviews "$(review 1 psjg APPROVED "$H"), $(review 2 'coderabbitai[bot]' CHANGES_REQUESTED "$H")" read3
+landing 1 "changes are requested while the push goes" 7
+says "LOUD: changes are requested by @coderabbitai[bot]" "it says so loudly"
+
+forge
+cp "$FORGE/repos_land-test_fpl_rules_branches_main_per_page_100.json" "$tmp/rules.json"
+rules '{"context": "commit-lint", "integration_id": 15368}' 1 '{"type": "required_signatures", "ruleset_id": 2}'
+mv "$FORGE/repos_land-test_fpl_rules_branches_main_per_page_100.json" \
+	"$FORGE/repos_land-test_fpl_rules_branches_main_per_page_100.read3.json"
+cp "$tmp/rules.json" "$FORGE/repos_land-test_fpl_rules_branches_main_per_page_100.json"
+landing 1 "a rule is added to main while the push goes" 7
+says "LOUD: the rules on main are not the ones judged: required_signatures" "it says so loudly"
 
 # The agent pushes a fix while the maintainer reads the diff, and it is approved and
 # checked by the time he presses Enter: he did not look at it, so it does not land.
