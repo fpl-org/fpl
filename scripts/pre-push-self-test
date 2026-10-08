@@ -22,6 +22,17 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
+# The line limits are generated into .githooks/commit-limits (lib.limits in flake.nix). Every
+# over-long fixture below is built from them, so a changed limit needs no edit here.
+# shellcheck source=../.githooks/commit-limits
+. "$root/.githooks/commit-limits"
+# overlong <text>: the text, padded with words until it is longer than the body limit. A line
+# is judged only with a space in it (an unbreakable token is exempt), and the padding has some.
+overlong() {
+	local s="$1"
+	while [ "${#s}" -le "$COMMIT_BODY_MAX" ]; do s="$s and more words"; done
+	printf '%s' "$s"
+}
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/pre-push-self-test.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 : >"$tmp/gitconfig"
@@ -671,7 +682,7 @@ GIT_AUTHOR_EMAIL=$claude msg 1 "trailers with lower-case keys, out of order" \
 says "out of order" "a lower-case key is ranked as its key"
 # The width gate spares that block, and only it: a last paragraph of lines with a colon is
 # prose to git when a key holds a space, so its long line is judged.
-long="Note the cause: the old reader took this paragraph for trailers, and spared this line"
+long="$(overlong "Note the cause: the old reader took this paragraph for trailers, and spared this line")"
 msg 1 "a long line in a last paragraph git reads as prose" \
 	"feat(x): a"$'\n\n'"Stack: m"$'\n'"Human-Only: true"$'\n\n'"$long"
 says "body line" "the long prose line is judged"
@@ -779,7 +790,7 @@ ED
 chmod +x "$ed"
 export GIT_EDITOR="$ed"
 ok=$'feat(x): fine\n\nStack: t\nHuman-Only: true'
-long="# Your branch is ahead of 'origin/main' by 2 commits, and this comment line is far too long"
+long="$(overlong "# Your branch is ahead of 'origin/main' by 2 commits, and this comment line is far too long")"
 stored() { git log -1 --format=%B; }
 git switch -q -c agent/claude/stack/t main
 
@@ -836,7 +847,7 @@ says "missing 'Assisted-By:'" "the ';' line is judged as the message's last para
 gate 1 "the same, with -F: git strips nothing under auto without an editor" \
 	git -c core.commentChar=auto commit -q --allow-empty -F "$tmp/with-comment"
 # git commit -v: the diff below the scissors line is git's, and long lines of it are no fault.
-printf 'x%090d with a space  and more words to be long past the limit\n' 0 >wide.txt
+printf '%s\n' "$(overlong "x$(printf '%0*d' "$COMMIT_BODY_MAX" 0) with a space")" >wide.txt
 git add wide.txt
 gate 0 "git commit -v over a staged diff with a long line" \
 	env ED_MSG="$ok" git commit -q -v
@@ -866,6 +877,65 @@ refuse() { # refuse <hook|lint> <rule> <text> <message>
 	fi
 }
 tr="Stack: t"$'\n'"Human-Only: true"
+# The over-long header and body are built from the limits sourced at the top.
+long_header="docs(x): $(printf 'w%.0s' $(seq 1 $((COMMIT_HEADER_MAX - 8))))"
+# a body line is refused only with a space past the limit (an unbreakable token is exempt)
+words=$((COMMIT_BODY_MAX / 5 + 1))
+long_body="$(printf 'word %.0s' $(seq 1 "$words"))x"
+# The limits fail closed. .githooks/commit-rules reads them from a generated file, and a file that
+# is missing, empty, comment-only or malformed must stop its caller with the rule id and the
+# remedy, never leave a limit unset, inherited from the environment or not a number (a test
+# against COMMIT_HEADER_MAX=oops is an error that skips the refusal). <contents> is the whole
+# commit-limits file, or MISSING for none; the rest is environment for the run, which a file
+# that sets nothing must not inherit.
+limits_refused() { # limits_refused <description> <contents|MISSING> [NAME=value...]
+	local what="$1" body="$2" rc=0
+	shift 2
+	total=$((total + 1))
+	rm -rf "$tmp/lim"
+	mkdir "$tmp/lim"
+	cp .githooks/commit-rules "$tmp/lim/"
+	[ "$body" = MISSING ] || printf '%s\n' "$body" >"$tmp/lim/commit-limits"
+	env "$@" bash -c '. "$1"; echo "ran on with ${COMMIT_HEADER_MAX-} ${COMMIT_BODY_MAX-}"' _ "$tmp/lim/commit-rules" \
+		>"$tmp/out" 2>&1 || rc=$?
+	[ "$rc" -ne 0 ] || rc=1
+	[ "$rc" -eq 2 ] || { fails=$((fails + 1)); echo "self-test: $what: exit $rc, want 2" >&2; sed 's/^/    /' "$tmp/out" >&2; }
+	says "[limits-file]" "$what: the refusal names its rule"
+	says "remedy: run nix run .#gen-config" "$what: the refusal says what to do"
+	never "ran on" "$what: the caller went on"
+}
+good=$'COMMIT_HEADER_MAX=72\nCOMMIT_BODY_MAX=72'
+limits_refused "no commit-limits file" MISSING
+limits_refused "no file, limits in the environment" MISSING COMMIT_HEADER_MAX=72 COMMIT_BODY_MAX=72
+limits_refused "an empty file, limits in the environment" "" COMMIT_HEADER_MAX=72 COMMIT_BODY_MAX=72
+limits_refused "a comment-only file" "# generated, and nothing else"
+limits_refused "a non-numeric header limit" $'COMMIT_HEADER_MAX=oops\nCOMMIT_BODY_MAX=72'
+limits_refused "a non-numeric body limit" $'COMMIT_HEADER_MAX=72\nCOMMIT_BODY_MAX=oops'
+limits_refused "an empty header limit" $'COMMIT_HEADER_MAX=\nCOMMIT_BODY_MAX=72'
+limits_refused "a zero body limit" $'COMMIT_HEADER_MAX=72\nCOMMIT_BODY_MAX=0'
+limits_refused "a negative header limit" $'COMMIT_HEADER_MAX=-72\nCOMMIT_BODY_MAX=72'
+limits_refused "a limit with a leading zero, which arithmetic reads as octal" $'COMMIT_HEADER_MAX=072\nCOMMIT_BODY_MAX=72'
+limits_refused "a fractional body limit" $'COMMIT_HEADER_MAX=72\nCOMMIT_BODY_MAX=72.5'
+limits_refused "a missing body limit, one in the environment" "COMMIT_HEADER_MAX=72" COMMIT_BODY_MAX=72
+limits_refused "a missing header limit" "COMMIT_BODY_MAX=72"
+limits_refused "a file that does not parse" $'COMMIT_HEADER_MAX=72\nCOMMIT_BODY_MAX=72 ) ('
+# The control, so that the refusals above are for the file and not for the harness: a good file
+# is sourced, and the limits are the file's, not the environment's.
+total=$((total + 1))
+printf '%s\n' "$good" >"$tmp/lim/commit-limits"
+env COMMIT_HEADER_MAX=1 COMMIT_BODY_MAX=1 bash -c '. "$1"; echo "ran on with ${COMMIT_HEADER_MAX-} ${COMMIT_BODY_MAX-}"' _ "$tmp/lim/commit-rules" \
+	>"$tmp/out" 2>&1 || { fails=$((fails + 1)); echo "self-test: a good commit-limits was refused" >&2; sed 's/^/    /' "$tmp/out" >&2; }
+says "ran on with 72 72" "the limits are the file's, not the environment's"
+# End to end: the hook itself refuses to judge a message by a malformed file. The message is
+# a good one, so a green here would be the hook skipping its length check.
+cp .githooks/commit-limits "$tmp/commit-limits.real"
+printf '%s\n' "COMMIT_HEADER_MAX=oops" "COMMIT_BODY_MAX=72" >.githooks/commit-limits
+printf '%s\n' "docs(x): a" "" "$tr" >"$tmp/m"
+gate 1 "the hook with a malformed commit-limits" .githooks/commit-msg "$tmp/m"
+says "[limits-file]" "the hook names the rule"
+says "remedy: run nix run .#gen-config" "the hook says what to do"
+cp "$tmp/commit-limits.real" .githooks/commit-limits
+gate 0 "the same message with the file restored" .githooks/commit-msg "$tmp/m"
 refuse hook header-shape "header must be '<type>(<scope>): <summary>'" "just some words"
 refuse hook type-unknown "unknown type 'doc': did you mean 'docs'?" "doc(readme): x"$'\n\n'"$tr"
 refuse hook type-unknown "unknown type 'feature': did you mean 'feat'?" "feature(x): y"$'\n\n'"$tr"
@@ -875,11 +945,11 @@ refuse lint type-case "type must be lowercase: Docs -> docs" "Docs(x): y"$'\n\n'
 refuse lint scope-case "scope must be lowercase: README -> readme" "docs(README): y"$'\n\n'"$tr"
 refuse hook scope-chars "scope 'a b' may hold only" "docs(a b): y"$'\n\n'"$tr"
 refuse hook scope-chars "scope is empty" "docs(): y"$'\n\n'"$tr"
-refuse hook header-length "header is 80 chars (>72)" "docs(x): $(printf 'w%.0s' $(seq 1 71))"$'\n\n'"$tr"
+refuse hook header-length "header is $((COMMIT_HEADER_MAX + 1)) chars (>$COMMIT_HEADER_MAX)" "$long_header"$'\n\n'"$tr"
 refuse hook summary-case "summary must start lower-case: Upper -> upper" "docs(x): Upper"$'\n\n'"$tr"
 refuse hook summary-period "summary must not end with a period: done." "docs(x): done."$'\n\n'"$tr"
 refuse hook blank-line-2 "line 2 must be blank" "docs(x): a"$'\n'"body"
-refuse hook body-width "body line 3 is 81 chars (>72)" "docs(x): a"$'\n\n'"$(printf 'word %.0s' $(seq 1 16))x"$'\n\n'"$tr"
+refuse hook body-width "body line 3 is $((5 * words + 1)) chars (>$COMMIT_BODY_MAX)" "docs(x): a"$'\n\n'"$long_body"$'\n\n'"$tr"
 refuse hook provenance-assisted "missing 'Assisted-By:'" "docs(x): a"$'\n\n'"Stack: t"
 refuse hook provenance-session "missing 'Session-Id:'" "docs(x): a"$'\n\n'"Stack: t"$'\n'"Assisted-By: claude"
 refuse hook agent-identity-unset "agent identity unset" "docs(x): a"$'\n\n'"Stack: t"$'\n'"Assisted-By: claude"$'\n'"Session-Id: s"
@@ -1065,7 +1135,7 @@ says "remedy:" "the refusal says what to do"
 same "the header the editor is shown is the skeleton" "<type>(<scope>): <summary>" "$(sed -n 1p "$seen")"
 same "the trailers it is shown are the branch's stack and a human commit" $'Stack: t\nHuman-Only: true' "$(grep -E '^(Stack|Human-Only):' "$seen")"
 same "the stack is the one acommit derives" "$want_stack" "$(grep '^Stack:' "$seen")"
-for want in "feat fix docs refactor perf test build ci chore revert" "[a-z0-9/._-]" "lower-case" "72" ".agents/COMMITS.md"; do
+for want in "feat fix docs refactor perf test build ci chore revert" "[a-z0-9/._-]" "lower-case" "at most $COMMIT_HEADER_MAX characters" "at most $COMMIT_BODY_MAX columns" ".agents/COMMITS.md"; do
 	total=$((total + 1))
 	grep -Fq -- "$want" "$seen" || { fails=$((fails + 1)); echo "self-test: the template lacks '$want'" >&2; }
 done
