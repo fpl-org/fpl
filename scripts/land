@@ -35,8 +35,9 @@
 #   land/linear             no commit between main and the head is a merge: main is linear
 #   land/rules              every rule on main is one judged here; the bypass skips them all,
 #                           so a rule the script does not know would go unenforced
-#                           main has rules, each naming its ruleset: an empty or malformed
-#                           answer is a forge failure, never "nothing required"
+#                           main has rules, each naming its ruleset, with the parameters
+#                           GitHub's schema gives its type, of their types: an empty or
+#                           malformed answer is a forge failure, never "nothing required"
 #   land/bypass             you may push past every ruleset on main "always", the owner's
 #                           one-time setting; without it the forge refuses any direct push
 #   land/remote             git fetches from and pushes to one place, the same, and when it
@@ -360,14 +361,88 @@ def judge_history(v, main, head, ancestor, merges):
              "rebase them away before approval: main's history is linear")
 
 
+# The parameters GitHub's schema gives each rule type judged here (the REST description,
+# components/schemas/repository-rule-*), as {name: (type, required)}. A rule is read only
+# when its parameters have these types and the required ones are there: a rule missing
+# its list of checks is no rule without checks.
+PARAMETERS = {
+    "pull_request": {
+        "dismiss_stale_reviews_on_push": (bool, True),
+        "require_code_owner_review": (bool, True),
+        "require_last_push_approval": (bool, True),
+        "required_approving_review_count": (int, True),
+        "required_review_thread_resolution": (bool, True),
+        "allowed_merge_methods": (list, False),
+        "dismissal_restriction": (dict, False),
+        "required_reviewers": (list, False),
+    },
+    "required_status_checks": {
+        "required_status_checks": (list, True),
+        "strict_required_status_checks_policy": (bool, True),
+        "do_not_enforce_on_create": (bool, False),
+    },
+}
+
+
+def typed(value, kind):
+    """value is a kind; a bool is no int here, as JSON keeps them apart."""
+    return isinstance(value, kind) and not (kind is int and isinstance(value, bool))
+
+
+def parameters_fault(kind, params):
+    """Why a judged rule's parameters are not GitHub's schema for it, or None."""
+    for name, (want, required) in PARAMETERS.get(kind, {}).items():
+        if name not in params:
+            if required:
+                return f"has no parameter {name}"
+        elif not typed(params[name], want):
+            return f"has {name} {json.dumps(params[name])}, not a {want.__name__}"
+    count = params.get("required_approving_review_count", 0)
+    if not 0 <= count <= 10:  # the schema's bounds
+        return f"wants {count} approvals, outside 0 to 10"
+    for check in params.get("required_status_checks", []):
+        if not (isinstance(check, dict) and isinstance(check.get("context"), str)
+                and check["context"] and typed(check.get("integration_id", 0), int)):
+            return f"requires a check that is not a context and an app id: {json.dumps(check)}"
+    methods = params.get("allowed_merge_methods", [])
+    if not all(m in ("merge", "squash", "rebase") for m in methods):
+        return f"allows merge methods {json.dumps(methods)}"
+    if not typed(params.get("dismissal_restriction", {}).get("enabled", False), bool):
+        return "has a dismissal_restriction that is not enabled true or false"
+    if not all(isinstance(r, dict) for r in params.get("required_reviewers", [])):
+        return "has required_reviewers that are not objects"
+    return None
+
+
+def rule_fault(rule):
+    """Why one rule is not a rule as GitHub's schema gives it, or None."""
+    if not isinstance(rule, dict):
+        return f"a rule that is not an object: {json.dumps(rule)}"
+    kind = rule.get("type")
+    if not isinstance(kind, str) or not kind:
+        return f"a rule with no type: {json.dumps(rule)}"
+    if not typed(rule.get("ruleset_id"), int) or rule["ruleset_id"] <= 0:
+        return f"a {kind} rule that names no ruleset, so its bypass cannot be checked"
+    for name in ("ruleset_source_type", "ruleset_source"):
+        if name in rule and not isinstance(rule[name], str):
+            return f"a {kind} rule whose {name} is not a string"
+    params = rule.get("parameters", {} if kind not in PARAMETERS else None)
+    if not isinstance(params, dict):
+        return f"a {kind} rule without parameters, or with parameters that are no object"
+    why = parameters_fault(kind, params)
+    return f"a {kind} rule that {why}" if why else None
+
+
 def rules_fault(rules):
     """Why the answer for main's rules cannot be read as the rules, or None. Main has rules
-    (the bypass check below is what makes a push possible at all), each an object that says
-    which ruleset it comes from; anything else is a forge failure, not "nothing required"."""
-    if not rules or not all(isinstance(r, dict) for r in rules):
+    (the bypass check below is what makes a push possible at all), each as GitHub's schema
+    gives it; anything else is a forge failure, not "nothing required"."""
+    if not rules:
         return "the forge gave no rules for main, or an answer that is not a list of rules"
-    if not all(r.get("ruleset_id") for r in rules):
-        return "the forge gave a rule that names no ruleset, so its bypass cannot be checked"
+    for rule in rules:
+        why = rule_fault(rule)
+        if why:
+            return f"the forge gave {why}"
     return None
 
 
