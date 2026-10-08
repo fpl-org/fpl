@@ -33,8 +33,12 @@
 #   land/ancestor           main on the forge is an ancestor of the head: restack before
 #                           approval, never after
 #   land/linear             no commit between main and the head is a merge: main is linear
-#   land/rules              every rule on main is one judged here; the bypass skips them all,
-#                           so a rule the script does not know would go unenforced
+#   land/rules              every rule on main is one judged here, and every parameter of it
+#                           has a value the script enforces (a pull_request rule that wants
+#                           the last push approved by someone else, teams as reviewers or
+#                           two approvals is refused, and so is a parameter not known here
+#                           that is anything but false); the bypass skips them all, so a
+#                           requirement the script does not make would go unenforced
 #                           main has rules, each naming its ruleset, with the parameters
 #                           GitHub's schema gives its type, of their types: an empty or
 #                           malformed answer is a forge failure, never "nothing required"
@@ -446,16 +450,51 @@ def rules_fault(rules):
     return None
 
 
+# What scripts/land makes of each parameter of a judged rule: the values it enforces, and
+# why. The bypass skips the rule, so a value outside these, or a parameter not named here
+# (one GitHub added, or one it does not document) that is anything but false, is refused:
+# a requirement the script does not make would go unenforced.
+ENFORCED = {
+    "pull_request": {
+        # land/approved: one code owner's standing approval of the exact head.
+        "required_approving_review_count": lambda n: n <= 1,
+        "require_code_owner_review": lambda b: True,
+        "dismiss_stale_reviews_on_push": lambda b: True,
+        # land/threads judges the threads whatever this says.
+        "required_review_thread_resolution": lambda b: True,
+        # Who pushed last is not read here, so an approval by them would count.
+        "require_last_push_approval": lambda b: b is False,
+        # Teams that must approve some paths are not read here.
+        "required_reviewers": lambda r: r == [],
+        # Who may dismiss a review, and the merge button's methods: a push is neither.
+        "dismissal_restriction": lambda d: True,
+        "allowed_merge_methods": lambda m: True,
+    },
+    "required_status_checks": {
+        "required_status_checks": lambda c: True,  # land/checks
+        # land/ancestor: main is an ancestor of the head, so the head is up to date.
+        "strict_required_status_checks_policy": lambda b: True,
+        "do_not_enforce_on_create": lambda b: True,  # main exists
+    },
+}
+
+
+def unenforced(rule):
+    """The requirements of one rule that scripts/land does not make, by name."""
+    kind = rule["type"]
+    if kind not in JUDGED:
+        return [kind]
+    known = ENFORCED.get(kind, {})
+    return [f"{kind} {name}: {json.dumps(value)}"
+            for name, value in sorted((rule.get("parameters") or {}).items())
+            if (not known[name](value) if name in known else value is not False)]
+
+
 def judge_rules(v, d, rules):
     """land/rules and land/bypass: every rule is one judged here, and you may skip them."""
     unjudged = set()
     for rule in rules:
-        kind = rule.get("type")
-        count = dig(rule, "parameters.required_approving_review_count") or 0
-        if kind not in JUDGED:
-            unjudged.add(str(kind))
-        elif kind == "pull_request" and count > 1:
-            unjudged.add(f"pull_request with {count} approvals")
+        unjudged.update(unenforced(rule))
     if unjudged:
         v.no("land/rules", "main has rules scripts/land does not judge: "
              + ", ".join(sorted(unjudged)),

@@ -163,7 +163,7 @@ threads() {
 thread() { # thread <resolved> <url>
 	echo "{\"isResolved\": $1, \"path\": \"a\", \"line\": 1, \"comments\": {\"nodes\": [{\"url\": \"$2\"}]}}"
 }
-rules() { # rules <required contexts as JSON objects> [approvals] [another rule]
+rules() { # rules <required contexts> [approvals] [another rule] [pull_request parameters]
 	fixture "repos/land-test/fpl/rules/branches/main?per_page=100" <<-EOF
 	[[{"type": "pull_request", "ruleset_id": 1, "ruleset_source_type": "Repository",
 	   "ruleset_source": "land-test/fpl",
@@ -171,7 +171,7 @@ rules() { # rules <required contexts as JSON objects> [approvals] [another rule]
 	     "dismiss_stale_reviews_on_push": true, "require_code_owner_review": true,
 	     "require_last_push_approval": false, "required_review_thread_resolution": true,
 	     "required_reviewers": [], "allowed_merge_methods": ["rebase"],
-	     "dismissal_restriction": {"enabled": false, "allowed_actors": []}}},
+	     "dismissal_restriction": {"enabled": false, "allowed_actors": []}${4:+, $4}}},
 	  {"type": "required_status_checks", "ruleset_id": 1,
 	   "parameters": {"required_status_checks": [$1],
 	     "strict_required_status_checks_policy": false, "do_not_enforce_on_create": false}},
@@ -459,7 +459,38 @@ says "required_signatures" "it names the rule it does not judge"
 forge
 rules '{"context": "commit-lint", "integration_id": 15368}' 2
 expect 1 "a ruleset that wants two approvals" --dry-run 7
-says "pull_request with 2 approvals" "one code owner's approval is not enough"
+says "pull_request required_approving_review_count: 2" "one code owner's approval is not enough"
+
+# A parameter of a judged rule that asks what scripts/land does not make is refused.
+lint='{"context": "commit-lint", "integration_id": 15368}'
+param_case() { # param_case <description> <exit code> <text> <rules arguments after the first...>
+	local what="$1" want="$2" text="$3"
+	shift 3
+	forge
+	rules "$lint" "$@"
+	expect "$want" "$what" --dry-run 7
+	if [ "$want" -eq 1 ]; then
+		says "NO  land/rules" "it names the rule"
+		says "$text" "it names the parameter"
+	else
+		says "ok  land/rules" "$text"
+	fi
+}
+param_case "the last push approved by someone else" 1 "require_last_push_approval: true" \
+	1 "" '"require_last_push_approval": true'
+param_case "a team required for some paths" 1 "pull_request required_reviewers" \
+	1 "" '"required_reviewers": [{"file_patterns": ["*"], "minimum_approvals": 1, "reviewer": {"id": 1, "type": "Team"}}]'
+param_case "a parameter GitHub does not document, enabled" 1 \
+	"require_extra_approval_for_unattributed_changes: true" \
+	1 "" '"require_extra_approval_for_unattributed_changes": true'
+param_case "a parameter not known here, false" 0 "a parameter that is false asks nothing" \
+	1 "" '"require_extra_approval_for_unattributed_changes": false'
+param_case "a parameter on a rule that has none" 1 "deletion x: 1" \
+	1 '{"type": "deletion", "ruleset_id": 2, "parameters": {"x": 1}}'
+param_case "the branch up to date before merging" 0 "land/ancestor makes it" \
+	1 '{"type": "required_status_checks", "ruleset_id": 2, "parameters": {"required_status_checks": [], "strict_required_status_checks_policy": true}}'
+param_case "zero approvals, no code owner review, no thread resolution" 0 "the script is stricter" \
+	0 "" '"require_code_owner_review": false, "required_review_thread_resolution": false'
 
 # An answer that says nothing is not "nothing required": it fails closed, by name.
 for empty in '[[]]' '{}' '[]' '[[{}]]' '[["x"]]'; do
