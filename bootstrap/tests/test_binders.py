@@ -36,12 +36,20 @@ def test_a_binder_in_a_body_reaches_the_lines_after_it_and_their_children() -> N
     assert run(source) == "6\n[ 2 | 1 + ]\n"
 
 
-@pytest.mark.parametrize("source", ["1 →x\nx\n", "[ 1 →x ] x\n", "→x | x\n", "1 →a/b\na/b\n"])
-def test_a_name_dies_with_the_line_or_quotation_that_bound_it(source: str) -> None:
+@pytest.mark.parametrize(
+    ("source", "error"),
+    [
+        ("1 →x\nx\n", "ERROR: 2:1 unknown word: x"),
+        ("[ 1 →x ] x\n", "ERROR: 1:10 unknown word: x"),
+        ("→x | x\n", "ERROR: 1:6 unknown word: x"),
+        ("1 →a/b\na/b\n", "ERROR: 2:1 unknown word: a/b"),
+    ],
+)
+def test_a_name_dies_with_the_line_or_quotation_that_bound_it(source: str, error: str) -> None:
     """Decision f: a binder is mortal; past its scope the name is no word at all."""
     with pytest.raises(FplError) as caught:
         run(source)
-    assert str(caught.value) == "ERROR: 1:1 no evaluator yet"
+    assert str(caught.value) == error
 
 
 @pytest.mark.parametrize(
@@ -187,17 +195,15 @@ def test_history_holds_the_shadowed_definitions(source: str, printed: str) -> No
         "a/b/\n\tk : -- y\n\t\t1\n",
         "../k\n",
         "m/ 1\n",
-        "#m bind\n",
-        "m/\n\tk : -- y\n\t\t1\nm\n",
         "k : -- y\n\t3\n../k\n",
         "a/b/\n\t{ a 1 a 2 }\n",
-        "f : -- y\n\t1\nf/history/x\n",
     ],
 )
 def test_what_directories_do_not_yet_read_is_refused(source: str) -> None:
     """Hole unimplemented-words: code in a directory block, a bind of anything but a known
-    #name, a path head, a head with tokens after its slash, ../ or bind at the top, a directory
-    called as a word and a path into w/history are refused before anything runs."""
+    #name, a path head, a head with tokens after its slash and ../ at the top are refused before
+    anything runs; a bind at the top, a directory called as a word and a path into w/history are
+    refused at their word (test_desugar)."""
     with pytest.raises(FplError) as caught:
         run(source)
     assert str(caught.value) == "ERROR: 1:1 no evaluator yet"
