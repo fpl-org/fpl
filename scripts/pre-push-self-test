@@ -893,7 +893,46 @@ printf '%s\n' "$(overlong "x$(printf '%0*d' "$COMMIT_BODY_MAX" 0) with a space")
 git add wide.txt
 gate 0 "git commit -v over a staged diff with a long line" \
 	env ED_MSG="$ok" git commit -q -v
+# The diff left in the file, as an editor shows it: cut where git cuts, in every mode, under
+# -vv, and in an amend and with -e -F, sources for which prepare-commit-msg writes no template
+# but records the scissors line all the same (commit_cut_state).
+vfix='1s/.*/feat(x): fine/'
+git reset -q --soft HEAD^
+for mode in strip whitespace verbatim; do
+	gate 0 "git commit -v, the diff with its long line left in, under commit.cleanup=$mode" \
+		env ED_SED="$vfix" git -c commit.cleanup="$mode" commit -q -v
+	git reset -q --soft HEAD^
+done
+printf '%s\n' "$(overlong "y$(printf '%0*d' "$COMMIT_BODY_MAX" 0) with a space")" >>wide.txt
+gate 0 "git commit -vv, a long line in the unstaged diff too" env ED_SED="$vfix" git commit -q -vv
+gate 0 "an amend with -v, the diff left in" env ED_SED= git commit -q --amend -v
+git reset -q --soft HEAD^
+gate 0 "-v -e -F, the diff left in" env ED_MSG= ED_SED= git commit -q -v -e -F "$tmp/ok-msg"
 git reset -q --hard HEAD
+# A scissors line and a quoted diff the person typed, without -v: git cuts nowhere and stores
+# them, so the text below them is judged. A guess from that text took it for the diff of -v and
+# let a long line past the hook (Codex review of #138, round 2).
+hw="$(overlong "a line typed below a quoted diff, which git stores as it is") and more"
+typed=$'\n'"$sc"$'\ndiff --git a/x b/x\n'"$hw"$'\n'
+for mode in strip whitespace verbatim; do
+	gate 1 "a typed scissors line and a quoted diff, edited, under commit.cleanup=$mode" \
+		env ED_MSG="$ok" ED_TAIL="$typed" git -c commit.cleanup="$mode" commit -q --allow-empty
+	says "body line" "the line below the quoted diff is judged ($mode)"
+done
+# The same text in a message given to git with -e -F: git's status block follows it, so it is
+# not the diff of -v, and with commit.status=false git writes no diff for -v at all.
+printf '%s\n\n%s\n%s\n%s' 'feat(x): fine' 'Stack: t' 'Human-Only: true' "$typed" >"$tmp/typed-msg"
+for st in true false; do
+	gate 1 "a given message ending in a scissors line and a quoted diff, -e -F, commit.status=$st" \
+		env ED_MSG= ED_SED= git -c commit.status="$st" commit -q --allow-empty -e -F "$tmp/typed-msg"
+	says "body line" "the line below the quoted diff is judged (-e -F, commit.status=$st)"
+done
+# What git stores is what commit-lint, the push gate, judges: the same message, committed with
+# the hooks off, is refused there as well.
+env ED_MSG="$ok" ED_TAIL="$typed" git -c core.hooksPath=/dev/null commit -q --allow-empty
+gate 1 "commit-lint on that message as git stored it" scripts/commit-lint -b agent/claude/stack/t HEAD^..HEAD
+says "[body-width]" "commit-lint judges the line below the quoted diff"
+git reset -q --hard HEAD^
 # An editor of ':' leaves nothing to tell it from -m: judged as unedited, the strict reading.
 printf '%s\n\n%s\n\nStack: t\nHuman-Only: true\n' 'feat(x): fine' "$long" >"$tmp/tmpl"
 gate 1 "an editor that is ':' (as -m runs the hook): the comment line is judged" \

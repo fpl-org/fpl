@@ -45,7 +45,39 @@ repo_root="$(git rev-parse --show-toplevel)"
 # shellcheck source=commit-rules
 . "$repo_root/.githooks/commit-rules"
 state="$(commit_template_state)"
-rm -f "$state"
+cut_state="$(commit_cut_state)"
+rm -f "$state" "$cut_state"
+
+# The scissors line of git commit -v, recorded for commit-msg (commit_cut_state), for every
+# source: -v is given to an amend and to -e -F as well. What git writes for -v comes last
+# (measured, git 2.54: the file this hook gets is the file the editor gets): its scissors line,
+# its own comment lines, then the diff, the first line of which opens 'diff --git', down to the
+# end of the file (-vv adds comment lines and a second diff). Without -v the file ends in git's
+# status block, comment lines, and with commit.status=false git writes no diff for -v at all.
+# So the last scissors line is recorded only when a diff follows it and runs to the end: a
+# message given to git (-e -F, an amend, a template) that holds a scissors line and a quoted
+# diff of its own is followed by git's status block, and is not taken for -v. --no-status on
+# the command line reaches no hook; with it, such a message reads as -v, and commit-lint judges
+# what git stored. The prefix is the repository's or, under 'auto', any one git may pick; a
+# line of the diff that ends like a scissors line ('+# ----... >8 ...') is passed by.
+if [ "$(git config --type=bool --get commit.status || true)" != false ]; then
+	P="$(commit_comment_prefix)" awk '
+		BEGIN { p0 = ENVIRON["P"]; d = "------------------------"; t = " " d " >8 " d }
+		{ line[++n] = $0; if (NF) last = n }
+		END {
+			for (i = n; i >= 1; i--) {
+				l = line[i]; k = length(l) - length(t)
+				if (k < 1 || substr(l, k + 1) != t) continue
+				p = substr(l, 1, k)
+				if (p0 != "" ? p != p0 : !(k == 1 && index("#;@!$%^&|:", p))) continue
+				for (j = i + 1; j <= n && substr(line[j], 1, k) == p; j++) continue
+				if (j <= n && index(line[j], "diff --git ") == 1 && substr(line[last], 1, k) != p) print l
+				exit
+			}
+		}' "$file" >"$cut_state"
+fi
+[ -s "$cut_state" ] || rm -f "$cut_state"
+
 case "${2:-}" in
 "" | template) ;;
 *) exit 0 ;;
