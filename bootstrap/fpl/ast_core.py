@@ -254,3 +254,25 @@ EFFECTS: dict[str, Effect] = {
     "?": Effect((), ()),
     "_": Effect((), ()),
 }
+
+PLANNED = frozenset(
+    {
+        "newline",
+        "debug",
+        "select",
+        "unpair",
+        "dict",
+        "curry",
+        "shape",
+        "pos",
+        "true",
+        "false",
+        "bind",
+    }
+)
+"""Words the language's own examples call and nothing here runs where they are called, so a
+call of one that no definition names is `no evaluator yet`, not an unknown word. Each is called
+and never defined in a maintainer's example: newline (draft1), debug (draft2/03), select
+(draft2/05), unpair (draft2/06), dict (draft2/08), curry (draft2/11), shape (draft3/paths), pos,
+true and false (match/01, match/04), and bind (draft3/paths), which runs only as `#name bind`
+in a directory. A word that runs moves to EFFECTS (hole unimplemented-words)."""

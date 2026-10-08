@@ -304,8 +304,10 @@ def test_a_dispatched_word_has_a_path_per_group_and_clause(
     otherwise."""
     source = clauses(groups, part)
     if len(groups) == 1 and part is None:
-        with pytest.raises(FplError, match=r"^ERROR: 1:1 no evaluator yet$"):
+        with pytest.raises(FplError) as caught:
             desugar(parse(source + f"f/{min(groups)}/effect\n"))
+        at = source.count("\n") + 1
+        assert str(caught.value) == f"ERROR: {at}:1 unknown word: f/{min(groups)}/effect"
         return
     for n in groups:
         first = ("x0",) if part is None else ("x0:", part)

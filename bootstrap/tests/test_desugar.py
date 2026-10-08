@@ -11,6 +11,7 @@ from test_parse import spans
 from fpl.ast_core import (
     DIGITS,
     EFFECTS,
+    PLANNED,
     Call,
     Define,
     Effect,
@@ -24,7 +25,7 @@ from fpl.ast_core import (
 from fpl.ast_surface import Cell, Enclosure, Frame, Line, Pair, Program, Text
 from fpl.desugar import START, desugar, listing, resugar, text
 from fpl.driver import run
-from fpl.errors import FplError, Span
+from fpl.errors import FplError, Span, UnresolvedError
 from fpl.eval import BUILTINS, CONTROLS, evaluate
 from fpl.parse import parse
 from fpl.print import render
@@ -453,18 +454,55 @@ def test_a_numeral_of_digits_digits_reads(numeral: str) -> None:
 @pytest.mark.parametrize(
     "source",
     [
-        *("∞\n", "#1\n", "$1\n", "1\u00b4\n", "a/b\n", "{ 1 }\n", "()\n", "“⟨1⟩”\n"),
+        *("∞\n", "#1\n", "$1\n", "1\u00b4\n", "{ 1 }\n", "()\n", "“⟨1⟩”\n"),
         *(";;; s\n\t1\n", "\n\t1\n", "1\n\t; c\n\t\t2\n"),
-        *("⟨ (+ 1 2) ⟩\n", "f : x\n", "f : x -- y | 1\n", "f : #x -- y\n", "1 2 3 sqrt\n"),
+        *("⟨ (+ 1 2) ⟩\n", "f : x\n", "f : x -- y | 1\n", "f : #x -- y\n"),
         *("f : x: -- y\n", "f : -- y:\n", "#f : --\n", "f : t: -- x -- y\n"),
+        "f : x: Foo -- y\n\t1\n",
     ],
 )
 def test_what_no_part_implements_is_refused_before_running(source: str) -> None:
-    """Syntax no part implements yet is refused at 1:1 as `no evaluator yet`, before any line
-    runs."""
+    """Syntax no part implements yet, and a type word nothing names, is refused at 1:1 as `no
+    evaluator yet`, before any line runs."""
     with pytest.raises(FplError) as caught:
         run(source)
     assert str(caught.value) == "ERROR: 1:1 no evaluator yet"
+
+
+@pytest.mark.parametrize(
+    ("source", "error"),
+    [
+        ("foo\n", "ERROR: 1:1 unknown word: foo"),
+        ("1 2 3 sqrt\n", "ERROR: 1:7 unknown word: sqrt"),
+        ("2 | 3 +\nfoo\n", "ERROR: 2:1 unknown word: foo"),
+        ("a/b\n", "ERROR: 1:1 unknown word: a/b"),
+        ("f : -- y\n\t1\nf/history/x\n", "ERROR: 3:1 unknown word: f/history/x"),
+        ("f : -- y\n\t../g\n", "ERROR: 2:2 unknown word: ../g"),
+        ("1 debug\n", "ERROR: 1:3 no evaluator yet: debug"),
+        ("[ 1 newline ] !\n", "ERROR: 1:5 no evaluator yet: newline"),
+        ("#m bind\n", "ERROR: 1:4 no evaluator yet: bind"),
+        ("m/\n\tk : -- y\n\t\t1\nm\n", "ERROR: 4:1 no evaluator yet: m"),
+        ("m/\n\tn/\n\t\tk : -- y\n\t\t\t1\n\tf : -- y\n\t\tn\n", "ERROR: 6:3 no evaluator yet: n"),
+    ],
+)
+def test_a_call_nothing_answers_is_refused_at_its_word(source: str, error: str) -> None:
+    """A word no definition and no builtin names is `unknown word: w` where w is written; w is
+    `no evaluator yet: w` when it is a directory, or a word the language's examples call and
+    nothing here runs (PLANNED). Either way the span is w's own, not the source's start."""
+    with pytest.raises(UnresolvedError) as caught:
+        run(source)
+    assert str(caught.value) == error
+
+
+def test_a_word_that_runs_is_no_longer_planned() -> None:
+    """A planned word moves to EFFECTS when a part runs it."""
+    assert PLANNED.isdisjoint(EFFECTS)
+
+
+@pytest.mark.parametrize("word", sorted(PLANNED - {"bind"}))
+def test_a_planned_word_that_is_defined_runs(word: str) -> None:
+    """A word the examples call is refused only while nothing names it: a definition answers."""
+    assert run(f"{word} : x -- x\n\tdup drop\n1 {word}\n") == "1\n"
 
 
 def test_join_takes_code_and_enclose_a_value() -> None:

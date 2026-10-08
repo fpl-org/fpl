@@ -133,6 +133,29 @@ def test_an_error_in_an_earlier_input_names_its_event() -> None:
     assert last.bodies[last.event.out] == last.out.encode()
 
 
+def test_an_unknown_word_is_told_at_the_word_in_the_input_that_holds_it() -> None:
+    log, outcomes = entered(["2 | 3 +\n", "foo\n", "f : -- x\n\t2\n", "f gone\n", "f\n"])
+    assert [o.out for o in outcomes] == [
+        "5\n",
+        "ERROR: 1:1 unknown word: foo\n",
+        "",
+        "ERROR: 1:3 unknown word: gone\n",
+        "2\n",
+    ]
+    assert [o.notes for o in outcomes] == [(), ("foo\n^",), (), ("f gone\n  ^",), ()]
+    assert [o.event.status for o in outcomes] == ["ok", "error", "ok", "error", "ok"]
+    assert [part.text for part in program(log, log.head)] == ["2 | 3 +\n", "f : -- x\n\t2\n", "f\n"]
+
+
+def test_a_word_the_language_knows_but_no_evaluator_runs_is_told_apart() -> None:
+    _, outcomes = entered(["1 2 +\n", "3 debug\n", "3 gone\n"])
+    assert [o.out for o in outcomes[1:]] == [
+        "ERROR: 1:3 no evaluator yet: debug\n",
+        "ERROR: 1:3 unknown word: gone\n",
+    ]
+    assert [o.notes for o in outcomes[1:]] == [("3 debug\n  ^",), ("3 gone\n  ^",)]
+
+
 def test_an_input_after_the_first_starts_at_the_left_margin() -> None:
     _, outcomes = entered(["1\n", "\n\t\n\t3\n", "\n", "\t3\n"])
     assert [o.out for o in outcomes] == [

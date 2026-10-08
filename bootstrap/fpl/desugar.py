@@ -20,7 +20,8 @@ literal, $x, ( constructor patterns ) or p ∈ test; a match with no row of only
 makes its word's effect +fail.
 A line with no code, a comment's or the empty first line, is no statement and no child; its
 comment is not carried into the core, but for a word's docs (fpl/trivia.py). Anything outside
-the implemented set is refused before evaluation (hole unimplemented-words).
+the implemented set is refused before evaluation (hole unimplemented-words), at the source's
+start; but a call nothing answers is refused at its word, as unknown or as not run yet (PLANNED).
 A word with two or more keys, or one with a typed input, is dispatched (design 09 §1.1): its
 i-th key of arity n is the clause f/n/i, and f/n its dispatcher, one row per clause guarding
 each typed input with its type word and calling the clause, the most typed inputs first and the
@@ -39,6 +40,7 @@ from fpl import trivia
 from fpl.ast_core import (
     DIGITS,
     EFFECTS,
+    PLANNED,
     Atom,
     Bind,
     Call,
@@ -68,7 +70,7 @@ from fpl.ast_core import (
     Wild,
 )
 from fpl.ast_surface import Cell, Comment, Enclosure, Frame, Item, Line, Program, Text, Word
-from fpl.errors import FplError, Span
+from fpl.errors import FplError, Span, UnresolvedError
 from fpl.print import render
 
 START = Span(1, 1)
@@ -91,6 +93,15 @@ type Clause = tuple[str, Effect]
 def unimplemented() -> NoReturn:
     """Refuse what no part implements yet, at the source's start."""
     raise FplError(START, "no evaluator yet")
+
+
+def missing(word: Word, directory: bool) -> UnresolvedError:
+    """The refusal of a call nothing answers, at the word and naming it as written: `unknown
+    word: w`; but `no evaluator yet: w` where w names a directory, which is not called, or is a
+    word the language's examples call (PLANNED)."""
+    name = "/".join(word.body)
+    reason = "no evaluator yet" if directory or name in PLANNED else "unknown word"
+    return UnresolvedError(word.span, f"{reason}: {word.prefix}{name}")
 
 
 def desugar(program: Program) -> tuple[Statement, ...]:
@@ -252,13 +263,24 @@ class Catalog:
         path = "/".join((*here, entry))
         return path if path in self.effects else None
 
-    def resolve(self, here: Here, segments: Here) -> str:
-        """The word a path names from here, then each enclosing directory; none is refused."""
+    def find(self, here: Here, segments: Here) -> str | None:
+        """The word a path names from here, then each enclosing directory, or None."""
         for depth in range(len(here), -1, -1):
             found = self.lookup(here[:depth], segments)
             if found is not None:
                 return found
-        unimplemented()
+        return None
+
+    def listed(self, here: Here, segments: Here) -> bool:
+        """The path names a directory from here, then from each enclosing directory."""
+        return any((*here[:depth], *segments) in self.logs for depth in range(len(here), -1, -1))
+
+    def resolve(self, here: Here, segments: Here) -> str:
+        """The word a path names from here, then each enclosing directory; none is refused."""
+        found = self.find(here, segments)
+        if found is None:
+            unimplemented()
+        return found
 
 
 def directory(line: Line) -> str | None:
@@ -915,10 +937,13 @@ class _Desugar:
         path = "/".join(word.body)
         if not (word.prefix or word.mods) and any(path in s for s in self.effects.maps[:-1]):
             return Call(path, word.span)
-        path = self.catalog.resolve(self.origin(word), word.body)
-        if path in self.catalog.refused:
-            raise FplError(word.span, self.catalog.refused[path])
-        return Call(self.catalog.aliases.get(path, path), word.span)
+        here = self.origin(word)
+        found = self.catalog.find(here, word.body)
+        if found is None:
+            raise missing(word, self.catalog.listed(here, word.body))
+        if found in self.catalog.refused:
+            raise FplError(word.span, self.catalog.refused[found])
+        return Call(self.catalog.aliases.get(found, found), word.span)
 
     def origin(self, word: Word) -> Here:
         """Where a word's lookup starts: here, or after `..` the directory holding here; a
