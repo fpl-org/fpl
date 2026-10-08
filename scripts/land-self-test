@@ -178,8 +178,17 @@ ruleset() { # ruleset <id> <current_user_can_bypass>
 	echo "{\"name\": \"set $1\", \"current_user_can_bypass\": \"$2\"}" |
 		fixture "repos/land-test/fpl/rulesets/$1?includes_parents=true"
 }
-runs() { echo "[{\"total_count\": 0, \"check_runs\": [$1]}]" |
-	fixture "repos/land-test/fpl/commits/$at/check-runs?filter=all&per_page=100"; }
+runs() { # runs <check runs as JSON objects> [total_count]: one page, counted right
+	python3 -c 'import json, sys
+runs = json.loads("[" + sys.argv[1] + "]")
+total = int(sys.argv[2]) if sys.argv[2] else len(runs)
+print(json.dumps([{"total_count": total, "check_runs": runs}]))' "$1" "${2:-}" |
+		fixture "repos/land-test/fpl/commits/$at/check-runs?filter=all&per_page=100"
+}
+statuses() { # statuses <pages, each a JSON list of commit statuses>
+	echo "[$1]" | fixture "repos/land-test/fpl/commits/$at/statuses?per_page=100"
+}
+status() { echo "{\"id\": $1, \"context\": \"$2\", \"state\": \"$3\"}"; } # <id> <context> <state>
 run() { # run <id> <name> <status> <conclusion> <started> [app]
 	echo "{\"id\": $1, \"name\": \"$2\", \"status\": \"$3\", \"conclusion\": \"$4\",
 	  \"started_at\": \"2026-10-07T0$5:00:00Z\", \"app\": {\"id\": ${6:-15368}}}"
@@ -202,7 +211,7 @@ forge() {
 	ruleset 1 always
 	ruleset 2 always
 	runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed success 1)"
-	echo '{"state": "success", "statuses": []}' | fixture "repos/land-test/fpl/commits/$at/status"
+	statuses "[]"
 	children ""
 }
 
@@ -387,6 +396,41 @@ runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check in_progress n
 expect 1 "a check still running" --dry-run 7
 says "zeta-check is in_progress" "it says it is running"
 
+# A check run and a commit status that share a required name: GitHub wants both to pass.
+forge
+rules '{"context": "ci"}'
+runs "$(run 1 ci completed success 1)"
+statuses "[$(status 1 ci failure)]"
+expect 1 "a check run succeeded, a commit status of the same name failed" --dry-run 7
+says "ci (commit status)'s newest status on ${H:0:12} concluded failure" "it names the status"
+says "ok  land/checks             ci succeeded" "the check run is judged too"
+statuses "[$(status 1 ci pending)]"
+expect 1 "a check run succeeded, a commit status of the same name is pending" --dry-run 7
+says "ci (commit status) is pending" "a pending status is waited for"
+runs ""
+statuses "[$(status 1 ci success)]"
+expect 0 "a commit status alone meets a rule that names no app" --dry-run 7
+says "ci (commit status) succeeded" "it says so"
+statuses "[$(status 2 ci failure), $(status 1 ci success)]"
+expect 1 "the newest status of a context failed, an older one succeeded" --dry-run 7
+statuses "[$(status 2 ci success), $(status 1 ci failure)]"
+expect 0 "the newest status of a context succeeded, an older one failed" --dry-run 7
+statuses "[$(status 3 other success)], [$(status 2 ci failure)]"
+expect 1 "the failing status is on the second page" --dry-run 7
+says "concluded failure" "every page of statuses is read"
+
+forge
+statuses "[$(status 1 zeta-check failure)]"
+expect 1 "a rule that names an app, and a failing status of the same name" --dry-run 7
+says "zeta-check (commit status)'s newest status" "a status's app is unknown: it refuses"
+statuses "[$(status 1 zeta-check success)]"
+expect 0 "a rule that names an app, and a succeeding status of the same name" --dry-run 7
+
+forge
+runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed success 1)" 3
+expect 1 "the pages hold fewer check runs than the forge counted" --dry-run 7
+says "not every page of check runs" "an incomplete answer is refused by name"
+
 forge
 git --git-dir="$REMOTE" update-ref refs/heads/main "$M1"
 expect 1 "main moved past the pull request's base" --dry-run 7
@@ -538,7 +582,8 @@ sed "s/$H/$H2/" "$FORGE/repos_land-test_fpl_pulls_7.json" >"$FORGE/repos_land-te
 reviews "$(review 1 psjg APPROVED "$H2")" after
 cp "$FORGE/repos_land-test_fpl_commits_${H}_check-runs_filter_all_per_page_100.json" \
 	"$FORGE/repos_land-test_fpl_commits_${H2}_check-runs_filter_all_per_page_100.json"
-cp "$FORGE/repos_land-test_fpl_commits_${H}_status.json" "$FORGE/repos_land-test_fpl_commits_${H2}_status.json"
+cp "$FORGE/repos_land-test_fpl_commits_${H}_statuses_per_page_100.json" \
+	"$FORGE/repos_land-test_fpl_commits_${H2}_statuses_per_page_100.json"
 mkdir -p "$tmp/moved"
 printf '#!/bin/sh\n: >"$FORGE/written"\ngit --git-dir="$REMOTE" update-ref refs/pull/7/head %s\n' "$H2" \
 	>"$tmp/moved/open"

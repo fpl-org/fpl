@@ -27,7 +27,9 @@
 #   land/checks             every check the rulesets on main require (read from the forge,
 #                           not listed here) concluded success on the head, judged by its
 #                           latest run: a success after a cancelled duplicate counts, a
-#                           cancelled or skipped latest run does not
+#                           cancelled or skipped latest run does not. A check run and a
+#                           commit status that share a required name must both succeed,
+#                           as on GitHub; every page of both is read
 #   land/ancestor           main on the forge is an ancestor of the head: restack before
 #                           approval, never after
 #   land/linear             no commit between main and the head is a merge: main is linear
@@ -279,35 +281,66 @@ def required_checks(rules):
     return required
 
 
+def check_answers(d):
+    """Every check run and the newest commit status of each context on the head, or None
+    when the pages are not all the check runs the forge counted, or not statuses."""
+    replies = load(f"{d}/checks.json")
+    if not isinstance(replies, list) or not all(isinstance(p, dict) for p in replies):
+        return None, None
+    runs = [r for page in replies for r in page.get("check_runs") or []]
+    if not replies or len(runs) != replies[0].get("total_count"):
+        return None, None
+    statuses = load(f"{d}/statuses.json")
+    if not isinstance(statuses, list) or not all(isinstance(p, list) for p in statuses):
+        return None, None
+    newest = {}  # the forge lists a context's statuses newest first; the id decides
+    for s in (s for page in statuses for s in page):
+        if not isinstance(s, dict) or not isinstance(s.get("id"), int):
+            return None, None
+        if s.get("context") not in newest or s["id"] > newest[s.get("context")]["id"]:
+            newest[s.get("context")] = s
+    return runs, newest
+
+
 def judge_checks(v, d, rules, n, head):
-    """land/checks: each required check's latest run on the head, or its commit status."""
+    """land/checks: each required name's latest check run on the head, per app that made
+    one, and its newest commit status: when both carry the name, GitHub requires both."""
     h = head[:12]
     required = required_checks(rules)
     if not required:
         v.ok("land/checks", "the rulesets on main require no check")
-    runs = pages(f"{d}/checks.json", "check_runs")
-    statuses = {s["context"]: s["state"] for s in load(f"{d}/status.json").get("statuses", [])}
+    runs, statuses = check_answers(d)
+    if runs is None:
+        v.no("land/checks", f"the forge's answer for the checks on {h} is not every page"
+             " of check runs it counted and of commit statuses",
+             "run this again; if it keeps failing, read the checks on the forge yourself")
+        return
     for name, app in required:
-        found = [r for r in runs if r.get("name") == name
-                 and (app is None or dig(r, "app.id") == app)]
-        if found:
-            run = latest_run(found)
-            state, verdict = run.get("status"), run.get("conclusion")
-        elif app is None and name in statuses:
-            verdict = statuses[name]
+        found = {}  # each app's runs of the name
+        for r in runs:
+            if r.get("name") == name and (app is None or dig(r, "app.id") == app):
+                found.setdefault(dig(r, "app.id"), []).append(r)
+        seen = [(name, "latest run", latest_run(rs).get("status"),
+                 latest_run(rs).get("conclusion")) for rs in found.values()]
+        # A status says nothing of the app that set it: a failing one refuses when the rule
+        # names an app too, and only a rule that names none is met by a status alone.
+        status = statuses.get(name)
+        if status and (app is None or status.get("state") != "success"):
+            verdict = status.get("state")
             state = "pending" if verdict == "pending" else "completed"
-        else:
+            seen.append((f"{name} (commit status)", "newest status", state, verdict))
+        if not seen:
             v.no("land/checks", f"{name} has not run on {h}",
                  "push the head again, or rerun the workflow that makes it")
-            continue
-        if state != "completed":
-            v.no("land/checks", f"{name} is {state} on {h}",
-                 f"wait for it, then run this again: gh pr checks {n} --watch")
-        elif verdict != "success":
-            v.no("land/checks", f"{name}'s latest run on {h} concluded {verdict}",
-                 f"rerun it until it succeeds: gh run rerun <run> (gh pr checks {n})")
-        else:
-            v.ok("land/checks", f"{name} succeeded on {h}")
+        for what, latest, state, verdict in seen:
+            if state != "completed":
+                v.no("land/checks", f"{what} is {state} on {h}",
+                     f"wait for it, then run this again: gh pr checks {n} --watch")
+            elif verdict != "success":
+                v.no("land/checks", f"{what}'s {latest} on {h} concluded {verdict}",
+                     f"rerun it until it succeeds: gh run rerun <run> (gh pr checks {n})")
+            else:
+                v.ok("land/checks", f"{what} succeeded on {h}")
 
 
 def judge_history(v, main, head, ancestor, merges):
@@ -514,8 +547,8 @@ gather() {
 	)"
 	gh api --paginate --slurp "repos/$slug/commits/$head/check-runs?filter=all&per_page=100" \
 		>"$tmp/checks.json" || die "cannot read the checks on $head"
-	gh api "repos/$slug/commits/$head/status" >"$tmp/status.json" ||
-		die "cannot read the statuses on $head"
+	gh api --paginate --slurp "repos/$slug/commits/$head/statuses?per_page=100" \
+		>"$tmp/statuses.json" || die "cannot read the statuses on $head"
 	git fetch -q --no-tags "$remote" "refs/pull/$n/head" || die "cannot fetch #$n's head"
 	fetched="$(git rev-parse FETCH_HEAD)"
 	git fetch -q --no-tags "$remote" refs/heads/main || die "cannot fetch main"
