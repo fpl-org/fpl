@@ -48,15 +48,17 @@ its own marker (`git commit --fixup=<commit> -m "[spec]"`).
 
 A real merge and a real revert pass unjudged, since git wrote their messages. A merge is a
 `Merge ...` commit with more than one parent (or one in the making); a revert is a commit,
-under any title, whose line `This reverts commit <id>` names a commit that exists, in either
-form git writes (`<sha>.` under its `Revert "..."` or `Reapply "..."` title, or
-`<abbrev> (<subject>, <date>).` from `git revert --reference` or `revert.reference=true`;
-`, reversing` for the revert of a merge, `git revert -m N`), the id naming one commit, over
-the tree `git revert` makes of that commit (the same merge, by `git merge-tree`: the reverted
-lines come back where they were, and a file renamed since is followed). Any other
-commit that opens with those words is judged like every commit, and so is a revert whose
-conflicts were resolved by hand. git does not tell `commit-msg` that a commit is an amend, so
-an amend of a merge or revert is refused there, reworded or not: amend one with
+under any title, whose line `This reverts commit <id>` names a commit the branch already
+holds (an ancestor of the revert's parent), in either form git writes (`<sha>.` under its
+`Revert "..."` or `Reapply "..."` title, or `<abbrev> (<subject>, <date>).` from
+`git revert --reference` or `revert.reference=true`; `, reversing` for the revert of a
+merge, `git revert -m N`), the id naming one commit, over the tree `git revert` makes of
+that commit (the same merge, by `git merge-tree`: the reverted lines come back where they
+were, and a file renamed since is followed). Any other commit that opens with those words is
+judged like every commit, and so is a revert whose conflicts were resolved by hand, one that
+names a commit of another branch, and one whose named commit a rebase has since replaced
+(the message still names the old id). git does not tell `commit-msg` that a commit is an
+amend, so an amend of a merge or revert is refused there, reworded or not: amend one with
 `git commit --amend --no-verify` (commit-lint skips merges).
 
 ## Message format
