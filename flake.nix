@@ -186,6 +186,7 @@
             )}
             if [ "$mode" = check ]; then
               stale=0
+              unmarked=0
               for f in ${nixpkgs.lib.concatStringsSep " " (builtins.attrNames generated)}; do
                 if ! cmp -s "$dest/$f" "$top/$f"; then
                   echo "gen-config: $f differs from what lib.limits in flake.nix generates:" >&2
@@ -196,11 +197,21 @@
                   fi
                   stale=1
                 fi
+                case "$(git -C "$top" check-attr linguist-generated -- "$f")" in
+                *": true") ;;
+                *)
+                  echo "gen-config: .gitattributes does not mark $f linguist-generated=true" >&2
+                  unmarked=1
+                  ;;
+                esac
               done
               if [ "$stale" = 1 ]; then
                 echo "gen-config: run  nix run .#gen-config  and commit the result" >&2
-                exit 1
               fi
+              if [ "$unmarked" = 1 ]; then
+                echo "gen-config: add the line  <file> linguist-generated=true  to .gitattributes" >&2
+              fi
+              [ "$stale$unmarked" = 00 ] || exit 1
             fi
           '';
         };
