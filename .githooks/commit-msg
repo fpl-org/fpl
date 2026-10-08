@@ -482,16 +482,17 @@ canonical_keys() {
 		{ print }'
 }
 
-# The trailer block: the last paragraph, when git reads it as one (git interpret-trailers
-# --parse: one 'Key: value' a line, continuations unfolded), the block that `git log
-# --format=%(trailers)` and a changelog generator read. git takes a paragraph of trailers
-# alone, or one of at least a quarter trailers with one that git writes itself (Signed-off-by)
-# beside lines of prose; it skips trailing blank and comment lines to find it. Gates 4, 5, 8
-# and 9 judge its trailers and only those: a line that looks like a trailer anywhere else is
-# body text, which neither provides a trailer nor breaks the order. The width gate spares the
-# trailers of the block (a line git splits at a ':' after a key, or a continuation), not a
-# line of prose or a comment line beside them, which git keeps in the message. --no-divider:
-# a '---' line is text in a commit message, as git log has it.
+# The trailer block: the last paragraph, when git reads it as one (commit_trailers: git
+# interpret-trailers --parse, ':' the separator, one 'Key: value' a line, continuations
+# unfolded), the block that `git log --format=%(trailers)` and a changelog generator read under
+# git's default separator. git takes a paragraph of trailers alone, or one of at least a quarter
+# trailers with one that git writes itself (Signed-off-by) beside lines of prose; it skips
+# trailing blank and comment lines to find it. Gates 4, 5, 8 and 9 judge its trailers and only
+# those: a line that looks like a trailer anywhere else is body text, which neither provides a
+# trailer nor breaks the order. The width gate spares the trailers of the block (a line git
+# splits at a ':' after a key, or a continuation), not a line of prose or a comment line beside
+# them, which git keeps in the message. --no-divider: a '---' line is text in a commit message,
+# as git log has it.
 #
 # git reads a key without regard to case (`%(trailers:key=Stack)` finds 'stack:' too), so the
 # known keys are read in their one spelling, and every gate below sees what git sees: an
@@ -526,7 +527,7 @@ if [ -n "$lint_commit" ] && git merge-base --is-ancestor "$lint_commit" "$landed
 	done
 else
 	legacy=0
-	git interpret-trailers --parse --no-divider <"$msg_file" >"$tmp/parsed"
+	commit_trailers <"$msg_file" >"$tmp/parsed"
 	trailers="$(canonical_keys <"$tmp/parsed")"
 	comment="$(commit_comment_prefix)" # empty under 'auto': no line is taken for a comment
 	blank='^[[:space:]]*$'
@@ -566,7 +567,7 @@ cat "$tmp/keyed" >"$msg_file"
 # What the gates below judge is what git reads in the file as it now is: the same trailers. A
 # correction that changed the reading would be a message the person did not write.
 if [ "$legacy" -eq 0 ]; then
-	again="$(git interpret-trailers --parse --no-divider <"$msg_file" | canonical_keys)"
+	again="$(commit_trailers <"$msg_file" | canonical_keys)"
 	[ "$again" = "$trailers" ] \
 		|| fail trailer-rewrite "correcting the trailer keys changed the trailers git reads" \
 			"write the trailer keys in their canonical spelling yourself (Assisted-By, Session-Id, Stack, ...)"
