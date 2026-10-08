@@ -55,11 +55,12 @@
 #
 # Then it prints the conversation, opens the diff in the browser and stops for a keypress.
 # After Enter it approves the head when it said it would, checks everything again, and pushes:
-# `git push <url> <head>:refs/heads/main`, to the URL land/remote checked, checked once
-# more right before. Git refuses a push that is not a fast-forward
-# unless told to force, and nothing here forces. Afterwards it checks that main is the head
-# and that GitHub shows the pull request as merged, says so loudly when not, and prints the
-# command that retargets to main each open pull request based on the landed branch.
+# `git push <url> <head>:refs/heads/main`, to the URL land/remote checked, checked once more
+# right before. Git refuses a push that is not a fast-forward unless told to force, and
+# nothing here forces. Once the push went it prints the command that retargets to main each
+# open pull request based on the landed branch, before anything that can come out LOUD; then
+# it checks that main is the head and that GitHub shows the pull request as merged, and says
+# so loudly when not.
 #
 # Known limit: the window between the last read and the push. GitHub has no call that
 # judges a pull request and moves main in one step, and with the bypass the rulesets do not
@@ -74,17 +75,20 @@
 # The second look, after the keypress, reads everything again in this order: the pull
 # request, who you are, the review threads, the check runs and commit statuses on the head,
 # the head and main from git, the approvals, and last the rules on main and their rulesets.
-# It judges them, checks land/remote again and pushes. A change after its read and before
-# the push goes unseen: an approval dismissed, a request for changes, a rule changed, a
-# thread reopened, a check rerun, the pull request closed, retargeted or made a draft.
-# Reading the approvals and the rules last keeps their window to the time it takes to judge.
-# After the push it reads main (LOUD unless it is the head), the pull request (LOUD unless
-# GitHub shows it merged), the approvals, the rules and the checks on the head again: LOUD
-# when no code owner's approval of the head stands, changes are requested, the rules differ
-# in any way from the ones judged, or a check they require did not succeed on the head.
-# That detects; it cannot undo. The review threads, and the pull request's state beyond the
-# merge, are not read again. Closing the window needs the landing on the server's side,
-# which GitHub does not offer.
+# It judges them, checks land/remote again and pushes. A change after its read and before the
+# push goes unseen: an approval dismissed, a request for changes, a rule changed, a thread
+# reopened, a check rerun, the pull request closed, retargeted or made a draft. Reading the
+# approvals and the rules last keeps their window to the time it takes to judge. After the
+# push it reads main (LOUD unless it is the head), the pull request (LOUD unless GitHub shows
+# it merged), the approvals, the rules and the checks on the head again: LOUD when no code
+# owner's approval of the head stands, changes are requested, the rules differ in any way
+# from the ones judged, or a check they require did not succeed on the head. The checks are
+# judged on the check runs and commit statuses there were when they were judged before the
+# push, those the forge numbered at most the highest it had then: the push to main starts
+# runs of its own on the head (noslop runs on a push to main), and a run or a status made
+# after that read, the push's or a rerun's, is not judged. That detects; it cannot undo. The
+# review threads, and the pull request's state beyond the merge, are not read again. Closing
+# the window needs the landing on the server's side, which GitHub does not offer.
 #
 # --dry-run makes every check, prints what it would approve and push, and changes nothing on
 # the forge; it needs no terminal. A landing needs one: it is for a person. It is a rail, not
@@ -340,35 +344,52 @@ def required_checks(rules):
     return required
 
 
-def check_answers(d):
-    """Every check run and the newest commit status of each context on the head, or None
-    when the pages are not all the check runs the forge counted, or not statuses."""
-    replies = load(f"{d}/checks.json")
+def check_answers(d, kind="", upto=None):
+    """Every check run and the newest commit status of each context on the head, as read
+    into checks<kind>.json and statuses<kind>.json, or None when the pages are not all the
+    check runs the forge counted, or not statuses. With upto, (the highest check run id,
+    the highest status id), a run or a status numbered above it is left out: the forge
+    numbers both in the order it makes them."""
+    replies = load(f"{d}/checks{kind}.json")
     if not isinstance(replies, list) or not all(isinstance(p, dict) for p in replies):
         return None, None
     runs = [r for page in replies for r in page.get("check_runs") or []]
     if not replies or len(runs) != replies[0].get("total_count"):
         return None, None
-    statuses = load(f"{d}/statuses.json")
+    statuses = load(f"{d}/statuses{kind}.json")
     if not isinstance(statuses, list) or not all(isinstance(p, list) for p in statuses):
         return None, None
+    statuses = [s for page in statuses for s in page]
+    if not all(isinstance(s, dict) and typed(s.get("id"), int) for s in statuses):
+        return None, None
+    if upto:
+        runs = [r for r in runs if (r.get("id") or 0) <= upto[0]]
+        statuses = [s for s in statuses if s["id"] <= upto[1]]
     newest = {}  # the forge lists a context's statuses newest first; the id decides
-    for s in (s for page in statuses for s in page):
-        if not isinstance(s, dict) or not isinstance(s.get("id"), int):
-            return None, None
+    for s in statuses:
         if s.get("context") not in newest or s["id"] > newest[s.get("context")]["id"]:
             newest[s.get("context")] = s
     return runs, newest
 
 
-def judge_checks(v, d, rules, n, head):
+def ceiling(d):
+    """The highest check run id and the highest commit status id on the head when its
+    checks were judged, before the push; 0 where there was none."""
+    runs, _ = check_answers(d, ".judged")
+    statuses = [s for page in load(f"{d}/statuses.judged.json") for s in page]
+    return (max((r.get("id") or 0 for r in runs or []), default=0),
+            max((s["id"] for s in statuses), default=0))
+
+
+def judge_checks(v, d, rules, n, head, upto=None):
     """land/checks: each required name's latest check run on the head, per app that made
-    one, and its newest commit status: when both carry the name, GitHub requires both."""
+    one, and its newest commit status: when both carry the name, GitHub requires both.
+    With upto, only the runs and statuses numbered at most that (check_answers)."""
     h = head[:12]
     required = required_checks(rules)
     if not required:
         v.ok("land/checks", "the rulesets on main require no check")
-    runs, statuses = check_answers(d)
+    runs, statuses = check_answers(d, upto=upto)
     if runs is None:
         v.no("land/checks", f"the forge's answer for the checks on {h} is not every page"
              " of check runs it counted and of commit statuses",
@@ -633,7 +654,10 @@ def still(d, head, n):
     """After the push, on what the forge says then: a code owner's approval of the head
     still stands, nobody's standing verdict requests changes, the rules on main are the
     ones judged before the push, every one of them is one judged here, and every check
-    they require succeeded on the head, judged as land/checks judges it. Prints a LOUD
+    they require succeeded on the head, judged as land/checks judges it on the runs and
+    statuses that were there when the checks were judged (ceiling): the push to main
+    starts runs of its own on the head (noslop runs on a push to main), which are no
+    change to what was judged, and neither is a status set after that read. Prints a LOUD
     line and its remedy for each that fails and returns 1 when any does."""
     loud = []
     last = standing(d)
@@ -666,7 +690,7 @@ def still(d, head, n):
             loud.append(("main has rules scripts/land does not judge: " + ", ".join(unjudged),
                          "teach scripts/land those rules before it lands anything else"))
         checks = Gathered()
-        judge_checks(checks, d, rules, n, head)
+        judge_checks(checks, d, rules, n, head, ceiling(d))
         loud.extend(checks.lines)
     for line, remedy in loud:
         print(f"land: LOUD: {line}")
@@ -914,8 +938,11 @@ judge
 [ "$refused" -eq 0 ] || die "refused on the second look; nothing landed"
 [ "$approve" -eq 0 ] || die "the forge does not show the approval of $head; nothing landed"
 [ "$head" = "$seen" ] || die "#$n moved to $head since you looked at $seen; nothing landed"
-# The rules the push relies on, to hold the rules on main against after it.
+# The rules the push relies on, to hold the rules on main against after it, and the checks
+# on the head as judged, whose runs and statuses alone are judged again after it.
 cp "$tmp/rules.json" "$tmp/rules.judged.json"
+cp "$tmp/checks.json" "$tmp/checks.judged.json"
+cp "$tmp/statuses.json" "$tmp/statuses.judged.json"
 
 destination
 echo "land: $push"
@@ -929,6 +956,10 @@ if ! out="$(git push "$dest" "$head:refs/heads/main" 2>&1)"; then
 	die "the push was refused; nothing landed"
 fi
 printf '%s\n' "$out"
+# The head is on main: what is stacked on it wants main as its base, whatever comes out
+# LOUD below, so the list comes first.
+kids="$(children)" || kids="  (list them yourself: gh pr list --repo $slug --base $headref)"
+[ -z "$kids" ] || printf 'land: retarget what is stacked on %s to main:\n%s\n' "$headref" "$kids"
 
 now="$(git ls-remote "$dest" refs/heads/main | cut -f1)"
 [ "$now" = "$head" ] || die "LOUD: main on the forge is ${now:-unreadable}, not $head; look before anything else lands"
@@ -948,5 +979,3 @@ read_rules
 read_checks
 py still "$tmp" "$head" "$n" ||
 	die "LOUD: main is $head, but what it was landed on changed during the push; look at #$n before anything else lands"
-kids="$(children)"
-[ -z "$kids" ] || printf 'land: retarget what is stacked on %s to main:\n%s\n' "$headref" "$kids"

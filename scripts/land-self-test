@@ -212,15 +212,15 @@ ruleset() { # ruleset <id> <current_user_can_bypass>
 	echo "{\"name\": \"set $1\", \"current_user_can_bypass\": \"$2\"}" |
 		fixture "repos/land-test/fpl/rulesets/$1?includes_parents=true"
 }
-runs() { # runs <check runs as JSON objects> [total_count]: one page, counted right
+runs() { # runs <check runs as JSON objects> [total_count] [variant]: one page, counted right
 	python3 -c 'import json, sys
 runs = json.loads("[" + sys.argv[1] + "]")
 total = int(sys.argv[2]) if sys.argv[2] else len(runs)
 print(json.dumps([{"total_count": total, "check_runs": runs}]))' "$1" "${2:-}" |
-		fixture "repos/land-test/fpl/commits/$at/check-runs?filter=all&per_page=100"
+		fixture "repos/land-test/fpl/commits/$at/check-runs?filter=all&per_page=100" ${3:+"$3"}
 }
-statuses() { # statuses <pages, each a JSON list of commit statuses>
-	echo "[$1]" | fixture "repos/land-test/fpl/commits/$at/statuses?per_page=100"
+statuses() { # statuses <pages, each a JSON list of commit statuses> [variant]
+	echo "[$1]" | fixture "repos/land-test/fpl/commits/$at/statuses?per_page=100" ${2:+"$2"}
 }
 status() { echo "{\"id\": $1, \"context\": \"$2\", \"state\": \"$3\"}"; } # <id> <context> <state>
 run() { # run <id> <name> <status> <conclusion> <started> [app]
@@ -825,16 +825,79 @@ forge
 later 'rules[::-1]'
 landing 0 "the forge lists the same rules in another order after the push" 7
 lacks "LOUD" "an order is no change"
+# The checks after the push are judged on the runs and statuses there were when they were
+# judged before it: those numbered at most the highest number read then. The push to main
+# starts runs of its own on the head (noslop runs on a push to main); they are no change.
 forge
-runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed success 1),
-	$(run 3 zeta-check completed failure 2)"
-mv "$FORGE/repos_land-test_fpl_commits_${H}_check-runs_filter_all_per_page_100.json" \
-	"$FORGE/repos_land-test_fpl_commits_${H}_check-runs_filter_all_per_page_100.read3.json"
-runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed success 1)"
-landing 1 "a required check's latest run fails on the head while the push goes" 7
+runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed failure 1)" "" read3
+landing 1 "a required check's run, judged a success, has failed on the head after the push" 7
 says "LOUD: land/checks: zeta-check's latest run on ${H:0:12} concluded failure" \
 	"the checks are judged again after the push, the rules unchanged"
 lacks "the rules on main changed" "the rules are the same"
+forge
+runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed failure 1),
+	$(run 3 zeta-check in_progress null 2)" "" read3
+landing 1 "a run judged before the push has failed, and the push started another" 7
+says "LOUD: land/checks: zeta-check's latest run on ${H:0:12} concluded failure" \
+	"the run there was before the push is judged"
+lacks "in_progress" "the run the push started is not"
+forge
+runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed success 1),
+	$(run 3 zeta-check in_progress null 2)" "" read3
+children '{"number": 8}'
+landing 0 "the push to main starts a run of a required check on the head" 7
+lacks "LOUD" "a run the push started is no change"
+says "gh api -X PATCH repos/land-test/fpl/pulls/8 -f base=main" "the retarget is printed"
+main_is "$H" "main is the head"
+forge
+statuses "[$(status 1 zeta-check pending)]" read3
+landing 0 "the push to main sets a pending status of a required name where none was" 7
+lacks "LOUD" "a status set after the checks were judged is no change"
+forge
+statuses "[$(status 5 zeta-check success)]"
+statuses "[$(status 6 zeta-check pending), $(status 5 zeta-check success)]" read3
+landing 0 "the push to main sets a newer pending status of a required name" 7
+lacks "LOUD" "the status judged before the push is judged again"
+forge
+statuses "[$(status 5 zeta-check success)]"
+statuses "[$(status 4 zeta-check failure), $(status 5 zeta-check success)]" read3
+landing 0 "an older status of a required name shows up after the push" 7
+lacks "LOUD" "the newest status at most the highest judged decides"
+
+# Whatever comes out LOUD after the push, the head is on main: what is stacked on it is
+# listed for its new base first.
+# first <text> <then> <description>: the last output holds both, the first before the other.
+first() {
+	total=$((total + 1))
+	awk -v a="$1" -v b="$2" 'index($0, a) && !x { x = NR } index($0, b) && !y { y = NR }
+		END { exit !(x && y && x < y) }' "$tmp/out" && return
+	fails=$((fails + 1))
+	echo "self-test: $3: the output lacks '$1' before '$2'" >&2
+	sed 's/^/    /' "$tmp/out" >&2
+}
+forge
+reviews "$(review 1 psjg APPROVED "$H"), $(review 2 psjg DISMISSED "$H")" read3
+children '{"number": 8}'
+landing 1 "the approval is dismissed while the push goes, with a pull request stacked on it" 7
+says "LOUD: no code owner's approval" "it says so loudly"
+first "pulls/8 -f base=main" "LOUD" "the retarget comes before the LOUD lines"
+forge
+pull open false main false
+children '{"number": 8}'
+landing 1 "GitHub does not show the merge, with a pull request stacked on it" 7
+first "pulls/8 -f base=main" "LOUD: main is $H, but GitHub does not show #7 as merged" \
+	"the retarget comes before the LOUD exit"
+forge
+mkdir -p "$tmp/elsewhere"
+printf '#!/bin/sh
+[ "$1" != ls-remote ] || { echo "%s	refs/heads/main"; exit 0; }
+exec %s "$@"
+' \
+	"$M1" "$(command -v git)" >"$tmp/elsewhere/git"
+chmod +x "$tmp/elsewhere/git"
+children '{"number": 8}'
+PATH="$tmp/elsewhere:$PATH" landing 1 "main is not the head right after the push, with a pull request stacked on it" 7
+first "pulls/8 -f base=main" "LOUD: main on the forge is $M1" "the retarget comes before the LOUD exit"
 
 # The agent pushes a fix while the maintainer reads the diff, and it is approved and
 # checked by the time he presses Enter: he did not look at it, so it does not land.
