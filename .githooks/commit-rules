@@ -12,8 +12,35 @@
 # The header is  <type>(<scope>)<!?>: <summary>  and is at most COMMIT_HEADER_MAX long.
 COMMIT_TYPES="feat fix docs refactor perf test build ci chore revert"
 COMMIT_SCOPE_CHARS='a-z0-9/._-' # the inside of a bracket expression: lower-case, no spaces
-COMMIT_HEADER_MAX=72
-COMMIT_BODY_MAX=72
+# COMMIT_HEADER_MAX and COMMIT_BODY_MAX come from .githooks/commit-limits, which is generated
+# from lib.limits in flake.nix (nix run .#gen-config), the one place the line limits are
+# written. It sits beside this file, wherever the caller found this file.
+#
+# The limits fail closed: a missing, unreadable, empty or malformed file stops the caller with
+# the rule id limits-file and the remedy, and nothing is inherited from the environment or
+# defaulted. A limit that is not a positive decimal integer would otherwise turn a length
+# test into an error that skips the refusal (COMMIT_HEADER_MAX=oops) or into octal (072).
+_commit_limits_refuse() { # _commit_limits_refuse <what is wrong>
+	{
+		echo "commit-rules [limits-file]: $1"
+		echo "    remedy: run nix run .#gen-config"
+		echo "    see .agents/COMMITS.md"
+	} >&2
+	exit 2
+}
+unset COMMIT_HEADER_MAX COMMIT_BODY_MAX
+# shellcheck source=commit-limits
+. "$(dirname "${BASH_SOURCE[0]}")/commit-limits" 2>/dev/null ||
+	_commit_limits_refuse ".githooks/commit-limits is missing, unreadable or does not run"
+for _commit_limit in COMMIT_HEADER_MAX COMMIT_BODY_MAX; do
+	case "${!_commit_limit-}" in
+	"") _commit_limits_refuse ".githooks/commit-limits does not set $_commit_limit" ;;
+	0* | *[!0-9]*)
+		_commit_limits_refuse ".githooks/commit-limits sets $_commit_limit to '${!_commit_limit}', not a positive decimal integer"
+		;;
+	esac
+done
+unset _commit_limit
 # The summary starts lower-case (a class, not a range: [A-Z] collates "s" in some locales) and
 # does not end with a period.
 COMMIT_SKELETON='<type>(<scope>): <summary>'
