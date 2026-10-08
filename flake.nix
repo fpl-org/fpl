@@ -165,6 +165,12 @@
             top="$(git rev-parse --show-toplevel)"
             mode="write"
             dest="$top"
+            # One argument at most: a second one would be dropped, and `-- DIR --check` would
+            # write into DIR and check nothing, while its caller read exit 0 as a pass.
+            if [ "$#" -gt 1 ]; then
+              echo "usage: nix run .#gen-config [-- DIR | --check]: one argument at most, got $#" >&2
+              exit 2
+            fi
             case "''${1:-}" in
             "") ;;
             --check) mode="check" ;;
