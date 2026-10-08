@@ -120,7 +120,35 @@ def test_an_earlier_input_whose_output_moved_is_named() -> None:
     assert [o.out for o in outcomes] == ["", "1\n", ""]
     assert outcomes[2].notes == (f"CHANGED 2 ${second.ident.spelled()}",)
     assert outcomes[2].bodies[outcomes[2].event.body] == b"f : -- x\n\t2\n"
-    assert enter(log, "f\n", CONTEXT, log.head).notes == outcomes[2].notes
+    assert enter(log, "f\n", CONTEXT, log.head).notes == ()
+
+
+def test_a_redefinition_is_named_once_not_after_every_later_input() -> None:
+    define = "plus-one : n -- n\n\t{} +\n"
+    _, outcomes = entered([define.format(1), "3 plus-one\n", define.format(2), "1\n", "2\n"])
+    assert [o.out for o in outcomes] == ["", "4\n", "", "1\n", "2\n"]
+    assert [o.notes for o in outcomes] == [
+        (),
+        (),
+        (f"CHANGED 2 ${outcomes[1].event.ident.spelled()}",),
+        (),
+        (),
+    ]
+
+
+def test_an_output_that_moves_back_is_named_again() -> None:
+    texts = ["f : -- x\n\t1\n", "f\n", "f : -- x\n\t2\n", "f : -- x\n\t1\n"]
+    _, outcomes = entered(texts)
+    named = (f"CHANGED 2 ${outcomes[1].event.ident.spelled()}",)
+    assert [o.notes for o in outcomes] == [(), (), named, named]
+
+
+@given(st.lists(st.sampled_from(("f : -- x\n\t1\n", "f : -- x\n\t2\n", "f\n")), max_size=6))
+def test_a_blank_input_moves_no_output(texts: list[str]) -> None:
+    """[law: changed-once] nothing is named after an input that adds no line, whatever was
+    defined again before it."""
+    log, _ = entered(texts)
+    assert enter(log, "\n", CONTEXT, log.head).notes == ()
 
 
 def test_an_error_in_an_earlier_input_names_its_event() -> None:
