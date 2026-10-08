@@ -170,6 +170,16 @@ def _by_part(entry: _Entry, lines: Lines) -> list[Lines]:
     return groups
 
 
+def _earlier(entry: _Entry, left: Lines) -> Lines:
+    """The lines the program at the input's state leaves, run again. When it no longer runs
+    within the fuel of this call, `left`: nothing is then compared, so the baseline never
+    refuses an input whose own run succeeded."""
+    try:
+        return stacks(checked(entry.source)[0], entry.context.fuel)
+    except FplError:
+        return left
+
+
 def _changed(entry: _Entry, left: Lines, before: Lines, notes: tuple[str, ...]) -> Outcome:
     """The input's output, the notes given, then each earlier input whose lines print other
     than they did in `before`, the run of the state the input extends: a move is named at the
@@ -189,7 +199,8 @@ def enter(log: Log, text: str, context: Context, at: Event | None) -> Outcome:
     The input gains a final newline if it lacks one. Joined after the program's parts, it is
     run as one file; its goals are noted even when the run then fails, and any FplError, from
     the margin rule on, becomes an error event whose state is its parent's. The program at `at`
-    is run once more, for the lines to compare the new run's with."""
+    is run once more, for the lines to compare the new run's with; if that run fails (it
+    ran under another fuel), nothing is named."""
     entry = _Entry(log, at, context, program(log, at), text if text.endswith("\n") else text + "\n")
     notes: tuple[str, ...] = ()
     try:
@@ -197,10 +208,9 @@ def enter(log: Log, text: str, context: Context, at: Event | None) -> Outcome:
         statements, goals = checked(entry.source + entry.text)
         notes = entry.noted(goals)
         left = stacks(statements, context.fuel)
-        before = stacks(checked(entry.source)[0], context.fuel)
     except FplError as error:
         return _failed(entry, error, notes)
-    return _changed(entry, left, before, notes)
+    return _changed(entry, left, _earlier(entry, left), notes)
 
 
 def rewind(log: Log, target: Event | None, context: Context) -> Event:
