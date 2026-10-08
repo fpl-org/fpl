@@ -35,9 +35,15 @@ mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$GH_CONFIG_DIR"
 # The repository: main at M0, which holds CODEOWNERS; the pull request #7 one commit above
 # it at H; M1, a main that moved past M0 without H; MC, a main whose CODEOWNERS has a rule
 # for part of the tree; HM, a head above M0 that merges M1 into H.
-export REMOTE="$tmp/remote.git" FORGE="$tmp/forge"
+# The owner's prefix, not the whole URL, is redirected: a rewrite a case sets for the whole
+# URL is then the longer match, and git takes it, as it would on a maintainer's machine.
+export REMOTE="$tmp/repos/fpl.git" FORGE="$tmp/forge" GIT_SSH_COMMAND=false GIT_TERMINAL_PROMPT=0
 git init -q --bare -b main "$REMOTE"
-git config --global url."$REMOTE".insteadOf https://github.com/land-test/fpl.git
+git config --global url."$tmp/repos/".insteadOf https://github.com/land-test/
+# Another repository, where a misconfigured remote would push instead.
+OTHER="$tmp/other.git"
+git init -q --bare -b main "$OTHER"
+git config --global url."$OTHER".insteadOf https://github.com/other/fpl.git
 repo="$tmp/repo"
 git init -q -b main "$repo"
 cd "$repo"
@@ -437,6 +443,49 @@ ruleset 2 pull_requests_only
 expect 1 "a ruleset the maintainer may bypass only for pull requests" --dry-run 7
 says "NO  land/bypass" "it names the rule"
 says "Bypass list > Repository admin > Always" "it gives the owner's one-time step"
+
+# land/remote: the push goes where the fetch comes from, the repository read on the forge.
+# Each case sets one thing in the clone's config and takes it away again.
+remote_case() { # remote_case <description> <git config arguments...>
+	local what="$1"
+	shift
+	forge
+	git config "$@"
+	expect 1 "$what" --dry-run 7
+	says "land/remote" "it names the rule"
+	says "remedy:" "it says what to do"
+	lacks "would run: git push" "nothing is judged against a remote that pushes elsewhere"
+}
+remote_case "a pushurl to another repository" remote.github.pushurl https://github.com/other/fpl.git
+git config --unset-all remote.github.pushurl
+says "pushes to $OTHER" "it names where the push would go"
+forge
+git config remote.github.pushurl https://github.com/land-test/fpl.git
+expect 0 "a pushurl to the same repository" --dry-run 7
+remote_case "a second push URL" --add remote.github.pushurl https://github.com/other/fpl.git
+says "more than one URL" "it says why"
+git config --unset-all remote.github.pushurl
+remote_case "a pushInsteadOf that rewrites the push" \
+	url.https://github.com/other/.pushInsteadOf https://github.com/land-test/
+git config --unset-all url.https://github.com/other/.pushInsteadOf
+# ssh to a host that is not there: nothing reaches the network, even before the fix.
+remote_case "an insteadOf that sends fetch and push to another GitHub repository" \
+	url.git@github.com-nowhere:other/fpl.git.insteadOf https://github.com/land-test/fpl.git
+says "git goes to other/fpl" "it names the repository git goes to"
+git config --unset-all url.git@github.com-nowhere:other/fpl.git.insteadOf
+forge
+expect 0 "the remote as it should be, after each case" --dry-run 7
+
+forge
+git config remote.github.pushurl https://github.com/other/fpl.git
+landing 1 "a landing whose remote pushes to another repository" 7
+git config --unset-all remote.github.pushurl
+total=$((total + 1))
+if git --git-dir="$OTHER" rev-parse -q --verify refs/heads/main >/dev/null; then
+	fails=$((fails + 1))
+	echo "self-test: a landing whose remote pushes elsewhere: it pushed there" >&2
+fi
+main_is "$M0" "nothing landed"
 
 # Landings: a terminal, a keypress, a push. ----------------------------------------------
 forge

@@ -204,7 +204,10 @@ approves the head for you after the keypress); nobody's standing verdict request
 every review thread is resolved; every check the rulesets on `main` require concluded
 success on the head, judged by its latest run; `main` is an ancestor of the head, and no
 merge commit lies between them; every rule on `main` is one it judges; and you may push past
-the rulesets on `main`. Then it prints the conversation, opens the diff in
+the rulesets on `main`. Before it reads anything it refuses, as `land/remote`, a remote that
+pushes anywhere but where it fetches from (a `pushurl`, a second URL, a
+`url.<base>.pushInsteadOf`), or that git sends to another GitHub repository than the one it
+names. Then it prints the conversation, opens the diff in
 the browser and waits for Enter; after it, it checks everything again, pushes, checks that
 `main` is the head and that GitHub shows the merge, and prints the command that retargets
 to `main` each pull request based on the landed branch. The author of a pull request cannot
