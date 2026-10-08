@@ -214,9 +214,13 @@ def bodies(patch):
 
 
 def find(patches, mark):
+    """The patch whose description holds the marker as a line of its own.
+
+    A whole line, never a substring: `GitHub-PR: o/r#1` must not find the patch of `#10`.
+    """
     for oid, patch in patches.items():
         for revision in patch["revisions"].values():
-            if any(mark in d["body"] for d in revision["description"]):
+            if any(mark in d["body"].splitlines() for d in revision["description"]):
                 return oid
     return None
 
@@ -444,6 +448,10 @@ def self_test():
 
     def check(name, ok):
         checks.append((name, bool(ok)))
+
+    ten = {"p10": {"revisions": {"r": {"description": [{"body": "pr 10\n\nGitHub-PR: o/r#10"}]}}}}
+    check("a marker is not found inside a longer one", find(ten, marker("o/r", 1)) is None)
+    check("a marker is found as a whole line", find(ten, marker("o/r", 10)) == "p10")
 
     with tempfile.TemporaryDirectory() as tmp:
         env = dict(os.environ, RAD_HOME=f"{tmp}/home", RAD_PASSPHRASE="self-test",
