@@ -37,6 +37,10 @@
 #                           answer is a forge failure, never "nothing required"
 #   land/bypass             you may push past every ruleset on main "always", the owner's
 #                           one-time setting; without it the forge refuses any direct push
+#   land/remote             git fetches from and pushes to one place, the same, and when it
+#                           is on GitHub it is the repository the forge is read for: a
+#                           pushurl, a second URL or a url.<base>.pushInsteadOf that sends
+#                           the push elsewhere is refused before anything is read
 #
 # Then it prints the conversation, opens the diff in the browser and stops for a keypress.
 # After Enter it approves the head when it said it would, checks everything again, and pushes:
@@ -439,10 +443,34 @@ done
 command -v gh >/dev/null || die "gh not found; scripts/layer on github"
 command -v python3 >/dev/null || die "python3 not found"
 
-# Not `git remote get-url`: that applies url.<base>.insteadOf, and the repository is named
-# by what the remote says, not by where git is told to fetch it from.
+# The repository is named by what the remote says, not by `git remote get-url`, which
+# applies url.<base>.insteadOf; land/remote below holds where git really goes to that name.
 url="$(git config --get "remote.$remote.url")" || die "no remote '$remote'; name one with --remote"
 slug="$(py slug "$url")" || die "remote '$remote' is not a GitHub repository"
+
+# land/remote: the push goes where the fetch comes from. git resolves pushurl, every URL a
+# remote has, url.<base>.insteadOf and url.<base>.pushInsteadOf the same way for the remote's
+# name as `git remote get-url` reports, so exactly one URL each way, equal, is where both go;
+# when it is on GitHub, its repository is the one the forge is read for. A rewrite that sends
+# both to a mirror off GitHub passes: the push then lands nothing GitHub shows, and the check
+# after it says so loudly.
+remote_remedy="make remote '$remote' fetch from and push to $slug alone:"
+remote_remedy="$remote_remedy git config --unset-all remote.$remote.pushurl, and drop the"
+remote_remedy="$remote_remedy url.<base>.pushInsteadOf or insteadOf that rewrites it"
+remote_remedy="$remote_remedy (git config --get-regexp '^url[.]')"
+fetch_url="$(git remote get-url --all "$remote")" || die "land/remote: cannot resolve remote '$remote'"
+push_url="$(git remote get-url --push --all "$remote")" || die "land/remote: cannot resolve where '$remote' pushes"
+case "$fetch_url$push_url" in
+*$'\n'*)
+	die "land/remote: '$remote' has more than one URL (fetch: ${fetch_url//$'\n'/ };" \
+		"push: ${push_url//$'\n'/ }); remedy: $remote_remedy"
+	;;
+esac
+[ "$push_url" = "$fetch_url" ] ||
+	die "land/remote: '$remote' pushes to $push_url but fetches from $fetch_url; remedy: $remote_remedy"
+if where="$(py slug "$push_url")" && [ "$where" != "$slug" ]; then
+	die "land/remote: '$remote' names $slug but git goes to $where; remedy: $remote_remedy"
+fi
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/land.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 
