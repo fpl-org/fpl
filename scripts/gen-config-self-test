@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+#
+# scripts/gen-config-self-test — proof that the generated-config gate still bites.
+#
+# `make check` and `make gates` run `nix run .#gen-config -- --check` (the config-fresh
+# target), which fails when a committed file that the flake generates (.editorconfig,
+# quality/ruff-limits.toml, .githooks/commit-limits) differs from what lib.limits in flake.nix
+# says, or is gone. A check that passes everything looks like a check that found nothing
+# wrong, so this one runs it
+#   - on a copy of flake.nix with one number changed, from this checkout,
+#   - in a repository that lost one generated file,
+# and wants both red, with the remedy in the message; and it wants the lanes wired: both
+# lanes run the check, and every lane that runs ruff first checks the width ruff is given
+# (scripts/ruff-limits). The unchanged flake and the intact repository are the controls: each
+# must be green, or a red below could be for an unrelated reason.
+#
+# The numbers are read from the flake (lib.limits), never written here, so a changed limit
+# needs no edit in this file. Nothing in the checkout is written: the changed flakes and the
+# repository live in a temporary directory and --check writes only there too. Needs nix, like
+# the generator, and make.
+
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+command -v nix >/dev/null 2>&1 || {
+	echo "gen-config-self-test: nix is not on PATH; the generator is a flake app (.agents/DEVSHELL.md)" >&2
+	exit 2
+}
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/gen-config-self-test.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+
+flake="$(cat flake.nix)"
+fails=0 total=0
+
+# limit <name under lib.limits>: its value in the flake, a positive decimal integer.
+limit() {
+	local v
+	v="$(nix eval --json ".#lib.limits.$1" 2>/dev/null)" || v=""
+	case "$v" in
+	"" | 0* | *[!0-9]*)
+		echo "gen-config-self-test: lib.limits.$1 in flake.nix is '$v', not a positive integer" >&2
+		return 1
+		;;
+	esac
+	printf '%s' "$v"
+}
+py="$(limit python.lineLength)" || exit 2
+header="$(limit commit.header)" || exit 2
+body="$(limit commit.body)" || exit 2
+
+# try <exit code wanted> <description> <old text> <new text> [<file the refusal must name>...]:
+# --check against a copy of flake.nix with <old text> replaced by <new text>.
+try() {
+	local want="$1" what="$2" old="$3" new="$4" rc=0 f
+	shift 4
+	total=$((total + 1))
+	local dir="$tmp/flake$total" changed="${flake/"$old"/$new}" # bash 3.2 keeps quotes around the replacement
+	if [ "$want" -ne 0 ] && [ "$changed" = "$flake" ]; then
+		fails=$((fails + 1))
+		echo "gen-config-self-test: $what: '$old' is not in flake.nix, nothing was changed" >&2
+		return
+	fi
+	mkdir "$dir"
+	printf '%s\n' "$changed" >"$dir/flake.nix"
+	cp flake.lock "$dir/flake.lock"
+	nix run "path:$dir#gen-config" -- --check >"$tmp/out" 2>&1 || rc=$?
+	[ "$rc" -eq 0 ] || rc=1
+	if [ "$rc" -ne "$want" ]; then
+		fails=$((fails + 1))
+		echo "gen-config-self-test: $what: exit $rc, want $want" >&2
+		sed 's/^/    /' "$tmp/out" >&2
+		return
+	fi
+	[ "$want" -eq 0 ] && return
+	for f in "$@" "nix run .#gen-config"; do
+		grep -Fq -- "$f" "$tmp/out" && continue
+		fails=$((fails + 1))
+		echo "gen-config-self-test: $what: the refusal does not say '$f'" >&2
+		sed 's/^/    /' "$tmp/out" >&2
+	done
+}
+
+try 0 "the flake as it is" "" ""
+try 1 "a changed Python line length" "python.lineLength = $py;" "python.lineLength = $((py + 1));" \
+	quality/ruff-limits.toml .editorconfig
+try 1 "a changed commit header limit" "header = $header;" "header = $((header + 1));" \
+	.githooks/commit-limits
+try 1 "a changed commit body limit" "body = $body;" "body = $((body + 1));" \
+	.githooks/commit-limits
+
+# lost <exit code wanted> <description> <generated file to delete, or "">: --check, with the
+# unchanged flake, in a repository that holds the generated files and .gitattributes, minus one.
+# --check compares against the repository it is run in, so a deleted file is a difference.
+ctl="$tmp/flake1"
+generated=".editorconfig quality/ruff-limits.toml .githooks/commit-limits"
+lost() {
+	local want="$1" what="$2" gone="$3" rc=0 f
+	total=$((total + 1))
+	rm -rf "$tmp/repo"
+	mkdir "$tmp/repo"
+	git -C "$tmp/repo" init -q
+	cp .gitattributes "$tmp/repo/"
+	for f in $generated; do
+		mkdir -p "$tmp/repo/$(dirname "$f")"
+		cp "$f" "$tmp/repo/$f"
+	done
+	[ -z "$gone" ] || rm "$tmp/repo/$gone"
+	(cd "$tmp/repo" && nix run "path:$ctl#gen-config" -- --check) >"$tmp/out" 2>&1 || rc=$?
+	[ "$rc" -eq 0 ] || rc=1
+	if [ "$rc" -ne "$want" ]; then
+		fails=$((fails + 1))
+		echo "gen-config-self-test: $what: exit $rc, want $want" >&2
+		sed 's/^/    /' "$tmp/out" >&2
+		return
+	fi
+	[ "$want" -eq 0 ] && return
+	for f in "$gone" "does not exist" "nix run .#gen-config"; do
+		grep -Fq -- "$f" "$tmp/out" && continue
+		fails=$((fails + 1))
+		echo "gen-config-self-test: $what: the refusal does not say '$f'" >&2
+		sed 's/^/    /' "$tmp/out" >&2
+	done
+}
+lost 0 "a repository that holds every generated file" ""
+for f in $generated; do
+	lost 1 "a repository without $f" "$f"
+done
+
+# wired <description> <lane> <text the lane's recipe must hold>: `make -n` prints a lane's
+# commands without running them; the text is in them, before the first command that runs ruff
+# (or anywhere, where the lane runs none: "-").
+wired() {
+	local what="$1" lane="$2" text="$3"
+	total=$((total + 1))
+	make -n -f quality/noslop.mk "$lane" >"$tmp/out" 2>&1 || true
+	if ! awk -v t="$text" 'index($0, t) && !a { a = NR }
+		/\/ruff (check|format)/ && !r { r = NR }
+		END { exit !(a && (!r || a < r)) }' "$tmp/out"; then
+		fails=$((fails + 1))
+		echo "gen-config-self-test: $what: 'make $lane' does not run '$text' before ruff" >&2
+		sed 's/^/    /' "$tmp/out" | head -20 >&2
+	fi
+}
+# Every lane that runs ruff (the venv target they share) checks the width first, and check
+# and gates check the generated files.
+for lane in fix quick check gates tools; do
+	wired "the width ruff is given is checked" "$lane" "scripts/ruff-limits"
+done
+for lane in check gates; do
+	wired "the generated files are checked" "$lane" "gen-config -- --check"
+done
+# And where there is no nix to run the generator, the lane stops with that said, never skips.
+# make is found before the PATH is cut: in the dev shell /usr/bin/make is a shim that fails there.
+if ! (PATH=/usr/bin:/bin; command -v nix) >/dev/null 2>&1; then
+	total=$((total + 1))
+	rc=0
+	env PATH=/usr/bin:/bin "$(command -v make)" -f quality/noslop.mk config-fresh >"$tmp/out" 2>&1 || rc=$?
+	if [ "$rc" -eq 0 ] || ! grep -Fq "nix is not on PATH" "$tmp/out"; then
+		fails=$((fails + 1))
+		echo "gen-config-self-test: without nix, config-fresh: exit $rc, want a refusal that says so" >&2
+		sed 's/^/    /' "$tmp/out" >&2
+	fi
+fi
+
+echo "gen-config self-test: $fails of $total checks failed"
+[ "$fails" -eq 0 ]

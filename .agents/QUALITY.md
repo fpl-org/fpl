@@ -62,6 +62,7 @@ request that moves the package is drawn where the package was.
 | --- | --- |
 | `ruff-limits` | a `quality/ruff-limits.toml` that sets no `line-length`, which would give ruff its default of 88; every lane that runs ruff checks it first |
 | `pristine` | an uncommitted change to a policy file (below) |
+| `config-fresh` | a file generated from `lib.limits` in `flake.nix` (`.editorconfig`, `quality/ruff-limits.toml`, `.githooks/commit-limits`) that differs from the flake or is gone; the remedy is `nix run .#gen-config` |
 | `ruff check`, `ruff format --check` | lint findings, including cyclomatic complexity over 8 (`quality/ruff.toml`); unformatted code |
 | `pyright`, strict | anything strict mode refuses, and a `match` that misses a case (`quality/pyright.json`) |
 | `mypy`, strict | the same code as the reference implementation of the typing PEPs reads it, with unreachable code and unused ignores as errors (`quality/mypy.ini`) |
