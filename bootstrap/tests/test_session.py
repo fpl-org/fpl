@@ -276,3 +276,26 @@ def test_a_program_that_no_longer_checks_is_refused(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(session, "checked", changed)
     with pytest.raises(RefusedError, match=r"^the program does not check: 2:3 no longer so$"):
         words(log, log.head)
+
+
+def test_a_name_written_with_a_prime_is_listed() -> None:
+    """A prime is legal in a name; only the dispatchers and the tests made for a head group
+    are left out, and a name beside the group clause `area` that holds one is neither."""
+    prime = "\N{PRIME}"
+    shapes = "circle : r -- shape\n\t#circle swap pair\n"
+    group = "area : ( circle r ) -- n\n\tr dup times\n"
+    texts = [f"foo{prime} : -- x\n\t1\n", f"d{prime}/\n\tg : -- x\n\t\t1\n", shapes, group]
+    names = [line.split(" : ")[0] for line in defined([*texts, f"area{prime} : -- x\n\t1\n"])]
+    assert names == ["area", f"area{prime}", "circle", f"d{prime}/g", f"foo{prime}"]
+
+
+def test_a_definition_that_shadows_a_builtin_takes_its_place_in_the_listing() -> None:
+    """The word in force is the definition, so its line is listed once, in the session's block,
+    and the builtin's is not; a definition under a directory shadows nothing."""
+    log, _ = entered(["+ : x -- y\n\t2 times\n", "d/\n\ttimes : x -- y\n\t\tdrop 2\n"])
+    builtins, rest = words(log, log.head).split("\n\n")
+    lines = builtins.splitlines()
+    assert "+ : x y -- z" not in lines
+    assert "times : x y -- z" in lines
+    assert len(lines) == len(EFFECTS) - 1
+    assert rest == "+ : x -- y\nd/times : x -- y\n"

@@ -10,7 +10,7 @@ from functools import cache, cached_property
 from pathlib import Path
 
 from fpl.ast_core import EFFECTS, Define, Effect, Statement
-from fpl.desugar import PRIME
+from fpl.desugar import tests
 from fpl.driver import Lines, checked, printed, stacks
 from fpl.errors import FplError, Span
 from fpl.eval import effect_words
@@ -208,30 +208,46 @@ def _listed(name: str, effect: Effect) -> str:
     return f"{name} : {' '.join(effect_words(effect))}"
 
 
+def _made(last: dict[str, Define]) -> set[str]:
+    """The names of the tests `tests` makes for the clauses with a head group. A test is known
+    by that, not by a prime in its name, which a name written by hand may hold."""
+    return {t.name for d in last.values() if len(d.clause) == 2 for t in tests(d)}
+
+
 def _written(statements: tuple[Statement, ...]) -> list[Define]:
     """The definitions in force, by name: the last of each word, but for the dispatchers and the
     tests made for a head group, which no one wrote."""
     last = {s.word: s for s in statements if isinstance(s, Define)}
-    written = [d for d in last.values() if len(d.clause) != 1 and PRIME not in d.name]
+    made = _made(last)
+    written = [d for d in last.values() if len(d.clause) != 1 and d.name not in made]
     return sorted(written, key=lambda d: d.name)
+
+
+def _builtins(shadowed: set[str]) -> list[str]:
+    """The builtins' lines by name, but for the words a definition shadows."""
+    return [_listed(name, EFFECTS[name]) for name in sorted(EFFECTS) if name not in shadowed]
+
+
+def _joined(blocks: tuple[list[str], list[str]]) -> str:
+    """The blocks that are not empty, a line a word, a blank line between them."""
+    return "\n".join("".join(line + "\n" for line in block) for block in blocks if block)
 
 
 def words(log: Log, at: Event | None) -> str:
     """What the state at `at` offers, a line a word: the builtins by name, then, after a blank
     line, the words the program defines by name. A word defined twice is listed as the later
-    one, which is the one in force; a dispatched word is listed as its clauses, in the order
-    written and each with the effect line it was written with, not as the dispatcher and the
-    tests made for them; the queries w/history, w/doc and w/effect, which every defined word
-    has, are not listed. Refused (RefusedError): a program that no longer checks, which an
-    earlier evaluator accepted."""
+    one, which is the one in force, and a builtin a definition shadows is not listed; a
+    dispatched word is listed as its clauses, in the order written and each with the effect
+    line it was written with, not as the dispatcher and the tests made for them; the queries
+    w/history, w/doc and w/effect, which every defined word has, are not listed. Refused
+    (RefusedError): a program that no longer checks, which an earlier evaluator accepted."""
     try:
         statements, _ = checked("".join(part.text for part in program(log, at)))
     except FplError as error:
         raise RefusedError(
             f"the program does not check: {error.span.line}:{error.span.col} {error.message}"
         ) from None
-    blocks = (
-        [_listed(name, EFFECTS[name]) for name in sorted(EFFECTS)],
-        [_listed(d.name, d.effect) for d in _written(statements)],
+    written = _written(statements)
+    return _joined(
+        (_builtins({d.name for d in written}), [_listed(d.name, d.effect) for d in written])
     )
-    return "\n".join("".join(line + "\n" for line in block) for block in blocks if block)
