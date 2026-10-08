@@ -781,7 +781,60 @@ mv "$FORGE/repos_land-test_fpl_rules_branches_main_per_page_100.json" \
 	"$FORGE/repos_land-test_fpl_rules_branches_main_per_page_100.read3.json"
 cp "$tmp/rules.json" "$FORGE/repos_land-test_fpl_rules_branches_main_per_page_100.json"
 landing 1 "a rule is added to main while the push goes" 7
-says "LOUD: the rules on main are not the ones judged: required_signatures" "it says so loudly"
+says "LOUD: main has rules scripts/land does not judge: required_signatures" "it says so loudly"
+says "LOUD: the rules on main changed since they were judged: required_signatures of ruleset 2 added" \
+	"it names the rule added"
+
+# After the push the rules on main are held against the ones judged before it, and the
+# checks they require are judged on the head again, as land/checks judges them.
+# later <python expression over rules>: the rules on main, so changed, on the read after
+# the push (the third: no approval is given in these runs).
+later() {
+	python3 -c 'import json, sys
+path = sys.argv[1]
+rules = json.load(open(path))[0]
+json.dump([eval(sys.argv[2])], open(path[:-len(".json")] + ".read3.json", "w"))' \
+		"$FORGE/repos_land-test_fpl_rules_branches_main_per_page_100.json" "$1"
+}
+# checks_rule <python expression over p, its parameters>: the required_status_checks rule's
+# parameters made that.
+checks_rule() {
+	later '[dict(r, parameters='"$1"') if r["type"] == "required_status_checks" else r
+		for r, p in ((r, r.get("parameters")) for r in rules)]'
+}
+forge
+checks_rule 'dict(p, required_status_checks=p["required_status_checks"]
+	+ [{"context": "omega", "integration_id": 15368}])'
+landing 1 "a check that never ran is required while the push goes" 7
+says "LOUD: the rules on main changed since they were judged: required_status_checks of ruleset 1 changed" \
+	"it says the rules changed"
+says "LOUD: land/checks: omega has not run on ${H:0:12}" "it judges the new requirement on the head"
+says "remedy: push the head again, or rerun the workflow that makes it" "it gives the remedy"
+main_is "$H" "main moved all the same: this detects, it cannot undo"
+forge
+later '[r for r in rules if r["type"] != "deletion"]'
+landing 1 "a rule is removed from main while the push goes" 7
+says "LOUD: the rules on main changed since they were judged: deletion of ruleset 2 removed" \
+	"it names the rule removed"
+forge
+checks_rule 'dict(p, strict_required_status_checks_policy=True)'
+landing 1 "a parameter of a rule changes while the push goes" 7
+says "strict_required_status_checks_policy\": false" "it shows the rule as judged"
+says "strict_required_status_checks_policy\": true" "and as it is now"
+forge
+later 'rules[::-1]'
+landing 0 "the forge lists the same rules in another order after the push" 7
+lacks "LOUD" "an order is no change"
+forge
+runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed success 1),
+	$(run 3 zeta-check completed failure 2)"
+mv "$FORGE/repos_land-test_fpl_commits_${H}_check-runs_filter_all_per_page_100.json" \
+	"$FORGE/repos_land-test_fpl_commits_${H}_check-runs_filter_all_per_page_100.read3.json"
+runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed success 1)"
+landing 1 "a required check's latest run fails on the head while the push goes" 7
+says "LOUD: land/checks: zeta-check's latest run on ${H:0:12} concluded failure" \
+	"the checks are judged again after the push, the rules unchanged"
+lacks "the rules on main changed" "the rules are the same"
 
 # The agent pushes a fix while the maintainer reads the diff, and it is approved and
 # checked by the time he presses Enter: he did not look at it, so it does not land.
