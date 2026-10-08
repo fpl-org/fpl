@@ -34,11 +34,13 @@ def grown(log: Log, outcome: Outcome) -> Log:
     return log.grown(outcome.event, outcome.bodies, log.size)
 
 
-def entered(texts: Sequence[str], log: Log = EMPTY) -> tuple[Log, tuple[Outcome, ...]]:
+def entered(
+    texts: Sequence[str], log: Log = EMPTY, context: Context = CONTEXT
+) -> tuple[Log, tuple[Outcome, ...]]:
     """The log after each text is entered at the head, and each outcome."""
     outcomes: list[Outcome] = []
     for text in texts:
-        outcome = enter(log, text, CONTEXT, log.head)
+        outcome = enter(log, text, context, log.head)
         outcomes.append(outcome)
         log = grown(log, outcome)
     return log, tuple(outcomes)
@@ -141,6 +143,23 @@ def test_an_output_that_moves_back_is_named_again() -> None:
     _, outcomes = entered(texts)
     named = (f"CHANGED 2 ${outcomes[1].event.ident.spelled()}",)
     assert [o.notes for o in outcomes] == [(), (), named, named]
+
+
+def test_a_baseline_out_of_fuel_refuses_nothing() -> None:
+    """The program before an input may need more fuel than this call has; the input that
+    redefines the costly word still succeeds, and names nothing."""
+    log, _ = entered(["f : -- x\n\t1 | 1 +\n", "f\n"], context=replace(CONTEXT, fuel=100))
+    low = replace(CONTEXT, fuel=2)
+    assert enter(log, "f\n", low, log.head).out == "ERROR: @2 1:1 out of fuel\n"
+    outcome = enter(log, "f : -- x\n\t3\n", low, log.head)
+    assert (outcome.event.status, outcome.out, outcome.notes) == ("ok", "", ())
+
+
+def test_a_baseline_that_ran_within_less_fuel_still_names_what_moved() -> None:
+    log, outcomes = entered(["f : -- x\n\t2\n", "f\n"], context=replace(CONTEXT, fuel=2))
+    outcome = enter(log, "f : -- x\n\t1 | 2 +\n", replace(CONTEXT, fuel=100), log.head)
+    assert (outcome.event.status, outcome.out) == ("ok", "")
+    assert outcome.notes == (f"CHANGED 2 ${outcomes[1].event.ident.spelled()}",)
 
 
 @given(st.lists(st.sampled_from(("f : -- x\n\t1\n", "f : -- x\n\t2\n", "f\n")), max_size=6))
