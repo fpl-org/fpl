@@ -19,7 +19,7 @@
 #                 committed; no other lane runs it (scripts/diagrams)
 
 .DEFAULT_GOAL := check
-.PHONY: fix quick check harden ready gates tools map venv pristine clean-noslop
+.PHONY: fix quick check harden ready gates tools map venv ruff-limits pristine clean-noslop
 
 Q        := quality
 VENV     := .venv
@@ -36,7 +36,12 @@ export UV_PYTHON_DOWNLOADS := never
 $(BIN)/.synced: $(Q)/uv.lock $(Q)/pyproject.toml
 	uv sync --project $(Q) --frozen --python python3.12 --quiet
 	@touch $@
-venv: $(BIN)/.synced
+
+# Every lane that runs ruff needs the venv, so the venv is where ruff's width is checked: an
+# empty quality/ruff-limits.toml is valid TOML and silently gives ruff its default of 88.
+ruff-limits: $(BIN)/.synced
+	$(BIN)/python scripts/ruff-limits
+venv: $(BIN)/.synced ruff-limits
 
 fix: venv
 	$(BIN)/ruff check --config $(Q)/ruff.toml --fix fpl tests
@@ -95,7 +100,7 @@ ready: harden gates
 
 # The harness's own Python, judged by the same ruff it judges others with.
 HARNESS := scripts/crap scripts/props scripts/escapes scripts/mutants scripts/gates \
-           scripts/forward-only scripts/diagrams $(Q)/noslop_pytest.py
+           scripts/forward-only scripts/diagrams scripts/ruff-limits $(Q)/noslop_pytest.py
 
 gates: venv
 	$(BIN)/ruff check --config $(Q)/ruff.toml $(HARNESS)
@@ -106,6 +111,7 @@ gates: venv
 	$(BIN)/python scripts/forward-only --self-test
 	$(BIN)/python scripts/mutants --self-test
 	$(BIN)/python scripts/diagrams --self-test
+	$(BIN)/python scripts/ruff-limits --self-test
 	scripts/leak-check --self-test
 	scripts/pre-push-self-test
 	scripts/boundary-self-test

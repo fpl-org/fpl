@@ -46,6 +46,7 @@ request that moves the package is drawn where the package was.
 
 | Check | Refuses |
 | --- | --- |
+| `ruff-limits` | a `quality/ruff-limits.toml` that sets no `line-length`, which would give ruff its default of 88; every lane that runs ruff checks it first |
 | `pristine` | an uncommitted change to a policy file (below) |
 | `ruff check`, `ruff format --check` | lint findings, including cyclomatic complexity over 8 (`quality/ruff.toml`); unformatted code |
 | `pyright`, strict | anything strict mode refuses, and a `match` that misses a case (`quality/pyright.json`) |
