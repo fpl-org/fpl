@@ -1171,11 +1171,13 @@ gate 0 "scripts/setup wires the hooks" scripts/setup
 says "    prepare-commit-msg" "setup reports the template hook"
 says "    commit-msg" "setup reports the gate"
 same "core.hooksPath points at the tracked hooks" ".githooks" "$(git config --local core.hooksPath)"
+same "scripts/setup sets the scissors cleanup the rules rely on" "scissors" "$(git config --local commit.cleanup)"
 chmod -x .githooks/prepare-commit-msg
 gate 0 "scripts/setup with a hook that is not executable" scripts/setup
 says "prepare-commit-msg is not executable" "setup says git will ignore it"
 chmod +x .githooks/prepare-commit-msg
-git config --local --unset commit.cleanup
+# Exit 5 when the key is unset: the check above names that, and the run still reaches its count.
+git config --local --unset commit.cleanup || true
 
 echo "pre-push self-test: $fails of $total checks failed (bash $BASH_VERSION)"
 if [ -z "${PRE_PUSH_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ]; then
