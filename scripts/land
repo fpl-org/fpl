@@ -63,16 +63,28 @@
 #
 # Known limit: the window between the last read and the push. GitHub has no call that
 # judges a pull request and moves main in one step, and with the bypass the rulesets do not
-# judge the push, so what this script read decides. The pinned head guarantees that what
-# lands is exactly the commit that was judged and approved, and a push without force means
-# git refuses it when main moved since it was read. It cannot see an approval dismissed, a
-# request for changes, a rule added, a thread reopened or the pull request closed between
-# its last read and the push. On the second look it reads the approvals and then the rules
-# last, right before the push, so the window is the time it takes to judge them; after the
-# push it reads the approvals, the rules and the checks again and says LOUD when an approval
-# is gone, changes are requested, the rules differ from the ones judged, or a check they
-# require did not succeed on the head. That detects; it cannot undo.
-# Closing the window needs the landing on the server's side, which GitHub does not offer.
+# judge the push, so what this script read decides. What the push itself guarantees: what
+# lands is exactly the commit that was judged, approved and looked at, since the push names
+# its SHA; it goes to the URL land/remote checked; and git refuses an update of main that is
+# not a fast-forward, since nothing forces. Git refuses that and only that, not a main that
+# moved: a main that moved since it was read to another ancestor of the head (a pull request
+# lower in the stack, landed by someone else) still takes the push, though land/ancestor and
+# land/linear judged the main read before.
+#
+# The second look, after the keypress, reads everything again in this order: the pull
+# request, who you are, the review threads, the check runs and commit statuses on the head,
+# the head and main from git, the approvals, and last the rules on main and their rulesets.
+# It judges them, checks land/remote again and pushes. A change after its read and before
+# the push goes unseen: an approval dismissed, a request for changes, a rule changed, a
+# thread reopened, a check rerun, the pull request closed, retargeted or made a draft.
+# Reading the approvals and the rules last keeps their window to the time it takes to judge.
+# After the push it reads main (LOUD unless it is the head), the pull request (LOUD unless
+# GitHub shows it merged), the approvals, the rules and the checks on the head again: LOUD
+# when no code owner's approval of the head stands, changes are requested, the rules differ
+# in any way from the ones judged, or a check they require did not succeed on the head.
+# That detects; it cannot undo. The review threads, and the pull request's state beyond the
+# merge, are not read again. Closing the window needs the landing on the server's side,
+# which GitHub does not offer.
 #
 # --dry-run makes every check, prints what it would approve and push, and changes nothing on
 # the forge; it needs no terminal. A landing needs one: it is for a person. It is a rail, not
