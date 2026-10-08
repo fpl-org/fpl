@@ -2,7 +2,9 @@
 # Harness policy: changing it takes a harness commit with [policy], never one that changes code.
 
 target-version = "py312"
-line-length = 100
+# line-length comes from here: generated from lib.limits in flake.nix (nix run .#gen-config),
+# the one place the line limits are written. Ruff resolves the path against this file.
+extend = "ruff-limits.toml"
 
 [lint]
 select = [
