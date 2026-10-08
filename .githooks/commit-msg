@@ -139,14 +139,15 @@ esac
 # any commit could open with "Merge" and edit what it likes.
 #   merge   a subject "Merge ..." on a commit with more than one parent (lint mode), or
 #           with a merge in the making (MERGE_HEAD)
-#   revert  a line 'This reverts commit <id>' naming a commit that exists, under any title,
-#           over the tree git revert makes of that commit (is_revert). git writes the line in
-#           two forms: '<sha>.' under its own title Revert "..." (Reapply "..." for the revert
-#           of a revert), and, with --reference or revert.reference=true, '<abbrev>
-#           (<subject>, <date>).' under the person's title or a comment line asking for one;
-#           the person may retitle either. The revert of a merge (-m N) ends the line in
-#           ', reversing' and names the parent on the next. The text alone is a sentence anyone
-#           can type: the tree is what makes the revert.
+#   revert  a line 'This reverts commit <id>' naming a commit the branch holds (an ancestor of
+#           the commit's parent), under any title, over the tree git revert makes of that
+#           commit (is_revert). git writes the line in two forms: '<sha>.' under its own
+#           title Revert "..." (Reapply "..." for the revert of a revert), and, with
+#           --reference or revert.reference=true, '<abbrev> (<subject>, <date>).' under the
+#           person's title or a comment line asking for one; the person may retitle either.
+#           The revert of a merge (-m N) ends the line in ', reversing' and names the parent
+#           on the next. The text alone is a sentence anyone can type: the tree is what makes
+#           the revert.
 # Not recognised: an amend of either. git tells commit-msg nothing of it (no argument, and
 # no variable but the author's, which a plain commit has too), so the amended message of a
 # merge or revert, reworded or not, is judged as a new commit and refused (an amend with
@@ -201,6 +202,10 @@ is_revert() {
 		made="$(git write-tree 2>/dev/null)" || return 1
 	fi
 	[ "$made" != "$(git rev-parse "$base^{tree}")" ] || return 1
+	# The named commit is one the branch holds. Two commits made only to be named, one holding
+	# the forged tree and one undoing it back to the branch's, make any tree the "revert" of
+	# the second.
+	git merge-base --is-ancestor "$reverted" "$base" 2>/dev/null || return 1
 	read -r -a ids < <(git rev-list --parents -n 1 "$reverted")
 	if [ "${#ids[@]}" -eq 1 ]; then ids+=("$(git hash-object -t tree /dev/null)"); fi
 	for ((i = 1; i < ${#ids[@]}; i++)); do

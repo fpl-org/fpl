@@ -328,6 +328,22 @@ commit -m 'Revert "feat(x): spec"' -m "This reverts commit $spec."
 lint 1 "git's revert text naming a real commit, over a diff that is no inverse"
 says "header must be" "the forged revert is judged as any commit"
 git reset -q --hard "$spec"
+# The commit named must be one the branch holds. Two commits made only to be named make any
+# tree the "revert" of the second: P holds the forged tree, R undoes it back to the branch's
+# tree, and the revert of R onto the branch is P's tree. Neither is in the branch's history,
+# so the named commit is no ancestor of the one judged (CodeRabbit on PR #138).
+echo forged >>docs/SPEC.md
+git add docs/SPEC.md
+forged_p="$(git commit-tree -p "$spec" -m "p" "$(git write-tree)")"
+forged_r="$(git commit-tree -p "$forged_p" -m "r" "$(git rev-parse "$spec^{tree}")")"
+printf 'Revert "r"\n\nThis reverts commit %s.\n' "$forged_r" >"$tmp/forged-msg"
+gate 1 "revert text naming a commit made only to be named, in hook mode" \
+	.githooks/commit-msg "$tmp/forged-msg"
+says "header must be" "the revert of a commit outside the branch is judged"
+commit -F "$tmp/forged-msg"
+lint 1 "revert text naming a commit made only to be named"
+says "header must be" "the revert of a commit outside the branch is judged as any commit"
+git reset -q --hard "$spec"
 git -c core.hooksPath=/dev/null revert --no-commit HEAD
 mkdir -p docs
 echo extra >docs/DESIGN.md
