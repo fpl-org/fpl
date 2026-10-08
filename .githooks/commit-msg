@@ -547,17 +547,22 @@ fi
 # Only a line that git reads as a trailer is corrected: the trailers git parsed (the first
 # input, in order) are matched to the lines of the block by their keys, and any other line, a
 # comment line above all ('session-id: ...' under core.commentChar=s), stays as written, as
-# git stores it. Lines of a comment prefix are passed by in any case.
+# git stores it. Lines of a comment prefix are passed by in any case. A key is matched as git's
+# trailer parser reads one (find_separator in git's trailer.c): letters, digits and '-', then
+# the ':' after any blanks. So 'human-only:true', 'human-only:<tab>true' and 'human-only :true',
+# which git reads as that trailer, are corrected too (Codex review of #138, round 2: the match
+# wanted ': ' and left them as written); only the key is rewritten, the rest stays as typed.
 awk -v from="$trailer_start" -v keys="$COMMIT_TRAILER_KEYS" -v norm="$norm" -v cp="$comment" '
 	BEGIN { n = split(keys, k, " "); for (i = 1; i <= n; i++) canon[tolower(k[i])] = k[i] }
 	FILENAME == ARGV[1] { c = index($0, ":"); if (c > 1) want[++w] = substr($0, 1, c - 1); next }
-	FNR > from && !(cp != "" && substr($0, 1, length(cp)) == cp) && match($0, /^[A-Za-z][^:]*: /) {
-		key = substr($0, 1, RLENGTH - 2)
+	FNR > from && !(cp != "" && substr($0, 1, length(cp)) == cp) && match($0, /^[A-Za-z0-9-]+/) &&
+		substr($0, RLENGTH + 1) ~ /^[ \t]*:/ {
+		key = substr($0, 1, RLENGTH)
 		if (j < w && key == want[j + 1]) {
 			j++
 			c = canon[tolower(key)]
 			if (c != "" && c != key) {
-				$0 = c substr($0, RLENGTH - 1)
+				$0 = c substr($0, RLENGTH + 1)
 				printf "trailer-key\t%s\t%s\n", key, c >>norm
 			}
 		}

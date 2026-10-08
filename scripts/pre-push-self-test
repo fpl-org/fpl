@@ -1097,6 +1097,20 @@ gate 0 "the same in an amend" env ED_ALL="$sloppy" git commit -q --allow-empty -
 same "the edit sticks in an amend" "$canon" "$(stored)"
 gate 0 "the same in an amend with -m" env GIT_EDITOR=: git commit -q --allow-empty --amend -m "$sloppy"
 same "the edit sticks in an amend with -m" "$canon" "$(stored)"
+# git reads 'Key:value', 'Key:<tab>value' and 'Key :value' as the trailer 'Key: value'
+# (find_separator in trailer.c), so the provenance gate passed them, and the key was left in
+# the wrong case: the correction wanted ': ' (Codex review of #138, round 2). Only the key
+# changes; the rest of the line is the person's. A key may open with a digit ('1x'), and git
+# reads it too: the correction counts it, or it falls out of step with git's trailers.
+for k in 'human-only:true' $'human-only:\ttrue' 'human-only :true' $'1x: a\nhuman-only: true'; do
+	l="${k//$'\t'/<tab>}" # the line as the description shows it
+	l="${l//$'\n'/ | }"
+	gate 0 "a trailer key in the wrong case, written '$l', with -m" \
+		env GIT_EDITOR=: git commit -q --allow-empty -m $'docs(readme): fine\n\nStack: t\n'"$k"
+	says "wrote 'human-only' as 'Human-Only'" "the scold names the key written '$l'"
+	same "only the key of '$l' is corrected" \
+		$'docs(readme): fine\n\nStack: t\n'"${k/human-only/Human-Only}" "$(stored)"
+done
 # The block corrected is the one git reads, prose and all: a key in it is a trailer to git.
 sobbed=$'docs(readme): fine\n\nSigned-off-by: t <t@example.invalid>\na line of prose in the block\nStack: t\n'
 gate 0 "a trailer key in the wrong case, in a block with prose git reads" \
