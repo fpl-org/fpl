@@ -89,3 +89,20 @@ def test_a_goal_goes_to_stderr_before_the_program_runs(
     printed = capsys.readouterr()
     assert printed.out == "ERROR: 2:2 unfilled goal\n"
     assert printed.err == "GOAL 2:2 ? : t0 -- value\n\t?\n ^\n"
+
+
+@pytest.mark.parametrize("body", ["f", "f f"])
+def test_a_recursion_without_end_runs_out_of_fuel(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    body: str,
+) -> None:
+    """A file whose word calls itself forever stops at the driver's step budget: one located
+    error line on stdout and exit 1, not a run without end (#96). The budget is patched small
+    so the law holds in milliseconds; its size is the driver's design knob."""
+    monkeypatch.setattr("fpl.driver.FUEL_DEFAULT", 1000)
+    program = tmp_path / "p.fpl"
+    program.write_text(f"f : --\n\t{body}\nf\n")
+    assert main([str(program)]) == 1
+    assert capsys.readouterr().out == "ERROR: 3:1 out of fuel\n"

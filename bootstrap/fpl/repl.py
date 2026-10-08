@@ -16,12 +16,13 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NoReturn, TextIO, override
 
+from fpl.driver import FUEL_DEFAULT
 from fpl.errors import FplError
 from fpl.log import ASCII, U64, Event, Log, RefusedError, Who, keyed, load, locked, resolve, write
 from fpl.multihash import Multihash
 from fpl.parse import parse
 from fpl.print import render
-from fpl.session import FUEL_DEFAULT, Context, enter, evaluator, program, rewind
+from fpl.session import Context, enter, evaluator, program, rewind
 from fpl.trivia import head
 
 USAGE = (

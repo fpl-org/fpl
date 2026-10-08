@@ -506,10 +506,10 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 - Evidence: quality/importlinter.ini:46-60 (driver-on-top names fpl.repl only as a forbidden target)
 
 ## fuel-scope
-- Depends on it: fpl/eval.py (metered), fpl/session.py (FUEL_DEFAULT), fpl/repl.py (--fuel), tests/test_fuel.py
-- Default in force: 1,000,000 steps per top-level run line, nested runs counted, the budget recorded in each event; out of fuel is an error at the run's line
+- Depends on it: fpl/eval.py (metered), fpl/driver.py (FUEL_DEFAULT, run), fpl/repl.py (--fuel), tests/test_fuel.py, tests/test_main.py
+- Default in force: 1,000,000 steps per top-level run line, in a file run and in each REPL event, nested runs counted, the budget recorded in each event; out of fuel is an error at the run's line
 - Closes by: design, choosing the unit the budget bounds (line, input or session)
-- Evidence: fpl/eval.py:95; fpl/session.py:18; [ 1 drop ] 100000 repeat took 500,003 steps in 1.23 s at 4e26338 (about 2.5 s per line at the default)
+- Evidence: fpl/eval.py:95; fpl/driver.py:14; [ 1 drop ] 100000 repeat took 500,003 steps in 1.23 s at 4e26338 (about 2.5 s per line at the default)
 
 ## log-fsync-barrier
 - Depends on it: fpl/log.py (write, keyed), the law write-ahead (tests/test_repl.py)
