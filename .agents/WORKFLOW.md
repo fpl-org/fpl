@@ -207,15 +207,18 @@ ancestor of the head, and no merge commit lies between them; every rule on `main
 judges; and you may push past the rulesets on `main`. Before it reads anything it refuses,
 as `land/remote`, a remote that pushes anywhere but where it fetches from (a `pushurl`, a
 second URL, a `url.<base>.pushInsteadOf`), or that git sends anywhere but the GitHub
-repository it names, on GitHub or off it (a `url.<base>.insteadOf`). Every fetch and the
-push name that URL, not the remote, and git would rewrite even that, so a
-`url.<base>.insteadOf` or `pushInsteadOf` that matches the URL itself, or a remote section
-named by it, is refused too; the check is made again right before the push. Then it prints
-the conversation, opens the diff in the browser and waits for Enter; after it, it checks
-everything again, pushes, prints the command that retargets to `main` each pull request
-based on the landed branch, and then checks that `main` is the head and that GitHub shows
-the merge. The author of a pull request cannot approve it, which is why the two sides are
-two accounts.
+repository it names, on GitHub or off it (a `url.<base>.insteadOf`). A GitHub repository's
+URL is one of GitHub's spellings, `https://github.com/<owner>/<name>`,
+`ssh://git@github.com/<owner>/<name>` or `git@github.com:<owner>/<name>`, with `.git` or
+without; over ssh the host may be an ssh config alias, `github.com-<alias>`, where ssh
+decides where it leads. Any other scheme, host or user is refused. Every fetch and the push
+name that URL, not the remote, and git would rewrite even that, so a `url.<base>.insteadOf`
+or `pushInsteadOf` that matches the URL itself, or a remote section named by it, is refused
+too; the check is made again right before the push. Then it prints the conversation, opens
+the diff in the browser and waits for Enter; after it, it checks everything again, pushes,
+prints the command that retargets to `main` each pull request based on the landed branch,
+and then checks that `main` is the head and that GitHub shows the merge. The author of a
+pull request cannot approve it, which is why the two sides are two accounts.
 
 **What a landing guarantees, and what it does not.** The push names the head's SHA, so what
 lands is exactly the commit that was judged, approved and looked at, and it goes to the URL

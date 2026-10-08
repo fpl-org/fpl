@@ -51,7 +51,12 @@
 #                           read. Every fetch and the push name that URL, not the remote,
 #                           and the push goes only after the check is made again: a
 #                           url.<base>.insteadOf or pushInsteadOf that would rewrite the URL
-#                           itself, or a remote named by it, is refused too
+#                           itself, or a remote named by it, is refused too. A GitHub
+#                           repository's URL is https://github.com/<owner>/<name>,
+#                           ssh://git@github.com/<owner>/<name> or
+#                           git@github.com:<owner>/<name>, .git or not; over ssh the host
+#                           may be github.com-<alias>, an ssh config Host, where ssh decides
+#                           where it leads. Any other scheme, host or user is refused
 #
 # Then it prints the conversation, opens the diff in the browser and stops for a keypress.
 # After Enter it approves the head when it said it would, checks everything again, and pushes:
@@ -156,13 +161,21 @@ def text(value):
 
 
 def slug(url):
-    """owner/name of a GitHub URL in any of git's spellings, or exit 1."""
+    """owner/name of a GitHub repository's URL, or exit 1. Three spellings are GitHub's:
+    https://github.com/<owner>/<name>, ssh://git@github.com/<owner>/<name> and
+    git@github.com:<owner>/<name>, each with .git or without. Over ssh the host may be
+    github.com-<alias>, a Host in the ssh config that git cannot see into (the residual:
+    where that alias leads is ssh's to say). Every other scheme, host, user or a relative
+    path is no GitHub repository."""
     m = re.fullmatch(
-        r"(?:[a-z+]+://)?(?:[^@/]+@)?(?:www\.|ssh\.)?github\.com(?:-[\w.-]+)?(?::\d+)?[:/]"
-        r"([^/]+)/([^/]+?)(?:\.git)?/?",
+        r"(?:https://github\.com/"
+        r"|ssh://git@github\.com(?:-[\w.-]+)?/"
+        r"|git@github\.com(?:-[\w.-]+)?:)"
+        r"([\w-]+)/([\w.-]+?)(?:\.git)?",
         url,
+        re.ASCII,
     )
-    if not m:
+    if not m or m[2] in (".", ".."):
         sys.exit(1)
     print(f"{m[1]}/{m[2]}")
 
@@ -771,7 +784,9 @@ slug="" dest=""
 destination() {
 	local url named fetch_url push_url where why remedy
 	url="$(git config --get "remote.$remote.url")" || die "no remote '$remote'; name one with --remote"
-	named="$(py slug "$url")" || die "remote '$remote' is not a GitHub repository"
+	named="$(py slug "$url")" ||
+		die "land/remote: remote '$remote' is $url, not a GitHub repository's URL; remedy: give it" \
+			"https://github.com/<owner>/<name>.git (or ssh://git@github.com/... or git@github.com:...)"
 	[ -n "$slug" ] || slug="$named"
 	remedy="make remote '$remote' fetch from and push to $slug on GitHub alone: drop its"
 	remedy="$remedy pushurl (git config --unset-all remote.$remote.pushurl), every"
