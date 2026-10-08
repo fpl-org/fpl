@@ -1,7 +1,7 @@
 """A session over a log: the state at an event is every accepted input its deps lead back
 through, run again as one file; entering an input prints only what its own lines leave, and
-names each earlier input whose output the run has moved. Pure but for `evaluator`, which reads
-the package's sources once."""
+names, once, each earlier input whose output the input moved from what the state before it
+printed. Pure but for `evaluator`, which reads the package's sources once."""
 
 from bisect import bisect_right
 from collections.abc import Mapping
@@ -105,6 +105,11 @@ class _Entry:
     text: str
 
     @cached_property
+    def source(self) -> str:
+        """The program at the input's state: its parts, joined."""
+        return "".join(part.text for part in self.parts)
+
+    @cached_property
     def starts(self) -> tuple[int, ...]:
         """The line each part starts at, then the line the input starts at."""
         starts = [1]
@@ -157,36 +162,45 @@ def _failed(entry: _Entry, error: FplError, notes: tuple[str, ...]) -> Outcome:
     return entry.logged("error", line + "\n", (*notes, caret) if caret else notes)
 
 
-def _changed(entry: _Entry, left: Lines, notes: tuple[str, ...]) -> Outcome:
-    """The input's output, the notes given, then each earlier input whose lines now print
-    other than it recorded."""
+def _by_part(entry: _Entry, lines: Lines) -> list[Lines]:
+    """The lines of a run grouped by the part they lie in, the input's last."""
     groups: list[Lines] = [() for _ in entry.starts]
-    for line, stack in left:
+    for line, stack in lines:
         groups[entry.owner(line)] += ((line, stack),)
+    return groups
+
+
+def _changed(entry: _Entry, left: Lines, before: Lines, notes: tuple[str, ...]) -> Outcome:
+    """The input's output, the notes given, then each earlier input whose lines print other
+    than they did in `before`, the run of the state the input extends: a move is named at the
+    input that makes it, and not again."""
+    now, was = _by_part(entry, left), _by_part(entry, before)
     moved = (
         part.event
-        for part, group in zip(entry.parts, groups, strict=False)
-        if content(printed(group).encode()) != part.event.out
+        for part, new, old in zip(entry.parts, now, was, strict=False)
+        if printed(new) != printed(old)
     )
     changed = tuple(f"CHANGED {e.seq} ${e.ident.spelled()}" for e in moved)
-    return entry.logged("ok", printed(groups[-1]), notes + changed)
+    return entry.logged("ok", printed(now[-1]), notes + changed)
 
 
 def enter(log: Log, text: str, context: Context, at: Event | None) -> Outcome:
     """The outcome of `text` after the program at `at` (None, the origin), not yet appended.
     The input gains a final newline if it lacks one. Joined after the program's parts, it is
     run as one file; its goals are noted even when the run then fails, and any FplError, from
-    the margin rule on, becomes an error event whose state is its parent's."""
+    the margin rule on, becomes an error event whose state is its parent's. The program at `at`
+    is run once more, for the lines to compare the new run's with."""
     entry = _Entry(log, at, context, program(log, at), text if text.endswith("\n") else text + "\n")
     notes: tuple[str, ...] = ()
     try:
         entry.margin()
-        statements, goals = checked("".join(part.text for part in entry.parts) + entry.text)
+        statements, goals = checked(entry.source + entry.text)
         notes = entry.noted(goals)
         left = stacks(statements, context.fuel)
+        before = stacks(checked(entry.source)[0], context.fuel)
     except FplError as error:
         return _failed(entry, error, notes)
-    return _changed(entry, left, notes)
+    return _changed(entry, left, before, notes)
 
 
 def rewind(log: Log, target: Event | None, context: Context) -> Event:
