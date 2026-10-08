@@ -272,7 +272,10 @@ PLANNED = frozenset(
 )
 """Words the language's own examples call and nothing here runs where they are called, so a
 call of one that no definition names is `no evaluator yet`, not an unknown word. Each is called
-and never defined in a maintainer's example: newline (draft1), debug (draft2/03), select
+in a maintainer's example where nothing defines it: newline (draft1), debug (draft2/03), select
 (draft2/05), unpair (draft2/06), dict (draft2/08), curry (draft2/11), shape (draft3/paths), pos,
 true and false (match/01, match/04), and bind (draft3/paths), which runs only as `#name bind`
-in a directory. A word that runs moves to EFFECTS (hole unimplemented-words)."""
+in a directory. A program's own definition wins: draft2/02 defines curry. This is a sample, not
+the dictionary: first and divide are called in the examples too and are unknown here. Whether
+the set belongs here at all is the owner's call. A word that runs moves to EFFECTS (hole
+unimplemented-words)."""
