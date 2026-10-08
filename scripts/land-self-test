@@ -165,10 +165,16 @@ thread() { # thread <resolved> <url>
 }
 rules() { # rules <required contexts as JSON objects> [approvals] [another rule]
 	fixture "repos/land-test/fpl/rules/branches/main?per_page=100" <<-EOF
-	[[{"type": "pull_request", "ruleset_id": 1,
-	   "parameters": {"required_approving_review_count": ${2:-1}}},
+	[[{"type": "pull_request", "ruleset_id": 1, "ruleset_source_type": "Repository",
+	   "ruleset_source": "land-test/fpl",
+	   "parameters": {"required_approving_review_count": ${2:-1},
+	     "dismiss_stale_reviews_on_push": true, "require_code_owner_review": true,
+	     "require_last_push_approval": false, "required_review_thread_resolution": true,
+	     "required_reviewers": [], "allowed_merge_methods": ["rebase"],
+	     "dismissal_restriction": {"enabled": false, "allowed_actors": []}}},
 	  {"type": "required_status_checks", "ruleset_id": 1,
-	   "parameters": {"required_status_checks": [$1]}},
+	   "parameters": {"required_status_checks": [$1],
+	     "strict_required_status_checks_policy": false, "do_not_enforce_on_create": false}},
 	  {"type": "required_linear_history", "ruleset_id": 1},
 	  {"type": "non_fast_forward", "ruleset_id": 1},
 	  {"type": "deletion", "ruleset_id": 2}${3:+, $3}]]
@@ -470,6 +476,31 @@ rules '{"context": "commit-lint", "integration_id": 15368}' 1 '{"type": "deletio
 expect 1 "a rule that names no ruleset" --dry-run 7
 says "NO  land/rules" "a rule without a ruleset_id is a forge failure"
 lacks "ok  land/rules" "it is not judged as fine"
+
+# A rule that is not GitHub's schema for it is a forge failure too, never fewer rules.
+for bad in '{"type": "required_status_checks", "ruleset_id": 1}' \
+	'{"type": "required_status_checks", "ruleset_id": 1, "parameters": {"required_status_checks": "ci", "strict_required_status_checks_policy": false}}' \
+	'{"type": "required_status_checks", "ruleset_id": 1, "parameters": {"required_status_checks": [{"context": "ci", "integration_id": "15368"}], "strict_required_status_checks_policy": false}}' \
+	'{"type": "required_status_checks", "ruleset_id": 1, "parameters": {"required_status_checks": [{"integration_id": 15368}], "strict_required_status_checks_policy": false}}' \
+	'{"type": "required_status_checks", "ruleset_id": 1, "parameters": {"required_status_checks": [{"context": "ci"}]}}' \
+	'{"type": "pull_request", "ruleset_id": 1}' \
+	'{"type": "pull_request", "ruleset_id": 1, "parameters": {"required_approving_review_count": "2", "dismiss_stale_reviews_on_push": true, "require_code_owner_review": true, "require_last_push_approval": false, "required_review_thread_resolution": true}}' \
+	'{"type": "pull_request", "ruleset_id": 1, "parameters": {"required_approving_review_count": true, "dismiss_stale_reviews_on_push": true, "require_code_owner_review": true, "require_last_push_approval": false, "required_review_thread_resolution": true}}' \
+	'{"type": "pull_request", "ruleset_id": 1, "parameters": {"required_approving_review_count": 1, "dismiss_stale_reviews_on_push": true, "require_code_owner_review": true, "require_last_push_approval": "yes", "required_review_thread_resolution": true}}' \
+	'{"type": "deletion", "ruleset_id": "2"}' \
+	'{"type": "deletion", "ruleset_id": true}' \
+	'{"type": 5, "ruleset_id": 2}'; do
+	forge
+	rules '{"context": "commit-lint", "integration_id": 15368}' 1 "$bad"
+	expect 1 "a rule not as GitHub's schema gives it: $bad" --dry-run 7
+	says "NO  land/rules" "a malformed rule is refused by name"
+	lacks "ok  land/checks" "no check is judged against rules that are not read"
+done
+forge
+rules '{"context": "commit-lint"}'
+expect 0 "a required check that names no app means any app" --dry-run 7
+says "ok  land/rules" "a check without integration_id is the schema's"
+lacks "NO  land/rules" "it is not read as malformed"
 
 forge
 for empty in '{}' '[]' '[{}]' '[{"data": null, "errors": [{}]}]'; do
