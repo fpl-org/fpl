@@ -68,6 +68,15 @@ one file, `.githooks/commit-rules`, which `commit-msg`, `scripts/acommit` and th
 all read. Names such as `COMMIT_TYPES` below are its variables; this document does not repeat
 their values, so there is one place to change a rule and no copy to forget.
 
+The two length limits are the exception to "in that file": `COMMIT_HEADER_MAX` and
+`COMMIT_BODY_MAX` are written once, in `lib.limits` in `flake.nix`, with the Python line length.
+`nix run .#gen-config` writes them to `.githooks/commit-limits`, which `commit-rules` sources,
+and writes `.editorconfig` and `quality/ruff-limits.toml` from the same numbers. The generated
+files stay committed, for a clone without Nix, and `make check` and `make gates` fail when one
+differs from the flake or is gone; the hooks refuse to run on a limits file that is missing or
+not a positive integer, naming `nix run .#gen-config`. To change a limit, change it in `flake.nix`
+and run the generator.
+
 ## Writing a message by hand
 
 A plain `git commit` opens an editor on a message that is not empty: `.githooks/prepare-commit-msg`

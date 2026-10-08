@@ -40,7 +40,10 @@ Keep talk about the vision sober, and the harness small: `docs/notes/2026-09-19-
   quality/            the noslop gate's lanes, tool configs and pinned tools (.agents/QUALITY.md)
   tools/<name>/       tooling beside the language, each a uv project of its own, judged by make tools (.agents/QUALITY.md)
   flake.nix, flake.lock   the dev shell: one pinned toolchain for everyone (.agents/DEVSHELL.md)
+                      and lib.limits, the one place the line limits are written: nix run .#gen-config
+                      writes .editorconfig, quality/ruff-limits.toml and .githooks/commit-limits from it
   .githooks/          pre-commit, prepare-commit-msg, commit-msg, commit-rules (the rules, shared),
+                      commit-limits (generated: the line limits),
                       atomic-check, reference-transaction, pre-push
                       (all enabled by scripts/setup)
   worktrees/<name>/   one implementation attempt each; git-ignored; see .agents/WORKTREES.md
