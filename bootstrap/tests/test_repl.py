@@ -22,7 +22,7 @@ from test_session import POOL
 
 from fpl.__main__ import main as run_file
 from fpl.log import Log, RefusedError, keyed, load, locked
-from fpl.repl import USAGE, inputs, main, pending, provenance
+from fpl.repl import COMMANDS, USAGE, inputs, main, pending, provenance
 from fpl.session import words
 
 SESSION = ["--session", "s.fon"]
@@ -191,7 +191,7 @@ def test_refused(argv: list[str], env: dict[str, str], message: str) -> None:
 
 
 def test_a_session() -> None:
-    """Inputs append at the head and name it; the log lists them, --show joins the program,
+    """Inputs append at the head and name it; the log lists the commands, --show joins the program,
     a rewind returns to an earlier state, and --at evaluates without appending."""
     with session() as (work, env):
         assert called([*SESSION, "-e", "f : -- x\n\t2\n"], env)[:2] == (0, "")
@@ -313,7 +313,7 @@ def test_the_loop_in_memory() -> None:
         "1 2",
         "f",
         "ERROR: 1:1 no evaluator yet",
-        "ERROR: unknown command",
+        "ERROR: unknown command :bogus; :help lists the commands",
     ]
 
 
@@ -534,7 +534,8 @@ def test_words_in_the_loop_in_memory() -> None:
     command itself, with no argument, is one."""
     code, out, err = called([], {}, f"{DEFINITION}\n:words\n:words x\n")
     assert (code, err) == (0, "")
-    assert out.splitlines()[-3:] == [*LAST, "ERROR: unknown command"]
+    told = "ERROR: :words takes no argument; :help lists the commands"
+    assert out.splitlines()[-3:] == [*LAST, told]
 
 
 def test_words_as_of_an_event() -> None:
@@ -569,3 +570,75 @@ def test_words_is_one_action_among_the_others(argv: list[str]) -> None:
     """--words takes the place of -e, --rewind, --log and --show, and goes with --at as --show
     does."""
     assert called(argv, {}) == (2, "", USAGE + "\n")
+
+
+HELP = """\
+:words         list the words the session offers
+:show          print the program
+:log           list the events of the log
+:rewind EVENT  return the program to its state at EVENT
+:canonical     toggle echoing an input as the printer writes it
+:help          list the commands
+:quit          leave the loop
+"""
+
+
+def test_help_lists_every_command_a_line_each() -> None:
+    """:help prints one line a command, from the table the loop dispatches by."""
+    code, out, err = called([], {}, ":help\n")
+    assert (code, out, err) == (0, HELP, "")
+    assert [row.split()[0] for row in out.splitlines()] == [f":{name}" for name in COMMANDS]
+
+
+@pytest.mark.parametrize("name", list(COMMANDS))
+def test_every_command_the_loop_takes_is_in_the_help(name: str) -> None:
+    """A command in the table is carried out by the loop, neither refused as unknown nor told
+    off for its arguments, and :help has exactly one line for it: it cannot be one without the
+    other."""
+    argument = " 0" if COMMANDS[name].args else ""
+    _, out, _ = called([], {}, f"2\n:{name}{argument}\n")
+    assert "ERROR" not in out
+    _, helped, _ = called([], {}, ":help\n")
+    assert sum(row.startswith(f":{name} ") for row in helped.splitlines()) == 1
+
+
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
+@given(st.text(st.characters(blacklist_categories=("Cs", "C", "Z")), max_size=8))
+@example("help")
+@example("")
+@example("Words")
+def test_a_name_not_in_the_table_is_unknown(name: str) -> None:
+    """:x, for an x the table does not name, is told as unknown, with the way to the list."""
+    if name in COMMANDS:
+        return
+    code, out, err = called([], {}, f":{name}\n")
+    told = f"ERROR: unknown command :{name}; :help lists the commands\n"
+    assert (code, out, err) == (0, told, "")
+
+
+@pytest.mark.parametrize(
+    ("typed", "told"),
+    [
+        (":words x", ":words takes no argument"),
+        (":help me", ":help takes no argument"),
+        (":quit now", ":quit takes no argument"),
+        (":rewind", ":rewind takes EVENT"),
+        (":rewind 0 1", ":rewind takes EVENT"),
+    ],
+)
+def test_a_command_with_other_arguments_than_its_own_is_told(typed: str, told: str) -> None:
+    """A command named but given more or fewer arguments than it takes is refused, and the
+    loop goes on to the next input (:quit with an argument does not quit)."""
+    _, out, _ = called([], {}, f"{typed}\n:help\n")
+    assert out == f"ERROR: {told}; :help lists the commands\n{HELP}"
+
+
+def test_help_appends_nothing_and_names_no_head() -> None:
+    """:help is a reader that needs no log: nothing is appended, no head is named, and the
+    listing is the same at any event."""
+    with session() as (work, env):
+        called([*SESSION, "-e", DEFINITION], env)
+        before = files(work)
+        assert called(SESSION, env, ":help\n") == (0, HELP, "")
+        assert called([*SESSION, "--at", "1"], env, ":help\n") == (0, HELP, "")
+        assert files(work) == before
