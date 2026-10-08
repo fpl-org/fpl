@@ -44,14 +44,19 @@
 #                           malformed answer is a forge failure, never "nothing required"
 #   land/bypass             you may push past every ruleset on main "always", the owner's
 #                           one-time setting; without it the forge refuses any direct push
-#   land/remote             git fetches from and pushes to one place, the same, and when it
-#                           is on GitHub it is the repository the forge is read for: a
-#                           pushurl, a second URL or a url.<base>.pushInsteadOf that sends
-#                           the push elsewhere is refused before anything is read
+#   land/remote             git fetches from and pushes to one URL, the same, and it is the
+#                           GitHub repository the forge is read for: a pushurl, a second
+#                           URL, or a url.<base>.insteadOf or pushInsteadOf that sends git
+#                           elsewhere, on GitHub or off it, is refused before anything is
+#                           read. Every fetch and the push name that URL, not the remote,
+#                           and the push goes only after the check is made again: a
+#                           url.<base>.insteadOf or pushInsteadOf that would rewrite the URL
+#                           itself, or a remote named by it, is refused too
 #
 # Then it prints the conversation, opens the diff in the browser and stops for a keypress.
 # After Enter it approves the head when it said it would, checks everything again, and pushes:
-# `git push <remote> <head>:refs/heads/main`. Git refuses a push that is not a fast-forward
+# `git push <url> <head>:refs/heads/main`, to the URL land/remote checked, checked once
+# more right before. Git refuses a push that is not a fast-forward
 # unless told to force, and nothing here forces. Afterwards it checks that main is the head
 # and that GitHub shows the pull request as merged, says so loudly when not, and prints the
 # command that retargets to main each open pull request based on the landed branch.
@@ -73,7 +78,8 @@
 #
 # The repository is the one --remote (default github) points at; its configured URL must be
 # on GitHub. The forge is read and written with `gh api` only (scripts/layer on github), so
-# scripts/land-self-test serves it from fixtures with a gh of its own first on PATH.
+# scripts/land-self-test serves it from fixtures with a gh of its own first on PATH, and
+# git's fetches and pushes from a bare repository with a git of its own.
 # FPL_LAND_WAIT: seconds to wait for GitHub to show the merge (default 30).
 #
 # Exit 0: landed, or a dry run found nothing to refuse; 1: refused or failed; 2: usage.
@@ -141,6 +147,23 @@ def slug(url):
     if not m:
         sys.exit(1)
     print(f"{m[1]}/{m[2]}")
+
+
+def pinned(dest):
+    """Exit 1, saying why, when git would not send a fetch or a push of the URL `dest` to
+    `dest` itself; the configuration is `git config -z --list` on stdin. Git rewrites a URL
+    named on the command line as it rewrites a remote's: by the longest url.<base>.insteadOf
+    or pushInsteadOf that is a prefix of it, and by the remote section named by the URL when
+    there is one. Any of these refuses, so the URL checked is the URL git goes to."""
+    for entry in sys.stdin.read().split("\0"):
+        key, _, value = entry.partition("\n")
+        if key.startswith(f"remote.{dest}."):
+            print(f"{key} configures a remote named by that URL")
+            sys.exit(1)
+        if key.startswith("url.") and key.endswith((".insteadof", ".pushinsteadof")) \
+                and dest.startswith(value):
+            print(f"{key} {value} rewrites it")
+            sys.exit(1)
 
 
 def pull(url):
@@ -579,6 +602,8 @@ def still(d, head):
 def main(cmd, *args):
     if cmd == "slug":
         slug(*args)
+    elif cmd == "pinned":
+        pinned(*args)
     elif cmd == "pull":
         pull(*args)
     elif cmd == "fields":
@@ -632,34 +657,50 @@ done
 command -v gh >/dev/null || die "gh not found; scripts/layer on github"
 command -v python3 >/dev/null || die "python3 not found"
 
+# destination: land/remote. Sets slug, the repository the remote names, and dest, the one
+# URL git fetches it from and pushes it to; dies unless dest is that repository on GitHub
+# and git sends a fetch or a push of dest to dest itself. Run before anything is read and
+# again right before the push, where any change since the first run refuses.
+#
 # The repository is named by what the remote says, not by `git remote get-url`, which
-# applies url.<base>.insteadOf; land/remote below holds where git really goes to that name.
-url="$(git config --get "remote.$remote.url")" || die "no remote '$remote'; name one with --remote"
-slug="$(py slug "$url")" || die "remote '$remote' is not a GitHub repository"
-
-# land/remote: the push goes where the fetch comes from. git resolves pushurl, every URL a
-# remote has, url.<base>.insteadOf and url.<base>.pushInsteadOf the same way for the remote's
-# name as `git remote get-url` reports, so exactly one URL each way, equal, is where both go;
-# when it is on GitHub, its repository is the one the forge is read for. A rewrite that sends
-# both to a mirror off GitHub passes: the push then lands nothing GitHub shows, and the check
-# after it says so loudly.
-remote_remedy="make remote '$remote' fetch from and push to $slug alone:"
-remote_remedy="$remote_remedy git config --unset-all remote.$remote.pushurl, and drop the"
-remote_remedy="$remote_remedy url.<base>.pushInsteadOf or insteadOf that rewrites it"
-remote_remedy="$remote_remedy (git config --get-regexp '^url[.]')"
-fetch_url="$(git remote get-url --all "$remote")" || die "land/remote: cannot resolve remote '$remote'"
-push_url="$(git remote get-url --push --all "$remote")" || die "land/remote: cannot resolve where '$remote' pushes"
-case "$fetch_url$push_url" in
-*$'\n'*)
-	die "land/remote: '$remote' has more than one URL (fetch: ${fetch_url//$'\n'/ };" \
-		"push: ${push_url//$'\n'/ }); remedy: $remote_remedy"
-	;;
-esac
-[ "$push_url" = "$fetch_url" ] ||
-	die "land/remote: '$remote' pushes to $push_url but fetches from $fetch_url; remedy: $remote_remedy"
-if where="$(py slug "$push_url")" && [ "$where" != "$slug" ]; then
-	die "land/remote: '$remote' names $slug but git goes to $where; remedy: $remote_remedy"
-fi
+# applies url.<base>.insteadOf. git resolves pushurl, every URL a remote has, insteadOf and
+# pushInsteadOf for the remote's name as `git remote get-url` reports, so exactly one URL
+# each way, equal, is where both go. Every fetch and the push then name dest, never the
+# remote, so a pushurl set later does not move them; git rewrites a URL on the command line
+# too, which `py pinned` refuses.
+slug="" dest=""
+destination() {
+	local url named fetch_url push_url where why remedy
+	url="$(git config --get "remote.$remote.url")" || die "no remote '$remote'; name one with --remote"
+	named="$(py slug "$url")" || die "remote '$remote' is not a GitHub repository"
+	[ -n "$slug" ] || slug="$named"
+	remedy="make remote '$remote' fetch from and push to $slug on GitHub alone: drop its"
+	remedy="$remedy pushurl (git config --unset-all remote.$remote.pushurl), every"
+	remedy="$remedy url.<base>.insteadOf or pushInsteadOf that rewrites it, and any remote"
+	remedy="$remedy named by its URL (git config --get-regexp '^(url|remote)[.]')"
+	[ "$named" = "$slug" ] || die "land/remote: '$remote' names $named now, not $slug; remedy: $remedy"
+	fetch_url="$(git remote get-url --all "$remote")" || die "land/remote: cannot resolve remote '$remote'"
+	push_url="$(git remote get-url --push --all "$remote")" ||
+		die "land/remote: cannot resolve where '$remote' pushes"
+	case "$fetch_url$push_url" in
+	*$'\n'*)
+		die "land/remote: '$remote' has more than one URL (fetch: ${fetch_url//$'\n'/ };" \
+			"push: ${push_url//$'\n'/ }); remedy: $remedy"
+		;;
+	esac
+	[ "$push_url" = "$fetch_url" ] ||
+		die "land/remote: '$remote' pushes to $push_url but fetches from $fetch_url; remedy: $remedy"
+	where="$(py slug "$push_url")" ||
+		die "land/remote: '$remote' names $slug but git goes to $push_url, not GitHub; remedy: $remedy"
+	[ "$where" = "$slug" ] ||
+		die "land/remote: '$remote' names $slug but git goes to $where; remedy: $remedy"
+	[ -z "$dest" ] || [ "$push_url" = "$dest" ] ||
+		die "land/remote: '$remote' went to $dest when it was checked, and goes to $push_url now; remedy: $remedy"
+	why="$(git config -z --list | py pinned "$push_url")" ||
+		die "land/remote: git would not send $push_url there: $why; remedy: $remedy"
+	dest="$push_url"
+}
+destination
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/land.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 
@@ -696,9 +737,9 @@ gather() {
 		>"$tmp/checks.json" || die "cannot read the checks on $head"
 	gh api --paginate --slurp "repos/$slug/commits/$head/statuses?per_page=100" \
 		>"$tmp/statuses.json" || die "cannot read the statuses on $head"
-	git fetch -q --no-tags "$remote" "refs/pull/$n/head" || die "cannot fetch #$n's head"
+	git fetch -q --no-tags "$dest" "refs/pull/$n/head" || die "cannot fetch #$n's head"
 	fetched="$(git rev-parse FETCH_HEAD)"
-	git fetch -q --no-tags "$remote" refs/heads/main || die "cannot fetch main"
+	git fetch -q --no-tags "$dest" refs/heads/main || die "cannot fetch main"
 	main="$(git rev-parse FETCH_HEAD)"
 	ancestor=no
 	if git merge-base --is-ancestor "$main" "$fetched"; then ancestor=yes; fi
@@ -744,7 +785,7 @@ judge() {
 }
 
 gather
-push="git push $remote $head:refs/heads/main"
+push="git push $dest $head:refs/heads/main"
 echo "land: #$n $headref -> main, head $head"
 judge
 
@@ -796,8 +837,9 @@ judge
 [ "$approve" -eq 0 ] || die "the forge does not show the approval of $head; nothing landed"
 [ "$head" = "$seen" ] || die "#$n moved to $head since you looked at $seen; nothing landed"
 
+destination
 echo "land: $push"
-if ! out="$(git push "$remote" "$head:refs/heads/main" 2>&1)"; then
+if ! out="$(git push "$dest" "$head:refs/heads/main" 2>&1)"; then
 	printf '%s\n' "$out" >&2
 	case "$out" in
 	*GH013* | *"rule violation"*)
@@ -808,7 +850,7 @@ if ! out="$(git push "$remote" "$head:refs/heads/main" 2>&1)"; then
 fi
 printf '%s\n' "$out"
 
-now="$(git ls-remote "$remote" refs/heads/main | cut -f1)"
+now="$(git ls-remote "$dest" refs/heads/main | cut -f1)"
 [ "$now" = "$head" ] || die "LOUD: main on the forge is ${now:-unreadable}, not $head; look before anything else lands"
 waited=0 limit="${FPL_LAND_WAIT:-30}"
 while :; do

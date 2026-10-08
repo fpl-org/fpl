@@ -7,8 +7,11 @@
 # first on PATH: `gh api <path>` prints the fixture named after the path, a write (-X POST,
 # PATCH, PUT) is logged and marks the forge written, after which a fixture's `.after`
 # variant is served where there is one. Git talks to a bare repository on disk: the remote
-# says https://github.com/land-test/fpl.git, and url.<path>.insteadOf sends git there, so
-# scripts/land names the repository as it does on GitHub while nothing reaches the network.
+# says https://github.com/land-test/fpl.git, and a git of the test's own, first on PATH,
+# sends a fetch, push or ls-remote of that URL (or of git@github.com:land-test/fpl.git)
+# there. The rewrite is not in git's configuration, where scripts/land refuses any that
+# sends git off GitHub, so it names the repository as it does on GitHub while nothing
+# reaches the network: GIT_ALLOW_PROTOCOL=file refuses every transport but the disk.
 # Git's global and system config, HOME, XDG_CONFIG_HOME and gh's config point away from the
 # maintainer's, and no token is set, so a gh that slipped past the stub could not write.
 #
@@ -35,15 +38,15 @@ mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$GH_CONFIG_DIR"
 # The repository: main at M0, which holds CODEOWNERS; the pull request #7 one commit above
 # it at H; M1, a main that moved past M0 without H; MC, a main whose CODEOWNERS has a rule
 # for part of the tree; HM, a head above M0 that merges M1 into H.
-# The owner's prefix, not the whole URL, is redirected: a rewrite a case sets for the whole
-# URL is then the longer match, and git takes it, as it would on a maintainer's machine.
-export REMOTE="$tmp/repos/fpl.git" FORGE="$tmp/forge" GIT_SSH_COMMAND=false GIT_TERMINAL_PROMPT=0
+export REPOS="$tmp/repos" REMOTE="$tmp/repos/fpl.git" FORGE="$tmp/forge" GIT_SSH_COMMAND=false \
+	GIT_TERMINAL_PROMPT=0 GIT_ALLOW_PROTOCOL=file
 git init -q --bare -b main "$REMOTE"
-git config --global url."$tmp/repos/".insteadOf https://github.com/land-test/
 # Another repository, where a misconfigured remote would push instead.
 OTHER="$tmp/other.git"
 git init -q --bare -b main "$OTHER"
 git config --global url."$OTHER".insteadOf https://github.com/other/fpl.git
+# A copy of the remote off GitHub, made by `mirror`, where a rewrite would send git instead.
+MIRROR="$tmp/mirror.git"
 repo="$tmp/repo"
 git init -q -b main "$repo"
 cd "$repo"
@@ -73,12 +76,33 @@ printf '* @psjg\ndocs/ @someone\n' >.github/CODEOWNERS
 git commit -q -am "owners by path"
 MC="$(git rev-parse HEAD)"
 git reset -q --hard "$M0"
-git push -q github "$M0:refs/heads/main" "$H:refs/heads/$BR" "$M1:refs/heads/m1" \
+git push -q "$REMOTE" "$M0:refs/heads/main" "$H:refs/heads/$BR" "$M1:refs/heads/m1" \
 	"$MC:refs/heads/mc" "$H2:refs/heads/h2" "$HM:refs/heads/hm"
 
-# The stand-ins: gh serves the forge, open and xdg-open only log.
+# The stand-ins: gh serves the forge, git sends the test's GitHub to the disk, open and
+# xdg-open only log.
 bin="$tmp/bin"
 mkdir -p "$bin"
+# The real git, found before any stand-in is on PATH: the run with /bin/bash inherits it.
+LAND_TEST_GIT="${LAND_TEST_GIT:-$(command -v git)}"
+export LAND_TEST_GIT
+cat >"$bin/git" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+fetch | push | ls-remote)
+	args=()
+	for a in "$@"; do
+		case "$a" in
+		https://github.com/land-test/*) a="$REPOS/${a#https://github.com/land-test/}" ;;
+		git@github.com:land-test/*) a="$REPOS/${a#git@github.com:land-test/}" ;;
+		esac
+		args+=("$a")
+	done
+	set -- "${args[@]}"
+	;;
+esac
+exec "$LAND_TEST_GIT" "$@"
+EOF
 cat >"$bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -115,7 +139,7 @@ sed "s/@MERGED@/$merged/" "$file"
 EOF
 printf '#!/bin/sh\necho "open $*" >>"$FORGE/calls"\n' >"$bin/open"
 cp "$bin/open" "$bin/xdg-open"
-chmod +x "$bin/gh" "$bin/open" "$bin/xdg-open"
+chmod +x "$bin/gh" "$bin/git" "$bin/open" "$bin/xdg-open"
 export PATH="$bin:$PATH"
 
 # A pseudo-terminal that presses Enter once the question is asked.
@@ -212,6 +236,7 @@ forge() {
 	: >"$FORGE/calls"
 	git --git-dir="$REMOTE" update-ref refs/heads/main "$M0"
 	git --git-dir="$REMOTE" update-ref refs/pull/7/head "$at"
+	git --git-dir="$OTHER" update-ref -d refs/heads/main 2>/dev/null || :
 	pull open false main @MERGED@
 	me psjg
 	reviews "$(review 1 psjg APPROVED "$at")"
@@ -271,11 +296,26 @@ main_is() {
 	echo "self-test: $2: main is not $1" >&2
 }
 called() { cp "$FORGE/calls" "$tmp/out"; }
+# untouched <git dir> <description>: nothing was pushed to that repository's main.
+untouched() {
+	total=$((total + 1))
+	if git --git-dir="$1" rev-parse -q --verify refs/heads/main >/dev/null &&
+		[ "$(git --git-dir="$1" rev-parse refs/heads/main)" != "$M0" ]; then
+		fails=$((fails + 1))
+		echo "self-test: $2: main there is $(git --git-dir="$1" rev-parse refs/heads/main)" >&2
+	fi
+}
+# mirror: a fresh copy of the remote, pull request head included, off GitHub.
+mirror() {
+	rm -rf "$MIRROR"
+	git clone -q --mirror "$REMOTE" "$MIRROR"
+}
 
 # Dry runs: every check, nothing written. ------------------------------------------------
 forge
 expect 0 "everything holds" --dry-run 7
-says "would run: git push github $H:refs/heads/main" "a dry run prints the push"
+says "would run: git push https://github.com/land-test/fpl.git $H:refs/heads/main" \
+	"a dry run prints the push, to the URL checked"
 lacks "would approve" "an approval at the head is not given again"
 main_is "$M0" "a dry run leaves main"
 called
@@ -583,6 +623,37 @@ remote_case "an insteadOf that sends fetch and push to another GitHub repository
 	url.git@github.com-nowhere:other/fpl.git.insteadOf https://github.com/land-test/fpl.git
 says "git goes to other/fpl" "it names the repository git goes to"
 git config --unset-all url.git@github.com-nowhere:other/fpl.git.insteadOf
+remote_case "a remote named by the URL itself, which git uses for that URL" \
+	remote.https://github.com/land-test/fpl.git.pushurl https://github.com/other/fpl.git
+says "configures a remote named by that URL" "it names the section"
+git config --remove-section remote.https://github.com/land-test/fpl.git
+# The push names the URL checked; git rewrites that URL too, by the insteadOf that matches
+# it rather than the remote's: here git@github.com:land-test/fpl.git, the URL git goes to.
+forge
+git config url.git@github.com:land-test/.insteadOf https://github.com/land-test/
+expect 0 "an insteadOf to the same repository over ssh" --dry-run 7
+says "would run: git push git@github.com:land-test/fpl.git $H:refs/heads/main" \
+	"it pushes to the URL git goes to"
+git config url."$OTHER".insteadOf git@github.com:land-test/fpl.git
+expect 1 "an insteadOf that rewrites the URL checked, not the remote's" --dry-run 7
+says "land/remote" "it names the rule"
+says "rewrites it" "it says why"
+lacks "would run: git push" "nothing is judged"
+git config --unset-all url."$OTHER".insteadOf
+git config --unset-all url.git@github.com:land-test/.insteadOf
+# A rewrite off GitHub is refused, not taken for a mirror that the check after the push
+# would catch: by then main there has moved, under rules nobody read.
+forge
+mirror
+git config url."$MIRROR".insteadOf https://github.com/land-test/fpl.git
+expect 1 "an insteadOf that sends fetch and push off GitHub" --dry-run 7
+says "land/remote" "it names the rule"
+says "git goes to $MIRROR, not GitHub" "it says where git goes"
+lacks "would run: git push" "nothing is judged against a repository off GitHub"
+landing 1 "a landing whose remote git sends off GitHub" 7
+git config --unset-all url."$MIRROR".insteadOf
+untouched "$MIRROR" "nothing was pushed off GitHub"
+main_is "$M0" "nothing landed"
 forge
 expect 0 "the remote as it should be, after each case" --dry-run 7
 
@@ -596,6 +667,39 @@ if git --git-dir="$OTHER" rev-parse -q --verify refs/heads/main >/dev/null; then
 	echo "self-test: a landing whose remote pushes elsewhere: it pushed there" >&2
 fi
 main_is "$M0" "nothing landed"
+
+# Where git goes is checked again right before the push, and the push names the URL it
+# checked: a remote changed while the diff is open does not take the push elsewhere.
+rewire_case() { # rewire_case <description> <git config arguments...>
+	local what="$1"
+	shift
+	forge
+	mirror
+	mkdir -p "$tmp/rewire"
+	printf '#!/bin/sh\ngit config'" %s"'\n' "$*" >"$tmp/rewire/open"
+	chmod +x "$tmp/rewire/open"
+	PATH="$tmp/rewire:$PATH" landing 1 "$what" 7
+	says "land/remote" "it names the rule"
+	untouched "$OTHER" "nothing was pushed to another repository"
+	untouched "$MIRROR" "nothing was pushed off GitHub"
+	main_is "$M0" "nothing landed"
+}
+rewire_case "a pushurl to another repository, set while the diff is open" \
+	remote.github.pushurl https://github.com/other/fpl.git
+git config --unset-all remote.github.pushurl
+rewire_case "an insteadOf off GitHub, set while the diff is open" \
+	url."$MIRROR".insteadOf https://github.com/land-test/fpl.git
+git config --unset-all url."$MIRROR".insteadOf
+# A pushurl set after that last check, as git starts: the push names the URL, not the remote.
+forge
+mkdir -p "$tmp/late"
+printf '#!/bin/sh\n[ "$1" != push ] || %s config remote.github.pushurl https://github.com/other/fpl.git\nexec %s "$@"\n' \
+	"$(command -v git)" "$(command -v git)" >"$tmp/late/git"
+chmod +x "$tmp/late/git"
+PATH="$tmp/late:$PATH" landing 0 "a pushurl set as the push starts" 7
+git config --unset-all remote.github.pushurl
+untouched "$OTHER" "the push did not go through the remote's name"
+main_is "$H" "it went to the URL checked"
 
 # Landings: a terminal, a keypress, a push. ----------------------------------------------
 forge
