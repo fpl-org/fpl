@@ -147,6 +147,15 @@ def test_a_goal_run_is_refused_where_it_stands() -> None:
     assert str(caught.value) == "ERROR: 2:2 unfilled goal"
 
 
+def test_a_goal_no_count_fills_is_refused_at_it() -> None:
+    """A goal whose rest ends at too few values whatever it leaves, a hole in the rest clearing
+    the stack, is refused at it, the search bounded by what the rest can take."""
+    source = "f : x -- y\n\t?\n\tmatch\n\t\t_\t?\n\t1 drop\n1 f\n"
+    with pytest.raises(FplError) as caught:
+        run(source)
+    assert str(caught.value) == "ERROR: 2:2 cannot infer ? : no count it leaves ends at 1"
+
+
 @pytest.mark.parametrize(
     ("source", "output"),
     [
