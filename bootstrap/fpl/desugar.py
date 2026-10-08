@@ -272,8 +272,18 @@ class Catalog:
         return None
 
     def listed(self, here: Here, segments: Here) -> bool:
-        """The path names a directory from here, then from each enclosing directory."""
-        return any((*here[:depth], *segments) in self.logs for depth in range(len(here), -1, -1))
+        """The path names a directory from here, then from each enclosing directory, or in a
+        directory mounted in one of them."""
+        for depth in range(len(here), -1, -1):
+            there = here[:depth]
+            roots = [there] + [
+                self.directory(there, entry.name)
+                for entry in self.logs.get(there, [])
+                if isinstance(entry, Mount)
+            ]
+            if any((*root, *segments) in self.logs for root in roots):
+                return True
+        return False
 
     def resolve(self, here: Here, segments: Here) -> str:
         """The word a path names from here, then each enclosing directory; none is refused."""
