@@ -122,6 +122,38 @@ lost() {
 		sed 's/^/    /' "$tmp/out" >&2
 	done
 }
+# args <exit code wanted> <description> <argument>...: the generator, unchanged flake, called
+# with these arguments. A refusal (exit 2) names the usage and writes nothing under out/; the
+# control, DIR alone, writes the files there.
+args() {
+	local want="$1" what="$2" rc=0
+	shift 2
+	total=$((total + 1))
+	rm -rf "$tmp/out-dir"
+	nix run "path:$ctl#gen-config" -- "$@" >"$tmp/out" 2>&1 || rc=$?
+	if [ "$rc" -ne "$want" ]; then
+		fails=$((fails + 1))
+		echo "gen-config-self-test: $what: exit $rc, want $want" >&2
+		sed 's/^/    /' "$tmp/out" >&2
+		return
+	fi
+	if [ "$want" -eq 0 ]; then
+		[ -f "$tmp/out-dir/.editorconfig" ] && return
+		fails=$((fails + 1))
+		echo "gen-config-self-test: $what: no .editorconfig was written under DIR" >&2
+		return
+	fi
+	if ! grep -Fq "usage: nix run .#gen-config" "$tmp/out" || [ -e "$tmp/out-dir" ]; then
+		fails=$((fails + 1))
+		echo "gen-config-self-test: $what: want the usage, and nothing written under DIR" >&2
+		sed 's/^/    /' "$tmp/out" >&2
+	fi
+}
+args 0 "DIR alone writes there" "$tmp/out-dir"
+args 2 "--check with a second argument" --check extra
+args 2 "DIR followed by --check, which would write and check nothing" "$tmp/out-dir" --check
+args 2 "an unknown option" --wibble
+
 lost 0 "a repository that holds every generated file" ""
 for f in $generated; do
 	lost 1 "a repository without $f" "$f"
