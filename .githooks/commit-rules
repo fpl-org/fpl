@@ -133,11 +133,23 @@ commit_rules_text() {
 commit_trailers() { git -c trailer.separators=: interpret-trailers --parse --no-divider; }
 
 # commit_comment_raw: what the repository sets as git's comment prefix (core.commentChar or
-# core.commentString, the last one set wins), '#' when neither is.
+# core.commentString, the last one set wins), '#' when neither is. core.commentString is read
+# only where the running git knows it (2.45 on): an older git ignores it and strips, parses and
+# stores by core.commentChar, so a hook that honoured it cut '//' lines git stores (measured,
+# git 2.44.2: an over-long '//' line passed the hook and landed; Codex review of #138).
 commit_comment_raw() {
-	local cc
-	cc="$(git config --get-regexp '^core\.comment(char|string)$' | sed -n '$s/^[^ ]* //p')" || cc=""
+	local cc keys='^core\.comment(char|string)$'
+	commit_comment_string_known || keys='^core\.commentchar$'
+	cc="$(git config --get-regexp "$keys" | sed -n '$s/^[^ ]* //p')" || cc=""
 	printf '%s' "${cc:-#}"
+}
+
+# commit_comment_string_known: whether the running git reads core.commentString. Asked of git
+# itself, which a version number cannot be trusted to tell (vendor builds, release candidates),
+# and only where a commentString is set, so the common case costs no process.
+commit_comment_string_known() {
+	! git config --get core.commentString >/dev/null ||
+		[ "$(printf 'a\n' | git -c core.commentString=';;' stripspace --comment-lines)" = ';; a' ]
 }
 
 # commit_comment_prefix: the prefix of the comment lines git strips from a message, which the
