@@ -8,11 +8,12 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from fpl import session
+from fpl.ast_core import EFFECTS
 from fpl.driver import run
 from fpl.errors import FplError, Span
 from fpl.log import SCHEMA, Event, Log, RefusedError
 from fpl.multihash import BLAKE2B_256, content
-from fpl.session import FUEL_DEFAULT, Context, Outcome, enter, evaluator, program, rewind
+from fpl.session import FUEL_DEFAULT, Context, Outcome, enter, evaluator, program, rewind, words
 
 CONTEXT = Context(evaluator(), "agent", "Claude Opus 5.5", "s", FUEL_DEFAULT)
 EMPTY = Log((), {}, 0)
@@ -200,3 +201,78 @@ def test_the_evaluator_is_the_hash_of_its_sources_once() -> None:
     assert evaluator().code == BLAKE2B_256
     assert replace(CONTEXT, fuel=3).fuel == 3
     assert (CONTEXT.who, CONTEXT.model, CONTEXT.session) == ("agent", "Claude Opus 5.5", "s")
+
+
+def defined(texts: Sequence[str]) -> list[str]:
+    """The lines of the words the program of `texts` defines, after the builtins' block."""
+    log, _ = entered(texts)
+    return words(log, log.head).partition("\n\n")[2].splitlines()
+
+
+def test_the_words_are_the_builtins_then_the_definitions() -> None:
+    log, _ = entered(["plus-one : n -- n\n\t1 +\n"])
+    builtins, rest = words(log, log.head).split("\n\n")
+    lines = builtins.splitlines()
+    assert [line.split(" : ")[0] for line in lines] == sorted(EFFECTS)
+    assert lines[:3] == ["! : q -- x", "+ : x y -- z", ", : a b -- ab"]
+    assert {"each : xs q -- ys", "fold : xs q -- x", "swap : x y -- y x"} <= set(lines)
+    assert rest == "plus-one : n -- n\n"
+
+
+def test_a_state_that_defines_nothing_has_no_second_block() -> None:
+    nothing = words(EMPTY, None)
+    assert nothing.endswith("\n")
+    assert "\n\n" not in nothing
+    log, _ = entered(["1 2 +\n", "1 [\n"])
+    assert words(log, log.head) == nothing
+
+
+def test_the_words_of_an_earlier_state() -> None:
+    log, (first, _, _) = entered(["a : -- x\n\t1\n", "b : -- x\n\t2\n", "c : -- x\n\t1 ["])
+    assert words(log, log.head).endswith("\n\na : -- x\nb : -- x\n")
+    assert words(log, first.event).endswith("\n\na : -- x\n")
+    assert words(log, None) == words(EMPTY, None)
+
+
+def test_the_words_are_sorted_and_the_later_definition_is_in_force() -> None:
+    texts = ["b : -- x\n\t1\n", "a : n -- n\n\t1 +\n", "b : -- y\n\t2\n"]
+    assert defined(texts) == ["a : n -- n", "b : -- y"]
+
+
+def test_a_dispatched_word_is_its_clauses_in_the_order_written() -> None:
+    texts = ["f : x: Text -- y\n\tdrop 2\n", "f : x: Int -- y\n\tdrop 1\n", "g : -- x\n\t1\n"]
+    assert defined(texts) == ["f : x: Text -- y", "f : x: Int -- y", "g : -- x"]
+
+
+def test_a_head_group_is_listed_once_without_the_tests_made_for_it() -> None:
+    shapes = "circle : r -- shape\n\t#circle swap pair\n"
+    lines = defined([shapes, "area : ( circle r ) -- n\n\tr dup times\n"])
+    assert [line.split(" : ")[0] for line in lines] == ["area", "circle"]
+    assert lines[0].endswith(" -- n +fail")
+
+
+@pytest.mark.parametrize(
+    ("source", "word"),
+    [
+        ("plus-one : n -- n\n\t1 +\n", "plus-one"),
+        ("f : x -- c\n\tmatch\n\t\t1\t#one\n", "f"),
+        ("d/\n\tg : -- x\n\t\t1\n", "d/g"),
+    ],
+)
+def test_a_listed_effect_is_what_the_effect_query_pushes(source: str, word: str) -> None:
+    """The text after the colon is the strings w/effect answers, joined by spaces."""
+    (line,) = defined([source])
+    assert line.startswith(f"{word} : ")
+    strings = " ".join(f"“{each}”" for each in line.removeprefix(f"{word} : ").split())
+    assert run(f"{source}{word}/effect\n") == run(f"⟨ {strings} ⟩\n")
+
+
+def test_a_program_that_no_longer_checks_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    log, _ = entered(["1\n"])
+
+    def changed(_source: str) -> None:
+        raise FplError(Span(2, 3), "no longer so")
+
+    monkeypatch.setattr(session, "checked", changed)
+    with pytest.raises(RefusedError, match=r"^the program does not check: 2:3 no longer so$"):
+        words(log, log.head)

@@ -21,8 +21,9 @@ from test_desugar import programs
 from test_session import POOL
 
 from fpl.__main__ import main as run_file
-from fpl.log import RefusedError, keyed, load, locked
+from fpl.log import Log, RefusedError, keyed, load, locked
 from fpl.repl import USAGE, inputs, main, pending, provenance
+from fpl.session import words
 
 SESSION = ["--session", "s.fon"]
 SOURCES = programs | st.text(alphabet="ab1 \t\n[]:?-|", max_size=30)
@@ -34,7 +35,7 @@ command = st.one_of(
     seqs.map(lambda k: ["--rewind", k]),
     st.tuples(seqs, texts).map(lambda p: ["--at", p[0], "-e", p[1]]),
     st.tuples(seqs, texts).map(lambda p: ["--head", p[0], "-e", p[1]]),
-    st.sampled_from([["--log"], ["--show"]]),
+    st.sampled_from([["--log"], ["--show"], ["--words"]]),
 )
 
 
@@ -509,3 +510,62 @@ def test_a_path_refused(
         assert named in out
         after = {path: data for path, data in files(work).items() if path.suffix != ".lock"}
         assert after == before
+
+
+DEFINITION = "plus-one : n -- n\n\t1 +\n"
+LAST = ["", "plus-one : n -- n"]
+
+
+def test_words_in_the_loop_list_the_builtins_then_the_session_s_own() -> None:
+    """:words lists a line a word, the builtins and then, after a blank line, what the session
+    defined; it is no input, so nothing is appended and no head is named."""
+    with session() as (work, env):
+        code, out, err = called(SESSION, env, f"{DEFINITION}\n:words\n:quit\n")
+        rows = out.splitlines()
+        assert (code, rows[-2:], err.count("HEAD")) == (0, LAST, 1)
+        assert {"each : xs q -- ys", "fold : xs q -- x", "+ : x y -- z"} <= set(rows)
+        log = load(work / "s.fon", keyed(env))
+        assert len(log.events) == 1
+        assert out == words(log, log.head)
+
+
+def test_words_in_the_loop_in_memory() -> None:
+    """Without --session :words lists the words of the log held in memory, and only the
+    command itself, with no argument, is one."""
+    code, out, err = called([], {}, f"{DEFINITION}\n:words\n:words x\n")
+    assert (code, err) == (0, "")
+    assert out.splitlines()[-3:] == [*LAST, "ERROR: unknown command"]
+
+
+def test_words_as_of_an_event() -> None:
+    """--words, and :words in a loop, list the words as of --at, and append nothing."""
+    with session() as (work, env):
+        called([*SESSION, "-e", "a : -- x\n\t1\n"], env)
+        called([*SESSION, "-e", "b : -- x\n\t2\n"], env)
+        before = files(work)
+        head = called([*SESSION, "--words"], env)
+        assert head[0] == 0
+        assert head[1].endswith("\n\na : -- x\nb : -- x\n")
+        first = called([*SESSION, "--at", "1", "--words"], env)
+        assert (first[0], first[1].endswith("\n\na : -- x\n")) == (0, True)
+        assert called([*SESSION, "--at", "1"], env, ":words\n") == first
+        assert called([*SESSION], env, ":words\n") == head
+        assert called(["--words"], {}) == (0, words(Log((), {}, 0), None), "")
+        assert files(work) == before
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--words", "--log"],
+        ["--words", "--show"],
+        ["--words", "-e", "1"],
+        ["--words", "--rewind", "0"],
+        ["--at", "0", "--words", "--head", "0"],
+        ["--at", "0", "--words", "--log"],
+    ],
+)
+def test_words_is_one_action_among_the_others(argv: list[str]) -> None:
+    """--words takes the place of -e, --rewind, --log and --show, and goes with --at as --show
+    does."""
+    assert called(argv, {}) == (2, "", USAGE + "\n")

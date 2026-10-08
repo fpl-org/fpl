@@ -18,6 +18,7 @@ from fpl.ast_core import (
     Call,
     Define,
     Dict,
+    Effect,
     Equal,
     Guarded,
     Inverse,
@@ -120,13 +121,17 @@ def metered(run: Run, words: Words, fuel: int | None) -> tuple[Value, ...]:
 
 
 def effect_line(define: Define) -> Listed:
+    """The effect line of a defined word as a list of strings (hole effect-query)."""
+    return Listed(effect_words(define.effect))
+
+
+def effect_words(effect: Effect) -> tuple[str, ...]:
     """ins -- outs, a typed input as its two strings `x:` and its type, then +fail if the word
-    may fail (hole effect-query)."""
-    effect = define.effect
+    may fail: what w/effect pushes, and what a listing of the words writes after the colon."""
     fails = ("+fail",) if effect.fails else ()
     typed = zip(effect.ins, effect.types, strict=True)
     ins = (text for name, part in typed for text in slotted(name, part))
-    return Listed((*ins, "--", *effect.outs, *fails))
+    return (*ins, "--", *effect.outs, *fails)
 
 
 def slotted(name: str, part: str | None) -> tuple[str, ...]:

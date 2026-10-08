@@ -1,9 +1,13 @@
 """`python -m fpl.repl`: one input entered at a session's head or evaluated as of an event, a
-rewind, the log listed, or the program at an event shown; with none of these, inputs read one
-after another, each as its own -e. Without --session the log is empty and held in memory, so
+rewind, the log listed, the program at an event shown, or the words it offers listed; with none
+of these, inputs read one after another, each as its own -e. In that loop an input that opens
+with : is a command instead: :words :show :log :rewind EVENT :canonical :quit. :words lists a
+line a word, `name : ins -- outs`, the builtins first and then the session's own, so the form
+of a word is looked up, not guessed. Without --session the log is empty and held in memory, so
 one input runs as its file does. An append is checked against --head and made durable under
-the session's lock before anything is printed. Exit 0 ok, 1 the input failed, 2 argv not taken
-or a refusal, a path the system refuses included, with nothing written but a lock."""
+the session's lock before anything is printed; a listing, like the log and the program shown,
+appends nothing. Exit 0 ok, 1 the input failed, 2 argv not taken or a refusal, a path the
+system refuses included, with nothing written but a lock."""
 
 import importlib
 import itertools
@@ -21,14 +25,14 @@ from fpl.log import ASCII, U64, Event, Log, RefusedError, Who, keyed, load, lock
 from fpl.multihash import Multihash
 from fpl.parse import parse
 from fpl.print import render
-from fpl.session import FUEL_DEFAULT, Context, enter, evaluator, program, rewind
+from fpl.session import FUEL_DEFAULT, Context, enter, evaluator, program, rewind, words
 from fpl.trivia import head
 
 USAGE = (
     "usage: python -m fpl.repl [--session FILE] [--fuel N] [--canonical] [--at EVENT]"
-    " [--head EVENT] [-e SOURCE | --rewind EVENT | --log | --show]"
+    " [--head EVENT] [-e SOURCE | --rewind EVENT | --log | --show | --words]"
 )
-ACTIONS = ("source", "rewind", "log", "show")
+ACTIONS = ("source", "rewind", "log", "show", "words")
 NUMERAL = re.compile(r"0|[1-9][0-9]*")
 EMPTY = Log((), {}, 0)
 
@@ -92,10 +96,11 @@ def _call(argv: list[str]) -> _Call:
     action.add_argument("--rewind")
     action.add_argument("--log", action="store_const", const="")
     action.add_argument("--show", action="store_const", const="")
+    action.add_argument("--words", action="store_const", const="")
     args = vars(parser.parse_args(_sourced(argv)))
     name = next((name for name in ACTIONS if args[name] is not None), "loop")
     if args["at"] is not None and (args["head"] is not None or name in ("rewind", "log")):
-        raise UsageError("--at goes with -e or --show")
+        raise UsageError("--at goes with -e, --show or --words")
     fields = ("session", "fuel", "canonical", "at", "head")
     value = args.get(name) or ""
     return _Call(**{field: args[field] for field in fields}, action=name, value=value)
@@ -178,7 +183,16 @@ def _shown(log: Log, at: Event | None) -> _Said:
     return _Said("".join(part.text for part in program(log, at)), (), 0)
 
 
-READERS: dict[str, Callable[[Log, Event | None], _Said]] = {"log": _listed, "show": _shown}
+def _worded(log: Log, at: Event | None) -> _Said:
+    """The words the program at `at` offers, a line each."""
+    return _Said(words(log, at), (), 0)
+
+
+READERS: dict[str, Callable[[Log, Event | None], _Said]] = {
+    "log": _listed,
+    "show": _shown,
+    "words": _worded,
+}
 WRITERS: dict[str, Callable[[_Call, Log, Context, Event | None], _Change]] = {
     "source": _entered,
     "rewind": _rewound,
@@ -291,6 +305,8 @@ def _commanded(call: _Call, text: str) -> _Call:
     match text.split():
         case [":show"]:
             return replace(call, action="show")
+        case [":words"]:
+            return replace(call, action="words")
         case [":log"]:
             return replace(call, action="log", at=None)
         case [":rewind", event]:

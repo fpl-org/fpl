@@ -1,7 +1,7 @@
 """A session over a log: the state at an event is every accepted input its deps lead back
 through, run again as one file; entering an input prints only what its own lines leave, and
-names each earlier input whose output the run has moved. Pure but for `evaluator`, which reads
-the package's sources once."""
+names each earlier input whose output the run has moved; the words it offers are listed from the
+same run. Pure but for `evaluator`, which reads the package's sources once."""
 
 from bisect import bisect_right
 from collections.abc import Mapping
@@ -9,8 +9,11 @@ from dataclasses import dataclass, replace
 from functools import cache, cached_property
 from pathlib import Path
 
+from fpl.ast_core import EFFECTS, Define, Effect, Statement
+from fpl.desugar import PRIME
 from fpl.driver import Lines, checked, printed, stacks
 from fpl.errors import FplError, Span
+from fpl.eval import effect_words
 from fpl.log import SCHEMA, Event, Log, RefusedError, Status, Who, prefixed
 from fpl.multihash import Multihash, content, hashed
 from fpl.types import Goal, reported
@@ -198,3 +201,37 @@ def rewind(log: Log, target: Event | None, context: Context) -> Event:
     if target == head:
         raise RefusedError("cannot rewind to the head")
     return replace(_next(log, context, target), kind="rewind", links=(head.ident,))
+
+
+def _listed(name: str, effect: Effect) -> str:
+    """A word's line: its name, a colon, and its effect as w/effect spells it."""
+    return f"{name} : {' '.join(effect_words(effect))}"
+
+
+def _written(statements: tuple[Statement, ...]) -> list[Define]:
+    """The definitions in force, by name: the last of each word, but for the dispatchers and the
+    tests made for a head group, which no one wrote."""
+    last = {s.word: s for s in statements if isinstance(s, Define)}
+    written = [d for d in last.values() if len(d.clause) != 1 and PRIME not in d.name]
+    return sorted(written, key=lambda d: d.name)
+
+
+def words(log: Log, at: Event | None) -> str:
+    """What the state at `at` offers, a line a word: the builtins by name, then, after a blank
+    line, the words the program defines by name. A word defined twice is listed as the later
+    one, which is the one in force; a dispatched word is listed as its clauses, in the order
+    written and each with the effect line it was written with, not as the dispatcher and the
+    tests made for them; the queries w/history, w/doc and w/effect, which every defined word
+    has, are not listed. Refused (RefusedError): a program that no longer checks, which an
+    earlier evaluator accepted."""
+    try:
+        statements, _ = checked("".join(part.text for part in program(log, at)))
+    except FplError as error:
+        raise RefusedError(
+            f"the program does not check: {error.span.line}:{error.span.col} {error.message}"
+        ) from None
+    blocks = (
+        [_listed(name, EFFECTS[name]) for name in sorted(EFFECTS)],
+        [_listed(d.name, d.effect) for d in _written(statements)],
+    )
+    return "\n".join("".join(line + "\n" for line in block) for block in blocks if block)
