@@ -34,14 +34,16 @@
 #                           approval, never after
 #   land/linear             no commit between main and the head is a merge: main is linear
 #   land/rules              every rule on main is one judged here, and every parameter of it
-#                           has a value the script enforces (a pull_request rule that wants
+#                           has a value the script enforces. A pull_request rule that wants
 #                           the last push approved by someone else, teams as reviewers or
 #                           two approvals is refused, and so is a parameter not known here
-#                           that is anything but false); the bypass skips them all, so a
-#                           requirement the script does not make would go unenforced
-#                           main has rules, each naming its ruleset, with the parameters
-#                           GitHub's schema gives its type, of their types: an empty or
-#                           malformed answer is a forge failure, never "nothing required"
+#                           that is anything but false. The bypass skips them all, so a
+#                           requirement the script does not make would go unenforced.
+#                           The forge's answer must also be rules as GitHub's schema gives
+#                           them: main has at least one, each naming its ruleset, and a
+#                           pull_request or required_status_checks rule has the parameters
+#                           the schema requires of it, of the types it gives them. An empty
+#                           or malformed answer is a forge failure, never "nothing required"
 #   land/bypass             you may push past every ruleset on main "always", the owner's
 #                           one-time setting; without it the forge refuses any direct push
 #   land/remote             git fetches from and pushes to one URL, the same, and it is the

@@ -995,6 +995,31 @@ landing 1 "GitHub does not show the pull request as merged" 7
 says "does not show #7 as merged" "it says so loudly"
 main_is "$H" "main moved all the same"
 
+# The header's land/rules entry says two things, which it keeps in sentences of their own: the
+# requirements scripts/land does not make (which the bypass would leave unenforced), and the
+# schema the forge's answer must have. A sentence that holds both runs them together.
+total=$((total + 1))
+if ! python3 - "$land" <<'PY'
+import re
+import sys
+
+header = []
+for line in open(sys.argv[1]).read().splitlines()[1:]:
+    if not line.startswith("#"):
+        break
+    header.append(line[1:].strip())
+text = " ".join(header)
+entry = re.search(r"land/rules (.*?) land/bypass ", text).group(1)
+bad = [s for s in re.split(r"\.\s+", entry) if "unenforced" in s and "schema" in s]
+if bad:
+    print("one sentence holds both: " + bad[0], file=sys.stderr)
+    sys.exit(1)
+PY
+then
+	fails=$((fails + 1))
+	echo "self-test: the header's land/rules entry runs two conditions into one sentence" >&2
+fi
+
 echo "land self-test: $fails of $total checks failed (bash $BASH_VERSION)"
 if [ -z "${LAND_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ]; then
 	mkdir -p "$tmp/shim"
