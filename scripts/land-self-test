@@ -16,8 +16,9 @@
 # maintainer's, and no token is set, so a gh that slipped past the stub could not write.
 #
 # A landing needs a terminal; those cases run under a pseudo-terminal that presses Enter
-# when the question appears. Where there is a /bin/bash, the whole run is made a second
-# time with it first on PATH: on a Mac that is bash 3.2.
+# when the question appears. Where there is a /bin/bash other than the bash running this, the
+# whole run is made a second time with it first on PATH: on a Mac that is bash 3.2. Where the
+# running bash is /bin/bash (Linux), a second pass would repeat every check, so there is none.
 
 # The stand-ins' scripts are written in single quotes: they expand when they run.
 # shellcheck disable=SC2016
@@ -1029,7 +1030,7 @@ then
 fi
 
 echo "land self-test: $fails of $total checks failed (bash $BASH_VERSION)"
-if [ -z "${LAND_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ]; then
+if [ -z "${LAND_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ] && ! [ /bin/bash -ef "$BASH" ]; then
 	mkdir -p "$tmp/shim"
 	ln -s /bin/bash "$tmp/shim/bash"
 	PATH="$tmp/shim:$PATH" LAND_SELF_TEST_SHIM=1 /bin/bash "$root/scripts/land-self-test" ||
