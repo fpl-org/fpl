@@ -34,7 +34,9 @@
 # The rules end in a marker line with a random id, and what was written is recorded for
 # .githooks/commit-msg (commit_template_state): git's prefix, and the rules block as written.
 # commit-msg takes out that block and nothing else, and reads the prefix from the record, since
-# the message as it comes back from the editor cannot show it.
+# the message as it comes back from the editor cannot show it. For a source that gets no template
+# (-e -F, an amend) the prefix is recorded alone, read from the status block git appended: its
+# scissors line, then comment lines to the end of the file.
 #
 # Usage (git runs it): prepare-commit-msg <message file> [<source> [<sha>]]
 
@@ -75,6 +77,31 @@ if [ "$(git config --type=bool --get commit.status || true)" != false ]; then
 				exit
 			}
 		}' "$file" >"$cut_state"
+	# Under the deprecated core.commentChar=auto git has picked the comment character by now, and
+	# the file shows it, whatever the source (-e -F, an amend, a template): the status block git
+	# appended last is its scissors line and then comment lines only, down to the end of the file
+	# (with -v the diff follows, and the line recorded above has the character). The pick is
+	# recorded for commit-msg (commit_template_state), which cuts at git's scissors line and
+	# strips git's comment lines by it; with none recorded no line is taken for either, the strict
+	# reading. A scissors line the person typed is passed by unless only comment lines follow it.
+	if [ "$(commit_comment_raw)" = auto ]; then
+		picked="$(sed -n '1s/^\(.\).*/\1/p' "$cut_state")"
+		[ -n "$picked" ] || picked="$(awk '
+			BEGIN { d = "------------------------"; t = " " d " >8 " d }
+			{ line[++n] = $0 }
+			END {
+				for (i = n; i >= 1; i--) {
+					l = line[i]
+					if (length(l) != length(t) + 1 || substr(l, 2) != t) continue
+					p = substr(l, 1, 1)
+					if (!index("#;@!$%^&|:", p)) continue
+					for (j = i + 1; j <= n; j++) if (length(line[j]) && substr(line[j], 1, 1) != p) break
+					if (j > n) print p
+					exit
+				}
+			}' "$file")"
+		[ -z "$picked" ] || printf '%s\n' "$picked" >"$state"
+	fi
 fi
 [ -s "$cut_state" ] || rm -f "$cut_state"
 
