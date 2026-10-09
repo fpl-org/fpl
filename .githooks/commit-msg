@@ -117,9 +117,11 @@ fi
 # cannot be told from a person's editor named ':', which therefore reads as no editor: its
 # comment lines are judged, the reading that lets no long line into the stored message. A
 # --cleanup option on the command line is not visible here either (the config's reading
-# stands). Both are left to commit-lint on push, which reads the stored message. So is the
-# deprecated core.commentChar=auto: no hook learns which prefix git picked, so no line is taken
-# for a comment or a scissors line (commit_comment_prefix), the strict reading again.
+# stands). Both are left to commit-lint on push, which reads the stored message. Under the
+# deprecated core.commentChar=auto the prefix git picked is read from the status block it left in
+# the file, by .githooks/prepare-commit-msg, for every source; where no block shows it (--no-status,
+# commit.status=false) no line is taken for a comment or a scissors line (commit_comment_prefix),
+# the strict reading again.
 effective_message() {
 	local mode editor=1 prefix at="$cut_line"
 	[ "${GIT_EDITOR:-}" != : ] || editor=0

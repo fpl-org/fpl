@@ -772,6 +772,14 @@ fi
 
 
 
+same() { # same <description> <expected> <actual>
+	total=$((total + 1))
+	[ "$2" = "$3" ] || {
+		fails=$((fails + 1))
+		echo "self-test: $1:" >&2
+		printf '%s\n' "--- want" "$2" "--- got" "$3" | sed 's/^/    /' >&2
+	}
+}
 # ---- commit-msg and prepare-commit-msg, through git itself --------------------------------
 # A real `git commit` in the throwaway clone, with GIT_EDITOR a script that plays the person:
 # it writes ED_MSG in place of the message in the file git prepared and keeps git's comment
@@ -854,6 +862,28 @@ gate 1 "a person's ';' line last, under core.commentChar=auto: judged, so the tr
 says "missing 'Assisted-By:'" "the ';' line is judged as the message's last paragraph"
 gate 1 "the same, with -F: git strips nothing under auto without an editor" \
 	git -c core.commentChar=auto commit -q --allow-empty -F "$tmp/with-comment"
+# commit.cleanup=scissors (which scripts/setup sets) cuts at git's scissors line. Under 'auto' git
+# has picked the character by the time prepare-commit-msg runs, and the status block it appended
+# shows which: for -e -F and an amend too, where no template is written (the pick is recorded
+# all the same). Without it the hook judged the text git cuts away (CodeRabbit on #150).
+gate 0 "text below git's scissors line, -e -F, under commit.cleanup=scissors and core.commentChar=auto" \
+	env ED_MSG= ED_TAIL="$long"$'\n' git -c commit.cleanup=scissors -c core.commentChar=auto commit -q --allow-empty -e -F "$tmp/ok-msg"
+same "-e -F, scissors, auto: the message given is stored" "$ok" "$(stored)"
+printf '%s\n\n%s\n\n%s\n%s\n' 'feat(x): fine' '# typed by the person, so git picks another character' 'Stack: t' 'Human-Only: true' >"$tmp/hash-msg"
+gate 0 "the same where the message has a '#' line, so git picks another character" \
+	env ED_MSG= ED_TAIL="${long/#\#/;}"$'\n' git -c commit.cleanup=scissors -c core.commentChar=auto commit -q --allow-empty -e -F "$tmp/hash-msg"
+same "-e -F, scissors, auto, a '#' line: the message given is stored" "$(cat "$tmp/hash-msg")" "$(stored)"
+gate 0 "an amend, the same" \
+	env ED_MSG= ED_TAIL="$long"$'\n' git -c commit.cleanup=scissors -c core.commentChar=auto commit -q --allow-empty --amend
+# A scissors line the person typed is git's too when it is made of the character git picked: git
+# cuts at the first such line (measured, git 2.54). One of another character is text, and kept.
+printf '%s\n\n%s\n%s\n\nStack: t\nHuman-Only: true\n' 'feat(x): fine' "${sc/#\#/;}" "$long" >"$tmp/semi-below"
+gate 1 "a scissors line the person typed in git's own character, -e -F: git cuts there" \
+	git -c commit.cleanup=scissors -c core.commentChar=auto commit -q --allow-empty -e -F "$tmp/below-scissors"
+says "missing 'Assisted-By:'" "what is left above the typed scissors line is what is judged"
+gate 1 "a typed scissors line in another character, -e -F: not git's, so the text is kept" \
+	git -c commit.cleanup=scissors -c core.commentChar=auto commit -q --allow-empty -e -F "$tmp/semi-below"
+says "body line" "the line below the typed ';' scissors line is judged"
 # The same separators, set for one command: git hands them to the hook (GIT_CONFIG_PARAMETERS).
 gate 0 "a valid message, committed under git -c trailer.separators='='" \
 	git -c trailer.separators='=' commit -q --allow-empty -F "$tmp/ok-msg"
@@ -1100,14 +1130,6 @@ GIT_EDITOR=: reuse "a message given with -m" -m $'doc(x): typed\n\nbody line\n\n
 # only in case is accepted as that key, so landed history is not refused for case alone.
 logf="$(git rev-parse --git-path commit-msg-tolerated.log)"
 rm -f "$logf"
-same() { # same <description> <expected> <actual>
-	total=$((total + 1))
-	[ "$2" = "$3" ] || {
-		fails=$((fails + 1))
-		echo "self-test: $1:" >&2
-		printf '%s\n' "--- want" "$2" "--- got" "$3" | sed 's/^/    /' >&2
-	}
-}
 canon=$'docs(readme): fine\n\nStack: t\nHuman-Only: true'
 sloppy=$'Docs(README): fine\n\nStack: t\nHuman-only: true'
 gate 0 "a capitalised type, a capitalised scope and a trailer key in the wrong case, edited" \
