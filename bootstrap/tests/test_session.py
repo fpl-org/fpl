@@ -145,13 +145,25 @@ def test_an_output_that_moves_back_is_named_again() -> None:
     assert [o.notes for o in outcomes] == [(), (), named, named]
 
 
-def test_a_baseline_out_of_fuel_refuses_nothing() -> None:
+def test_a_baseline_runs_under_the_fuel_its_program_was_accepted_with() -> None:
     """The program before an input may need more fuel than this call has; the input that
-    redefines the costly word still succeeds, and names nothing."""
-    log, _ = entered(["f : -- x\n\t1 | 1 +\n", "f\n"], context=replace(CONTEXT, fuel=100))
+    redefines the costly word still succeeds, and names the output it moves."""
+    log, outcomes = entered(["f : -- x\n\t1 | 1 +\n", "f\n"], context=replace(CONTEXT, fuel=100))
     low = replace(CONTEXT, fuel=2)
     assert enter(log, "f\n", low, log.head).out == "ERROR: @2 1:1 out of fuel\n"
     outcome = enter(log, "f : -- x\n\t3\n", low, log.head)
+    assert (outcome.event.status, outcome.out) == ("ok", "")
+    assert outcome.notes == (f"CHANGED 2 ${outcomes[1].event.ident.spelled()}",)
+
+
+def test_a_baseline_that_fails_refuses_nothing() -> None:
+    """A program that no longer runs within the fuel it was accepted with (written under
+    another evaluator) is not compared: the input that redefines the costly word still
+    succeeds, and names nothing."""
+    log, _ = entered(["f : -- x\n\t1 | 1 +\n"], context=replace(CONTEXT, fuel=100))
+    run = enter(log, "f\n", replace(CONTEXT, fuel=100), log.head)
+    log = grown(log, replace(run, event=replace(run.event, fuel=2)))
+    outcome = enter(log, "f : -- x\n\t3\n", replace(CONTEXT, fuel=2), log.head)
     assert (outcome.event.status, outcome.out, outcome.notes) == ("ok", "", ())
 
 

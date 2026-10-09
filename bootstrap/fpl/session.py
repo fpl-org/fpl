@@ -171,11 +171,13 @@ def _by_part(entry: _Entry, lines: Lines) -> list[Lines]:
 
 
 def _earlier(entry: _Entry, left: Lines) -> Lines:
-    """The lines the program at the input's state leaves, run again. When it no longer runs
-    within the fuel of this call, `left`: nothing is then compared, so the baseline never
-    refuses an input whose own run succeeded."""
+    """The lines the program at the input's state leaves, run again under the fuel it was
+    accepted with: that of its last part, whose run was the whole of it. When it no longer
+    runs within that fuel (it was accepted under another evaluator), `left`: nothing is then
+    compared, so the baseline never refuses an input whose own run succeeded."""
+    fuel = entry.parts[-1].event.fuel if entry.parts else entry.context.fuel
     try:
-        return stacks(checked(entry.source)[0], entry.context.fuel)
+        return stacks(checked(entry.source)[0], fuel)
     except FplError:
         return left
 
@@ -199,8 +201,8 @@ def enter(log: Log, text: str, context: Context, at: Event | None) -> Outcome:
     The input gains a final newline if it lacks one. Joined after the program's parts, it is
     run as one file; its goals are noted even when the run then fails, and any FplError, from
     the margin rule on, becomes an error event whose state is its parent's. The program at `at`
-    is run once more, for the lines to compare the new run's with; if that run fails (it
-    ran under another fuel), nothing is named."""
+    is run once more, under the fuel it was accepted with, for the lines to compare the new
+    run's with; if that run fails (it was accepted under another evaluator), nothing is named."""
     entry = _Entry(log, at, context, program(log, at), text if text.endswith("\n") else text + "\n")
     notes: tuple[str, ...] = ()
     try:
