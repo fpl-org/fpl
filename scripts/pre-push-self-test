@@ -884,6 +884,50 @@ says "missing 'Assisted-By:'" "what is left above the typed scissors line is wha
 gate 1 "a typed scissors line in another character, -e -F: not git's, so the text is kept" \
 	git -c commit.cleanup=scissors -c core.commentChar=auto commit -q --allow-empty -e -F "$tmp/semi-below"
 says "body line" "the line below the typed ';' scissors line is judged"
+# A scissors line the person typed shows git's pick only where git wrote a status block below it,
+# and git writes none when no editor runs (-F, -m, -C: GIT_EDITOR=: for the hook), nor under
+# --no-status, which reaches no hook. The text below a typed scissors line is the person's then,
+# and git, which picked '#', stores it: the hook took it for the status block and stripped it
+# (a cross-family review of #150). The pick is read from a scissors line only where git writes
+# one into the status block, commit.cleanup=scissors, or from the diff of -v.
+printf '%s\n\n%s\n%s\n\n%s\n%s\n' 'feat(x): fine' 'Stack: t' 'Human-Only: true' \
+	"${sc/#\#/;}" "${long/#\#/;}" >"$tmp/semi-tail"
+gate 1 "a typed ';' scissors line and a long ';' line, -F without an editor, auto, strip: git stores them" \
+	git -c core.commentChar=auto -c commit.cleanup=strip commit -q --allow-empty -F "$tmp/semi-tail"
+says "body line" "the long ';' line git stores is judged (-F)"
+gate 1 "the same with -e -F --no-status, where git writes no status block" \
+	env ED_MSG= git -c core.commentChar=auto -c commit.cleanup=strip commit -q --allow-empty --no-status -e -F "$tmp/semi-tail"
+says "body line" "the long ';' line git stores is judged (-e -F --no-status)"
+# Under commit.cleanup=scissors, --no-status and an editor, the file git shows holds nothing a hook
+# can tell from the person's own text, so this one is left to commit-lint, which reads the
+# message as stored. The same holds for a scissors line and a quoted diff the person typed, with
+# commit.verbose=false: no -v, so git cuts nowhere.
+env ED_MSG= git -c core.hooksPath=/dev/null -c core.commentChar=auto -c commit.cleanup=scissors \
+	commit -q --allow-empty --no-status -e -F "$tmp/semi-tail"
+gate 1 "commit-lint on a typed ';' scissors line git did not cut at (--no-status, scissors, auto)" \
+	scripts/commit-lint -b agent/claude/stack/t HEAD^..HEAD
+says "[body-width]" "commit-lint judges the ';' line git stored"
+git reset -q --hard HEAD^
+printf '%s\n\n%s\n%s\n\n%s\ndiff --git a/x b/x\n%s\n' 'feat(x): fine' 'Stack: t' 'Human-Only: true' "$sc" \
+	"$(overlong "a line typed below a quoted diff, which git stores as it is")" >"$tmp/hash-tail"
+gate 1 "a typed scissors line and a quoted diff, -F without an editor, commit.verbose=false" \
+	git -c commit.cleanup=strip -c commit.verbose=false commit -q --allow-empty -F "$tmp/hash-tail"
+says "missing 'Assisted-By:'" "the quoted diff git stores follows the trailers, so they are no block (-F)"
+env ED_MSG= ED_SED= git -c core.hooksPath=/dev/null -c commit.cleanup=strip -c commit.verbose=false \
+	commit -q --allow-empty --no-status -e -F "$tmp/hash-tail"
+gate 1 "commit-lint on a typed scissors line and a quoted diff git did not cut at (--no-status)" \
+	scripts/commit-lint -b agent/claude/stack/t HEAD^..HEAD
+says "[provenance-assisted]" "commit-lint reads the trailers where git does, above the quoted diff it stored"
+git reset -q --hard HEAD^
+# With -v the pick is still read, from git's scissors line above its diff, under any cleanup.
+lf="a file name with spaces that is long enough to pass the seventy-two column limit.txt"
+base="$(git rev-parse HEAD)"
+: >"$lf"
+git add "$lf"
+gate 0 "-v -e -F, auto, strip: git's status block is read for its pick, so its long 'new file:' line is not judged" \
+	env ED_MSG= ED_SED= git -c core.commentChar=auto -c commit.cleanup=strip commit -q -v -e -F "$tmp/ok-msg"
+git reset -q --hard "$base"
+rm -f "$lf"
 # The same separators, set for one command: git hands them to the hook (GIT_CONFIG_PARAMETERS).
 gate 0 "a valid message, committed under git -c trailer.separators='='" \
 	git -c trailer.separators='=' commit -q --allow-empty -F "$tmp/ok-msg"
