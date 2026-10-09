@@ -219,11 +219,11 @@ def _made(statements: tuple[Statement, ...]) -> set[tuple[Define, Span]]:
 
 
 def _written(statements: tuple[Statement, ...]) -> list[Define]:
-    """The definitions the session offers, by name: the last of each word, while its entry in
-    the evaluator's table is still its own code, which a query of another word takes over
-    (`f/effect` under `f`); but not the dispatchers and the tests made for a head group, which
-    no one wrote. Identity decides, not equality: a query's code is never empty, so the shared
-    empty tuple of a definition without a body cannot pass for it."""
+    """The definitions the session offers, by name: the last of each word, at the place of its
+    first, while its entry in the evaluator's table is still its own code, which a query of
+    another word takes over (`f/effect` under `f`); but not the dispatchers and the tests made
+    for a head group, which no one wrote. Identity decides, not equality: a query's code is
+    never empty, so the shared empty tuple of a definition without a body cannot pass for it."""
     words = table(statements)
     last = {s.word: s for s in statements if isinstance(s, Define)}
     made = _made(statements)
@@ -246,8 +246,10 @@ def words(log: Log, at: Event | None) -> str:
     """What the state at `at` offers, a line a word: the builtins by name, then, after a blank
     line, the words the program defines by name. A word defined twice is listed as the later
     one, which is the one in force, and a builtin a definition shadows is not listed; a
-    dispatched word is listed as its clauses, in the order written and each with the effect
-    line it was written with, not as the dispatcher and the tests made for them; the queries
+    dispatched word is listed as its clauses, each where its key was first written and with
+    the effect line it was last written with, not as the dispatcher and the tests made for
+    them: a clause written again keeps its path ordinal, and so its age among equally specific
+    clauses, as the dispatcher keeps it, and does not move to the end; the queries
     w/history, w/doc and w/effect, which every defined word has, are not listed, nor is a
     definition written at one of their paths, which the query takes over. Refused
     (RefusedError): a program that no longer checks, which an earlier evaluator accepted."""

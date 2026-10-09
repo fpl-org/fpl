@@ -244,6 +244,21 @@ def test_a_dispatched_word_is_its_clauses_in_the_order_written() -> None:
     assert defined(texts) == ["f : x: Text -- y", "f : x: Int -- y", "g : -- x"]
 
 
+def test_a_clause_written_again_keeps_its_place_and_its_age() -> None:
+    """A clause written again under its key is listed where the key was first written, with the
+    later effect line: the evaluator keeps it at that path ordinal, which is its age among
+    equally specific clauses, so `1 f` takes the q clause, written between the two p ones, and
+    a listing that moved p after q would show it as the newer. Arity groups stay where their
+    first clause was written."""
+    pq = "p : x -- b\n\tdrop 1\nq : x -- b\n\tdrop 1\n"
+    texts = [pq, "f : x: p -- y\n\tdrop #p1\n", "f : x: q -- y\n\tdrop #q\n"]
+    texts.append("f : x: p -- z\n\tdrop #p2\n")
+    assert defined(texts) == ["f : x: p -- z", "f : x: q -- y", "p : x -- b", "q : x -- b"]
+    assert run("".join(texts) + "1 f\n") == "#q\n"
+    arities = ["f : x -- y\n\tdrop 1\n", "f : x z -- y\n\tdrop drop 2\n", "f : x -- z\n\tdrop 3\n"]
+    assert defined(arities) == ["f : x -- z", "f : x z -- y"]
+
+
 def test_a_head_group_is_listed_once_without_the_tests_made_for_it() -> None:
     shapes = "circle : r -- shape\n\t#circle swap pair\n"
     lines = defined([shapes, "area : ( circle r ) -- n\n\tr dup times\n"])
