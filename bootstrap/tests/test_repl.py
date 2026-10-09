@@ -344,17 +344,21 @@ def test_a_definition_without_tabs() -> None:
 
 
 def test_a_definition_without_a_body_is_noted() -> None:
-    """A definition whose head has no code under it is the identity, and the loop says so,
-    naming the word and where its head is, before the input's other notes, also when the input
-    then fails; one with a body, a one-shot input and a command are not noted."""
-    note = "NOTE 1:1 plus-one has an empty body, which is the identity\n"
+    """A definition whose head has no code under it is noted, naming the word and where its
+    head is, before the input's other notes, also when the input then fails; the note says
+    only that the body is empty, since a head group makes such a body a match and not the
+    identity. One with a body, a one-shot input and a command are not noted."""
+    note = "NOTE 1:1 plus-one has an empty body\n"
     assert called([], {}, "plus-one : n -- n\n\n1 2 3 plus-one\n") == (0, "1 2 3\n", note)
     assert called([], {}, "plus-one : n -- n\n") == (0, "", note)
     assert called([], {}, "plus-one : n -- n\n;; doc\n") == (0, "", note)
     nested = called([], {}, "a/\n\tb : -- x\n\n:show\n")
-    assert nested[2].startswith("NOTE 2:2 b has an empty body, which is the identity\n")
+    assert nested[2].startswith("NOTE 2:2 b has an empty body\n")
     assert called([], {}, "f : -- x\n\t2\n\nf\n:show\n")[2] == ""
     assert called(["-e", "plus-one : n -- n"], {}) == (0, "", "")
+    grouped = called([], {}, "area : ( circle r ) --\n\n")[2]
+    assert "NOTE 1:1 area has an empty body\n" in grouped
+    assert "identity" not in grouped
     code, out, err = called([], {}, "1 [\n")
     assert (code, out.startswith("ERROR: ")) == (0, True)
     assert "NOTE" not in err
@@ -364,7 +368,7 @@ def test_a_note_comes_before_the_head() -> None:
     """In a session the NOTE comes first and the new head last."""
     with session() as (_, env):
         notes = called(SESSION, env, "f : -- x\n\n")[2].splitlines()
-    assert notes[0] == "NOTE 1:1 f has an empty body, which is the identity"
+    assert notes[0] == "NOTE 1:1 f has an empty body"
     assert notes[-1].startswith("HEAD 1 $")
 
 

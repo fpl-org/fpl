@@ -347,13 +347,14 @@ def _seen(call: _Call, log: Log) -> _Call:
 
 def _bare(lines: tuple[Line, ...]) -> Iterator[str]:
     """A NOTE for each definition among the lines, and the blocks under them, whose head has
-    no code under it: such a body is the identity, which an empty line where the body was meant
-    would otherwise leave without a word."""
+    no code under it, which an empty line where the body was meant would otherwise leave
+    without a word. It says only that the written body is empty: what the word then does is
+    the desugaring's (a head group makes it a match), which this parse does not see."""
     for line in lines:
         name = plain(line.frames[0].cells[0].items[0]) if head(line) else None
         if name is not None and not any(map(code, line.block)):
             at = f"{line.span.line}:{line.span.col}"
-            yield f"NOTE {at} {name} has an empty body, which is the identity"
+            yield f"NOTE {at} {name} has an empty body"
         yield from _bare(line.block)
 
 
