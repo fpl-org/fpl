@@ -242,48 +242,34 @@ class Catalog:
                 return (*here[:depth], name)
         unimplemented()
 
-    def lookup(self, here: Here, segments: Here) -> str | None:
-        """The word a path names in one directory: the latest entry that holds it wins."""
-        for entry in reversed(self.logs.get(here, [])):
-            found = self.through(here, entry, segments)
-            if found is not None:
-                return found
-        return None
+    def reached(self, here: Here, segments: Here) -> Iterator[Here]:
+        """The paths a path may name from here, then from each enclosing directory, in the
+        order they answer: in each directory the latest entry first, a subdirectory looking on
+        in its own log, a mount only at what its directory holds, so mounts never chain. The
+        one walk both a word (find) and a directory (listed) are looked up by."""
+        for depth in range(len(here), -1, -1):
+            yield from self.entries(here[:depth], segments)
 
-    def through(self, here: Here, entry: str | Mount, segments: Here) -> str | None:
-        """The word a path names through one entry: a subdirectory looks on in its own log, a
-        mount only at the words its directory defines, so mounts never chain."""
-        if isinstance(entry, Mount):
-            path = "/".join((*self.directory(here, entry.name), *segments))
-            return path if path in self.effects else None
-        if entry != segments[0]:
-            return None
-        if len(segments) > 1:
-            return self.lookup((*here, entry), segments[1:])
-        path = "/".join((*here, entry))
-        return path if path in self.effects else None
+    def entries(self, here: Here, segments: Here) -> Iterator[Here]:
+        """The paths a path may name through the entries of one directory, the latest first."""
+        first, rest = segments[0], segments[1:]
+        for entry in reversed(self.logs.get(here, [])):
+            if isinstance(entry, Mount):
+                yield (*self.directory(here, entry.name), *segments)
+            elif entry == first and rest:
+                yield from self.entries((*here, entry), rest)
+            elif entry == first:
+                yield (*here, entry)
 
     def find(self, here: Here, segments: Here) -> str | None:
         """The word a path names from here, then each enclosing directory, or None."""
-        for depth in range(len(here), -1, -1):
-            found = self.lookup(here[:depth], segments)
-            if found is not None:
-                return found
-        return None
+        words = ("/".join(path) for path in self.reached(here, segments))
+        return next((word for word in words if word in self.effects), None)
 
     def listed(self, here: Here, segments: Here) -> bool:
-        """The path names a directory from here, then from each enclosing directory, or in a
-        directory mounted in one of them."""
-        for depth in range(len(here), -1, -1):
-            there = here[:depth]
-            roots = [there] + [
-                self.directory(there, entry.name)
-                for entry in self.logs.get(there, [])
-                if isinstance(entry, Mount)
-            ]
-            if any((*root, *segments) in self.logs for root in roots):
-                return True
-        return False
+        """The path names a directory from here, then each enclosing directory, by the walk a
+        word is found by: through a subdirectory, or a directory mounted at any level of it."""
+        return any(path in self.logs for path in self.reached(here, segments))
 
     def resolve(self, here: Here, segments: Here) -> str:
         """The word a path names from here, then each enclosing directory; none is refused."""

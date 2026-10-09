@@ -492,6 +492,14 @@ def test_what_no_part_implements_is_refused_before_running(source: str) -> None:
             "ERROR: 9:3 no evaluator yet: n/p",
         ),
         ("m/\n\tk : -- y\n\t\t1\na/\n\t#m bind\n\tf : -- y\n\t\tn\n", "ERROR: 7:3 unknown word: n"),
+        (
+            "m/\n\tn/\n\t\tk : -- y\n\t\t\t1\na/\n\tx/\n\t\t#m bind\n\tf : -- y\n\t\tx/n\n",
+            "ERROR: 9:3 no evaluator yet: x/n",
+        ),
+        (
+            "m/\n\tn/\n\t\tk : -- y\n\t\t\t1\na/\n\tx/\n\t\t#m bind\n\tf : -- y\n\t\tx/q\n",
+            "ERROR: 9:3 unknown word: x/q",
+        ),
     ],
 )
 def test_a_call_nothing_answers_is_refused_at_its_word(source: str, error: str) -> None:
