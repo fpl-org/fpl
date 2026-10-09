@@ -208,12 +208,14 @@ def _listed(name: str, effect: Effect) -> str:
     return f"{name} : {' '.join(effect_words(effect))}"
 
 
-def _made(statements: tuple[Statement, ...]) -> set[Define]:
-    """The tests `tests` makes for the clauses with a head group, as the definitions they are.
-    A test is known by the whole definition, not by a prime in its name, which a name written
-    by hand may hold, nor by its word, which a definition written at its path shares, untyped,
-    while its effect and body are the writer's own."""
-    return {t for s in statements if isinstance(s, Define) and len(s.clause) == 2 for t in tests(s)}
+def _made(statements: tuple[Statement, ...]) -> set[tuple[Define, Span]]:
+    """The tests `tests` makes for the clauses with a head group, each with where it stands:
+    at its clause's effect line. A test is known by the whole definition and that place, not
+    by a prime in its name, which a name written by hand may hold, nor by its word, which a
+    definition written at its path shares, nor by the definition alone, which the writer may
+    copy word for word, on a line of their own."""
+    clauses = (s for s in statements if isinstance(s, Define) and len(s.clause) == 2)
+    return {(t, t.span) for s in clauses for t in tests(s)}
 
 
 def _written(statements: tuple[Statement, ...]) -> list[Define]:
@@ -226,7 +228,7 @@ def _written(statements: tuple[Statement, ...]) -> list[Define]:
     last = {s.word: s for s in statements if isinstance(s, Define)}
     made = _made(statements)
     offered = (d for d in last.values() if words[d.word] is d.code)
-    written = [d for d in offered if len(d.clause) != 1 and d not in made]
+    written = [d for d in offered if len(d.clause) != 1 and (d, d.span) not in made]
     return sorted(written, key=lambda d: d.name)
 
 

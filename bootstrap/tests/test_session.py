@@ -330,6 +330,21 @@ def test_a_definition_at_the_word_of_a_made_test_is_listed_while_it_is_in_force(
     assert [line.split(" : ")[0] for line in defined(texts)] == expected
 
 
+@pytest.mark.parametrize("before", [False, True])
+def test_a_definition_written_as_a_made_test_is_listed_while_it_is_in_force(before: bool) -> None:
+    """A clause written word for word as the test made for a head group is still the writer's:
+    its own line tells it from the test, which stands at the group clause's line."""
+    prime = "\N{PRIME}"
+    shapes = "circle : r -- shape\n\t#circle swap pair\n"
+    group = "area : ( circle r ) -- n\n\tr dup times\n"
+    rows = "\t\t\tmatch\n\t\t\t\t( circle r )\t1\n\t\t\t\t_\t0\n"
+    clause = f"area/\n\t1/\n\t\t1{prime}1 : x -- b\n{rows}"
+    texts = [shapes, clause, group] if before else [shapes, group, clause]
+    assert run(f"{''.join(texts)}3 circle area/1/1{prime}1\n") == run("1\n")
+    expected = ["area", "circle"] if before else ["area", f"area/1/1{prime}1", "circle"]
+    assert [line.split(" : ")[0] for line in defined(texts)] == expected
+
+
 @pytest.mark.parametrize("query", ["history", "doc", "effect"])
 @pytest.mark.parametrize("before", [False, True])
 def test_a_definition_at_a_query_of_a_defined_word_is_not_listed(query: str, before: bool) -> None:
