@@ -519,9 +519,9 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 
 ## repl-transcript
 - Depends on it: fpl/repl.py, fpl/session.py (enter), tests/test_repl.py, tests/test_session.py
-- Default in force: an error in an earlier event is ERROR: @<seq> <l>:<c>; CHANGED <seq> $<id> names an earlier input whose output moved; HEAD <seq> $<id> follows an append on stderr; an input after the first starts at the left margin; an input ends at a blank line or once it is not pending; a first line with : is a command (:show :log :rewind E :canonical :quit); joined outputs differ from the file's only where a run leaves a single empty stack; at a terminal a tab inserts itself (GNU readline; libedit untried)
+- Default in force: an error in an earlier event is ERROR: @<seq> <l>:<c>; CHANGED <seq> $<id> names an earlier input whose output moved; HEAD <seq> $<id> follows an append on stderr; an input after the first starts at the left margin; an input ends at a blank line or once it is not pending; a first line with : is a command (:words :show :log :rewind E :canonical :quit; :words lists the builtins, then after a blank line the session's own words, a line `name : ins -- outs` each as w/effect spells it, appends nothing, and shows no slot kinds); joined outputs differ from the file's only where a run leaves a single empty stack; at a terminal a tab inserts itself (GNU readline; libedit untried)
 - Closes by: design, fixing the transcript's form
-- Evidence: tests/test_session.py:117, :126, :136; tests/test_repl.py:264, :299, :345; fpl/print.py:24-31
+- Evidence: tests/test_session.py:118, :127, :137; tests/test_repl.py:265, :300, :346; fpl/print.py:24-31
 
 ## head-group-pin
 - Depends on it: fpl/desugar.py `_Desugar.code`, tests/test_overload.py test_a_pin_in_a_head_group_is_refused

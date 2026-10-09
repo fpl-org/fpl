@@ -1,7 +1,7 @@
 """A session over a log: the state at an event is every accepted input its deps lead back
 through, run again as one file; entering an input prints only what its own lines leave, and
-names each earlier input whose output the run has moved. Pure but for `evaluator`, which reads
-the package's sources once."""
+names each earlier input whose output the run has moved; the words it offers are listed from the
+same run. Pure but for `evaluator`, which reads the package's sources once."""
 
 from bisect import bisect_right
 from collections.abc import Mapping
@@ -9,8 +9,11 @@ from dataclasses import dataclass, replace
 from functools import cache, cached_property
 from pathlib import Path
 
+from fpl.ast_core import EFFECTS, Define, Effect, Statement
+from fpl.desugar import tests
 from fpl.driver import Lines, checked, printed, stacks
 from fpl.errors import FplError, Span
+from fpl.eval import effect_words, table
 from fpl.log import SCHEMA, Event, Log, RefusedError, Status, Who, prefixed
 from fpl.multihash import Multihash, content, hashed
 from fpl.types import Goal, reported
@@ -198,3 +201,65 @@ def rewind(log: Log, target: Event | None, context: Context) -> Event:
     if target == head:
         raise RefusedError("cannot rewind to the head")
     return replace(_next(log, context, target), kind="rewind", links=(head.ident,))
+
+
+def _listed(name: str, effect: Effect) -> str:
+    """A word's line: its name, a colon, and its effect as w/effect spells it."""
+    return f"{name} : {' '.join(effect_words(effect))}"
+
+
+def _made(statements: tuple[Statement, ...]) -> set[tuple[Define, Span]]:
+    """The tests `tests` makes for the clauses with a head group, each with where it stands:
+    at its clause's effect line. A test is known by the whole definition and that place, not
+    by a prime in its name, which a name written by hand may hold, nor by its word, which a
+    definition written at its path shares, nor by the definition alone, which the writer may
+    copy word for word, on a line of their own."""
+    clauses = (s for s in statements if isinstance(s, Define) and len(s.clause) == 2)
+    return {(t, t.span) for s in clauses for t in tests(s)}
+
+
+def _written(statements: tuple[Statement, ...]) -> list[Define]:
+    """The definitions the session offers, by name: the last of each word, at the place of its
+    first, while its entry in the evaluator's table is still its own code, which a query of
+    another word takes over (`f/effect` under `f`); but not the dispatchers and the tests made
+    for a head group, which no one wrote. Identity decides, not equality: a query's code is
+    never empty, so the shared empty tuple of a definition without a body cannot pass for it."""
+    words = table(statements)
+    last = {s.word: s for s in statements if isinstance(s, Define)}
+    made = _made(statements)
+    offered = (d for d in last.values() if words[d.word] is d.code)
+    written = [d for d in offered if len(d.clause) != 1 and (d, d.span) not in made]
+    return sorted(written, key=lambda d: d.name)
+
+
+def _builtins(shadowed: set[str]) -> list[str]:
+    """The builtins' lines by name, but for the words a definition shadows."""
+    return [_listed(name, EFFECTS[name]) for name in sorted(EFFECTS) if name not in shadowed]
+
+
+def _joined(blocks: tuple[list[str], list[str]]) -> str:
+    """The blocks that are not empty, a line a word, a blank line between them."""
+    return "\n".join("".join(line + "\n" for line in block) for block in blocks if block)
+
+
+def words(log: Log, at: Event | None) -> str:
+    """What the state at `at` offers, a line a word: the builtins by name, then, after a blank
+    line, the words the program defines by name. A word defined twice is listed as the later
+    one, which is the one in force, and a builtin a definition shadows is not listed; a
+    dispatched word is listed as its clauses, each where its key was first written and with
+    the effect line it was last written with, not as the dispatcher and the tests made for
+    them: a clause written again keeps its path ordinal, and so its age among equally specific
+    clauses, as the dispatcher keeps it, and does not move to the end; the queries
+    w/history, w/doc and w/effect, which every defined word has, are not listed, nor is a
+    definition written at one of their paths, which the query takes over. Refused
+    (RefusedError): a program that no longer checks, which an earlier evaluator accepted."""
+    try:
+        statements, _ = checked("".join(part.text for part in program(log, at)))
+    except FplError as error:
+        raise RefusedError(
+            f"the program does not check: {error.span.line}:{error.span.col} {error.message}"
+        ) from None
+    written = _written(statements)
+    return _joined(
+        (_builtins({d.name for d in written}), [_listed(d.name, d.effect) for d in written])
+    )

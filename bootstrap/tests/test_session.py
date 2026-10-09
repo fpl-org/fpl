@@ -8,11 +8,12 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from fpl import session
+from fpl.ast_core import EFFECTS
 from fpl.driver import run
 from fpl.errors import FplError, Span
 from fpl.log import SCHEMA, Event, Log, RefusedError
 from fpl.multihash import BLAKE2B_256, content
-from fpl.session import FUEL_DEFAULT, Context, Outcome, enter, evaluator, program, rewind
+from fpl.session import FUEL_DEFAULT, Context, Outcome, enter, evaluator, program, rewind, words
 
 CONTEXT = Context(evaluator(), "agent", "Claude Opus 5.5", "s", FUEL_DEFAULT)
 EMPTY = Log((), {}, 0)
@@ -223,3 +224,183 @@ def test_the_evaluator_is_the_hash_of_its_sources_once() -> None:
     assert evaluator().code == BLAKE2B_256
     assert replace(CONTEXT, fuel=3).fuel == 3
     assert (CONTEXT.who, CONTEXT.model, CONTEXT.session) == ("agent", "Claude Opus 5.5", "s")
+
+
+def defined(texts: Sequence[str]) -> list[str]:
+    """The lines of the words the program of `texts` defines, after the builtins' block."""
+    log, _ = entered(texts)
+    return words(log, log.head).partition("\n\n")[2].splitlines()
+
+
+def test_the_words_are_the_builtins_then_the_definitions() -> None:
+    log, _ = entered(["plus-one : n -- n\n\t1 +\n"])
+    builtins, rest = words(log, log.head).split("\n\n")
+    lines = builtins.splitlines()
+    assert [line.split(" : ")[0] for line in lines] == sorted(EFFECTS)
+    assert lines[:3] == ["! : q -- x", "+ : x y -- z", ", : a b -- ab"]
+    assert {"each : xs q -- ys", "fold : xs q -- x", "swap : x y -- y x"} <= set(lines)
+    assert rest == "plus-one : n -- n\n"
+
+
+def test_a_state_that_defines_nothing_has_no_second_block() -> None:
+    nothing = words(EMPTY, None)
+    assert nothing.endswith("\n")
+    assert "\n\n" not in nothing
+    log, _ = entered(["1 2 +\n", "1 [\n"])
+    assert words(log, log.head) == nothing
+
+
+def test_the_words_of_an_earlier_state() -> None:
+    log, (first, _, _) = entered(["a : -- x\n\t1\n", "b : -- x\n\t2\n", "c : -- x\n\t1 ["])
+    assert words(log, log.head).endswith("\n\na : -- x\nb : -- x\n")
+    assert words(log, first.event).endswith("\n\na : -- x\n")
+    assert words(log, None) == words(EMPTY, None)
+
+
+def test_the_words_are_sorted_and_the_later_definition_is_in_force() -> None:
+    texts = ["b : -- x\n\t1\n", "a : n -- n\n\t1 +\n", "b : -- y\n\t2\n"]
+    assert defined(texts) == ["a : n -- n", "b : -- y"]
+
+
+def test_a_dispatched_word_is_its_clauses_in_the_order_written() -> None:
+    texts = ["f : x: Text -- y\n\tdrop 2\n", "f : x: Int -- y\n\tdrop 1\n", "g : -- x\n\t1\n"]
+    assert defined(texts) == ["f : x: Text -- y", "f : x: Int -- y", "g : -- x"]
+
+
+def test_a_clause_written_again_keeps_its_place_and_its_age() -> None:
+    """A clause written again under its key is listed where the key was first written, with the
+    later effect line: the evaluator keeps it at that path ordinal, which is its age among
+    equally specific clauses, so `1 f` takes the q clause, written between the two p ones, and
+    a listing that moved p after q would show it as the newer. The place is the key's, whatever
+    its arity: a two-input clause written between two one-input ones is listed between them,
+    which says nothing of dispatch, where a call picks its arity by how many values it has."""
+    pq = "p : x -- b\n\tdrop 1\nq : x -- b\n\tdrop 1\n"
+    texts = [pq, "f : x: p -- y\n\tdrop #p1\n", "f : x: q -- y\n\tdrop #q\n"]
+    texts.append("f : x: p -- z\n\tdrop #p2\n")
+    assert defined(texts) == ["f : x: p -- z", "f : x: q -- y", "p : x -- b", "q : x -- b"]
+    assert run("".join(texts) + "1 f\n") == "#q\n"
+    arities = ["f : x -- y\n\tdrop 1\n", "f : x z -- y\n\tdrop drop 2\n", "f : x -- z\n\tdrop 3\n"]
+    assert defined(arities) == ["f : x -- z", "f : x z -- y"]
+    split = [pq, "f : x: p -- y\n\tdrop 1\n", "f : x z -- y\n\tdrop drop 2\n"]
+    split += ["f : x: q -- y\n\tdrop 3\n", "f : x: p -- z\n\tdrop 4\n"]
+    assert defined(split)[:3] == ["f : x: p -- z", "f : x z -- y", "f : x: q -- y"]
+
+
+def test_a_head_group_is_listed_once_without_the_tests_made_for_it() -> None:
+    shapes = "circle : r -- shape\n\t#circle swap pair\n"
+    lines = defined([shapes, "area : ( circle r ) -- n\n\tr dup times\n"])
+    assert [line.split(" : ")[0] for line in lines] == ["area", "circle"]
+    assert lines[0].endswith(" -- n +fail")
+
+
+@pytest.mark.parametrize(
+    ("source", "word"),
+    [
+        ("plus-one : n -- n\n\t1 +\n", "plus-one"),
+        ("f : x -- c\n\tmatch\n\t\t1\t#one\n", "f"),
+        ("d/\n\tg : -- x\n\t\t1\n", "d/g"),
+    ],
+)
+def test_a_listed_effect_is_what_the_effect_query_pushes(source: str, word: str) -> None:
+    """The text after the colon is the strings w/effect answers, joined by spaces."""
+    (line,) = defined([source])
+    assert line.startswith(f"{word} : ")
+    strings = " ".join(f"“{each}”" for each in line.removeprefix(f"{word} : ").split())
+    assert run(f"{source}{word}/effect\n") == run(f"⟨ {strings} ⟩\n")
+
+
+def test_a_program_that_no_longer_checks_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    log, _ = entered(["1\n"])
+
+    def changed(_source: str) -> None:
+        raise FplError(Span(2, 3), "no longer so")
+
+    monkeypatch.setattr(session, "checked", changed)
+    with pytest.raises(RefusedError, match=r"^the program does not check: 2:3 no longer so$"):
+        words(log, log.head)
+
+
+def test_a_name_written_with_a_prime_is_listed() -> None:
+    """A prime is legal in a name; only the dispatchers and the tests made for a head group
+    are left out, and a name beside the group clause `area` that holds one is neither."""
+    prime = "\N{PRIME}"
+    shapes = "circle : r -- shape\n\t#circle swap pair\n"
+    group = "area : ( circle r ) -- n\n\tr dup times\n"
+    texts = [f"foo{prime} : -- x\n\t1\n", f"d{prime}/\n\tg : -- x\n\t\t1\n", shapes, group]
+    names = [line.split(" : ")[0] for line in defined([*texts, f"area{prime} : -- x\n\t1\n"])]
+    assert names == ["area", f"area{prime}", "circle", f"d{prime}/g", f"foo{prime}"]
+
+
+def test_a_clause_under_the_path_of_a_made_test_is_listed() -> None:
+    """A clause written under the path that names a test made for a head group has a longer
+    word than the test, is what that path calls, and is listed."""
+    prime = "\N{PRIME}"
+    shapes = "circle : r -- shape\n\t#circle swap pair\n"
+    group = "area : ( circle r ) -- n\n\tr dup times\n"
+    clause = f"area/\n\t1/\n\t\t1{prime}1 : x: Int -- y\n\t\t\tdrop 7\n"
+    assert run(f"{shapes}{group}{clause}3 area/1/1{prime}1\n") == run("7\n")
+    lines = defined([shapes, group, clause])
+    assert [line.split(" : ")[0] for line in lines] == ["area", f"area/1/1{prime}1", "circle"]
+    assert lines[1] == f"area/1/1{prime}1 : x: Int -- y"
+
+
+def test_a_definition_that_shadows_a_builtin_takes_its_place_in_the_listing() -> None:
+    """The word in force is the definition, so its line is listed once, in the session's block,
+    and the builtin's is not; a definition under a directory shadows nothing."""
+    log, _ = entered(["+ : x -- y\n\t2 times\n", "d/\n\ttimes : x -- y\n\t\tdrop 2\n"])
+    builtins, rest = words(log, log.head).split("\n\n")
+    lines = builtins.splitlines()
+    assert "+ : x y -- z" not in lines
+    assert "times : x y -- z" in lines
+    assert len(lines) == len(EFFECTS) - 1
+    assert rest == "+ : x -- y\nd/times : x -- y\n"
+
+
+@pytest.mark.parametrize(("before", "answer", "listed"), [(False, "7", True), (True, "0", False)])
+def test_a_definition_at_the_word_of_a_made_test_is_listed_while_it_is_in_force(
+    before: bool, answer: str, listed: bool
+) -> None:
+    """Untyped, a clause at the path of a test made for a head group has that test's word; the
+    later of the two is what the word calls, and the user's is listed only when it is that one."""
+    prime = "\N{PRIME}"
+    shapes = "circle : r -- shape\n\t#circle swap pair\n"
+    group = "area : ( circle r ) -- n\n\tr dup times\n"
+    clause = f"area/\n\t1/\n\t\t1{prime}1 : x -- b\n\t\t\tdrop 7\n"
+    texts = [shapes, clause, group] if before else [shapes, group, clause]
+    assert run(f"{''.join(texts)}3 area/1/1{prime}1\n") == run(f"{answer}\n")
+    expected = ["area", f"area/1/1{prime}1", "circle"] if listed else ["area", "circle"]
+    assert [line.split(" : ")[0] for line in defined(texts)] == expected
+
+
+@pytest.mark.parametrize("before", [False, True])
+def test_a_definition_written_as_a_made_test_is_listed_while_it_is_in_force(before: bool) -> None:
+    """A clause written word for word as the test made for a head group is still the writer's:
+    its own line tells it from the test, which stands at the group clause's line."""
+    prime = "\N{PRIME}"
+    shapes = "circle : r -- shape\n\t#circle swap pair\n"
+    group = "area : ( circle r ) -- n\n\tr dup times\n"
+    rows = "\t\t\tmatch\n\t\t\t\t( circle r )\t1\n\t\t\t\t_\t0\n"
+    clause = f"area/\n\t1/\n\t\t1{prime}1 : x -- b\n{rows}"
+    texts = [shapes, clause, group] if before else [shapes, group, clause]
+    assert run(f"{''.join(texts)}3 circle area/1/1{prime}1\n") == run("1\n")
+    expected = ["area", "circle"] if before else ["area", f"area/1/1{prime}1", "circle"]
+    assert [line.split(" : ")[0] for line in defined(texts)] == expected
+
+
+@pytest.mark.parametrize("query", ["history", "doc", "effect"])
+@pytest.mark.parametrize("before", [False, True])
+def test_a_definition_at_a_query_of_a_defined_word_is_not_listed(query: str, before: bool) -> None:
+    """Every defined word w has w/history, w/doc and w/effect, which a definition written at
+    one of those paths does not replace, so that definition is not what the path calls."""
+    word, at = "f : -- x\n\t1\n", f"f/\n\t{query} : -- x\n\t\t2\n"
+    texts = [at, word] if before else [word, at]
+    assert run(f"{''.join(texts)}f/{query}\n") != run("2\n")
+    assert defined(texts) == ["f : -- x"]
+    nested = ["f/\n\tg : -- x\n\t\t1\n", f"f/\n\tg/\n\t\t{query} : -- x\n\t\t\t2\n"]
+    assert defined(nested) == ["f/g : -- x"]
+
+
+def test_a_definition_under_a_name_that_defines_nothing_is_listed() -> None:
+    """A path ending in a query's name is no query when nothing is defined above it."""
+    assert defined(["f/\n\teffect : -- x\n\t\t2\n"]) == ["f/effect : -- x"]
+    assert run("f/\n\teffect : -- x\n\t\t2\nf/effect\n") == run("2\n")

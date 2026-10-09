@@ -18,6 +18,7 @@ from fpl.ast_core import (
     Call,
     Define,
     Dict,
+    Effect,
     Equal,
     Guarded,
     Inverse,
@@ -70,6 +71,14 @@ def evaluate(
     first, each as a quotation, word/doc the docstring of the one in force and word/effect its
     effect line as a list of strings, +fail last when it may fail."""
     budget(fuel)
+    words = table(statements)
+    return tuple(metered(s, words, fuel) for s in statements if isinstance(s, Run))
+
+
+def table(statements: tuple[Statement, ...]) -> dict[str, tuple[Node, ...]]:
+    """What each word calls: the code of the last definition of its word, then for every such
+    word its queries w/history, w/doc and w/effect, which take their path from a definition
+    written there. A definition is in force where its word's entry is its own code."""
     logged: dict[str, list[Define]] = {}
     for s in statements:
         if isinstance(s, Define):
@@ -79,7 +88,7 @@ def evaluate(
         words[f"{word}/history"] = (Push(Listed(tuple(Quotation(d.code) for d in log[:-1]))),)
         words[f"{word}/doc"] = (Push(log[-1].doc),)
         words[f"{word}/effect"] = (Push(effect_line(log[-1])),)
-    return tuple(metered(s, words, fuel) for s in statements if isinstance(s, Run))
+    return words
 
 
 def budget(fuel: int | None) -> None:
@@ -120,13 +129,17 @@ def metered(run: Run, words: Words, fuel: int | None) -> tuple[Value, ...]:
 
 
 def effect_line(define: Define) -> Listed:
+    """The effect line of a defined word as a list of strings (hole effect-query)."""
+    return Listed(effect_words(define.effect))
+
+
+def effect_words(effect: Effect) -> tuple[str, ...]:
     """ins -- outs, a typed input as its two strings `x:` and its type, then +fail if the word
-    may fail (hole effect-query)."""
-    effect = define.effect
+    may fail: what w/effect pushes, and what a listing of the words writes after the colon."""
     fails = ("+fail",) if effect.fails else ()
     typed = zip(effect.ins, effect.types, strict=True)
     ins = (text for name, part in typed for text in slotted(name, part))
-    return Listed((*ins, "--", *effect.outs, *fails))
+    return (*ins, "--", *effect.outs, *fails)
 
 
 def slotted(name: str, part: str | None) -> tuple[str, ...]:
