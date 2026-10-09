@@ -997,7 +997,7 @@ main_is "$H" "main moved all the same"
 
 # The header's land/rules entry says two things, which it keeps in sentences of their own: the
 # requirements scripts/land does not make (which the bypass would leave unenforced), and the
-# schema the forge's answer must have. A sentence that holds both runs them together.
+# schema the forge's answer must have. The entry must say both, and no sentence may hold both.
 total=$((total + 1))
 if ! python3 - "$land" <<'PY'
 import re
@@ -1010,7 +1010,12 @@ for line in open(sys.argv[1]).read().splitlines()[1:]:
     header.append(line[1:].strip())
 text = " ".join(header)
 entry = re.search(r"land/rules (.*?) land/bypass ", text).group(1)
-bad = [s for s in re.split(r"\.\s+", entry) if "unenforced" in s and "schema" in s]
+sentences = re.split(r"\.\s+", entry)
+for word in ("unenforced", "schema"):
+    if not any(word in s for s in sentences):
+        print("the entry never says " + word, file=sys.stderr)
+        sys.exit(1)
+bad = [s for s in sentences if "unenforced" in s and "schema" in s]
 if bad:
     print("one sentence holds both: " + bad[0], file=sys.stderr)
     sys.exit(1)
