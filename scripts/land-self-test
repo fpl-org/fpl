@@ -328,6 +328,7 @@ forge
 children '{"number": 8}'
 expect 0 "a pull request stacked on it" --dry-run 7
 says "gh api -X PATCH repos/land-test/fpl/pulls/8 -f base=main" "the retarget is printed"
+says "you may push past ruleset 'set 1' as @psjg: always" "it names the account it judged"
 
 forge
 expect 0 "the pull request named by its URL" --dry-run https://github.com/land-test/fpl/pull/7
@@ -595,6 +596,7 @@ forge
 ruleset 2 pull_requests_only
 expect 1 "a ruleset the maintainer may bypass only for pull requests" --dry-run 7
 says "NO  land/bypass" "it names the rule"
+says "lets you (@psjg) past it pull_requests_only" "it names the account it judged"
 says "Bypass list > Repository admin > Always" "it gives the owner's one-time step"
 
 # land/remote: the push goes where the fetch comes from, the repository read on the forge.
@@ -792,6 +794,7 @@ printf '#!/bin/sh\necho "error: GH013: Repository rule violations found for refs
 chmod +x "$REMOTE/hooks/pre-receive"
 landing 1 "the forge's rulesets refuse the push" 7
 says "Bypass list > Repository admin > Always" "it gives the owner's one-time step"
+says "as another account than @psjg" "it names the push credential as a possible cause"
 main_is "$M0" "nothing landed"
 rm -f "$REMOTE/hooks/pre-receive"
 

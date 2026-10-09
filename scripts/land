@@ -45,7 +45,10 @@
 #                           the schema requires of it, of the types it gives them. An empty
 #                           or malformed answer is a forge failure, never "nothing required"
 #   land/bypass             you may push past every ruleset on main "always", the owner's
-#                           one-time setting; without it the forge refuses any direct push
+#                           one-time setting; without it the forge refuses any direct push.
+#                           This judges the account `gh api user` reports and names it; git
+#                           pushes with the credential it has for the remote, which may be
+#                           another account's, so a refused push names that as a cause too
 #   land/remote             git fetches from and pushes to one URL, the same, and it is the
 #                           GitHub repository the forge is read for: a pushurl, a second
 #                           URL, or a url.<base>.insteadOf or pushInsteadOf that sends git
@@ -138,6 +141,15 @@ BYPASS_REMEDY = (
     "the owner's one-time step, on GitHub: Settings > Rules > Rulesets, in each ruleset"
     " on main, Bypass list > Repository admin > Always (not 'For pull requests only')"
 )
+
+
+def push_remedy(login):
+    """What to say when the forge refuses the push for its rules. land/bypass judged the
+    account `gh api user` reports; git pushes with whatever credential it has for the
+    remote (an ssh key, a credential helper, a token), which may be another account's."""
+    return (f"either git pushed as another account than @{login}, the one judged here"
+            " (check the credential git uses for this remote: an ssh key, a credential"
+            f" helper, a token), or @{login} may not bypass the rules: " + BYPASS_REMEDY)
 
 
 def load(path):
@@ -583,8 +595,9 @@ def unenforced(rule):
             if (not known[name](value) if name in known else value is not False)]
 
 
-def judge_rules(v, d, rules):
-    """land/rules and land/bypass: every rule is one judged here, and you may skip them."""
+def judge_rules(v, d, rules, me):
+    """land/rules and land/bypass: every rule is one judged here, and you, the account `me`
+    that `gh api user` reports, may skip them."""
     unjudged = set()
     for rule in rules:
         unjudged.update(unenforced(rule))
@@ -598,9 +611,9 @@ def judge_rules(v, d, rules):
         rs = load(f"{d}/ruleset-{rid}.json")
         can = rs.get("current_user_can_bypass") or "unknown"
         if can in BYPASS:
-            v.ok("land/bypass", f"you may push past ruleset '{rs.get('name')}': {can}")
+            v.ok("land/bypass", f"you may push past ruleset '{rs.get('name')}' as @{me}: {can}")
         else:
-            v.no("land/bypass", f"ruleset '{rs.get('name')}' lets you past it {can}",
+            v.no("land/bypass", f"ruleset '{rs.get('name')}' lets you (@{me}) past it {can}",
                  BYPASS_REMEDY)
 
 
@@ -622,7 +635,7 @@ def judge(d, repo, fetched, main, ancestor, merges):  # noqa: PLR0913, PLR0917
         judge_checks(v, d, rules, pr["number"], pr["head"]["sha"])
     judge_history(v, main, pr["head"]["sha"], ancestor, merges)
     if not fault:
-        judge_rules(v, d, rules)
+        judge_rules(v, d, rules, me)
     if v.refused:
         print(f"land: #{pr['number']} refused by {', '.join(sorted(v.refused))}")
         return 1
@@ -733,8 +746,8 @@ def main(cmd, *args):
         for rid in sorted({r["ruleset_id"] for r in pages(args[0])
                            if isinstance(r, dict) and r.get("ruleset_id")}):
             print(rid)
-    elif cmd == "bypass-remedy":
-        print(BYPASS_REMEDY)
+    elif cmd == "push-remedy":
+        print(push_remedy(load(args[0])["login"]))
     elif cmd == "judge":
         sys.exit(judge(*args))
     elif cmd == "still":
@@ -970,7 +983,7 @@ if ! out="$(git push "$dest" "$head:refs/heads/main" 2>&1)"; then
 	printf '%s\n' "$out" >&2
 	case "$out" in
 	*GH013* | *"rule violation"*)
-		printf 'land: the rulesets on main refused the push. Remedy: %s\n' "$(py bypass-remedy)" >&2
+		printf 'land: the rulesets on main refused the push. Remedy: %s\n' "$(py push-remedy "$tmp/me.json")" >&2
 		;;
 	esac
 	die "the push was refused; nothing landed"
