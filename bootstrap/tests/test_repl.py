@@ -322,7 +322,10 @@ def test_a_body_at_the_margin(lines: list[str], made: list[str]) -> None:
     assert fed(lines) == made
 
 
-@given(st.sampled_from(["f : -- x", "f : n -- n ; note"]), st.from_regex(r"[^ \t\n\r].{0,8}"))
+@given(
+    st.sampled_from(["f : -- x", "f : n -- n ; note"]),
+    st.from_regex(r"[^ \t\n\r].{0,8}", fullmatch=True),
+)
 def test_a_body_is_read_with_or_without_its_tab(header: str, body: str) -> None:
     """[law: body-margin] the lines of a head, a body at the margin and a blank line make the
     inputs they make with the body one tab in."""
