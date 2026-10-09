@@ -290,8 +290,8 @@ def test_a_name_written_with_a_prime_is_listed() -> None:
 
 
 def test_a_clause_under_the_path_of_a_made_test_is_listed() -> None:
-    """A test made for a head group is told by its word: a clause written under the path that
-    names such a test has a longer word, is what that path calls, and is listed."""
+    """A clause written under the path that names a test made for a head group has a longer
+    word than the test, is what that path calls, and is listed."""
     prime = "\N{PRIME}"
     shapes = "circle : r -- shape\n\t#circle swap pair\n"
     group = "area : ( circle r ) -- n\n\tr dup times\n"
@@ -312,3 +312,19 @@ def test_a_definition_that_shadows_a_builtin_takes_its_place_in_the_listing() ->
     assert "times : x y -- z" in lines
     assert len(lines) == len(EFFECTS) - 1
     assert rest == "+ : x -- y\nd/times : x -- y\n"
+
+
+@pytest.mark.parametrize(("before", "answer", "listed"), [(False, "7", True), (True, "0", False)])
+def test_a_definition_at_the_word_of_a_made_test_is_listed_while_it_is_in_force(
+    before: bool, answer: str, listed: bool
+) -> None:
+    """Untyped, a clause at the path of a test made for a head group has that test's word; the
+    later of the two is what the word calls, and the user's is listed only when it is that one."""
+    prime = "\N{PRIME}"
+    shapes = "circle : r -- shape\n\t#circle swap pair\n"
+    group = "area : ( circle r ) -- n\n\tr dup times\n"
+    clause = f"area/\n\t1/\n\t\t1{prime}1 : x -- b\n\t\t\tdrop 7\n"
+    texts = [shapes, clause, group] if before else [shapes, group, clause]
+    assert run(f"{''.join(texts)}3 area/1/1{prime}1\n") == run(f"{answer}\n")
+    expected = ["area", f"area/1/1{prime}1", "circle"] if listed else ["area", "circle"]
+    assert [line.split(" : ")[0] for line in defined(texts)] == expected

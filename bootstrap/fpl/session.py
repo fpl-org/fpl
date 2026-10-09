@@ -208,19 +208,20 @@ def _listed(name: str, effect: Effect) -> str:
     return f"{name} : {' '.join(effect_words(effect))}"
 
 
-def _made(last: dict[str, Define]) -> set[str]:
-    """The words of the tests `tests` makes for the clauses with a head group. A test is known
-    by its word, not by a prime in its name, which a name written by hand may hold, nor by its
-    name alone, which a clause written under that path shares while its word is longer."""
-    return {t.word for d in last.values() if len(d.clause) == 2 for t in tests(d)}
+def _made(statements: tuple[Statement, ...]) -> set[Define]:
+    """The tests `tests` makes for the clauses with a head group, as the definitions they are.
+    A test is known by the whole definition, not by a prime in its name, which a name written
+    by hand may hold, nor by its word, which a definition written at its path shares, untyped,
+    while its effect and body are the writer's own."""
+    return {t for s in statements if isinstance(s, Define) and len(s.clause) == 2 for t in tests(s)}
 
 
 def _written(statements: tuple[Statement, ...]) -> list[Define]:
     """The definitions in force, by name: the last of each word, but for the dispatchers and the
     tests made for a head group, which no one wrote."""
     last = {s.word: s for s in statements if isinstance(s, Define)}
-    made = _made(last)
-    written = [d for d in last.values() if len(d.clause) != 1 and d.word not in made]
+    made = _made(statements)
+    written = [d for d in last.values() if len(d.clause) != 1 and d not in made]
     return sorted(written, key=lambda d: d.name)
 
 
