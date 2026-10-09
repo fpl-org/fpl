@@ -119,9 +119,11 @@ fi
 # --cleanup option on the command line is not visible here either (the config's reading
 # stands). Both are left to commit-lint on push, which reads the stored message. Under the
 # deprecated core.commentChar=auto the prefix git picked is read from the status block it left in
-# the file, by .githooks/prepare-commit-msg, for every source; where no block shows it (--no-status,
-# commit.status=false) no line is taken for a comment or a scissors line (commit_comment_prefix),
-# the strict reading again.
+# the file, by .githooks/prepare-commit-msg, for every source with an editor; where no block shows
+# it (no editor, commit.status=false, an unseen --no-status) no line is taken for a comment or a
+# scissors line (commit_comment_prefix), the strict reading again. --no-status with an editor
+# under commit.cleanup=scissors, and a scissors line and a quoted diff typed with --no-status,
+# read as git's own: commit-lint on push judges what git stored.
 effective_message() {
 	local mode editor=1 prefix at="$cut_line"
 	[ "${GIT_EDITOR:-}" != : ] || editor=0
