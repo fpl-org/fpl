@@ -1,16 +1,17 @@
 """`python -m fpl.repl`: one input entered at a session's head or evaluated as of an event, a
 rewind, the log listed, the program at an event shown, or the words it offers listed; with none
 of these, inputs read one after another, each as its own -e. In that loop an input that opens
-with : is a command instead: :words :show :log :rewind EVENT :canonical :quit. :words lists a
-line a word, `name : ins -- outs`, the builtins first and then the session's own, so the form
-of a word is looked up, not guessed. Without --session the log is empty and held in memory, so
-one input runs as its file does. An append is checked against --head and made durable under
-the session's lock before anything is printed; a listing, like the log and the program shown,
-appends nothing. Exit 0 ok, 1 the input failed, 2 argv not taken or a refusal, a path the
-system refuses included, with nothing written but a lock."""
+with : is a command instead, each one in COMMANDS: :words :show :log :rewind EVENT :canonical
+:help :quit. :help lists them, a line each, from that table, so a command cannot be taken
+without being listed. :words lists a line a word, `name : ins -- outs`, the builtins first and
+then the session's own, so the form of a word is looked up, not guessed. Without --session the
+log is empty and held in memory, so one input runs as its file does. An append is checked
+against --head and made durable under the session's lock before anything is printed; a
+listing, like the log and the program shown, appends nothing. Exit 0 ok, 1 the input failed,
+2 argv not taken or a refusal, a path the system refuses included, with nothing written but a
+lock."""
 
 import importlib
-import itertools
 import os
 import re
 import sys
@@ -299,22 +300,60 @@ def _reader(stdin: TextIO) -> Callable[[bool], str | None]:
     return _typed
 
 
+@dataclass(frozen=True)
+class Command:
+    """A command of the loop: the arguments it takes as :help spells them ("" for none, else
+    one name a word), what it does in a line, and the call it makes of the one it is given and
+    the arguments."""
+
+    args: str
+    help: str
+    make: Callable[[_Call, list[str]], _Call]
+
+
+COMMANDS: dict[str, Command] = {
+    "words": Command(
+        "", "list the words the session offers", lambda call, _: replace(call, action="words")
+    ),
+    "show": Command("", "print the program", lambda call, _: replace(call, action="show")),
+    "log": Command(
+        "", "list the events of the log", lambda call, _: replace(call, action="log", at=None)
+    ),
+    "rewind": Command(
+        "EVENT",
+        "return the program to its state at EVENT",
+        lambda call, args: replace(call, action="rewind", value=args[0], at=None),
+    ),
+    "canonical": Command(
+        "",
+        "toggle echoing an input as the printer writes it",
+        lambda call, _: replace(call, action="canonical", canonical=not call.canonical),
+    ),
+    "help": Command("", "list the commands", lambda call, _: replace(call, action="help")),
+    "quit": Command("", "leave the loop", lambda call, _: replace(call, action="quit")),
+}
+
+
+def _helped() -> _Said:
+    """A line a command of COMMANDS, in the order of the table: `:name ARGS`, two spaces past
+    the longest of those, and what it does."""
+    usages = {name: f":{name} {command.args}".rstrip() for name, command in COMMANDS.items()}
+    width = max(map(len, usages.values())) + 2
+    rows = (f"{usages[name]:<{width}}{command.help}\n" for name, command in COMMANDS.items())
+    return _Said("".join(rows), (), 0)
+
+
 def _commanded(call: _Call, text: str) -> _Call:
     """A : command as the call it makes; :log and :rewind name no state to evaluate at.
-    Refused: a command not known."""
-    match text.split():
-        case [":show"]:
-            return replace(call, action="show")
-        case [":words"]:
-            return replace(call, action="words")
-        case [":log"]:
-            return replace(call, action="log", at=None)
-        case [":rewind", event]:
-            return replace(call, action="rewind", value=event, at=None)
-        case [":canonical"]:
-            return replace(call, action="canonical", canonical=not call.canonical)
-        case _:
-            raise RefusedError("unknown command")
+    Refused: a command not in COMMANDS, and one given other arguments than it takes."""
+    name, *args = text.split()
+    command = COMMANDS.get(name[1:])
+    if command is None:
+        raise RefusedError(f"unknown command {name}; :help lists the commands")
+    if len(args) != len(command.args.split()):
+        takes = command.args or "no argument"
+        raise RefusedError(f"{name} takes {takes}; :help lists the commands")
+    return command.make(call, args)
 
 
 def _told(said: _Said, stdout: TextIO, stderr: TextIO) -> None:
@@ -333,7 +372,8 @@ def _turn(
     call: _Call, text: str, env: Mapping[str, str], log: Log, streams: tuple[TextIO, TextIO]
 ) -> tuple[_Call, Log]:
     """One input, entered as -e enters it, or one command, carried out and told; the call and
-    log the next one starts from. A refusal is told, and the head as it now stands adopted."""
+    log the next one starts from (the call of :canonical and :quit, as they made it: :quit ends
+    the loop). A refusal is told, and the head as it now stands adopted."""
     stdout, stderr = streams
     try:
         this = (
@@ -341,9 +381,9 @@ def _turn(
             if text.startswith(":")
             else replace(call, action="source", value=text)
         )
-        if this.action == "canonical":
+        if this.action in ("canonical", "quit"):
             return this, log
-        said, log = _said(this, env, log)
+        said, log = (_helped(), log) if this.action == "help" else _said(this, env, log)
     except RefusedError as error:
         _told(_Said(f"ERROR: {error}\n", (), 2), stdout, stderr)
         log = _loaded(call, env, log)
@@ -368,8 +408,10 @@ def _looped(
     log = _loaded(call, env, EMPTY)
     if call.head is None:
         call = _seen(call, log)
-    for text in itertools.takewhile(lambda t: t.split() != [":quit"], inputs(read)):
+    for text in inputs(read):
         call, log = _turn(call, text, env, log, streams)
+        if call.action == "quit":
+            break
     return 0
 
 
