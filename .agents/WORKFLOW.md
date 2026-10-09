@@ -210,8 +210,8 @@ second URL, a `url.<base>.pushInsteadOf`), or that git sends anywhere but the Gi
 repository it names, on GitHub or off it (a `url.<base>.insteadOf`). A GitHub repository's
 URL is one of GitHub's spellings, `https://github.com/<owner>/<name>`,
 `ssh://git@github.com/<owner>/<name>` or `git@github.com:<owner>/<name>`, with `.git` or
-without; over ssh the host may be an ssh config alias, `github.com-<alias>`, where ssh
-decides where it leads. Any other scheme, host or user is refused. Every fetch and the push
+without; over ssh the host may be an ssh config alias, `github.com-<alias>` with no dot in
+the alias (a dotted host is a DNS name), where ssh decides where it leads. Any other scheme, host or user is refused. Every fetch and the push
 name that URL, not the remote, and git would rewrite even that, so a `url.<base>.insteadOf`
 or `pushInsteadOf` that matches the URL itself, or a remote section named by it, is refused
 too; the check is made again right before the push. Then it prints the conversation, opens

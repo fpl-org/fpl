@@ -661,6 +661,7 @@ main_is "$M0" "nothing landed"
 # the host may be an alias, github.com-<alias>, which the ssh config resolves.
 for url in ssh://git@github.com/land-test/fpl.git git@github.com:land-test/fpl \
 	git@github.com-work:land-test/fpl.git ssh://git@github.com-work/land-test/fpl.git \
+	git@github.com-work_2-b:land-test/fpl.git ssh://git@github.com-0/land-test/fpl.git \
 	https://github.com/land-test/fpl; do
 	forge
 	git config remote.github.url "$url"
@@ -672,7 +673,10 @@ for url in https://github.com-evil.example/land-test/fpl.git file://github.com/l
 	git://github.com/land-test/fpl.git https://www.github.com/land-test/fpl.git \
 	https://someone@github.com/land-test/fpl.git ssh://someone@github.com/land-test/fpl.git \
 	ssh://git@github.com:22/land-test/fpl.git github.com:land-test/fpl.git \
-	https://github.com/land-test/fpl.git/extra https://github.com/land-test/..; do
+	https://github.com/land-test/fpl.git/extra https://github.com/land-test/.. \
+	ssh://git@github.com-evil.example/land-test/fpl.git git@github.com-evil.example:land-test/fpl.git \
+	ssh://git@github.com./land-test/fpl.git git@github.com.:land-test/fpl.git \
+	ssh://git@github.com-a.b/land-test/fpl.git git@github.com-:land-test/fpl.git; do
 	forge
 	git config remote.github.url "$url"
 	expect 1 "the remote is $url" --dry-run 7
@@ -687,6 +691,19 @@ remote_case "an insteadOf to a host named github.com-<something>, over https" \
 	url.https://github.com-evil.example/.insteadOf https://github.com/
 says "git goes to https://github.com-evil.example/land-test/fpl.git, not GitHub" "it says where git goes"
 git config --unset-all url.https://github.com-evil.example/.insteadOf
+# The same over ssh, the second review's case: an alias with a dot is a DNS name, and git
+# goes there when an insteadOf says so, though slug() once took it for an ssh config Host.
+git config remote.github.url git@github.com:land-test/fpl.git
+remote_case "an insteadOf to a host named github.com-<something>.<tld>, scp-style" \
+	url.git@github.com-evil.example:.insteadOf git@github.com:
+says "git goes to git@github.com-evil.example:land-test/fpl.git, not GitHub" "it says where git goes"
+git config --unset-all url.git@github.com-evil.example:.insteadOf
+git config remote.github.url ssh://git@github.com/land-test/fpl.git
+remote_case "an insteadOf to a host named github.com-<something>.<tld>, over ssh://" \
+	url.ssh://git@github.com-evil.example/.insteadOf ssh://git@github.com/
+says "git goes to ssh://git@github.com-evil.example/land-test/fpl.git, not GitHub" "it says where git goes"
+git config --unset-all url.ssh://git@github.com-evil.example/.insteadOf
+git config remote.github.url https://github.com/land-test/fpl.git
 forge
 expect 0 "the remote as it should be, after each case" --dry-run 7
 

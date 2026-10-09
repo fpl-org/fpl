@@ -55,8 +55,9 @@
 #                           repository's URL is https://github.com/<owner>/<name>,
 #                           ssh://git@github.com/<owner>/<name> or
 #                           git@github.com:<owner>/<name>, .git or not; over ssh the host
-#                           may be github.com-<alias>, an ssh config Host, where ssh decides
-#                           where it leads. Any other scheme, host or user is refused
+#                           may be github.com-<alias>, a Host of the ssh config with no dot
+#                           in it, where ssh decides where it leads. Any other scheme, host
+#                           or user is refused
 #
 # Then it prints the conversation, opens the diff in the browser and stops for a keypress.
 # After Enter it approves the head when it said it would, checks everything again, and pushes:
@@ -165,12 +166,14 @@ def slug(url):
     https://github.com/<owner>/<name>, ssh://git@github.com/<owner>/<name> and
     git@github.com:<owner>/<name>, each with .git or without. Over ssh the host may be
     github.com-<alias>, a Host in the ssh config that git cannot see into (the residual:
-    where that alias leads is ssh's to say). Every other scheme, host, user or a relative
+    where that alias leads is ssh's to say). An alias holds letters, digits, '-' and '_' and
+    no dot, as an ssh config Host does, so github.com-evil.example, a DNS name, is none.
+    Every other scheme, host, user or a relative
     path is no GitHub repository."""
     m = re.fullmatch(
         r"(?:https://github\.com/"
-        r"|ssh://git@github\.com(?:-[\w.-]+)?/"
-        r"|git@github\.com(?:-[\w.-]+)?:)"
+        r"|ssh://git@github\.com(?:-[\w-]+)?/"
+        r"|git@github\.com(?:-[\w-]+)?:)"
         r"([\w-]+)/([\w.-]+?)(?:\.git)?",
         url,
         re.ASCII,
