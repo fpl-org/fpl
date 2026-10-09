@@ -103,46 +103,40 @@ fi
 #   whitespace               blank-line and trailing-space cleanup only
 #   scissors                 whitespace, and cut at the scissors line if an editor ran
 #   verbatim                 as written
-# With -v git cuts at the scissors line it wrote, in every mode (measured, verbatim too). -v
-# does not reach this hook, so it cuts at a scissors line under 'scissors', and in any mode
-# where the first line below that line that is no comment starts 'diff --git', which is how
-# git's own verbose diff begins (its words are translated; a diff is not).
+# With -v git cuts at its first scissors line, in every mode (measured, verbatim too). -v does
+# not reach this hook, and the message cannot show it: a person may type a scissors line and
+# a quoted 'diff --git' below it, which git stores without -v (Codex review of #138, round 2;
+# a guess from that text let a long line past this hook). So the cut is made under 'scissors',
+# and where .githooks/prepare-commit-msg found git's diff of -v in the file before the editor
+# opened (commit_cut_state, $cut_line): at the first line that is that scissors line, as git
+# cuts. Under commit.status=false git writes no diff for -v (measured), so nothing is cut: more
+# is judged than git stores, the strict side. Only with --no-status on the command line, which
+# no hook sees, does a message given to git that ends in a scissors line and a diff of its own
+# (-e -F, an amend) read as -v; commit-lint judges what git stored.
 # An editor ran unless git set GIT_EDITOR=: for this hook, as it does for -m, -F and -C. That
 # cannot be told from a person's editor named ':', which therefore reads as no editor: its
 # comment lines are judged, the reading that lets no long line into the stored message. A
 # --cleanup option on the command line is not visible here either (the config's reading
-# stands). Both are left to commit-lint on push, which reads the stored message. So is the
-# deprecated core.commentChar=auto: no hook learns which prefix git picked, so no line is taken
-# for a comment or a scissors line (commit_comment_prefix), the strict reading again.
+# stands). Both are left to commit-lint on push, which reads the stored message. Under the
+# deprecated core.commentChar=auto the prefix git picked is read from the status block it left in
+# the file, by .githooks/prepare-commit-msg, for every source with an editor; where no block shows
+# it (no editor, commit.status=false, an unseen --no-status) no line is taken for a comment or a
+# scissors line (commit_comment_prefix), the strict reading again. --no-status with an editor
+# under commit.cleanup=scissors, and a scissors line and a quoted diff typed with --no-status,
+# read as git's own: commit-lint on push judges what git stored.
 effective_message() {
-	local mode editor=1 prefix
+	local mode editor=1 prefix at="$cut_line"
 	[ "${GIT_EDITOR:-}" != : ] || editor=0
 	mode="$(git config --get commit.cleanup || true)"
 	case "$mode" in
 	"" | default) if [ "$editor" -eq 1 ]; then mode="strip"; else mode="whitespace"; fi ;;
 	esac
 	prefix="$(commit_comment_prefix)"
-	if [ "$editor" -eq 1 ]; then
-		P="$prefix" SM="$([ "$mode" = scissors ] && echo 1 || echo 0)" \
-			awk '
-			BEGIN { p0 = ENVIRON["P"]; sm = ENVIRON["SM"]
-				d = "------------------------"; t = " " d " >8 " d }
-			{ line[++n] = $0 }
-			END {
-				for (i = 1; i <= n && !cut; i++) {
-					l = line[i]; k = length(l) - length(t)
-					if (k < 1 || substr(l, k + 1) != t) continue
-					p = substr(l, 1, k)
-					if (p != p0) continue
-					if (sm) { cut = i; break }
-					for (j = i + 1; j <= n; j++) {
-						if (substr(line[j], 1, k) == p) continue
-						if (index(line[j], "diff --git ") == 1) cut = i
-						break
-					}
-				}
-				for (i = 1; i <= (cut ? cut - 1 : n); i++) print line[i]
-			}' "$1" >"$tmp/cut"
+	if [ -z "$at" ] && [ "$mode" = scissors ] && [ -n "$prefix" ]; then
+		at="$prefix ------------------------ >8 ------------------------"
+	fi
+	if [ "$editor" -eq 1 ] && [ -n "$at" ]; then
+		AT="$at" awk 'BEGIN { at = ENVIRON["AT"] } $0 == at { exit } { print }' "$1" >"$tmp/cut"
 	else
 		cp "$1" "$tmp/cut"
 	fi
@@ -164,7 +158,13 @@ effective_message() {
 # (a person quoting them, under any prefix) is the person's, and stays; so do git's own comment
 # lines, as git keeps them. The record also holds the comment prefix git picked under 'auto'.
 COMMIT_PICKED_PREFIX=""
+cut_line=""
 if [ -z "$lint_commit" ]; then
+	cut_state="$(commit_cut_state)"
+	if [ -f "$cut_state" ]; then
+		cut_line="$(sed -n '1p' "$cut_state")"
+		rm -f "$cut_state"
+	fi
 	state="$(commit_template_state)"
 	if [ -f "$state" ]; then
 		COMMIT_PICKED_PREFIX="$(sed -n '1p' "$state")"
@@ -547,17 +547,22 @@ fi
 # Only a line that git reads as a trailer is corrected: the trailers git parsed (the first
 # input, in order) are matched to the lines of the block by their keys, and any other line, a
 # comment line above all ('session-id: ...' under core.commentChar=s), stays as written, as
-# git stores it. Lines of a comment prefix are passed by in any case.
+# git stores it. Lines of a comment prefix are passed by in any case. A key is matched as git's
+# trailer parser reads one (find_separator in git's trailer.c): letters, digits and '-', then
+# the ':' after any blanks. So 'human-only:true', 'human-only:<tab>true' and 'human-only :true',
+# which git reads as that trailer, are corrected too (Codex review of #138, round 2: the match
+# wanted ': ' and left them as written); only the key is rewritten, the rest stays as typed.
 awk -v from="$trailer_start" -v keys="$COMMIT_TRAILER_KEYS" -v norm="$norm" -v cp="$comment" '
 	BEGIN { n = split(keys, k, " "); for (i = 1; i <= n; i++) canon[tolower(k[i])] = k[i] }
 	FILENAME == ARGV[1] { c = index($0, ":"); if (c > 1) want[++w] = substr($0, 1, c - 1); next }
-	FNR > from && !(cp != "" && substr($0, 1, length(cp)) == cp) && match($0, /^[A-Za-z][^:]*: /) {
-		key = substr($0, 1, RLENGTH - 2)
+	FNR > from && !(cp != "" && substr($0, 1, length(cp)) == cp) && match($0, /^[A-Za-z0-9-]+/) &&
+		substr($0, RLENGTH + 1) ~ /^[ \t]*:/ {
+		key = substr($0, 1, RLENGTH)
 		if (j < w && key == want[j + 1]) {
 			j++
 			c = canon[tolower(key)]
 			if (c != "" && c != key) {
-				$0 = c substr($0, RLENGTH - 1)
+				$0 = c substr($0, RLENGTH + 1)
 				printf "trailer-key\t%s\t%s\n", key, c >>norm
 			}
 		}
