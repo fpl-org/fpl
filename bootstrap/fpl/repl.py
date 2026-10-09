@@ -16,13 +16,15 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NoReturn, TextIO, override
 
+from fpl.ast_surface import Line, Program
+from fpl.desugar import plain
 from fpl.errors import FplError
 from fpl.log import ASCII, U64, Event, Log, RefusedError, Who, keyed, load, locked, resolve, write
 from fpl.multihash import Multihash
 from fpl.parse import parse
 from fpl.print import render
 from fpl.session import FUEL_DEFAULT, Context, enter, evaluator, program, rewind
-from fpl.trivia import head
+from fpl.trivia import code, head
 
 USAGE = (
     "usage: python -m fpl.repl [--session FILE] [--fuel N] [--canonical] [--at EVENT]"
@@ -131,12 +133,18 @@ class _Change:
     said: _Said
 
 
+def _parsed(text: str) -> Program | None:
+    """The input as a program, or None when it does not parse alone."""
+    try:
+        return parse(text)
+    except FplError:
+        return None
+
+
 def _canonical(text: str) -> str:
     """The input as the printer writes it, or nothing when it does not parse alone."""
-    try:
-        return render(parse(text))
-    except FplError:
-        return ""
+    program = _parsed(text)
+    return "" if program is None else render(program)
 
 
 def _entered(call: _Call, log: Log, context: Context, at: Event | None) -> _Change:
@@ -242,12 +250,36 @@ def pending(text: str) -> bool:
     return head(last) or bool(last.block) or text.rstrip().endswith("/")
 
 
+def _body(text: str) -> str:
+    """The tabs the body of a definition takes if the input so far ends in its head, else
+    nothing: one more than the head has. An input that does not parse so far is inside a pair
+    left open (any other error has ended it, see `inputs`), where a line that reads as a head
+    is only text, such as a line of a string."""
+    if _parsed(text) is None:
+        return ""
+    last = text.rstrip("\n").rpartition("\n")[2]
+    parsed = _parsed(last.lstrip("\t"))
+    if parsed is None or not head(parsed.lines[0]):
+        return ""
+    return "\t" * (len(last) - len(last.lstrip("\t")) + 1)
+
+
+def _taken(text: str, line: str) -> str:
+    """A line as the input so far takes it: a line at the margin right after a definition head
+    is the body's first, one tab deeper; any other line, as it was written."""
+    return line if line[:1] in ("", " ", "\t") else _body(text) + line
+
+
 def inputs(read: Callable[[bool], str | None]) -> Iterator[str]:
     """Physical lines, read until None, grouped into inputs: an input ends at a blank line or
     at a line after which it is not pending, and blank lines between inputs are skipped.
-    Each input is its lines, each ending in a newline; `read` is told whether one goes on."""
+    A line at the margin right after a definition head is taken as the body's first, as if it
+    were written one tab deeper; one that starts with a space or a tab is left as written, so
+    the tabs-only rule of a file holds. Each input is its lines, each ending in a newline;
+    `read` is told whether one goes on."""
     text = ""
     while (line := read(bool(text))) is not None:
+        line = _taken(text, line)
         blank = not line.strip()
         if not blank:
             text += line + "\n"
@@ -313,6 +345,25 @@ def _seen(call: _Call, log: Log) -> _Call:
     return call if call.at is not None else replace(call, head=str(len(log.events)))
 
 
+def _bare(lines: tuple[Line, ...]) -> Iterator[str]:
+    """A NOTE for each definition among the lines, and the blocks under them, whose head has
+    no code under it, which an empty line where the body was meant would otherwise leave
+    without a word. It says only that the written body is empty: what the word then does is
+    the desugaring's (a head group makes it a match), which this parse does not see."""
+    for line in lines:
+        name = plain(line.frames[0].cells[0].items[0]) if head(line) else None
+        if name is not None and not any(map(code, line.block)):
+            at = f"{line.span.line}:{line.span.col}"
+            yield f"NOTE {at} {name} has an empty body"
+        yield from _bare(line.block)
+
+
+def _flagged(text: str, said: _Said) -> _Said:
+    """What an input said, with a NOTE first for each definition in it that has no body."""
+    program = _parsed(text)
+    return said if program is None else replace(said, notes=(*_bare(program.lines), *said.notes))
+
+
 def _turn(
     call: _Call, text: str, env: Mapping[str, str], log: Log, streams: tuple[TextIO, TextIO]
 ) -> tuple[_Call, Log]:
@@ -332,7 +383,7 @@ def _turn(
         _told(_Said(f"ERROR: {error}\n", (), 2), stdout, stderr)
         log = _loaded(call, env, log)
     else:
-        _told(said, stdout, stderr)
+        _told(_flagged(text, said), stdout, stderr)
     return _seen(call, log), log
 
 

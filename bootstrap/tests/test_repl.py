@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import override
 
 import pytest
-from hypothesis import HealthCheck, example, given, settings
+from hypothesis import HealthCheck, assume, example, given, settings
 from hypothesis import strategies as st
 from test_desugar import programs
 from test_session import POOL
@@ -296,6 +296,82 @@ def test_pending(text: str, on: bool) -> None:
     assert pending(text) is on
 
 
+def fed(lines: Sequence[str]) -> list[str]:
+    """The inputs the lines make, as the loop groups them."""
+    feed = iter(lines)
+    return list(inputs(lambda _: next(feed, None)))
+
+
+@pytest.mark.parametrize(
+    ("lines", "made"),
+    [
+        (["f : -- x", "2", ""], ["f : -- x\n\t2\n"]),
+        (["f : -- x", "\t2", ""], ["f : -- x\n\t2\n"]),
+        (["f : -- x", "  2", ""], ["f : -- x\n  2\n"]),
+        (["a", "f : -- x", "\tg : -- y", "2", ""], ["a\n", "f : -- x\n\tg : -- y\n\t\t2\n"]),
+        (["f : -- x", "2", "3", ""], ["f : -- x\n\t2\n3\n"]),
+        (["f : -- x", "", "2"], ["f : -- x\n", "2\n"]),
+        (["1 [", "2 ]"], ["1 [\n2 ]\n"]),
+        (["a/", "2"], ["a/\n2\n"]),
+        (["“", "f : -- x", "”", ""], ["“\nf : -- x\n”\n"]),
+    ],
+)
+def test_a_body_at_the_margin(lines: list[str], made: list[str]) -> None:
+    """A line at the margin right after a definition head is the body's first, one tab deeper
+    than the head; one that starts with a space or a tab, one after the body's first line or
+    a line that is no head, one after a blank line, and one after a line that only looks like
+    a head inside an open string, are left as they were written."""
+    assert fed(lines) == made
+
+
+@given(
+    st.sampled_from(["f : -- x", "f : n -- n ; note"]),
+    st.from_regex(r"[^ \t\n\r].{0,8}", fullmatch=True),
+)
+def test_a_body_is_read_with_or_without_its_tab(header: str, body: str) -> None:
+    """[law: body-margin] the lines of a head, a body at the margin and a blank line make the
+    inputs they make with the body one tab in."""
+    assume(body.isprintable())
+    assert fed([header, body, ""]) == fed([header, "\t" + body, ""])
+
+
+def test_a_definition_without_tabs() -> None:
+    """The stream reader takes the unindented line after a head for the body, so the word it
+    defines works; in one-shot, a file's own rule holds."""
+    typed = "plus-one : n -- n\n1 +\n1 2 3 plus-one\n"
+    assert called([], {}, typed) == (0, "2 3 4\n", "")
+    assert called([], {}, "plus-one : n -- n\n  1 +\n")[1].startswith("ERROR: 2:1 indentation")
+
+
+def test_a_definition_without_a_body_is_noted() -> None:
+    """A definition whose head has no code under it is noted, naming the word and where its
+    head is, before the input's other notes, also when the input then fails; the note says
+    only that the body is empty, since a head group makes such a body a match and not the
+    identity. One with a body, a one-shot input and a command are not noted."""
+    note = "NOTE 1:1 plus-one has an empty body\n"
+    assert called([], {}, "plus-one : n -- n\n\n1 2 3 plus-one\n") == (0, "1 2 3\n", note)
+    assert called([], {}, "plus-one : n -- n\n") == (0, "", note)
+    assert called([], {}, "plus-one : n -- n\n;; doc\n") == (0, "", note)
+    nested = called([], {}, "a/\n\tb : -- x\n\n:show\n")
+    assert nested[2].startswith("NOTE 2:2 b has an empty body\n")
+    assert called([], {}, "f : -- x\n\t2\n\nf\n:show\n")[2] == ""
+    assert called(["-e", "plus-one : n -- n"], {}) == (0, "", "")
+    grouped = called([], {}, "area : ( circle r ) --\n\n")[2]
+    assert "NOTE 1:1 area has an empty body\n" in grouped
+    assert "identity" not in grouped
+    code, out, err = called([], {}, "1 [\n")
+    assert (code, out.startswith("ERROR: ")) == (0, True)
+    assert "NOTE" not in err
+
+
+def test_a_note_comes_before_the_head() -> None:
+    """In a session the NOTE comes first and the new head last."""
+    with session() as (_, env):
+        notes = called(SESSION, env, "f : -- x\n\n")[2].splitlines()
+    assert notes[0] == "NOTE 1:1 f has an empty body"
+    assert notes[-1].startswith("HEAD 1 $")
+
+
 def test_the_loop_in_memory() -> None:
     """Without --session the loop keeps its log in memory and names no head; commands list,
     show, rewind and toggle the canonical form; an unknown command is told and passed over."""
@@ -380,6 +456,28 @@ def test_the_loop_at_a_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
         assert heads == [["HEAD", "1"], ["HEAD", "3"]]
         assert prompts == ["fpl> "] * 3 + ["...  "] * 2 + ["fpl> "] * 2
         assert bindings == ["tab: self-insert"]
+
+
+def test_a_definition_at_a_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """At a terminal the body typed without its tab is the body, as a prompt of continuation
+    after the head; an empty line ends the input."""
+    prompts: list[str] = []
+    lines = iter(["plus-one : n -- n", "1 +", "", "1 2 3 plus-one"])
+
+    def typed(prompt: str) -> str:
+        prompts.append(prompt)
+        line = next(lines, None)
+        if line is None:
+            raise EOFError
+        return line
+
+    monkeypatch.setattr(builtins, "input", typed)
+    bindings: list[str] = []
+    monkeypatch.setattr(readline, "parse_and_bind", bindings.append)
+    out, err = StringIO(), StringIO()
+    assert main([], Terminal(), out, err, {}) == 0
+    assert (out.getvalue(), err.getvalue()) == ("2 3 4\n", "")
+    assert prompts == ["fpl> ", "...  ", "...  ", "fpl> ", "fpl> "]
 
 
 def test_in_memory() -> None:
