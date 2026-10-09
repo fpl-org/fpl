@@ -289,6 +289,19 @@ def test_a_name_written_with_a_prime_is_listed() -> None:
     assert names == ["area", f"area{prime}", "circle", f"d{prime}/g", f"foo{prime}"]
 
 
+def test_a_clause_under_the_path_of_a_made_test_is_listed() -> None:
+    """A test made for a head group is told by its word: a clause written under the path that
+    names such a test has a longer word, is what that path calls, and is listed."""
+    prime = "\N{PRIME}"
+    shapes = "circle : r -- shape\n\t#circle swap pair\n"
+    group = "area : ( circle r ) -- n\n\tr dup times\n"
+    clause = f"area/\n\t1/\n\t\t1{prime}1 : x: Int -- y\n\t\t\tdrop 7\n"
+    assert run(f"{shapes}{group}{clause}3 area/1/1{prime}1\n") == run("7\n")
+    lines = defined([shapes, group, clause])
+    assert [line.split(" : ")[0] for line in lines] == ["area", f"area/1/1{prime}1", "circle"]
+    assert lines[1] == f"area/1/1{prime}1 : x: Int -- y"
+
+
 def test_a_definition_that_shadows_a_builtin_takes_its_place_in_the_listing() -> None:
     """The word in force is the definition, so its line is listed once, in the session's block,
     and the builtin's is not; a definition under a directory shadows nothing."""

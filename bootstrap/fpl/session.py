@@ -209,9 +209,10 @@ def _listed(name: str, effect: Effect) -> str:
 
 
 def _made(last: dict[str, Define]) -> set[str]:
-    """The names of the tests `tests` makes for the clauses with a head group. A test is known
-    by that, not by a prime in its name, which a name written by hand may hold."""
-    return {t.name for d in last.values() if len(d.clause) == 2 for t in tests(d)}
+    """The words of the tests `tests` makes for the clauses with a head group. A test is known
+    by its word, not by a prime in its name, which a name written by hand may hold, nor by its
+    name alone, which a clause written under that path shares while its word is longer."""
+    return {t.word for d in last.values() if len(d.clause) == 2 for t in tests(d)}
 
 
 def _written(statements: tuple[Statement, ...]) -> list[Define]:
@@ -219,7 +220,7 @@ def _written(statements: tuple[Statement, ...]) -> list[Define]:
     tests made for a head group, which no one wrote."""
     last = {s.word: s for s in statements if isinstance(s, Define)}
     made = _made(last)
-    written = [d for d in last.values() if len(d.clause) != 1 and d.name not in made]
+    written = [d for d in last.values() if len(d.clause) != 1 and d.word not in made]
     return sorted(written, key=lambda d: d.name)
 
 
