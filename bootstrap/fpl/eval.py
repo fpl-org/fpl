@@ -71,6 +71,14 @@ def evaluate(
     first, each as a quotation, word/doc the docstring of the one in force and word/effect its
     effect line as a list of strings, +fail last when it may fail."""
     budget(fuel)
+    words = table(statements)
+    return tuple(metered(s, words, fuel) for s in statements if isinstance(s, Run))
+
+
+def table(statements: tuple[Statement, ...]) -> dict[str, tuple[Node, ...]]:
+    """What each word calls: the code of the last definition of its word, then for every such
+    word its queries w/history, w/doc and w/effect, which take their path from a definition
+    written there. A definition is in force where its word's entry is its own code."""
     logged: dict[str, list[Define]] = {}
     for s in statements:
         if isinstance(s, Define):
@@ -80,7 +88,7 @@ def evaluate(
         words[f"{word}/history"] = (Push(Listed(tuple(Quotation(d.code) for d in log[:-1]))),)
         words[f"{word}/doc"] = (Push(log[-1].doc),)
         words[f"{word}/effect"] = (Push(effect_line(log[-1])),)
-    return tuple(metered(s, words, fuel) for s in statements if isinstance(s, Run))
+    return words
 
 
 def budget(fuel: int | None) -> None:

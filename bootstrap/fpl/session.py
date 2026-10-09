@@ -13,7 +13,7 @@ from fpl.ast_core import EFFECTS, Define, Effect, Statement
 from fpl.desugar import tests
 from fpl.driver import Lines, checked, printed, stacks
 from fpl.errors import FplError, Span
-from fpl.eval import effect_words
+from fpl.eval import effect_words, table
 from fpl.log import SCHEMA, Event, Log, RefusedError, Status, Who, prefixed
 from fpl.multihash import Multihash, content, hashed
 from fpl.types import Goal, reported
@@ -217,11 +217,16 @@ def _made(statements: tuple[Statement, ...]) -> set[Define]:
 
 
 def _written(statements: tuple[Statement, ...]) -> list[Define]:
-    """The definitions in force, by name: the last of each word, but for the dispatchers and the
-    tests made for a head group, which no one wrote."""
+    """The definitions the session offers, by name: the last of each word, while its entry in
+    the evaluator's table is still its own code, which a query of another word takes over
+    (`f/effect` under `f`); but not the dispatchers and the tests made for a head group, which
+    no one wrote. Identity decides, not equality: a query's code is never empty, so the shared
+    empty tuple of a definition without a body cannot pass for it."""
+    words = table(statements)
     last = {s.word: s for s in statements if isinstance(s, Define)}
     made = _made(statements)
-    written = [d for d in last.values() if len(d.clause) != 1 and d not in made]
+    offered = (d for d in last.values() if words[d.word] is d.code)
+    written = [d for d in offered if len(d.clause) != 1 and d not in made]
     return sorted(written, key=lambda d: d.name)
 
 
@@ -241,7 +246,8 @@ def words(log: Log, at: Event | None) -> str:
     one, which is the one in force, and a builtin a definition shadows is not listed; a
     dispatched word is listed as its clauses, in the order written and each with the effect
     line it was written with, not as the dispatcher and the tests made for them; the queries
-    w/history, w/doc and w/effect, which every defined word has, are not listed. Refused
+    w/history, w/doc and w/effect, which every defined word has, are not listed, nor is a
+    definition written at one of their paths, which the query takes over. Refused
     (RefusedError): a program that no longer checks, which an earlier evaluator accepted."""
     try:
         statements, _ = checked("".join(part.text for part in program(log, at)))

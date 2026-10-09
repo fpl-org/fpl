@@ -328,3 +328,22 @@ def test_a_definition_at_the_word_of_a_made_test_is_listed_while_it_is_in_force(
     assert run(f"{''.join(texts)}3 area/1/1{prime}1\n") == run(f"{answer}\n")
     expected = ["area", f"area/1/1{prime}1", "circle"] if listed else ["area", "circle"]
     assert [line.split(" : ")[0] for line in defined(texts)] == expected
+
+
+@pytest.mark.parametrize("query", ["history", "doc", "effect"])
+@pytest.mark.parametrize("before", [False, True])
+def test_a_definition_at_a_query_of_a_defined_word_is_not_listed(query: str, before: bool) -> None:
+    """Every defined word w has w/history, w/doc and w/effect, which a definition written at
+    one of those paths does not replace, so that definition is not what the path calls."""
+    word, at = "f : -- x\n\t1\n", f"f/\n\t{query} : -- x\n\t\t2\n"
+    texts = [at, word] if before else [word, at]
+    assert run(f"{''.join(texts)}f/{query}\n") != run("2\n")
+    assert defined(texts) == ["f : -- x"]
+    nested = ["f/\n\tg : -- x\n\t\t1\n", f"f/\n\tg/\n\t\t{query} : -- x\n\t\t\t2\n"]
+    assert defined(nested) == ["f/g : -- x"]
+
+
+def test_a_definition_under_a_name_that_defines_nothing_is_listed() -> None:
+    """A path ending in a query's name is no query when nothing is defined above it."""
+    assert defined(["f/\n\teffect : -- x\n\t\t2\n"]) == ["f/effect : -- x"]
+    assert run("f/\n\teffect : -- x\n\t\t2\nf/effect\n") == run("2\n")
