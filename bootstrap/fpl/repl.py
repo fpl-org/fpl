@@ -252,7 +252,11 @@ def pending(text: str) -> bool:
 
 def _body(text: str) -> str:
     """The tabs the body of a definition takes if the input so far ends in its head, else
-    nothing: one more than the head has."""
+    nothing: one more than the head has. An input that does not parse so far is inside a pair
+    left open (any other error has ended it, see `inputs`), where a line that reads as a head
+    is only text, such as a line of a string."""
+    if _parsed(text) is None:
+        return ""
     last = text.rstrip("\n").rpartition("\n")[2]
     parsed = _parsed(last.lstrip("\t"))
     if parsed is None or not head(parsed.lines[0]):

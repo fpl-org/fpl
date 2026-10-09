@@ -313,12 +313,14 @@ def fed(lines: Sequence[str]) -> list[str]:
         (["f : -- x", "", "2"], ["f : -- x\n", "2\n"]),
         (["1 [", "2 ]"], ["1 [\n2 ]\n"]),
         (["a/", "2"], ["a/\n2\n"]),
+        (["“", "f : -- x", "”", ""], ["“\nf : -- x\n”\n"]),
     ],
 )
 def test_a_body_at_the_margin(lines: list[str], made: list[str]) -> None:
     """A line at the margin right after a definition head is the body's first, one tab deeper
     than the head; one that starts with a space or a tab, one after the body's first line or
-    a line that is no head, and one after a blank line, are left as they were written."""
+    a line that is no head, one after a blank line, and one after a line that only looks like
+    a head inside an open string, are left as they were written."""
     assert fed(lines) == made
 
 
