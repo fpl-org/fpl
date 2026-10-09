@@ -483,9 +483,9 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 
 ## log-checkpoint
 - Depends on it: fpl/session.py (enter, program), fpl/log.py (load)
-- Default in force: every call loads and re-verifies the whole log and runs every accepted input up to the event again as one file
+- Default in force: every call loads and re-verifies the whole log and runs every accepted input up to the event again as one file, and an input runs the program at its state once more, the baseline of CHANGED, under the fuel its last input was accepted with, which names nothing when it no longer runs within that fuel (a log written under another evaluator)
 - Closes by: design, a checkpoint of frontier and state hash (row 50) once the cost is measured
-- Evidence: combined-draft.md:172 (row 50, checkpoints certified by a hash of the frontier); fpl/session.py:63, :175; fpl/log.py:313
+- Evidence: combined-draft.md:172 (row 50, checkpoints certified by a hash of the frontier); fpl/session.py:63, :173, :199; fpl/log.py:313
 
 ## log-v0-in-fpl
 - Depends on it: fpl/log.py, fpl/session.py
@@ -519,9 +519,9 @@ A hole is closed by the commit that removes its entry; that commit's body names 
 
 ## repl-transcript
 - Depends on it: fpl/repl.py, fpl/session.py (enter), tests/test_repl.py, tests/test_session.py
-- Default in force: an error in an earlier event is ERROR: @<seq> <l>:<c>; CHANGED <seq> $<id> names an earlier input whose output moved; HEAD <seq> $<id> follows an append on stderr; an input after the first starts at the left margin; an input ends at a blank line or once it is not pending; a first line with : is a command (:show :log :rewind E :canonical :quit); joined outputs differ from the file's only where a run leaves a single empty stack; at a terminal a tab inserts itself (GNU readline; libedit untried)
+- Default in force: an error in an earlier event is ERROR: @<seq> <l>:<c>; CHANGED <seq> $<id> names an earlier input whose output differs from the run of the state the input extends, so once, at the input that moves it; HEAD <seq> $<id> follows an append on stderr; an input after the first starts at the left margin; an input ends at a blank line or once it is not pending; a first line with : is a command (:show :log :rewind E :canonical :quit); joined outputs differ from the file's only where a run leaves a single empty stack; at a terminal a tab inserts itself (GNU readline; libedit untried)
 - Closes by: design, fixing the transcript's form
-- Evidence: tests/test_session.py:117, :126, :136; tests/test_repl.py:264, :299, :345; fpl/print.py:24-31
+- Evidence: tests/test_session.py:119, :128, :185, :195; tests/test_repl.py:265, :300, :355; fpl/print.py:24-31
 
 ## head-group-pin
 - Depends on it: fpl/desugar.py `_Desugar.code`, tests/test_overload.py test_a_pin_in_a_head_group_is_refused

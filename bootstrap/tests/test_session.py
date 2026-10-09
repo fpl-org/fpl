@@ -34,11 +34,13 @@ def grown(log: Log, outcome: Outcome) -> Log:
     return log.grown(outcome.event, outcome.bodies, log.size)
 
 
-def entered(texts: Sequence[str], log: Log = EMPTY) -> tuple[Log, tuple[Outcome, ...]]:
+def entered(
+    texts: Sequence[str], log: Log = EMPTY, context: Context = CONTEXT
+) -> tuple[Log, tuple[Outcome, ...]]:
     """The log after each text is entered at the head, and each outcome."""
     outcomes: list[Outcome] = []
     for text in texts:
-        outcome = enter(log, text, CONTEXT, log.head)
+        outcome = enter(log, text, context, log.head)
         outcomes.append(outcome)
         log = grown(log, outcome)
     return log, tuple(outcomes)
@@ -120,7 +122,64 @@ def test_an_earlier_input_whose_output_moved_is_named() -> None:
     assert [o.out for o in outcomes] == ["", "1\n", ""]
     assert outcomes[2].notes == (f"CHANGED 2 ${second.ident.spelled()}",)
     assert outcomes[2].bodies[outcomes[2].event.body] == b"f : -- x\n\t2\n"
-    assert enter(log, "f\n", CONTEXT, log.head).notes == outcomes[2].notes
+    assert enter(log, "f\n", CONTEXT, log.head).notes == ()
+
+
+def test_a_redefinition_is_named_once_not_after_every_later_input() -> None:
+    define = "plus-one : n -- n\n\t{} +\n"
+    _, outcomes = entered([define.format(1), "3 plus-one\n", define.format(2), "1\n", "2\n"])
+    assert [o.out for o in outcomes] == ["", "4\n", "", "1\n", "2\n"]
+    assert [o.notes for o in outcomes] == [
+        (),
+        (),
+        (f"CHANGED 2 ${outcomes[1].event.ident.spelled()}",),
+        (),
+        (),
+    ]
+
+
+def test_an_output_that_moves_back_is_named_again() -> None:
+    texts = ["f : -- x\n\t1\n", "f\n", "f : -- x\n\t2\n", "f : -- x\n\t1\n"]
+    _, outcomes = entered(texts)
+    named = (f"CHANGED 2 ${outcomes[1].event.ident.spelled()}",)
+    assert [o.notes for o in outcomes] == [(), (), named, named]
+
+
+def test_a_baseline_runs_under_the_fuel_its_program_was_accepted_with() -> None:
+    """The program before an input may need more fuel than this call has; the input that
+    redefines the costly word still succeeds, and names the output it moves."""
+    log, outcomes = entered(["f : -- x\n\t1 | 1 +\n", "f\n"], context=replace(CONTEXT, fuel=100))
+    low = replace(CONTEXT, fuel=2)
+    assert enter(log, "f\n", low, log.head).out == "ERROR: @2 1:1 out of fuel\n"
+    outcome = enter(log, "f : -- x\n\t3\n", low, log.head)
+    assert (outcome.event.status, outcome.out) == ("ok", "")
+    assert outcome.notes == (f"CHANGED 2 ${outcomes[1].event.ident.spelled()}",)
+
+
+def test_a_baseline_that_fails_refuses_nothing() -> None:
+    """A program that no longer runs within the fuel it was accepted with (written under
+    another evaluator) is not compared: the input that redefines the costly word still
+    succeeds, and names nothing."""
+    log, _ = entered(["f : -- x\n\t1 | 1 +\n"], context=replace(CONTEXT, fuel=100))
+    run = enter(log, "f\n", replace(CONTEXT, fuel=100), log.head)
+    log = grown(log, replace(run, event=replace(run.event, fuel=2)))
+    outcome = enter(log, "f : -- x\n\t3\n", replace(CONTEXT, fuel=2), log.head)
+    assert (outcome.event.status, outcome.out, outcome.notes) == ("ok", "", ())
+
+
+def test_a_baseline_that_ran_within_less_fuel_still_names_what_moved() -> None:
+    log, outcomes = entered(["f : -- x\n\t2\n", "f\n"], context=replace(CONTEXT, fuel=2))
+    outcome = enter(log, "f : -- x\n\t1 | 2 +\n", replace(CONTEXT, fuel=100), log.head)
+    assert (outcome.event.status, outcome.out) == ("ok", "")
+    assert outcome.notes == (f"CHANGED 2 ${outcomes[1].event.ident.spelled()}",)
+
+
+@given(st.lists(st.sampled_from(("f : -- x\n\t1\n", "f : -- x\n\t2\n", "f\n")), max_size=6))
+def test_a_blank_input_moves_no_output(texts: list[str]) -> None:
+    """[law: changed-once] nothing is named after an input that adds no line, whatever was
+    defined again before it."""
+    log, _ = entered(texts)
+    assert enter(log, "\n", CONTEXT, log.head).notes == ()
 
 
 def test_an_error_in_an_earlier_input_names_its_event() -> None:
