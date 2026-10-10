@@ -15,7 +15,6 @@ from fpl.log import SCHEMA, Event, Log, RefusedError, Status, Who, prefixed
 from fpl.multihash import Multihash, content, hashed
 from fpl.types import Goal, reported
 
-FUEL_DEFAULT = 1_000_000
 MARGIN = "an input starts at the left margin"
 
 

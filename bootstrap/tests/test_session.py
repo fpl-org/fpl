@@ -8,11 +8,11 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from fpl import session
-from fpl.driver import run
+from fpl.driver import FUEL_DEFAULT, run
 from fpl.errors import FplError, Span
 from fpl.log import SCHEMA, Event, Log, RefusedError
 from fpl.multihash import BLAKE2B_256, content
-from fpl.session import FUEL_DEFAULT, Context, Outcome, enter, evaluator, program, rewind
+from fpl.session import Context, Outcome, enter, evaluator, program, rewind
 
 CONTEXT = Context(evaluator(), "agent", "Claude Opus 5.5", "s", FUEL_DEFAULT)
 EMPTY = Log((), {}, 0)

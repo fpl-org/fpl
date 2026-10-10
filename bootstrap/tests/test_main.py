@@ -1,5 +1,7 @@
 """The command line: output or one error line, and an exit status that says which."""
 
+import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -7,6 +9,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+import fpl
 from fpl.__main__ import main
 from fpl.errors import FplError, Span
 
@@ -89,3 +92,44 @@ def test_a_goal_goes_to_stderr_before_the_program_runs(
     printed = capsys.readouterr()
     assert printed.out == "ERROR: 2:2 unfilled goal\n"
     assert printed.err == "GOAL 2:2 ? : t0 -- value\n\t?\n ^\n"
+
+
+@pytest.mark.parametrize("body", ["f", "f f"])
+def test_a_recursion_without_end_runs_out_of_fuel(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    body: str,
+) -> None:
+    """A file whose word calls itself forever stops at the driver's step budget: one located
+    error line on stdout and exit 1, not a run without end (#96). The budget is patched small
+    so the law holds in milliseconds; its size is the driver's design knob."""
+    monkeypatch.setattr("fpl.driver.FUEL_DEFAULT", 1000)
+    program = tmp_path / "p.fpl"
+    program.write_text(f"f : --\n\t{body}\nf\n")
+    assert main([str(program)]) == 1
+    assert capsys.readouterr().out == "ERROR: 3:1 out of fuel\n"
+
+
+SPAWNED_SECONDS = 60
+"""How long `python -m fpl` may take to spend the whole default budget on a runaway: measured
+about 2.5 s for `f f` once a step costs the code it puts in place (#144), and close to an hour
+before, when each step copied the code still waiting. Over twenty times headroom for a slow
+host, and still far below the hour."""
+
+
+def test_a_branching_recursion_runs_out_of_fuel_at_the_real_default(tmp_path: Path) -> None:
+    """A word that calls itself twice leaves one more call waiting each step; the file runner
+    still spends its whole FUEL_DEFAULT and stops in seconds, not after the quadratic hour a
+    step that copies the waiting code would take. Run as the user runs it, unpatched."""
+    program = tmp_path / "p.fpl"
+    program.write_text("f : --\n\tf f\nf\n")
+    spawned = subprocess.run(
+        [sys.executable, "-m", "fpl", str(program)],
+        cwd=Path(fpl.__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=SPAWNED_SECONDS,
+        check=False,
+    )
+    assert (spawned.returncode, spawned.stdout) == (1, "ERROR: 3:1 out of fuel\n")

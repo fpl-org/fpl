@@ -135,12 +135,23 @@ def slotted(name: str, part: str | None) -> tuple[str, ...]:
 
 
 def final(state: State) -> tuple[Value, ...]:
-    """The stack once no code is left, each step spent from the line's meter, if any."""
+    """The stack once no code is left, each step spent from the line's meter, if any.
+
+    A step reads only the first node and leaves the rest of the code behind what it puts in
+    place, so each step is taken on its node alone and the code still waiting is held here,
+    next node last: a step costs the code it puts in place, not the code waiting. Stepping the
+    whole state would copy that code each step, quadratic in the steps of a recursion that
+    leaves a call waiting each time (`f f`), which no budget of a million steps bounds in
+    time (#144). The stack and the values a step builds are still copied whole, so a loop that
+    grows either each round stays quadratic in its steps."""
     meter = FUEL.get(UNMETERED)
-    while state.code:
+    stack, waiting = state.stack, list(reversed(state.code))
+    while waiting:
         meter.spend()
-        state = step(state)
-    return state.stack
+        after = step(State(stack, (waiting.pop(),), state.words))
+        stack = after.stack
+        waiting.extend(reversed(after.code))
+    return stack
 
 
 def running(state: State) -> bool:
