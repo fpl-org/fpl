@@ -177,7 +177,7 @@ count="$(git rev-list --count "$remote/$base..$here")"
 # the first change, so list them all.
 subjects=""
 [ "$count" = 1 ] || subjects="$(git log --reverse --format='- %s' "$remote/$base..$here")"$'\n\n'
-text="$(printf '%s%s\n\n%s%s commit%s, rebase-merge.' \
+text="$(printf '%s%s\n\n%s%s commit%s, landed by fast-forward.' \
 	"${stack:+Stack: $stack$'\n\n'}" "$body" "$subjects" "$count" "$([ "$count" = 1 ] || echo s)")"
 
 # The forge is public: the title, the text and the branch name go through the leak gate

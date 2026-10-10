@@ -1,0 +1,1151 @@
+#!/usr/bin/env bash
+#
+# scripts/land-self-test — proof that scripts/land refuses each thing it is there to refuse,
+# and lands by fast-forward what it should. Run by `make gates`.
+#
+# The forge is a directory of JSON fixtures, served by a gh of the test's own that comes
+# first on PATH: `gh api <path>` prints the fixture named after the path, a write (-X POST,
+# PATCH, PUT) is logged and marks the forge written, after which a fixture's `.after`
+# variant is served where there is one. Git talks to a bare repository on disk: the remote
+# says https://github.com/land-test/fpl.git, and a git of the test's own, first on PATH,
+# sends a fetch, push or ls-remote of that URL (or of land-test's URL in GitHub's ssh and
+# scp-like spellings, the host an ssh alias or not) there. The rewrite is not in git's configuration, where scripts/land refuses any that
+# sends git off GitHub, so it names the repository as it does on GitHub while nothing
+# reaches the network: GIT_ALLOW_PROTOCOL=file refuses every transport but the disk.
+# Git's global and system config, HOME, XDG_CONFIG_HOME and gh's config point away from the
+# maintainer's, and no token is set, so a gh that slipped past the stub could not write.
+#
+# A landing needs a terminal; those cases run under a pseudo-terminal that presses Enter
+# when the question appears. Where there is a /bin/bash other than the bash running this, the
+# whole run is made a second time with it first on PATH: on a Mac that is bash 3.2. Where the
+# running bash is /bin/bash (Linux), a second pass would repeat every check, so there is none.
+
+# The stand-ins' scripts are written in single quotes: they expand when they run.
+# shellcheck disable=SC2016
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+land="$root/scripts/land"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/land-self-test.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+: >"$tmp/gitconfig"
+export GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home" \
+	XDG_CONFIG_HOME="$tmp/xdg" GH_CONFIG_DIR="$tmp/gh" GIT_AUTHOR_NAME=t \
+	GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t \
+	GIT_COMMITTER_EMAIL=t@example.invalid FPL_LAND_WAIT=0
+unset GH_TOKEN GITHUB_TOKEN GH_HOST GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_CONFIG_COUNT
+mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$GH_CONFIG_DIR"
+
+# The repository: main at M0, which holds CODEOWNERS; the pull request #7 one commit above
+# it at H; M1, a main that moved past M0 without H; MC, a main whose CODEOWNERS has a rule
+# for part of the tree; HM, a head above M0 that merges M1 into H.
+export REPOS="$tmp/repos" REMOTE="$tmp/repos/fpl.git" FORGE="$tmp/forge" GIT_SSH_COMMAND=false \
+	GIT_TERMINAL_PROMPT=0 GIT_ALLOW_PROTOCOL=file
+git init -q --bare -b main "$REMOTE"
+# Another repository, where a misconfigured remote would push instead.
+OTHER="$tmp/other.git"
+git init -q --bare -b main "$OTHER"
+git config --global url."$OTHER".insteadOf https://github.com/other/fpl.git
+# A copy of the remote off GitHub, made by `mirror`, where a rewrite would send git instead.
+MIRROR="$tmp/mirror.git"
+repo="$tmp/repo"
+git init -q -b main "$repo"
+cd "$repo"
+git remote add github https://github.com/land-test/fpl.git
+mkdir .github
+echo '* @psjg' >.github/CODEOWNERS
+git add -A
+git commit -q -m base
+M0="$(git rev-parse HEAD)"
+BR=agent/x/stack/feat
+git switch -q -c "$BR"
+git commit -q --allow-empty -m feature
+export HEAD_SHA
+HEAD_SHA="$(git rev-parse HEAD)"
+H="$HEAD_SHA"
+git commit -q --allow-empty -m "a fix on top"
+H2="$(git rev-parse HEAD)"
+git switch -q main
+git commit -q --allow-empty -m elsewhere
+M1="$(git rev-parse HEAD)"
+git switch -q -c merged "$H"
+git merge -q --no-ff -m "a merge" "$M1"
+HM="$(git rev-parse HEAD)"
+git switch -q main
+git reset -q --hard "$M0"
+printf '* @psjg\ndocs/ @someone\n' >.github/CODEOWNERS
+git commit -q -am "owners by path"
+MC="$(git rev-parse HEAD)"
+git reset -q --hard "$M0"
+git push -q "$REMOTE" "$M0:refs/heads/main" "$H:refs/heads/$BR" "$M1:refs/heads/m1" \
+	"$MC:refs/heads/mc" "$H2:refs/heads/h2" "$HM:refs/heads/hm"
+
+# The stand-ins: gh serves the forge, git sends the test's GitHub to the disk, open and
+# xdg-open only log.
+bin="$tmp/bin"
+mkdir -p "$bin"
+# The real git, found before any stand-in is on PATH: the run with /bin/bash inherits it.
+LAND_TEST_GIT="${LAND_TEST_GIT:-$(command -v git)}"
+export LAND_TEST_GIT
+cat >"$bin/git" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+fetch | push | ls-remote)
+	args=()
+	for a in "$@"; do
+		case "$a" in
+		https://github.com/land-test/*) a="$REPOS/${a#https://github.com/land-test/}" ;;
+		ssh://git@github.com/land-test/*) a="$REPOS/${a#ssh://git@github.com/land-test/}" ;;
+		ssh://git@github.com-*/land-test/*) a="$REPOS/${a#ssh://git@github.com-*/land-test/}" ;;
+		git@github.com:land-test/*) a="$REPOS/${a#git@github.com:land-test/}" ;;
+		git@github.com-*:land-test/*) a="$REPOS/${a#git@github.com-*:land-test/}" ;;
+		esac
+		args+=("$a")
+	done
+	set -- "${args[@]}"
+	;;
+esac
+exec "$LAND_TEST_GIT" "$@"
+EOF
+cat >"$bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "gh $*" >>"$FORGE/calls"
+[ "$1" = api ] || { echo "(the conversation of the pull request)"; exit 0; }
+shift
+# As gh does, it takes the host from --hostname, else from GH_HOST, else github.com; any
+# other host is served from the forge's ghe/ directory.
+method=GET path="" host="${GH_HOST:-github.com}"
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-X) method="$2"; shift 2 ;;
+	--hostname) host="$2"; shift 2 ;;
+	-f | -F) shift 2 ;;
+	--paginate | --slurp) shift ;;
+	*) path="$1"; shift ;;
+	esac
+done
+if [ "$method" != GET ]; then
+	: >"$FORGE/written"
+	echo '{}'
+	exit 0
+fi
+name="$(printf %s "$path" | tr -c 'A-Za-z0-9._-' _)"
+dir="$FORGE"
+[ "$host" = github.com ] || dir="$FORGE/ghe"
+file="$dir/$name.json"
+[ ! -e "$FORGE/written" ] || [ ! -e "$dir/$name.after.json" ] || file="$dir/$name.after.json"
+# The k-th read of a path is served its `.read<k>` variant where there is one.
+reads=$(($(cat "$FORGE/$name.reads" 2>/dev/null || echo 0) + 1))
+echo "$reads" >"$FORGE/$name.reads"
+[ ! -e "$dir/$name.read$reads.json" ] || file="$dir/$name.read$reads.json"
+[ -e "$file" ] || { echo "gh: Not Found (HTTP 404) $path" >&2; exit 1; }
+merged=false
+if git --git-dir="$REMOTE" merge-base --is-ancestor "$HEAD_SHA" refs/heads/main 2>/dev/null; then
+	merged=true
+fi
+sed "s/@MERGED@/$merged/" "$file"
+EOF
+printf '#!/bin/sh\necho "open $*" >>"$FORGE/calls"\n' >"$bin/open"
+cp "$bin/open" "$bin/xdg-open"
+chmod +x "$bin/gh" "$bin/git" "$bin/open" "$bin/xdg-open"
+export PATH="$bin:$PATH"
+
+# A pseudo-terminal that presses Enter once the question is asked.
+cat >"$tmp/terminal.py" <<'EOF'
+import os, pty, sys
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp(sys.argv[1], sys.argv[1:])
+seen, sent = b"", False
+while True:
+    try:
+        data = os.read(fd, 4096)
+    except OSError:
+        break
+    if not data:
+        break
+    sys.stdout.buffer.write(data)
+    seen += data
+    if not sent and b"Enter = " in seen:
+        os.write(fd, b"\n")
+        sent = True
+_, status = os.waitpid(pid, 0)
+sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1)
+EOF
+
+# The pull request's head in the fixtures that name it.
+at="$H"
+# fixture <api path> [after]: stdin becomes what gh api <path> prints.
+fixture() {
+	cat >"$FORGE/$(printf %s "$1" | tr -c 'A-Za-z0-9._-' _)${2:+.$2}.json"
+}
+pull() { # pull <state> <draft> <base> <merged>
+	fixture "repos/land-test/fpl/pulls/7" <<-EOF
+	{"number": 7, "state": "$1", "draft": $2, "merged": $4,
+	 "html_url": "https://github.com/land-test/fpl/pull/7", "user": {"login": "psjg-claude"},
+	 "base": {"ref": "$3"},
+	 "head": {"sha": "$at", "ref": "$BR", "repo": {"full_name": "land-test/fpl"}}}
+	EOF
+}
+me() { echo "{\"login\": \"$1\"}" | fixture user; }
+reviews() { echo "[[$1]]" | fixture "repos/land-test/fpl/pulls/7/reviews?per_page=100" ${2:+"$2"}; }
+review() { # review <id> <login> <state> <commit>
+	echo "{\"id\": $1, \"user\": {\"login\": \"$2\"}, \"state\": \"$3\", \"commit_id\": \"$4\"}"
+}
+threads() {
+	echo "[{\"data\": {\"repository\": {\"pullRequest\": {\"reviewThreads\": {\"nodes\": [$1],
+	  \"pageInfo\": {\"hasNextPage\": false, \"endCursor\": null}}}}}}]" | fixture graphql
+}
+thread() { # thread <resolved> <url>
+	echo "{\"isResolved\": $1, \"path\": \"a\", \"line\": 1, \"comments\": {\"nodes\": [{\"url\": \"$2\"}]}}"
+}
+rules() { # rules <required contexts> [approvals] [another rule] [pull_request parameters]
+	fixture "repos/land-test/fpl/rules/branches/main?per_page=100" <<-EOF
+	[[{"type": "pull_request", "ruleset_id": 1, "ruleset_source_type": "Repository",
+	   "ruleset_source": "land-test/fpl",
+	   "parameters": {"required_approving_review_count": ${2:-1},
+	     "dismiss_stale_reviews_on_push": true, "require_code_owner_review": true,
+	     "require_last_push_approval": false, "required_review_thread_resolution": true,
+	     "required_reviewers": [], "allowed_merge_methods": ["rebase"],
+	     "dismissal_restriction": {"enabled": false, "allowed_actors": []}${4:+, $4}}},
+	  {"type": "required_status_checks", "ruleset_id": 1,
+	   "parameters": {"required_status_checks": [$1],
+	     "strict_required_status_checks_policy": false, "do_not_enforce_on_create": false}},
+	  {"type": "required_linear_history", "ruleset_id": 1},
+	  {"type": "non_fast_forward", "ruleset_id": 1},
+	  {"type": "deletion", "ruleset_id": 2}${3:+, $3}]]
+	EOF
+}
+ruleset() { # ruleset <id> <current_user_can_bypass>
+	echo "{\"name\": \"set $1\", \"current_user_can_bypass\": \"$2\"}" |
+		fixture "repos/land-test/fpl/rulesets/$1?includes_parents=true"
+}
+runs() { # runs <check runs as JSON objects> [total_count] [variant]: one page, counted right
+	python3 -c 'import json, sys
+runs = json.loads("[" + sys.argv[1] + "]")
+total = int(sys.argv[2]) if sys.argv[2] else len(runs)
+print(json.dumps([{"total_count": total, "check_runs": runs}]))' "$1" "${2:-}" |
+		fixture "repos/land-test/fpl/commits/$at/check-runs?filter=all&per_page=100" ${3:+"$3"}
+}
+statuses() { # statuses <pages, each a JSON list of commit statuses> [variant]
+	echo "[$1]" | fixture "repos/land-test/fpl/commits/$at/statuses?per_page=100" ${2:+"$2"}
+}
+status() { echo "{\"id\": $1, \"context\": \"$2\", \"state\": \"$3\"}"; } # <id> <context> <state>
+run() { # run <id> <name> <status> <conclusion> <started> [app]
+	echo "{\"id\": $1, \"name\": \"$2\", \"status\": \"$3\", \"conclusion\": \"$4\",
+	  \"started_at\": \"2026-10-07T0$5:00:00Z\", \"app\": {\"id\": ${6:-15368}}}"
+}
+children() { echo "[[$1]]" | fixture "repos/land-test/fpl/pulls?state=open&base=$BR&per_page=100"; }
+
+# forge: a fresh forge and remote where every check passes, and nothing was written.
+forge() {
+	rm -rf "$FORGE" "$REMOTE/hooks/pre-receive"
+	mkdir -p "$FORGE"
+	: >"$FORGE/calls"
+	git --git-dir="$REMOTE" update-ref refs/heads/main "$M0"
+	git --git-dir="$REMOTE" update-ref refs/pull/7/head "$at"
+	git --git-dir="$OTHER" update-ref -d refs/heads/main 2>/dev/null || :
+	pull open false main @MERGED@
+	me psjg
+	reviews "$(review 1 psjg APPROVED "$at")"
+	threads "$(thread true https://forge/t1)"
+	rules '{"context": "commit-lint", "integration_id": 15368},
+	       {"context": "zeta-check", "integration_id": 15368}'
+	ruleset 1 always
+	ruleset 2 always
+	runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed success 1)"
+	statuses "[]"
+	children ""
+}
+
+fails=0 total=0
+# expect <exit code> <description> <scripts/land arguments...>: output in $tmp/out.
+expect() {
+	local want="$1" what="$2" rc=0
+	shift 2
+	total=$((total + 1))
+	"$land" "$@" >"$tmp/out" 2>&1 </dev/null || rc=$?
+	verdict "$want" "$rc" "$what"
+}
+# landing <exit code> <description> <arguments...>: the same, in a terminal.
+landing() {
+	local want="$1" what="$2" rc=0
+	shift 2
+	total=$((total + 1))
+	python3 "$tmp/terminal.py" "$land" "$@" >"$tmp/out" 2>&1 </dev/null || rc=$?
+	verdict "$want" "$rc" "$what"
+}
+verdict() {
+	cat "$tmp/out" >>"$tmp/outputs"
+	if [ "$2" -ne "$1" ]; then
+		fails=$((fails + 1))
+		echo "self-test: $3: exit $2, want $1" >&2
+		sed 's/^/    /' "$tmp/out" >&2
+	fi
+}
+# says <text> <description> / lacks: the last output holds, or lacks, the text.
+says() {
+	total=$((total + 1))
+	grep -qF -- "$1" "$tmp/out" && return
+	fails=$((fails + 1))
+	echo "self-test: $2: the output lacks '$1'" >&2
+	sed 's/^/    /' "$tmp/out" >&2
+}
+lacks() {
+	total=$((total + 1))
+	! grep -qF -- "$1" "$tmp/out" && return
+	fails=$((fails + 1))
+	echo "self-test: $2: the output holds '$1'" >&2
+}
+# main_is <sha> <description>: where main is on the remote.
+main_is() {
+	total=$((total + 1))
+	[ "$(git --git-dir="$REMOTE" rev-parse refs/heads/main)" = "$1" ] && return
+	fails=$((fails + 1))
+	echo "self-test: $2: main is not $1" >&2
+}
+called() { cp "$FORGE/calls" "$tmp/out"; }
+# untouched <git dir> <description>: nothing was pushed to that repository's main.
+untouched() {
+	total=$((total + 1))
+	if git --git-dir="$1" rev-parse -q --verify refs/heads/main >/dev/null &&
+		[ "$(git --git-dir="$1" rev-parse refs/heads/main)" != "$M0" ]; then
+		fails=$((fails + 1))
+		echo "self-test: $2: main there is $(git --git-dir="$1" rev-parse refs/heads/main)" >&2
+	fi
+}
+# mirror: a fresh copy of the remote, pull request head included, off GitHub.
+mirror() {
+	rm -rf "$MIRROR"
+	git clone -q --mirror "$REMOTE" "$MIRROR"
+}
+
+# Dry runs: every check, nothing written. ------------------------------------------------
+forge
+expect 0 "everything holds" --dry-run 7
+says "would run: git push https://github.com/land-test/fpl.git $H:refs/heads/main" \
+	"a dry run prints the push, to the URL checked"
+lacks "would approve" "an approval at the head is not given again"
+main_is "$M0" "a dry run leaves main"
+called
+lacks " -X " "a dry run writes nothing to the forge"
+
+forge
+children '{"number": 8}'
+expect 0 "a pull request stacked on it" --dry-run 7
+says "gh api --hostname github.com -X PATCH repos/land-test/fpl/pulls/8 -f base=main" \
+	"the retarget is printed"
+says "you may push past ruleset 'set 1' as @psjg: always" "it names the account it judged"
+
+forge
+expect 0 "the pull request named by its URL" --dry-run https://github.com/land-test/fpl/pull/7
+expect 1 "a pull request in another repository" --dry-run https://github.com/other/fpl/pull/7
+says "remote 'github' is land-test/fpl" "the refusal names both repositories"
+
+forge
+echo '[[{"number": 7}]]' | fixture "repos/land-test/fpl/pulls?state=open&head=land-test:$BR&per_page=100"
+git switch -q "$BR"
+expect 0 "the pull request of the current branch" --dry-run
+git switch -q main
+
+forge
+pull closed false main false
+expect 1 "a closed pull request" --dry-run 7
+says "NO  land/open" "it names the rule"
+says "remedy:" "it says what to do"
+says "would run: git push" "a refused dry run still prints the push"
+
+forge
+pull open true main false
+expect 1 "a draft" --dry-run 7
+says "#7 is a draft" "it says why"
+says "gh pr ready 7 --repo github.com/land-test/fpl" "the remedy names the repository"
+
+forge
+pull open false "$BR-below" false
+expect 1 "a pull request on another base" --dry-run 7
+says "NO  land/base" "it names the rule"
+says "gh api --hostname github.com -X PATCH repos/land-test/fpl/pulls/7 -f base=main" \
+	"the retarget it prints names the host"
+
+forge
+git --git-dir="$REMOTE" update-ref refs/pull/7/head "$M0"
+expect 1 "refs/pull/7/head is not the head the forge reports" --dry-run 7
+says "NO  land/head" "it names the rule"
+
+forge
+me psjg-claude
+expect 1 "the author lands his own pull request" --dry-run 7
+says "NO  land/author" "it names the rule"
+says "gh auth switch --hostname github.com --user <maintainer>" "the switch names the host"
+
+forge
+git --git-dir="$REMOTE" update-ref refs/heads/main "$MC"
+expect 1 "CODEOWNERS with a rule for part of the tree" --dry-run 7
+says "NO  land/codeowners" "it names the rule"
+says "rule for docs/ alone" "it says which rule"
+
+forge
+me someone
+reviews "$(review 1 psjg APPROVED "$M0")"
+expect 1 "the code owner approved an older commit" --dry-run 7
+says "NO  land/approved" "it names the rule"
+says "@psjg on ${M0:0:12} is not this head" "it names the approval it found"
+
+forge
+me someone
+reviews "$(review 1 psjg-codex APPROVED "$H")"
+expect 1 "the head approved by someone who owns no code" --dry-run 7
+says "no code owner approved" "it says why"
+
+forge
+reviews "$(review 1 psjg COMMENTED "$H")"
+expect 0 "no approval yet, and you are the code owner" --dry-run 7
+says "would approve $H as psjg" "it says it would approve the head"
+
+forge
+reviews "$(review 1 psjg APPROVED "$H"), $(review 2 'coderabbitai[bot]' CHANGES_REQUESTED "$M0")"
+expect 1 "a standing request for changes, from a bot too" --dry-run 7
+says "NO  land/changes-requested" "it names the rule"
+says "review 2" "it names the review to dismiss"
+says "gh api --hostname github.com -X PUT repos/land-test/fpl/pulls/7/reviews/<review>/dismissals" \
+	"the dismissal names the host"
+reviews "$(review 1 psjg APPROVED "$H"), $(review 2 'coderabbitai[bot]' CHANGES_REQUESTED "$M0"),
+	$(review 3 'coderabbitai[bot]' DISMISSED "$M0")"
+expect 0 "a request for changes that was dismissed" --dry-run 7
+
+forge
+threads "$(thread true https://forge/t1), $(thread false https://forge/t2)"
+expect 1 "an unresolved review thread" --dry-run 7
+says "NO  land/threads" "it names the rule"
+says "https://forge/t2" "it names the thread"
+
+forge
+runs "$(run 1 commit-lint completed success 1)"
+expect 1 "a required check that never ran" --dry-run 7
+says "zeta-check has not run" "it names the check the ruleset requires"
+
+forge
+runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed success 1 999)"
+expect 1 "a required check from another app" --dry-run 7
+says "zeta-check has not run" "a run by another app does not count"
+
+forge
+rules '{"context": "omega", "integration_id": 15368}'
+expect 1 "the required checks are the ruleset's, not a list in the script" --dry-run 7
+says "omega has not run" "it reads them from the rules on main"
+
+forge
+runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed success 1),
+	$(run 3 zeta-check completed cancelled 2)"
+expect 1 "a success, then a cancelled latest run" --dry-run 7
+says "zeta-check's latest run on ${H:0:12} concluded cancelled" "the latest run decides"
+says "gh run rerun <run> --repo github.com/land-test/fpl (gh pr checks 7 --repo github.com/land-test/fpl)" \
+	"the rerun names the repository"
+
+forge
+runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed cancelled 1),
+	$(run 3 zeta-check completed success 2)"
+expect 0 "a cancelled duplicate, then a success" --dry-run 7
+
+forge
+runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed success 1),
+	{\"id\": 3, \"name\": \"zeta-check\", \"status\": \"queued\", \"conclusion\": null,
+	 \"started_at\": null, \"app\": {\"id\": 15368}}"
+expect 1 "a rerun queued after a success" --dry-run 7
+says "zeta-check is queued" "the run made last decides, started or not"
+
+forge
+runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed skipped 1)"
+expect 1 "a skipped latest run" --dry-run 7
+says "concluded skipped" "skipped is not success"
+
+forge
+runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check in_progress null 1)"
+expect 1 "a check still running" --dry-run 7
+says "zeta-check is in_progress" "it says it is running"
+says "gh pr checks 7 --repo github.com/land-test/fpl --watch" "the wait names the repository"
+
+# A check run and a commit status that share a required name: GitHub wants both to pass.
+forge
+rules '{"context": "ci"}'
+runs "$(run 1 ci completed success 1)"
+statuses "[$(status 1 ci failure)]"
+expect 1 "a check run succeeded, a commit status of the same name failed" --dry-run 7
+says "ci (commit status)'s newest status on ${H:0:12} concluded failure" "it names the status"
+says "ok  land/checks             ci succeeded" "the check run is judged too"
+statuses "[$(status 1 ci pending)]"
+expect 1 "a check run succeeded, a commit status of the same name is pending" --dry-run 7
+says "ci (commit status) is pending" "a pending status is waited for"
+runs ""
+statuses "[$(status 1 ci success)]"
+expect 0 "a commit status alone meets a rule that names no app" --dry-run 7
+says "ci (commit status) succeeded" "it says so"
+statuses "[$(status 2 ci failure), $(status 1 ci success)]"
+expect 1 "the newest status of a context failed, an older one succeeded" --dry-run 7
+statuses "[$(status 2 ci success), $(status 1 ci failure)]"
+expect 0 "the newest status of a context succeeded, an older one failed" --dry-run 7
+statuses "[$(status 3 other success)], [$(status 2 ci failure)]"
+expect 1 "the failing status is on the second page" --dry-run 7
+says "concluded failure" "every page of statuses is read"
+
+forge
+statuses "[$(status 1 zeta-check failure)]"
+expect 1 "a rule that names an app, and a failing status of the same name" --dry-run 7
+says "zeta-check (commit status)'s newest status" "a status's app is unknown: it refuses"
+statuses "[$(status 1 zeta-check success)]"
+expect 0 "a rule that names an app, and a succeeding status of the same name" --dry-run 7
+
+forge
+runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed success 1)" 3
+expect 1 "the pages hold fewer check runs than the forge counted" --dry-run 7
+says "not every page of check runs" "an incomplete answer is refused by name"
+
+forge
+git --git-dir="$REMOTE" update-ref refs/heads/main "$M1"
+expect 1 "main moved past the pull request's base" --dry-run 7
+says "NO  land/ancestor" "it names the rule"
+says "restack before approval, never after" "it says when to restack"
+
+at="$HM"
+forge
+expect 1 "a merge commit between main and the head" --dry-run 7
+says "NO  land/linear" "it names the rule"
+says "1 merge commit(s)" "it counts them"
+at="$H"
+
+forge
+rules '{"context": "commit-lint", "integration_id": 15368}' 1 '{"type": "required_signatures", "ruleset_id": 2}'
+expect 1 "a rule on main that scripts/land does not judge" --dry-run 7
+says "NO  land/rules" "it names the rule"
+says "required_signatures" "it names the rule it does not judge"
+
+forge
+rules '{"context": "commit-lint", "integration_id": 15368}' 2
+expect 1 "a ruleset that wants two approvals" --dry-run 7
+says "pull_request required_approving_review_count: 2" "one code owner's approval is not enough"
+
+# A parameter of a judged rule that asks what scripts/land does not make is refused.
+lint='{"context": "commit-lint", "integration_id": 15368}'
+param_case() { # param_case <description> <exit code> <text> <rules arguments after the first...>
+	local what="$1" want="$2" text="$3"
+	shift 3
+	forge
+	rules "$lint" "$@"
+	expect "$want" "$what" --dry-run 7
+	if [ "$want" -eq 1 ]; then
+		says "NO  land/rules" "it names the rule"
+		says "$text" "it names the parameter"
+	else
+		says "ok  land/rules" "$text"
+	fi
+}
+param_case "the last push approved by someone else" 1 "require_last_push_approval: true" \
+	1 "" '"require_last_push_approval": true'
+param_case "a team required for some paths" 1 "pull_request required_reviewers" \
+	1 "" '"required_reviewers": [{"file_patterns": ["*"], "minimum_approvals": 1, "reviewer": {"id": 1, "type": "Team"}}]'
+param_case "a parameter GitHub does not document, enabled" 1 \
+	"require_extra_approval_for_unattributed_changes: true" \
+	1 "" '"require_extra_approval_for_unattributed_changes": true'
+param_case "a parameter not known here, false" 0 "a parameter that is false asks nothing" \
+	1 "" '"require_extra_approval_for_unattributed_changes": false'
+param_case "a parameter on a rule that has none" 1 "deletion x: 1" \
+	1 '{"type": "deletion", "ruleset_id": 2, "parameters": {"x": 1}}'
+param_case "the branch up to date before merging" 0 "land/ancestor makes it" \
+	1 '{"type": "required_status_checks", "ruleset_id": 2, "parameters": {"required_status_checks": [], "strict_required_status_checks_policy": true}}'
+param_case "zero approvals, no code owner review, no thread resolution" 0 "the script is stricter" \
+	0 "" '"require_code_owner_review": false, "required_review_thread_resolution": false'
+
+# An answer that says nothing is not "nothing required": it fails closed, by name.
+for empty in '[[]]' '{}' '[]' '[[{}]]' '[["x"]]'; do
+	forge
+	echo "$empty" | fixture "repos/land-test/fpl/rules/branches/main?per_page=100"
+	expect 1 "main's rules answered as $empty" --dry-run 7
+	says "NO  land/rules" "an empty or malformed rules answer is refused by name"
+	says "remedy:" "it says what to do"
+	lacks "ok  land/checks" "no check is judged against rules that are not there"
+done
+
+forge
+rules '{"context": "commit-lint", "integration_id": 15368}' 1 '{"type": "deletion"}'
+expect 1 "a rule that names no ruleset" --dry-run 7
+says "NO  land/rules" "a rule without a ruleset_id is a forge failure"
+lacks "ok  land/rules" "it is not judged as fine"
+
+# A rule that is not GitHub's schema for it is a forge failure too, never fewer rules.
+for bad in '{"type": "required_status_checks", "ruleset_id": 1}' \
+	'{"type": "required_status_checks", "ruleset_id": 1, "parameters": {"required_status_checks": "ci", "strict_required_status_checks_policy": false}}' \
+	'{"type": "required_status_checks", "ruleset_id": 1, "parameters": {"required_status_checks": [{"context": "ci", "integration_id": "15368"}], "strict_required_status_checks_policy": false}}' \
+	'{"type": "required_status_checks", "ruleset_id": 1, "parameters": {"required_status_checks": [{"integration_id": 15368}], "strict_required_status_checks_policy": false}}' \
+	'{"type": "required_status_checks", "ruleset_id": 1, "parameters": {"required_status_checks": [{"context": "ci"}]}}' \
+	'{"type": "pull_request", "ruleset_id": 1}' \
+	'{"type": "pull_request", "ruleset_id": 1, "parameters": {"required_approving_review_count": "2", "dismiss_stale_reviews_on_push": true, "require_code_owner_review": true, "require_last_push_approval": false, "required_review_thread_resolution": true}}' \
+	'{"type": "pull_request", "ruleset_id": 1, "parameters": {"required_approving_review_count": true, "dismiss_stale_reviews_on_push": true, "require_code_owner_review": true, "require_last_push_approval": false, "required_review_thread_resolution": true}}' \
+	'{"type": "pull_request", "ruleset_id": 1, "parameters": {"required_approving_review_count": 1, "dismiss_stale_reviews_on_push": true, "require_code_owner_review": true, "require_last_push_approval": "yes", "required_review_thread_resolution": true}}' \
+	'{"type": "deletion", "ruleset_id": "2"}' \
+	'{"type": "deletion", "ruleset_id": true}' \
+	'{"type": 5, "ruleset_id": 2}'; do
+	forge
+	rules '{"context": "commit-lint", "integration_id": 15368}' 1 "$bad"
+	expect 1 "a rule not as GitHub's schema gives it: $bad" --dry-run 7
+	says "NO  land/rules" "a malformed rule is refused by name"
+	lacks "ok  land/checks" "no check is judged against rules that are not read"
+done
+forge
+rules '{"context": "commit-lint"}'
+expect 0 "a required check that names no app means any app" --dry-run 7
+says "ok  land/rules" "a check without integration_id is the schema's"
+lacks "NO  land/rules" "it is not read as malformed"
+
+forge
+for empty in '{}' '[]' '[{}]' '[{"data": null, "errors": [{}]}]'; do
+	echo "$empty" | fixture graphql
+	expect 1 "the review threads answered as $empty" --dry-run 7
+	says "NO  land/threads" "a reply that is no page of review threads is refused by name"
+	lacks "all 0 review threads resolved" "it is not read as no threads"
+done
+threads ""
+expect 0 "a page that holds no review thread" --dry-run 7
+says "all 0 review threads resolved" "an honest empty page is no thread"
+
+forge
+ruleset 2 pull_requests_only
+expect 1 "a ruleset the maintainer may bypass only for pull requests" --dry-run 7
+says "NO  land/bypass" "it names the rule"
+says "lets you (@psjg) past it pull_requests_only" "it names the account it judged"
+says "Bypass list > Repository admin > Always" "it gives the owner's one-time step"
+
+# land/remote: the push goes where the fetch comes from, the repository read on the forge.
+# Each case sets one thing in the clone's config and takes it away again.
+remote_case() { # remote_case <description> <git config arguments...>
+	local what="$1"
+	shift
+	forge
+	git config "$@"
+	expect 1 "$what" --dry-run 7
+	says "land/remote" "it names the rule"
+	says "remedy:" "it says what to do"
+	lacks "would run: git push" "nothing is judged against a remote that pushes elsewhere"
+}
+remote_case "a pushurl to another repository" remote.github.pushurl https://github.com/other/fpl.git
+git config --unset-all remote.github.pushurl
+says "pushes to $OTHER" "it names where the push would go"
+forge
+git config remote.github.pushurl https://github.com/land-test/fpl.git
+expect 0 "a pushurl to the same repository" --dry-run 7
+remote_case "a second push URL" --add remote.github.pushurl https://github.com/other/fpl.git
+says "more than one URL" "it says why"
+git config --unset-all remote.github.pushurl
+remote_case "a pushInsteadOf that rewrites the push" \
+	url.https://github.com/other/.pushInsteadOf https://github.com/land-test/
+git config --unset-all url.https://github.com/other/.pushInsteadOf
+# ssh to a host that is not there: nothing reaches the network, even before the fix.
+remote_case "an insteadOf that sends fetch and push to another GitHub repository" \
+	url.git@github.com-nowhere:other/fpl.git.insteadOf https://github.com/land-test/fpl.git
+says "git goes to other/fpl" "it names the repository git goes to"
+git config --unset-all url.git@github.com-nowhere:other/fpl.git.insteadOf
+remote_case "a remote named by the URL itself, which git uses for that URL" \
+	remote.https://github.com/land-test/fpl.git.pushurl https://github.com/other/fpl.git
+says "configures a remote named by that URL" "it names the section"
+git config --remove-section remote.https://github.com/land-test/fpl.git
+# The push names the URL checked; git rewrites that URL too, by the insteadOf that matches
+# it rather than the remote's: here git@github.com:land-test/fpl.git, the URL git goes to.
+forge
+git config url.git@github.com:land-test/.insteadOf https://github.com/land-test/
+expect 0 "an insteadOf to the same repository over ssh" --dry-run 7
+says "would run: git push git@github.com:land-test/fpl.git $H:refs/heads/main" \
+	"it pushes to the URL git goes to"
+git config url."$OTHER".insteadOf git@github.com:land-test/fpl.git
+expect 1 "an insteadOf that rewrites the URL checked, not the remote's" --dry-run 7
+says "land/remote" "it names the rule"
+says "rewrites it" "it says why"
+lacks "would run: git push" "nothing is judged"
+git config --unset-all url."$OTHER".insteadOf
+git config --unset-all url.git@github.com:land-test/.insteadOf
+# A rewrite off GitHub is refused, not taken for a mirror that the check after the push
+# would catch: by then main there has moved, under rules nobody read.
+forge
+mirror
+git config url."$MIRROR".insteadOf https://github.com/land-test/fpl.git
+expect 1 "an insteadOf that sends fetch and push off GitHub" --dry-run 7
+says "land/remote" "it names the rule"
+says "git goes to $MIRROR, not GitHub" "it says where git goes"
+lacks "would run: git push" "nothing is judged against a repository off GitHub"
+landing 1 "a landing whose remote git sends off GitHub" 7
+git config --unset-all url."$MIRROR".insteadOf
+untouched "$MIRROR" "nothing was pushed off GitHub"
+main_is "$M0" "nothing landed"
+# A GitHub repository's URL is one of GitHub's three spellings; over ssh, and only there,
+# the host may be an alias, github.com-<alias>, which the ssh config resolves.
+for url in ssh://git@github.com/land-test/fpl.git git@github.com:land-test/fpl \
+	git@github.com-work:land-test/fpl.git ssh://git@github.com-work/land-test/fpl.git \
+	git@github.com-work_2-b:land-test/fpl.git ssh://git@github.com-0/land-test/fpl.git \
+	https://github.com/land-test/fpl; do
+	forge
+	git config remote.github.url "$url"
+	expect 0 "the remote is $url" --dry-run 7
+	says "would run: git push $url $H:refs/heads/main" "it pushes to $url"
+done
+for url in https://github.com-evil.example/land-test/fpl.git file://github.com/land-test/fpl.git \
+	github.com/land-test/fpl.git ./github.com/land-test/fpl.git http://github.com/land-test/fpl.git \
+	git://github.com/land-test/fpl.git https://www.github.com/land-test/fpl.git \
+	https://someone@github.com/land-test/fpl.git ssh://someone@github.com/land-test/fpl.git \
+	ssh://git@github.com:22/land-test/fpl.git github.com:land-test/fpl.git \
+	https://github.com/land-test/fpl.git/extra https://github.com/land-test/.. \
+	ssh://git@github.com-evil.example/land-test/fpl.git git@github.com-evil.example:land-test/fpl.git \
+	ssh://git@github.com./land-test/fpl.git git@github.com.:land-test/fpl.git \
+	ssh://git@github.com-a.b/land-test/fpl.git git@github.com-:land-test/fpl.git; do
+	forge
+	git config remote.github.url "$url"
+	expect 1 "the remote is $url" --dry-run 7
+	says "land/remote: remote 'github' is $url, not a GitHub repository's URL" "it names the rule"
+	lacks "would run: git push" "nothing is judged"
+	called
+	lacks "gh api" "the forge is not read for $url"
+done
+git config remote.github.url https://github.com/land-test/fpl.git
+# The review's case: an insteadOf to a host that merely begins with github.com.
+remote_case "an insteadOf to a host named github.com-<something>, over https" \
+	url.https://github.com-evil.example/.insteadOf https://github.com/
+says "git goes to https://github.com-evil.example/land-test/fpl.git, not GitHub" "it says where git goes"
+git config --unset-all url.https://github.com-evil.example/.insteadOf
+# The same over ssh, the second review's case: an alias with a dot is a DNS name, and git
+# goes there when an insteadOf says so, though slug() once took it for an ssh config Host.
+git config remote.github.url git@github.com:land-test/fpl.git
+remote_case "an insteadOf to a host named github.com-<something>.<tld>, scp-style" \
+	url.git@github.com-evil.example:.insteadOf git@github.com:
+says "git goes to git@github.com-evil.example:land-test/fpl.git, not GitHub" "it says where git goes"
+git config --unset-all url.git@github.com-evil.example:.insteadOf
+git config remote.github.url ssh://git@github.com/land-test/fpl.git
+remote_case "an insteadOf to a host named github.com-<something>.<tld>, over ssh://" \
+	url.ssh://git@github.com-evil.example/.insteadOf ssh://git@github.com/
+says "git goes to ssh://git@github.com-evil.example/land-test/fpl.git, not GitHub" "it says where git goes"
+git config --unset-all url.ssh://git@github.com-evil.example/.insteadOf
+git config remote.github.url https://github.com/land-test/fpl.git
+forge
+expect 0 "the remote as it should be, after each case" --dry-run 7
+
+forge
+git config remote.github.pushurl https://github.com/other/fpl.git
+landing 1 "a landing whose remote pushes to another repository" 7
+git config --unset-all remote.github.pushurl
+total=$((total + 1))
+if git --git-dir="$OTHER" rev-parse -q --verify refs/heads/main >/dev/null; then
+	fails=$((fails + 1))
+	echo "self-test: a landing whose remote pushes elsewhere: it pushed there" >&2
+fi
+main_is "$M0" "nothing landed"
+
+# Where git goes is checked again right before the push, and the push names the URL it
+# checked: a remote changed while the diff is open does not take the push elsewhere.
+rewire_case() { # rewire_case <description> <git config arguments...>
+	local what="$1"
+	shift
+	forge
+	mirror
+	mkdir -p "$tmp/rewire"
+	printf '#!/bin/sh\ngit config'" %s"'\n' "$*" >"$tmp/rewire/open"
+	chmod +x "$tmp/rewire/open"
+	PATH="$tmp/rewire:$PATH" landing 1 "$what" 7
+	says "land/remote" "it names the rule"
+	untouched "$OTHER" "nothing was pushed to another repository"
+	untouched "$MIRROR" "nothing was pushed off GitHub"
+	main_is "$M0" "nothing landed"
+}
+rewire_case "a pushurl to another repository, set while the diff is open" \
+	remote.github.pushurl https://github.com/other/fpl.git
+git config --unset-all remote.github.pushurl
+rewire_case "an insteadOf off GitHub, set while the diff is open" \
+	url."$MIRROR".insteadOf https://github.com/land-test/fpl.git
+git config --unset-all url."$MIRROR".insteadOf
+# A pushurl set after that last check, as git starts: the push names the URL, not the remote.
+forge
+mkdir -p "$tmp/late"
+printf '#!/bin/sh\n[ "$1" != push ] || %s config remote.github.pushurl https://github.com/other/fpl.git\nexec %s "$@"\n' \
+	"$(command -v git)" "$(command -v git)" >"$tmp/late/git"
+chmod +x "$tmp/late/git"
+PATH="$tmp/late:$PATH" landing 0 "a pushurl set as the push starts" 7
+git config --unset-all remote.github.pushurl
+untouched "$OTHER" "the push did not go through the remote's name"
+main_is "$H" "it went to the URL checked"
+
+# Landings: a terminal, a keypress, a push. ----------------------------------------------
+forge
+expect 1 "a landing without a terminal" 7
+says "needs a terminal" "it says why"
+main_is "$M0" "nothing was pushed"
+
+forge
+landing 0 "everything holds" 7
+main_is "$H" "main is fast-forwarded to the head"
+says "#7 is merged; main is $H" "it checks the forge shows the merge"
+called
+lacks " -X " "an approval at the head is not given again"
+says "open https://github.com/land-test/fpl/pull/7/files" "the diff is opened"
+says "gh pr view 7 --repo github.com/land-test/fpl --comments" "the conversation is shown"
+
+forge
+children '{"number": 8}'
+landing 0 "a pull request stacked on the landed one" 7
+says "gh api --hostname github.com -X PATCH repos/land-test/fpl/pulls/8 -f base=main" \
+	"the retarget is printed"
+
+# When the pull requests stacked on it cannot be listed after the push, the command it
+# prints for that names the repository on github.com.
+forge
+rm "$FORGE/$(printf %s "repos/land-test/fpl/pulls?state=open&base=$BR&per_page=100" |
+	tr -c 'A-Za-z0-9._-' _).json"
+landing 0 "the pull requests stacked on the landed one cannot be listed" 7
+main_is "$H" "it landed"
+says "gh pr list --repo github.com/land-test/fpl --base $BR" "the listing names the repository"
+
+forge
+reviews ""
+reviews "$(review 1 psjg APPROVED "$H")" after
+landing 0 "the code owner approves in this run" 7
+main_is "$H" "main is fast-forwarded to the head"
+called
+says "gh api --hostname github.com -X POST repos/land-test/fpl/pulls/7/reviews -f commit_id=$H -f event=APPROVE" \
+	"the approval names the head"
+
+forge
+reviews ""
+landing 1 "an approval that the forge does not show afterwards" 7
+says "does not show the approval" "it says why"
+main_is "$M0" "nothing was pushed"
+
+forge
+printf '#!/bin/sh\necho "error: GH013: Repository rule violations found for refs/heads/main." >&2\nexit 1\n' \
+	>"$REMOTE/hooks/pre-receive"
+chmod +x "$REMOTE/hooks/pre-receive"
+landing 1 "the forge's rulesets refuse the push" 7
+says "Bypass list > Repository admin > Always" "it gives the owner's one-time step"
+says "as another account than @psjg" "it names the push credential as a possible cause"
+main_is "$M0" "nothing landed"
+rm -f "$REMOTE/hooks/pre-receive"
+
+# GH_HOST names the host of every gh call that names none, and the pull request, its
+# approvals, rules and checks must be read where the push goes: on github.com. Here the
+# other host approves what github.com does not.
+forge
+mkdir "$FORGE/ghe"
+cp "$FORGE"/*.json "$FORGE/ghe/"
+me someone
+reviews ""
+GH_HOST=ghe.example expect 1 "GH_HOST names another host, which approves the head" --dry-run 7
+says "NO  land/approved" "the approvals are read on github.com"
+
+# Every call scripts/land makes to the forge names github.com, a landing's and the lookup
+# of the current branch's pull request among them.
+forge
+reviews ""
+reviews "$(review 1 psjg APPROVED "$H")" after
+children '{"number": 8}'
+echo '[[{"number": 7}]]' | fixture "repos/land-test/fpl/pulls?state=open&head=land-test:$BR&per_page=100"
+git switch -q "$BR"
+GH_HOST=ghe.example landing 0 "a landing under a GH_HOST of another host"
+git switch -q main
+main_is "$H" "it landed on github.com"
+called
+total=$((total + 1))
+if grep '^gh ' "$tmp/out" | grep -v -e '^gh api --hostname github.com ' \
+	-e '^gh pr view [0-9]* --repo github.com/' | grep -q .; then
+	fails=$((fails + 1))
+	echo "self-test: a gh call that does not name github.com:" >&2
+	grep '^gh ' "$tmp/out" | grep -v -e '^gh api --hostname github.com ' \
+		-e '^gh pr view [0-9]* --repo github.com/' | sed 's/^/    /' >&2
+fi
+
+# The window between the last read and the push cannot be closed from here: the approvals
+# and then the rules are the last reads before the push, and are read again after it.
+forge
+printf '#!/bin/sh\necho "git push" >>"$FORGE/calls"\n' >"$REMOTE/hooks/pre-receive"
+chmod +x "$REMOTE/hooks/pre-receive"
+landing 0 "the approvals and the rules are read last before the push" 7
+rm -f "$REMOTE/hooks/pre-receive"
+total=$((total + 1))
+# What is read after the last read of the reviews and before the push: the rules alone.
+after="$(awk '/^git push$/ { exit } /pulls\/7\/reviews/ { a = ""; next } { a = a $0 "\n" }
+	END { printf "%s", a }' "$FORGE/calls")"
+case "$after" in *rules/branches/main*) ;; *) after="$after(no read of the rules)" ;; esac
+if printf '%s\n' "$after" | grep -v 'rules/branches/main\|rulesets/' | grep -q .; then
+	fails=$((fails + 1))
+	echo "self-test: read after the reviews, before the push, besides the rules:" >&2
+	printf '%s\n' "$after" | sed 's/^/    /' >&2
+fi
+
+forge
+reviews "$(review 1 psjg APPROVED "$H"), $(review 2 psjg DISMISSED "$H")" read3
+landing 1 "the approval is dismissed while the push goes" 7
+says "LOUD: no code owner's approval of ${H:0:12} stands any more" "it says so loudly"
+main_is "$H" "main moved all the same: this detects, it cannot undo"
+
+forge
+reviews "$(review 1 psjg APPROVED "$H"), $(review 2 'coderabbitai[bot]' CHANGES_REQUESTED "$H")" read3
+landing 1 "changes are requested while the push goes" 7
+says "LOUD: changes are requested by @coderabbitai[bot]" "it says so loudly"
+
+forge
+cp "$FORGE/repos_land-test_fpl_rules_branches_main_per_page_100.json" "$tmp/rules.json"
+rules '{"context": "commit-lint", "integration_id": 15368}' 1 '{"type": "required_signatures", "ruleset_id": 2}'
+mv "$FORGE/repos_land-test_fpl_rules_branches_main_per_page_100.json" \
+	"$FORGE/repos_land-test_fpl_rules_branches_main_per_page_100.read3.json"
+cp "$tmp/rules.json" "$FORGE/repos_land-test_fpl_rules_branches_main_per_page_100.json"
+landing 1 "a rule is added to main while the push goes" 7
+says "LOUD: main has rules scripts/land does not judge: required_signatures" "it says so loudly"
+says "LOUD: the rules on main changed since they were judged: required_signatures of ruleset 2 added" \
+	"it names the rule added"
+
+# After the push the rules on main are held against the ones judged before it, and the
+# checks they require are judged on the head again, as land/checks judges them.
+# later <python expression over rules>: the rules on main, so changed, on the read after
+# the push (the third: no approval is given in these runs).
+later() {
+	python3 -c 'import json, sys
+path = sys.argv[1]
+rules = json.load(open(path))[0]
+json.dump([eval(sys.argv[2])], open(path[:-len(".json")] + ".read3.json", "w"))' \
+		"$FORGE/repos_land-test_fpl_rules_branches_main_per_page_100.json" "$1"
+}
+# checks_rule <python expression over p, its parameters>: the required_status_checks rule's
+# parameters made that.
+checks_rule() {
+	later '[dict(r, parameters='"$1"') if r["type"] == "required_status_checks" else r
+		for r, p in ((r, r.get("parameters")) for r in rules)]'
+}
+forge
+checks_rule 'dict(p, required_status_checks=p["required_status_checks"]
+	+ [{"context": "omega", "integration_id": 15368}])'
+landing 1 "a check that never ran is required while the push goes" 7
+says "LOUD: the rules on main changed since they were judged: required_status_checks of ruleset 1 changed" \
+	"it says the rules changed"
+says "LOUD: land/checks: omega has not run on ${H:0:12}" "it judges the new requirement on the head"
+says "remedy: push the head again, or rerun the workflow that makes it" "it gives the remedy"
+main_is "$H" "main moved all the same: this detects, it cannot undo"
+forge
+later '[r for r in rules if r["type"] != "deletion"]'
+landing 1 "a rule is removed from main while the push goes" 7
+says "LOUD: the rules on main changed since they were judged: deletion of ruleset 2 removed" \
+	"it names the rule removed"
+forge
+checks_rule 'dict(p, strict_required_status_checks_policy=True)'
+landing 1 "a parameter of a rule changes while the push goes" 7
+says "strict_required_status_checks_policy\": false" "it shows the rule as judged"
+says "strict_required_status_checks_policy\": true" "and as it is now"
+forge
+later 'rules[::-1]'
+landing 0 "the forge lists the same rules in another order after the push" 7
+lacks "LOUD" "an order is no change"
+# The checks after the push are judged on the runs and statuses there were when they were
+# judged before it: those numbered at most the highest number read then. The push to main
+# starts runs of its own on the head (noslop runs on a push to main); they are no change.
+forge
+runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed failure 1)" "" read3
+landing 1 "a required check's run, judged a success, has failed on the head after the push" 7
+says "LOUD: land/checks: zeta-check's latest run on ${H:0:12} concluded failure" \
+	"the checks are judged again after the push, the rules unchanged"
+says "gh run rerun <run> --repo github.com/land-test/fpl" "the rerun after it names the repository"
+lacks "the rules on main changed" "the rules are the same"
+forge
+runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed failure 1),
+	$(run 3 zeta-check in_progress null 2)" "" read3
+landing 1 "a run judged before the push has failed, and the push started another" 7
+says "LOUD: land/checks: zeta-check's latest run on ${H:0:12} concluded failure" \
+	"the run there was before the push is judged"
+lacks "in_progress" "the run the push started is not"
+forge
+runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed success 1),
+	$(run 3 zeta-check in_progress null 2)" "" read3
+children '{"number": 8}'
+landing 0 "the push to main starts a run of a required check on the head" 7
+lacks "LOUD" "a run the push started is no change"
+says "gh api --hostname github.com -X PATCH repos/land-test/fpl/pulls/8 -f base=main" \
+	"the retarget is printed"
+main_is "$H" "main is the head"
+forge
+statuses "[$(status 1 zeta-check pending)]" read3
+landing 0 "the push to main sets a pending status of a required name where none was" 7
+lacks "LOUD" "a status set after the checks were judged is no change"
+forge
+statuses "[$(status 5 zeta-check success)]"
+statuses "[$(status 6 zeta-check pending), $(status 5 zeta-check success)]" read3
+landing 0 "the push to main sets a newer pending status of a required name" 7
+lacks "LOUD" "the status judged before the push is judged again"
+forge
+statuses "[$(status 5 zeta-check success)]"
+statuses "[$(status 4 zeta-check failure), $(status 5 zeta-check success)]" read3
+landing 0 "an older status of a required name shows up after the push" 7
+lacks "LOUD" "the newest status at most the highest judged decides"
+
+# Whatever comes out LOUD after the push, the head is on main: what is stacked on it is
+# listed for its new base first.
+# first <text> <then> <description>: the last output holds both, the first before the other.
+first() {
+	total=$((total + 1))
+	awk -v a="$1" -v b="$2" 'index($0, a) && !x { x = NR } index($0, b) && !y { y = NR }
+		END { exit !(x && y && x < y) }' "$tmp/out" && return
+	fails=$((fails + 1))
+	echo "self-test: $3: the output lacks '$1' before '$2'" >&2
+	sed 's/^/    /' "$tmp/out" >&2
+}
+forge
+reviews "$(review 1 psjg APPROVED "$H"), $(review 2 psjg DISMISSED "$H")" read3
+children '{"number": 8}'
+landing 1 "the approval is dismissed while the push goes, with a pull request stacked on it" 7
+says "LOUD: no code owner's approval" "it says so loudly"
+first "pulls/8 -f base=main" "LOUD" "the retarget comes before the LOUD lines"
+forge
+pull open false main false
+children '{"number": 8}'
+landing 1 "GitHub does not show the merge, with a pull request stacked on it" 7
+first "pulls/8 -f base=main" "LOUD: main is $H, but GitHub does not show #7 as merged" \
+	"the retarget comes before the LOUD exit"
+forge
+mkdir -p "$tmp/elsewhere"
+printf '#!/bin/sh
+[ "$1" != ls-remote ] || { echo "%s	refs/heads/main"; exit 0; }
+exec %s "$@"
+' \
+	"$M1" "$(command -v git)" >"$tmp/elsewhere/git"
+chmod +x "$tmp/elsewhere/git"
+children '{"number": 8}'
+PATH="$tmp/elsewhere:$PATH" landing 1 "main is not the head right after the push, with a pull request stacked on it" 7
+first "pulls/8 -f base=main" "LOUD: main on the forge is $M1" "the retarget comes before the LOUD exit"
+
+# The agent pushes a fix while the maintainer reads the diff, and it is approved and
+# checked by the time he presses Enter: he did not look at it, so it does not land.
+forge
+sed "s/$H/$H2/" "$FORGE/repos_land-test_fpl_pulls_7.json" >"$FORGE/repos_land-test_fpl_pulls_7.after.json"
+reviews "$(review 1 psjg APPROVED "$H2")" after
+cp "$FORGE/repos_land-test_fpl_commits_${H}_check-runs_filter_all_per_page_100.json" \
+	"$FORGE/repos_land-test_fpl_commits_${H2}_check-runs_filter_all_per_page_100.json"
+cp "$FORGE/repos_land-test_fpl_commits_${H}_statuses_per_page_100.json" \
+	"$FORGE/repos_land-test_fpl_commits_${H2}_statuses_per_page_100.json"
+mkdir -p "$tmp/moved"
+printf '#!/bin/sh\n: >"$FORGE/written"\ngit --git-dir="$REMOTE" update-ref refs/pull/7/head %s\n' "$H2" \
+	>"$tmp/moved/open"
+chmod +x "$tmp/moved/open"
+PATH="$tmp/moved:$PATH" landing 1 "the head moves while the diff is open" 7
+says "since you looked at $H" "it names the head that was looked at"
+main_is "$M0" "nothing landed"
+
+# Another landing moves main after the last check, right before the push: a git that does
+# so first. A forced push would still go; one that is no fast-forward must not.
+forge
+mkdir -p "$tmp/race"
+printf '#!/bin/sh\n[ "$1" != push ] || %s --git-dir="$REMOTE" update-ref refs/heads/main %s\nexec %s "$@"\n' \
+	"$(command -v git)" "$M1" "$(command -v git)" >"$tmp/race/git"
+chmod +x "$tmp/race/git"
+PATH="$tmp/race:$PATH" landing 1 "main moves between the last check and the push" 7
+says "the push was refused" "a push that is no longer a fast-forward does not go"
+main_is "$M1" "main stays where it moved"
+
+# Git refuses an update of main that is not a fast-forward, and only that: a main that
+# moved to another ancestor of the head since it was read still takes the push.
+at="$H2" HEAD_SHA="$H2"
+forge
+mkdir -p "$tmp/advance"
+printf '#!/bin/sh\n[ "$1" != push ] || %s --git-dir="$REMOTE" update-ref refs/heads/main %s\nexec %s "$@"\n' \
+	"$(command -v git)" "$H" "$(command -v git)" >"$tmp/advance/git"
+chmod +x "$tmp/advance/git"
+PATH="$tmp/advance:$PATH" landing 0 "main moves to another ancestor of the head before the push" 7
+main_is "$H2" "the push goes: git refuses what is no fast-forward, not a main that moved"
+at="$H" HEAD_SHA="$H"
+
+forge
+pull open false main false
+landing 1 "GitHub does not show the pull request as merged" 7
+says "does not show #7 as merged" "it says so loudly"
+main_is "$H" "main moved all the same"
+
+# The header's land/rules entry says two things, which it keeps in sentences of their own: the
+# requirements scripts/land does not make (which the bypass would leave unenforced), and the
+# schema the forge's answer must have. The entry must say both, and no sentence may hold both.
+total=$((total + 1))
+if ! python3 - "$land" <<'PY'
+import re
+import sys
+
+header = []
+for line in open(sys.argv[1]).read().splitlines()[1:]:
+    if not line.startswith("#"):
+        break
+    header.append(line[1:].strip())
+text = " ".join(header)
+entry = re.search(r"land/rules (.*?) land/bypass ", text).group(1)
+sentences = re.split(r"\.\s+", entry)
+for word in ("unenforced", "schema"):
+    if not any(word in s for s in sentences):
+        print("the entry never says " + word, file=sys.stderr)
+        sys.exit(1)
+bad = [s for s in sentences if "unenforced" in s and "schema" in s]
+if bad:
+    print("one sentence holds both: " + bad[0], file=sys.stderr)
+    sys.exit(1)
+PY
+then
+	fails=$((fails + 1))
+	echo "self-test: the header's land/rules entry runs two conditions into one sentence" >&2
+fi
+
+# Every gh command scripts/land printed in any case above, the remedies a person runs
+# included, names exactly github.com: whoever runs one may have a GH_HOST of another host. A
+# line passes when every --hostname value is github.com, every --repo (or -R) value is
+# github.com/<owner>/<name>, and it names the host at least once per gh command it holds; a
+# look-alike such as github.com.evil is neither. The program is plain awk, which the BSD awk
+# and bash 3.2 of macOS read as well as bash 5 does.
+sweep='
+function bare(v) { sub(/[).,;:"`\047]+$/, "", v); return v }
+{
+	g = gsub(/gh (api|pr|run|auth) /, "&"); ok = 0; bad = 0
+	for (i = 1; i <= NF; i++) {
+		if ($i == "--hostname") v = bare($(i + 1))
+		else if (substr($i, 1, 11) == "--hostname=") v = bare(substr($i, 12))
+		else v = ""
+		if ($i == "--hostname" || v != "") { if (v == "github.com") ok++; else bad++ }
+		if ($i == "--repo" || $i == "-R") r = bare($(i + 1))
+		else if (substr($i, 1, 7) == "--repo=") r = bare(substr($i, 8))
+		else r = ""
+		if ($i == "--repo" || $i == "-R" || r != "") {
+			if (r ~ /^github\.com\/[^\/]+\/[^\/]+$/) ok++; else bad++
+		}
+	}
+	if (g > ok || (g > 0 && bad > 0)) print
+}'
+total=$((total + 1))
+if awk "$sweep" "$tmp/outputs" | grep -q .; then
+	fails=$((fails + 1))
+	echo "self-test: a gh command it printed does not name exactly github.com:" >&2
+	awk "$sweep" "$tmp/outputs" | sort -u | sed 's/^/    /' >&2
+fi
+
+# The sweep itself: a look-alike host planted in a copy of the outputs, in either flag, is
+# caught, and so is a command naming no host; the real outputs pass, as the check above says.
+total=$((total + 1))
+planted="$tmp/planted"
+for line in 'gh api --hostname github.com.evil repos/o/r' \
+	'gh pr ready 7 --repo github.com.evil/o/r' \
+	'gh pr ready 7 --repo github.com/o' \
+	'gh api --hostname github.com --repo=other/r repos/o/r' \
+	'gh pr ready 7'; do
+	{ cat "$tmp/outputs"; echo "$line"; } >"$planted"
+	if ! awk "$sweep" "$planted" | grep -qxF "$line"; then
+		fails=$((fails + 1))
+		echo "self-test: the gh sweep lets this line pass: $line" >&2
+	fi
+done
+{ cat "$tmp/outputs"; echo 'gh api --hostname github.com repos/o/r (gh pr ready 7 --repo github.com/o/r)'; } >"$planted"
+if awk "$sweep" "$planted" | grep -q 'gh api --hostname github.com repos'; then
+	fails=$((fails + 1))
+	echo "self-test: the gh sweep refuses a command that names github.com exactly" >&2
+fi
+
+echo "land self-test: $fails of $total checks failed (bash $BASH_VERSION)"
+if [ -z "${LAND_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ] && ! [ /bin/bash -ef "$BASH" ]; then
+	mkdir -p "$tmp/shim"
+	ln -s /bin/bash "$tmp/shim/bash"
+	PATH="$tmp/shim:$PATH" LAND_SELF_TEST_SHIM=1 /bin/bash "$root/scripts/land-self-test" ||
+		fails=$((fails + 1))
+fi
+[ "$fails" -eq 0 ]

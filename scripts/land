@@ -1,56 +1,1026 @@
 #!/usr/bin/env bash
 #
-# scripts/land — the maintainer's half of landing a pull request: wait, look, decide.
+# scripts/land — the maintainer's half of landing a pull request: look, decide, fast-forward.
 #
-#   scripts/land                   the pull request of the current branch
-#   scripts/land <number | url>
+#   scripts/land [--dry-run] [--remote <name>] [<number | url>]
 #
-# Waits for the checks, prints the conversation, opens the diff in the browser, and then
-# stops for a keypress. Only after Enter does it approve, rebase-merge, delete the branch
-# and bring main up to date (.agents/WORKFLOW.md, "Land"). A failed check ends it before
-# the question.
+# Lands an approved pull request by pushing its head to main without force: a fast-forward.
+# The commits keep their SHAs, so a pull request stacked on the landed one keeps its commits,
+# and nothing above it is rebased or pushed again (.agents/WORKFLOW.md, "Land"). GitHub's
+# merge button rebase-merges, which gives every commit a new SHA; it is not used for our
+# pull requests. GitHub shows a pull request as merged once its head is on its base, so the
+# forge's record is the same as after the button.
 #
-# It exists because a chain of gh commands made it easy to approve a diff that had never
-# been on screen. It is for a person: it refuses without a terminal, and it refuses when
-# the active gh account is the author of the request, which the forge would reject
-# anyway. It is a rail, not a lock: whoever can run gh as the maintainer can approve
-# without it. Needs gh: `scripts/layer on github`.
+# Before it asks anything it checks the forge as it is, and refuses unless all of these hold.
+# Each refusal names its rule and says what to do:
+#
+#   land/open               the pull request is open and not a draft
+#   land/base               it is based on main
+#   land/head               the head the forge reports is the commit refs/pull/<n>/head holds
+#   land/author             the active gh account did not write it
+#   land/codeowners         main's CODEOWNERS names one set of users for every path, the only
+#                           form judged here (today: `* @psjg`)
+#   land/approved           a code owner's standing verdict approves that exact head, or you
+#                           are a code owner and approve it in this run, after the keypress
+#   land/changes-requested  nobody's standing verdict requests changes
+#   land/threads            every review thread is resolved
+#   land/checks             every check the rulesets on main require (read from the forge,
+#                           not listed here) concluded success on the head, judged by its
+#                           latest run: a success after a cancelled duplicate counts, a
+#                           cancelled or skipped latest run does not. A check run and a
+#                           commit status that share a required name must both succeed,
+#                           as on GitHub; every page of both is read
+#   land/ancestor           main on the forge is an ancestor of the head: restack before
+#                           approval, never after
+#   land/linear             no commit between main and the head is a merge: main is linear
+#   land/rules              every rule on main is one judged here, and every parameter of it
+#                           has a value the script enforces. A pull_request rule that wants
+#                           the last push approved by someone else, teams as reviewers or
+#                           two approvals is refused, and so is a parameter not known here
+#                           that is anything but false. The bypass skips them all, so a
+#                           requirement the script does not make would go unenforced.
+#                           The forge's answer must also be rules as GitHub's schema gives
+#                           them: main has at least one, each naming its ruleset, and a
+#                           pull_request or required_status_checks rule has the parameters
+#                           the schema requires of it, of the types it gives them. An empty
+#                           or malformed answer is a forge failure, never "nothing required"
+#   land/bypass             you may push past every ruleset on main "always", the owner's
+#                           one-time setting; without it the forge refuses any direct push.
+#                           This judges the account `gh api user` reports and names it; git
+#                           pushes with the credential it has for the remote, which may be
+#                           another account's, so a refused push names that as a cause too
+#   land/remote             git fetches from and pushes to one URL, the same, and it is the
+#                           GitHub repository the forge is read for: a pushurl, a second
+#                           URL, or a url.<base>.insteadOf or pushInsteadOf that sends git
+#                           elsewhere, on GitHub or off it, is refused before anything is
+#                           read. Every fetch and the push name that URL, not the remote,
+#                           and the push goes only after the check is made again: a
+#                           url.<base>.insteadOf or pushInsteadOf that would rewrite the URL
+#                           itself, or a remote named by it, is refused too. A GitHub
+#                           repository's URL is https://github.com/<owner>/<name>,
+#                           ssh://git@github.com/<owner>/<name> or
+#                           git@github.com:<owner>/<name>, .git or not; over ssh the host
+#                           may be github.com-<alias>, a Host of the ssh config with no dot
+#                           in it, where ssh decides where it leads. Any other scheme, host
+#                           or user is refused
+#
+# Then it prints the conversation, opens the diff in the browser and stops for a keypress.
+# After Enter it approves the head when it said it would, checks everything again, and pushes:
+# `git push <url> <head>:refs/heads/main`, to the URL land/remote checked, checked once more
+# right before. Git refuses a push that is not a fast-forward unless told to force, and
+# nothing here forces. Once the push went it prints the command that retargets to main each
+# open pull request based on the landed branch, before anything that can come out LOUD; then
+# it checks that main is the head and that GitHub shows the pull request as merged, and says
+# so loudly when not.
+#
+# Known limit: the window between the last read and the push. GitHub has no call that
+# judges a pull request and moves main in one step, and with the bypass the rulesets do not
+# judge the push, so what this script read decides. What the push itself guarantees: what
+# lands is exactly the commit that was judged, approved and looked at, since the push names
+# its SHA; it goes to the URL land/remote checked; and git refuses an update of main that is
+# not a fast-forward, since nothing forces. Git refuses that and only that, not a main that
+# moved: a main that moved since it was read to another ancestor of the head (a pull request
+# lower in the stack, landed by someone else) still takes the push, though land/ancestor and
+# land/linear judged the main read before.
+#
+# The second look, after the keypress, reads everything again in this order: the pull
+# request, who you are, the review threads, the check runs and commit statuses on the head,
+# the head and main from git, the approvals, and last the rules on main and their rulesets.
+# It judges them, checks land/remote again and pushes. A change after its read and before the
+# push goes unseen: an approval dismissed, a request for changes, a rule changed, a thread
+# reopened, a check rerun, the pull request closed, retargeted or made a draft. Reading the
+# approvals and the rules last keeps their window to the time it takes to judge. After the
+# push it reads main (LOUD unless it is the head), the pull request (LOUD unless GitHub shows
+# it merged), the approvals, the rules and the checks on the head again: LOUD when no code
+# owner's approval of the head stands, changes are requested, the rules differ in any way
+# from the ones judged, or a check they require did not succeed on the head. The checks are
+# judged on the check runs and commit statuses there were when they were judged before the
+# push, those the forge numbered at most the highest it had then: the push to main starts
+# runs of its own on the head (noslop runs on a push to main), and a run or a status made
+# after that read, the push's or a rerun's, is not judged. That detects; it cannot undo. The
+# review threads, and the pull request's state beyond the merge, are not read again. Closing
+# the window needs the landing on the server's side, which GitHub does not offer.
+#
+# --dry-run makes every check, prints what it would approve and push, and changes nothing on
+# the forge; it needs no terminal. A landing needs one: it is for a person. It is a rail, not
+# a lock: whoever can push to main as an admin can do so without it.
+#
+# The repository is the one --remote (default github) points at; its configured URL must be
+# on GitHub. The forge is read and written with `gh api` only (scripts/layer on github), so
+# scripts/land-self-test serves it from fixtures with a gh of its own first on PATH, and
+# git's fetches and pushes from a bare repository with a git of its own. Every gh call names
+# github.com, whatever GH_HOST or gh's configuration names, so the pull request, its
+# approvals, rules and checks are read where the push goes; so does every gh command it
+# prints for a person to run, who may have the same GH_HOST.
+# FPL_LAND_WAIT: seconds to wait for GitHub to show the merge (default 30).
+#
+# Exit 0: landed, or a dry run found nothing to refuse; 1: refused or failed; 2: usage.
 set -euo pipefail
 
 die() {
 	printf 'land: %s\n' "$*" >&2
 	exit 1
 }
+usage() {
+	echo "usage: scripts/land [--dry-run] [--remote <name>] [<number | url>]" >&2
+	exit 2
+}
 
-[ $# -le 1 ] || die "usage: scripts/land [<number | url>]"
-[ -t 0 ] && [ -t 1 ] || die "needs a terminal: landing is a person's decision"
+# The JSON half: every reading of the forge's answers, and the judgement, in one program.
+# python3 because the default dev shell has it and no jq; bash 3.2 cannot hold JSON.
+read -r -d '' PY <<'PY' || :
+import json
+import re
+import sys
+
+VERDICTS = ("APPROVED", "CHANGES_REQUESTED", "DISMISSED")
+# The rule types judged here: the push never forces and never deletes, and the rest have a
+# check of their own above. The admin bypass skips every rule, so any other is refused.
+JUDGED = ("deletion", "non_fast_forward", "required_linear_history", "pull_request",
+          "required_status_checks")
+BYPASS = ("always", "exempt")
+PAD = " " * 28
+BYPASS_REMEDY = (
+    "the owner's one-time step, on GitHub: Settings > Rules > Rulesets, in each ruleset"
+    " on main, Bypass list > Repository admin > Always (not 'For pull requests only')"
+)
+
+
+def push_remedy(login):
+    """What to say when the forge refuses the push for its rules. land/bypass judged the
+    account `gh api user` reports; git pushes with whatever credential it has for the
+    remote (an ssh key, a credential helper, a token), which may be another account's."""
+    return (f"either git pushed as another account than @{login}, the one judged here"
+            " (check the credential git uses for this remote: an ssh key, a credential"
+            f" helper, a token), or @{login} may not bypass the rules: " + BYPASS_REMEDY)
+
+
+def load(path):
+    with open(path) as f:
+        return json.load(f)
+
+
+def pages(path, key=None):
+    """Every item of what `gh api --paginate --slurp` read: a list of pages, each a list or
+    an object that holds the list under `key`."""
+    return [item for page in load(path) for item in (page[key] if key else page)]
+
+
+def dig(value, dotted):
+    for part in dotted.split("."):
+        value = value.get(part) if isinstance(value, dict) else None
+    return value
+
+
+def text(value):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return "" if value is None else str(value)
+
+
+def slug(url):
+    """owner/name of a GitHub repository's URL, or exit 1. Three spellings are GitHub's:
+    https://github.com/<owner>/<name>, ssh://git@github.com/<owner>/<name> and
+    git@github.com:<owner>/<name>, each with .git or without. Over ssh the host may be
+    github.com-<alias>, a Host in the ssh config that git cannot see into (the residual:
+    where that alias leads is ssh's to say). An alias holds letters, digits, '-' and '_' and
+    no dot, as an ssh config Host does, so github.com-evil.example, a DNS name, is none.
+    Every other scheme, host, user or a relative
+    path is no GitHub repository."""
+    m = re.fullmatch(
+        r"(?:https://github\.com/"
+        r"|ssh://git@github\.com(?:-[\w-]+)?/"
+        r"|git@github\.com(?:-[\w-]+)?:)"
+        r"([\w-]+)/([\w.-]+?)(?:\.git)?",
+        url,
+        re.ASCII,
+    )
+    if not m or m[2] in (".", ".."):
+        sys.exit(1)
+    print(f"{m[1]}/{m[2]}")
+
+
+def pinned(dest):
+    """Exit 1, saying why, when git would not send a fetch or a push of the URL `dest` to
+    `dest` itself; the configuration is `git config -z --list` on stdin. Git rewrites a URL
+    named on the command line as it rewrites a remote's: by the longest url.<base>.insteadOf
+    or pushInsteadOf that is a prefix of it, and by the remote section named by the URL when
+    there is one. Any of these refuses, so the URL checked is the URL git goes to."""
+    for entry in sys.stdin.read().split("\0"):
+        key, _, value = entry.partition("\n")
+        if key.startswith(f"remote.{dest}."):
+            print(f"{key} configures a remote named by that URL")
+            sys.exit(1)
+        if key.startswith("url.") and key.endswith((".insteadof", ".pushinsteadof")) \
+                and dest.startswith(value):
+            print(f"{key} {value} rewrites it")
+            sys.exit(1)
+
+
+def pull(url):
+    """owner/name and number of a pull request's URL, or exit 1."""
+    m = re.fullmatch(r"https://github\.com/([^/]+/[^/]+)/pull/(\d+)(?:/\S*)?", url)
+    if not m:
+        sys.exit(1)
+    print(m[1])
+    print(m[2])
+
+
+def codeowners(text):
+    """The users main's CODEOWNERS makes owners of every path, and None, or None and why it
+    cannot say. A rule for part of the tree, a team or an address is not judged here."""
+    found = []
+    for line in text.splitlines():
+        words = line.split("#", 1)[0].split()
+        if not words:
+            continue
+        if words[0] != "*":
+            return None, f"main's CODEOWNERS has a rule for {words[0]} alone"
+        found = words[1:]
+    if not found:
+        return None, "main's CODEOWNERS names no owner for every path"
+    if any(not w.startswith("@") or "/" in w for w in found):
+        return None, f"main's CODEOWNERS names {' '.join(found)}: not users alone"
+    return {w[1:].lower() for w in found}, None
+
+
+def latest_run(runs):
+    """The run made last. GitHub numbers check runs in the order it creates them, and a run
+    still queued has no start time yet, so the id decides, not started_at."""
+    return max(runs, key=lambda r: r.get("id") or 0)
+
+
+class Verdict:
+    """The lines a judgement prints, and the rules that refused."""
+
+    def __init__(self):
+        self.refused = set()
+
+    def ok(self, rule, what):
+        print(f"  ok  {rule:<23} {what}")
+
+    def no(self, rule, what, remedy):
+        self.refused.add(rule)
+        print(f"  NO  {rule:<23} {what}")
+        print(f"{PAD}remedy: {remedy}")
+
+
+def judge_pull(v, pr, me, fetched, repo):
+    """land/open, land/base, land/head and land/author."""
+    n, head = pr["number"], pr["head"]["sha"]
+    if pr.get("merged") or pr["state"] != "open":
+        state = "merged" if pr.get("merged") else pr["state"]
+        v.no("land/open", f"#{n} is {state}", "nothing to land; name an open pull request")
+    elif pr.get("draft"):
+        v.no("land/open", f"#{n} is a draft",
+             f"mark it ready first: gh pr ready {n} --repo github.com/{repo}")
+    else:
+        v.ok("land/open", f"#{n} is open")
+    base = pr["base"]["ref"]
+    if base == "main":
+        v.ok("land/base", "it is based on main")
+    else:
+        v.no("land/base", f"it is based on {base}, not main",
+             f"land #{n}'s base first, then retarget it:"
+             f" gh api --hostname github.com -X PATCH repos/{repo}/pulls/{n} -f base=main")
+    if fetched == head:
+        v.ok("land/head", f"the forge's head {head[:12]} is the commit refs/pull/{n}/head holds")
+    else:
+        v.no("land/head",
+             f"the forge reports head {head[:12]}, refs/pull/{n}/head holds {fetched[:12]}",
+             "the branch moved while this ran; run it again")
+    author = pr["user"]["login"]
+    if me.lower() == author.lower():
+        v.no("land/author", f"you are {me}, the author of #{n}",
+             "land as the maintainer: gh auth switch --hostname github.com --user <maintainer>")
+    else:
+        v.ok("land/author", f"you are {me}; {author} wrote it")
+
+
+def standing(d):
+    """Each reviewer's standing verdict: a comment leaves it standing."""
+    last = {}
+    for r in pages(f"{d}/reviews.json"):
+        who = (r.get("user") or {}).get("login")
+        if who and r.get("state") in VERDICTS:
+            last[who] = r
+    return last
+
+
+def judge_reviews(v, d, pr, me, repo):
+    """land/codeowners, land/approved and land/changes-requested. True when the approval
+    is yours to give in this run."""
+    n, head = pr["number"], pr["head"]["sha"]
+    h = head[:12]
+    last = standing(d)
+    asking = [(w, r) for w, r in last.items() if r["state"] == "CHANGES_REQUESTED"]
+    if asking:
+        v.no("land/changes-requested", "changes requested by "
+             + ", ".join(f"@{w} (review {r.get('id')})" for w, r in asking),
+             "they approve, or the review is dismissed with a reason:"
+             " gh api --hostname github.com -X PUT"
+             f" repos/{repo}/pulls/{n}/reviews/<review>/dismissals"
+             " -f message=<reason>")
+    else:
+        v.ok("land/changes-requested", "nobody's standing verdict requests changes")
+    with open(f"{d}/codeowners") as f:
+        owners, why = codeowners(f.read())
+    if owners is None:
+        v.no("land/codeowners", why,
+             "teach scripts/land that CODEOWNERS before it lands anything under it")
+        return False
+    v.ok("land/codeowners", "code owners: " + ", ".join(f"@{o}" for o in sorted(owners)))
+    approved = [(w, r) for w, r in last.items()
+                if w.lower() in owners and r["state"] == "APPROVED"]
+    at_head = [w for w, r in approved if r.get("commit_id") == head]
+    older = ", ".join(f"@{w} on {str(r.get('commit_id'))[:12]}" for w, r in approved)
+    if at_head:
+        v.ok("land/approved", f"code owner {', '.join('@' + w for w in at_head)} approved {h}")
+        return False
+    if me.lower() in owners and me.lower() != pr["user"]["login"].lower():
+        v.ok("land/approved", f"you, a code owner, approve {h} after the keypress"
+             + (f" ({older} is not this head)" if older else ""))
+        return True
+    v.no("land/approved",
+         f"no code owner approved {h}" + (f"; {older} is not this head" if older else ""),
+         f"a code owner approves {h}: one of them runs scripts/land {n}")
+    return False
+
+
+def judge_threads(v, d):
+    """land/threads. A reply that is no page of review threads is a forge failure, not
+    "no threads": an honest page has a `nodes` list, empty when nobody commented."""
+    replies = load(f"{d}/threads.json")
+    nodes = [dig(page, "data.repository.pullRequest.reviewThreads.nodes") for page in
+             (replies if isinstance(replies, list) else [])]
+    if not nodes or any(not isinstance(n, list) for n in nodes):
+        v.no("land/threads", "the forge's answer is not a page of review threads",
+             "run this again; if it keeps failing, read the threads on the forge yourself")
+        return
+    threads = [t for page in nodes for t in page]
+    loose = [t for t in threads if not t.get("isResolved")]
+    if not loose:
+        v.ok("land/threads", f"all {len(threads)} review threads resolved")
+        return
+    where = [(dig(t, "comments.nodes") or [{}])[0].get("url")
+             or f"{t.get('path')}:{t.get('line')}" for t in loose]
+    v.no("land/threads", f"{len(loose)} of {len(threads)} review threads unresolved: "
+         + " ".join(where), "answer each and resolve it on the forge")
+
+
+def required_checks(rules):
+    """(context, app id or None) of every check the rules on main require, once each."""
+    required = []
+    for rule in rules:
+        if rule.get("type") == "required_status_checks":
+            for c in dig(rule, "parameters.required_status_checks") or []:
+                if (c["context"], c.get("integration_id")) not in required:
+                    required.append((c["context"], c.get("integration_id")))
+    return required
+
+
+def check_answers(d, kind="", upto=None):
+    """Every check run and the newest commit status of each context on the head, as read
+    into checks<kind>.json and statuses<kind>.json, or None when the pages are not all the
+    check runs the forge counted, or not statuses. With upto, (the highest check run id,
+    the highest status id), a run or a status numbered above it is left out: the forge
+    numbers both in the order it makes them."""
+    replies = load(f"{d}/checks{kind}.json")
+    if not isinstance(replies, list) or not all(isinstance(p, dict) for p in replies):
+        return None, None
+    runs = [r for page in replies for r in page.get("check_runs") or []]
+    if not replies or len(runs) != replies[0].get("total_count"):
+        return None, None
+    statuses = load(f"{d}/statuses{kind}.json")
+    if not isinstance(statuses, list) or not all(isinstance(p, list) for p in statuses):
+        return None, None
+    statuses = [s for page in statuses for s in page]
+    if not all(isinstance(s, dict) and typed(s.get("id"), int) for s in statuses):
+        return None, None
+    if upto:
+        runs = [r for r in runs if (r.get("id") or 0) <= upto[0]]
+        statuses = [s for s in statuses if s["id"] <= upto[1]]
+    newest = {}  # the forge lists a context's statuses newest first; the id decides
+    for s in statuses:
+        if s.get("context") not in newest or s["id"] > newest[s.get("context")]["id"]:
+            newest[s.get("context")] = s
+    return runs, newest
+
+
+def ceiling(d):
+    """The highest check run id and the highest commit status id on the head when its
+    checks were judged, before the push; 0 where there was none."""
+    runs, _ = check_answers(d, ".judged")
+    statuses = [s for page in load(f"{d}/statuses.judged.json") for s in page]
+    return (max((r.get("id") or 0 for r in runs or []), default=0),
+            max((s["id"] for s in statuses), default=0))
+
+
+def judge_checks(v, d, rules, repo, n, head, upto=None):
+    """land/checks: each required name's latest check run on the head, per app that made
+    one, and its newest commit status: when both carry the name, GitHub requires both.
+    With upto, only the runs and statuses numbered at most that (check_answers)."""
+    h = head[:12]
+    required = required_checks(rules)
+    if not required:
+        v.ok("land/checks", "the rulesets on main require no check")
+    runs, statuses = check_answers(d, upto=upto)
+    if runs is None:
+        v.no("land/checks", f"the forge's answer for the checks on {h} is not every page"
+             " of check runs it counted and of commit statuses",
+             "run this again; if it keeps failing, read the checks on the forge yourself")
+        return
+    for name, app in required:
+        found = {}  # each app's runs of the name
+        for r in runs:
+            if r.get("name") == name and (app is None or dig(r, "app.id") == app):
+                found.setdefault(dig(r, "app.id"), []).append(r)
+        seen = [(name, "latest run", latest_run(rs).get("status"),
+                 latest_run(rs).get("conclusion")) for rs in found.values()]
+        # A status says nothing of the app that set it: a failing one refuses when the rule
+        # names an app too, and only a rule that names none is met by a status alone.
+        status = statuses.get(name)
+        if status and (app is None or status.get("state") != "success"):
+            verdict = status.get("state")
+            state = "pending" if verdict == "pending" else "completed"
+            seen.append((f"{name} (commit status)", "newest status", state, verdict))
+        if not seen:
+            v.no("land/checks", f"{name} has not run on {h}",
+                 "push the head again, or rerun the workflow that makes it")
+        for what, latest, state, verdict in seen:
+            if state != "completed":
+                v.no("land/checks", f"{what} is {state} on {h}",
+                     "wait for it, then run this again:"
+                     f" gh pr checks {n} --repo github.com/{repo} --watch")
+            elif verdict != "success":
+                v.no("land/checks", f"{what}'s {latest} on {h} concluded {verdict}",
+                     f"rerun it until it succeeds: gh run rerun <run> --repo github.com/{repo}"
+                     f" (gh pr checks {n} --repo github.com/{repo})")
+            else:
+                v.ok("land/checks", f"{what} succeeded on {h}")
+
+
+def judge_history(v, main, head, ancestor, merges):
+    """land/ancestor and land/linear: the push is a fast-forward and adds no merge."""
+    h = head[:12]
+    if ancestor == "yes":
+        v.ok("land/ancestor", f"main {main[:12]} is an ancestor of {h}: a fast-forward")
+    else:
+        v.no("land/ancestor", f"main {main[:12]} is not an ancestor of {h}",
+             "restack before approval, never after: when it is approved, the owner first"
+             " dismisses the approval (.agents/WORKFLOW.md rule 10); then scripts/restack, push,"
+             " and approve the new head")
+    if merges == "0":
+        v.ok("land/linear", f"no merge commit between main and {h}")
+    else:
+        v.no("land/linear", f"{merges} merge commit(s) between main and {h}",
+             "rebase them away before approval: main's history is linear")
+
+
+# The parameters GitHub's schema gives each rule type judged here (the REST description,
+# components/schemas/repository-rule-*), as {name: (type, required)}. A rule is read only
+# when its parameters have these types and the required ones are there: a rule missing
+# its list of checks is no rule without checks.
+PARAMETERS = {
+    "pull_request": {
+        "dismiss_stale_reviews_on_push": (bool, True),
+        "require_code_owner_review": (bool, True),
+        "require_last_push_approval": (bool, True),
+        "required_approving_review_count": (int, True),
+        "required_review_thread_resolution": (bool, True),
+        "allowed_merge_methods": (list, False),
+        "dismissal_restriction": (dict, False),
+        "required_reviewers": (list, False),
+    },
+    "required_status_checks": {
+        "required_status_checks": (list, True),
+        "strict_required_status_checks_policy": (bool, True),
+        "do_not_enforce_on_create": (bool, False),
+    },
+}
+
+
+def typed(value, kind):
+    """value is a kind; a bool is no int here, as JSON keeps them apart."""
+    return isinstance(value, kind) and not (kind is int and isinstance(value, bool))
+
+
+def parameters_fault(kind, params):
+    """Why a judged rule's parameters are not GitHub's schema for it, or None."""
+    for name, (want, required) in PARAMETERS.get(kind, {}).items():
+        if name not in params:
+            if required:
+                return f"has no parameter {name}"
+        elif not typed(params[name], want):
+            return f"has {name} {json.dumps(params[name])}, not a {want.__name__}"
+    count = params.get("required_approving_review_count", 0)
+    if not 0 <= count <= 10:  # the schema's bounds
+        return f"wants {count} approvals, outside 0 to 10"
+    for check in params.get("required_status_checks", []):
+        if not (isinstance(check, dict) and isinstance(check.get("context"), str)
+                and check["context"] and typed(check.get("integration_id", 0), int)):
+            return f"requires a check that is not a context and an app id: {json.dumps(check)}"
+    methods = params.get("allowed_merge_methods", [])
+    if not all(m in ("merge", "squash", "rebase") for m in methods):
+        return f"allows merge methods {json.dumps(methods)}"
+    if not typed(params.get("dismissal_restriction", {}).get("enabled", False), bool):
+        return "has a dismissal_restriction that is not enabled true or false"
+    if not all(isinstance(r, dict) for r in params.get("required_reviewers", [])):
+        return "has required_reviewers that are not objects"
+    return None
+
+
+def rule_fault(rule):
+    """Why one rule is not a rule as GitHub's schema gives it, or None."""
+    if not isinstance(rule, dict):
+        return f"a rule that is not an object: {json.dumps(rule)}"
+    kind = rule.get("type")
+    if not isinstance(kind, str) or not kind:
+        return f"a rule with no type: {json.dumps(rule)}"
+    if not typed(rule.get("ruleset_id"), int) or rule["ruleset_id"] <= 0:
+        return f"a {kind} rule that names no ruleset, so its bypass cannot be checked"
+    for name in ("ruleset_source_type", "ruleset_source"):
+        if name in rule and not isinstance(rule[name], str):
+            return f"a {kind} rule whose {name} is not a string"
+    params = rule.get("parameters", {} if kind not in PARAMETERS else None)
+    if not isinstance(params, dict):
+        return f"a {kind} rule without parameters, or with parameters that are no object"
+    why = parameters_fault(kind, params)
+    return f"a {kind} rule that {why}" if why else None
+
+
+def rules_fault(rules):
+    """Why the answer for main's rules cannot be read as the rules, or None. Main has rules
+    (the bypass check below is what makes a push possible at all), each as GitHub's schema
+    gives it; anything else is a forge failure, not "nothing required"."""
+    if not rules:
+        return "the forge gave no rules for main, or an answer that is not a list of rules"
+    for rule in rules:
+        why = rule_fault(rule)
+        if why:
+            return f"the forge gave {why}"
+    return None
+
+
+# What scripts/land makes of each parameter of a judged rule: the values it enforces, and
+# why. The bypass skips the rule, so a value outside these, or a parameter not named here
+# (one GitHub added, or one it does not document) that is anything but false, is refused:
+# a requirement the script does not make would go unenforced.
+ENFORCED = {
+    "pull_request": {
+        # land/approved: one code owner's standing approval of the exact head.
+        "required_approving_review_count": lambda n: n <= 1,
+        "require_code_owner_review": lambda b: True,
+        "dismiss_stale_reviews_on_push": lambda b: True,
+        # land/threads judges the threads whatever this says.
+        "required_review_thread_resolution": lambda b: True,
+        # Who pushed last is not read here, so an approval by them would count.
+        "require_last_push_approval": lambda b: b is False,
+        # Teams that must approve some paths are not read here.
+        "required_reviewers": lambda r: r == [],
+        # Who may dismiss a review, and the merge button's methods: a push is neither.
+        "dismissal_restriction": lambda d: True,
+        "allowed_merge_methods": lambda m: True,
+    },
+    "required_status_checks": {
+        "required_status_checks": lambda c: True,  # land/checks
+        # land/ancestor: main is an ancestor of the head, so the head is up to date.
+        "strict_required_status_checks_policy": lambda b: True,
+        "do_not_enforce_on_create": lambda b: True,  # main exists
+    },
+}
+
+
+def unenforced(rule):
+    """The requirements of one rule that scripts/land does not make, by name."""
+    kind = rule["type"]
+    if kind not in JUDGED:
+        return [kind]
+    known = ENFORCED.get(kind, {})
+    return [f"{kind} {name}: {json.dumps(value)}"
+            for name, value in sorted((rule.get("parameters") or {}).items())
+            if (not known[name](value) if name in known else value is not False)]
+
+
+def judge_rules(v, d, rules, me):
+    """land/rules and land/bypass: every rule is one judged here, and you, the account `me`
+    that `gh api user` reports, may skip them."""
+    unjudged = set()
+    for rule in rules:
+        unjudged.update(unenforced(rule))
+    if unjudged:
+        v.no("land/rules", "main has rules scripts/land does not judge: "
+             + ", ".join(sorted(unjudged)),
+             "teach scripts/land those rules before it pushes past them")
+    else:
+        v.ok("land/rules", "scripts/land judges every rule on main")
+    for rid in sorted({r["ruleset_id"] for r in rules if "ruleset_id" in r}):
+        rs = load(f"{d}/ruleset-{rid}.json")
+        can = rs.get("current_user_can_bypass") or "unknown"
+        if can in BYPASS:
+            v.ok("land/bypass", f"you may push past ruleset '{rs.get('name')}' as @{me}: {can}")
+        else:
+            v.no("land/bypass", f"ruleset '{rs.get('name')}' lets you (@{me}) past it {can}",
+                 BYPASS_REMEDY)
+
+
+def judge(d, repo, fetched, main, ancestor, merges):  # noqa: PLR0913, PLR0917
+    """Print one line per check and return 1 when any refuses, 3 when none does but the
+    approval is yours to give in this run, else 0."""
+    pr = load(f"{d}/pr.json")
+    me = load(f"{d}/me.json")["login"]
+    rules = pages(f"{d}/rules.json")
+    v = Verdict()
+    judge_pull(v, pr, me, fetched, repo)
+    approve = judge_reviews(v, d, pr, me, repo)
+    judge_threads(v, d)
+    fault = rules_fault(rules)
+    if fault:  # nothing below can be judged against rules that are not there
+        v.no("land/rules", fault, "run this again; if it keeps failing, read the rules"
+             " on main on the forge (Settings > Rules) and fix what the API does not show")
+    else:
+        judge_checks(v, d, rules, repo, pr["number"], pr["head"]["sha"])
+    judge_history(v, main, pr["head"]["sha"], ancestor, merges)
+    if not fault:
+        judge_rules(v, d, rules, me)
+    if v.refused:
+        print(f"land: #{pr['number']} refused by {', '.join(sorted(v.refused))}")
+        return 1
+    return 3 if approve else 0
+
+
+class Gathered(Verdict):
+    """A judgement that prints nothing and keeps each refusal with its remedy."""
+
+    def __init__(self):
+        super().__init__()
+        self.lines = []
+
+    def ok(self, rule, what):
+        pass
+
+    def no(self, rule, what, remedy):
+        self.refused.add(rule)
+        self.lines.append((f"{rule}: {what}", remedy))
+
+
+def canonical(rule):
+    return json.dumps(rule, sort_keys=True)
+
+
+def changed_rules(judged, now):
+    """Each rule on main added, removed or changed since the rules were judged; the order
+    the forge lists them in is no change."""
+    if sorted(map(canonical, judged)) == sorted(map(canonical, now)):
+        return []
+    before = {(r["type"], r["ruleset_id"]): r for r in judged}
+    after = {(r["type"], r["ruleset_id"]): r for r in now}
+    lines = []
+    for kind, rid in sorted(set(before) | set(after), key=str):
+        was, isnow = before.get((kind, rid)), after.get((kind, rid))
+        if isnow is None:
+            lines.append(f"{kind} of ruleset {rid} removed")
+        elif was is None:
+            lines.append(f"{kind} of ruleset {rid} added: {canonical(isnow)}")
+        elif canonical(was) != canonical(isnow):
+            lines.append(f"{kind} of ruleset {rid} changed from {canonical(was)}"
+                         f" to {canonical(isnow)}")
+    return lines or ["a rule is listed a different number of times"]
+
+
+def still(d, repo, head, n):
+    """After the push, on what the forge says then: a code owner's approval of the head
+    still stands, nobody's standing verdict requests changes, the rules on main are the
+    ones judged before the push, every one of them is one judged here, and every check
+    they require succeeded on the head, judged as land/checks judges it on the runs and
+    statuses that were there when the checks were judged (ceiling): the push to main
+    starts runs of its own on the head (noslop runs on a push to main), which are no
+    change to what was judged, and neither is a status set after that read. Prints a LOUD
+    line and its remedy for each that fails and returns 1 when any does."""
+    loud = []
+    last = standing(d)
+    with open(f"{d}/codeowners") as f:
+        owners = codeowners(f.read())[0] or set()
+    if not any(w.lower() in owners and r["state"] == "APPROVED" and r.get("commit_id") == head
+               for w, r in last.items()):
+        loud.append((f"no code owner's approval of {head[:12]} stands any more",
+                     f"ask the code owner why; if #{n} should not have landed, revert it"
+                     " in a pull request"))
+    asking = sorted(w for w, r in last.items() if r["state"] == "CHANGES_REQUESTED")
+    if asking:
+        loud.append(("changes are requested by " + ", ".join(f"@{w}" for w in asking),
+                     f"read the request on #{n} and answer it in a pull request on main"))
+    rules = pages(f"{d}/rules.json")
+    fault = rules_fault(rules)
+    if fault:
+        loud.append((f"the rules on main cannot be read: {fault}",
+                     "read the rules on main on the forge (Settings > Rules) and judge"
+                     f" #{n} against them yourself"))
+    else:
+        changed = changed_rules(pages(f"{d}/rules.judged.json"), rules)
+        if changed:
+            loud.append(("the rules on main changed since they were judged: "
+                         + "; ".join(changed),
+                         f"what landed was judged against the old rules: judge #{n}"
+                         " against these (Settings > Rules) before anything else lands"))
+        unjudged = sorted({u for r in rules for u in unenforced(r)})
+        if unjudged:
+            loud.append(("main has rules scripts/land does not judge: " + ", ".join(unjudged),
+                         "teach scripts/land those rules before it lands anything else"))
+        checks = Gathered()
+        judge_checks(checks, d, rules, repo, n, head, ceiling(d))
+        loud.extend(checks.lines)
+    for line, remedy in loud:
+        print(f"land: LOUD: {line}")
+        print(f"{PAD}remedy: {remedy}")
+    return 1 if loud else 0
+
+
+def main(cmd, *args):
+    if cmd == "slug":
+        slug(*args)
+    elif cmd == "pinned":
+        pinned(*args)
+    elif cmd == "pull":
+        pull(*args)
+    elif cmd == "fields":
+        for dotted in args[1:]:
+            print(text(dig(load(args[0]), dotted)))
+    elif cmd == "numbers":
+        for item in pages(args[0]):
+            print(item["number"])
+    elif cmd == "rulesets":
+        for rid in sorted({r["ruleset_id"] for r in pages(args[0])
+                           if isinstance(r, dict) and r.get("ruleset_id")}):
+            print(rid)
+    elif cmd == "push-remedy":
+        print(push_remedy(load(args[0])["login"]))
+    elif cmd == "judge":
+        sys.exit(judge(*args))
+    elif cmd == "still":
+        sys.exit(still(*args))
+
+
+main(*sys.argv[1:])
+PY
+py() { python3 -c "$PY" "$@"; }
+
+# A GraphQL query, the one read REST cannot make: whether a review thread is resolved.
+read -r -d '' THREADS <<'GQL' || :
+query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $endCursor) {
+        nodes { isResolved path line comments(first: 1) { nodes { url } } }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}
+GQL
+
+dry=0 remote=github target=""
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--dry-run) dry=1 ;;
+	--remote) [ $# -ge 2 ] || usage; remote="$2"; shift ;;
+	-*) usage ;;
+	*) [ -z "$target" ] || usage; target="$1" ;;
+	esac
+	shift
+done
+[ "$dry" -eq 1 ] || { [ -t 0 ] && [ -t 1 ]; } ||
+	die "needs a terminal: landing is a person's decision (--dry-run needs none)"
 command -v gh >/dev/null || die "gh not found; scripts/layer on github"
+command -v python3 >/dev/null || die "python3 not found"
+# api: gh api on github.com, where destination() says git pushes. A call that names no host
+# goes to the one GH_HOST or gh's configuration names, which may be another forge, whose
+# approvals, rules and checks would then decide a push to GitHub.
+api() { gh api --hostname github.com "$@"; }
 
-target="${1:-$(git branch --show-current)}"
-[ -n "$target" ] || die "detached HEAD; name the pull request"
-fields='[.url,.state,.author.login,(.number|tostring)]|join(" ")'
-info="$(gh pr view "$target" --json url,state,author,number -q "$fields")" ||
-	die "no pull request for '$target'"
-read -r url state author number <<<"$info"
-[ "$state" = OPEN ] || die "#$number is $state"
-me="$(gh api user -q .login)"
-[ "$me" != "$author" ] || die "you are '$me', the author of #$number; switch: gh auth switch"
+# destination: land/remote. Sets slug, the repository the remote names, and dest, the one
+# URL git fetches it from and pushes it to; dies unless dest is that repository on GitHub
+# and git sends a fetch or a push of dest to dest itself. Run before anything is read and
+# again right before the push, where any change since the first run refuses.
+#
+# The repository is named by what the remote says, not by `git remote get-url`, which
+# applies url.<base>.insteadOf. git resolves pushurl, every URL a remote has, insteadOf and
+# pushInsteadOf for the remote's name as `git remote get-url` reports, so exactly one URL
+# each way, equal, is where both go. Every fetch and the push then name dest, never the
+# remote, so a pushurl set later does not move them; git rewrites a URL on the command line
+# too, which `py pinned` refuses.
+slug="" dest=""
+destination() {
+	local url named fetch_url push_url where why remedy
+	url="$(git config --get "remote.$remote.url")" || die "no remote '$remote'; name one with --remote"
+	named="$(py slug "$url")" ||
+		die "land/remote: remote '$remote' is $url, not a GitHub repository's URL; remedy: give it" \
+			"https://github.com/<owner>/<name>.git (or ssh://git@github.com/... or git@github.com:...)"
+	[ -n "$slug" ] || slug="$named"
+	remedy="make remote '$remote' fetch from and push to $slug on GitHub alone: drop its"
+	remedy="$remedy pushurl (git config --unset-all remote.$remote.pushurl), every"
+	remedy="$remedy url.<base>.insteadOf or pushInsteadOf that rewrites it, and any remote"
+	remedy="$remedy named by its URL (git config --get-regexp '^(url|remote)[.]')"
+	[ "$named" = "$slug" ] || die "land/remote: '$remote' names $named now, not $slug; remedy: $remedy"
+	fetch_url="$(git remote get-url --all "$remote")" || die "land/remote: cannot resolve remote '$remote'"
+	push_url="$(git remote get-url --push --all "$remote")" ||
+		die "land/remote: cannot resolve where '$remote' pushes"
+	case "$fetch_url$push_url" in
+	*$'\n'*)
+		die "land/remote: '$remote' has more than one URL (fetch: ${fetch_url//$'\n'/ };" \
+			"push: ${push_url//$'\n'/ }); remedy: $remedy"
+		;;
+	esac
+	[ "$push_url" = "$fetch_url" ] ||
+		die "land/remote: '$remote' pushes to $push_url but fetches from $fetch_url; remedy: $remedy"
+	where="$(py slug "$push_url")" ||
+		die "land/remote: '$remote' names $slug but git goes to $push_url, not GitHub; remedy: $remedy"
+	[ "$where" = "$slug" ] ||
+		die "land/remote: '$remote' names $slug but git goes to $where; remedy: $remedy"
+	[ -z "$dest" ] || [ "$push_url" = "$dest" ] ||
+		die "land/remote: '$remote' went to $dest when it was checked, and goes to $push_url now; remedy: $remedy"
+	why="$(git config -z --list | py pinned "$push_url")" ||
+		die "land/remote: git would not send $push_url there: $why; remedy: $remedy"
+	dest="$push_url"
+}
+destination
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/land.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
 
-gh pr checks "$url" --watch || die "checks did not pass on #$number"
-GH_PAGER=cat gh pr view "$url" --comments
+case "$target" in
+"")
+	branch="$(git branch --show-current)"
+	[ -n "$branch" ] || die "detached HEAD; name the pull request"
+	api --paginate --slurp \
+		"repos/$slug/pulls?state=open&head=${slug%%/*}:$branch&per_page=100" >"$tmp/mine.json" ||
+		die "cannot list the pull requests of $branch"
+	n="$(py numbers "$tmp/mine.json")"
+	case "$n" in "" | *[!0-9]*) die "no single open pull request for $branch; name it" ;; esac
+	;;
+*[!0-9]*)
+	{ read -r repo; read -r n; } <<<"$(py pull "$target")" || die "not a pull request: $target"
+	[ "$repo" = "$slug" ] || die "#$n is in $repo; remote '$remote' is $slug"
+	;;
+*) n="$target" ;;
+esac
 
-if command -v open >/dev/null; then
-	open "$url/files"
-elif command -v xdg-open >/dev/null; then
-	xdg-open "$url/files" >/dev/null 2>&1 &
-else
-	printf '\nOpen the diff yourself: %s/files\n' "$url"
+# gather: read the pull request, its reviews, threads and checks, the rulesets on main and
+# who you are into $tmp, fetch main and the pull request's head, and set head, fetched, main
+# ancestor and merges. Run twice: before the question and after it, on the forge as it is then.
+gather() {
+	api "repos/$slug/pulls/$n" >"$tmp/pr.json" || die "cannot read #$n"
+	api user >"$tmp/me.json" || die "cannot read who you are"
+	api graphql --paginate --slurp -F owner="${slug%%/*}" -F name="${slug#*/}" \
+		-F number="$n" -f query="$THREADS" >"$tmp/threads.json" ||
+		die "cannot read the review threads of #$n"
+	{ read -r head; read -r headref; read -r headrepo; read -r html; } <<<"$(
+		py fields "$tmp/pr.json" head.sha head.ref head.repo.full_name html_url
+	)"
+	read_checks
+	git fetch -q --no-tags "$dest" "refs/pull/$n/head" || die "cannot fetch #$n's head"
+	fetched="$(git rev-parse FETCH_HEAD)"
+	git fetch -q --no-tags "$dest" refs/heads/main || die "cannot fetch main"
+	main="$(git rev-parse FETCH_HEAD)"
+	ancestor=no
+	if git merge-base --is-ancestor "$main" "$fetched"; then ancestor=yes; fi
+	merges="$(git rev-list --count --min-parents=2 "$main..$fetched")" ||
+		die "cannot count the merges between main and the head"
+	# GitHub reads the first of these that main has.
+	local f
+	: >"$tmp/codeowners"
+	for f in .github/CODEOWNERS CODEOWNERS docs/CODEOWNERS; do
+		git show "$main:$f" >"$tmp/codeowners" 2>/dev/null && break
+		: >"$tmp/codeowners"
+	done
+	# The approvals, then the rules, last: on the second look the push follows them by the
+	# time it takes to judge, the shortest the window can be made (the known limit above).
+	read_reviews
+	read_rules
+}
+read_checks() {
+	api --paginate --slurp "repos/$slug/commits/$head/check-runs?filter=all&per_page=100" \
+		>"$tmp/checks.json" || die "cannot read the checks on $head"
+	api --paginate --slurp "repos/$slug/commits/$head/statuses?per_page=100" \
+		>"$tmp/statuses.json" || die "cannot read the statuses on $head"
+}
+read_reviews() {
+	api --paginate --slurp "repos/$slug/pulls/$n/reviews?per_page=100" >"$tmp/reviews.json" ||
+		die "cannot read the reviews of #$n"
+}
+read_rules() {
+	api --paginate --slurp "repos/$slug/rules/branches/main?per_page=100" >"$tmp/rules.json" ||
+		die "cannot read the rules on main"
+	local id
+	for id in $(py rulesets "$tmp/rules.json"); do
+		api "repos/$slug/rulesets/$id?includes_parents=true" >"$tmp/ruleset-$id.json" ||
+			die "cannot read ruleset $id"
+	done
+}
+
+# judge: print every check; sets refused=1 when one refuses, and approve=1 when none does
+# and the approval is yours to give in this run.
+judge() {
+	local rc=0
+	py judge "$tmp" "$slug" "$fetched" "$main" "$ancestor" "$merges" || rc=$?
+	refused=0 approve=0
+	case "$rc" in
+	0) ;;
+	3) approve=1 ;;
+	*) refused=1 ;;
+	esac
+}
+
+gather
+push="git push $dest $head:refs/heads/main"
+echo "land: #$n $headref -> main, head $head"
+judge
+
+# children: the open pull requests based on the landed branch, which keep their commits and
+# want only a new base.
+children() {
+	[ "$headrepo" = "$slug" ] || return 0
+	api --paginate --slurp "repos/$slug/pulls?state=open&base=$headref&per_page=100" \
+		>"$tmp/children.json" || die "cannot list the pull requests based on $headref"
+	local m
+	for m in $(py numbers "$tmp/children.json"); do
+		echo "  gh api --hostname github.com -X PATCH repos/$slug/pulls/$m -f base=main"
+	done
+}
+
+if [ "$dry" -eq 1 ]; then
+	[ "$refused" -eq 0 ] || echo "land: nothing would be pushed until the refusals are gone; then:"
+	[ "$approve" -eq 0 ] || echo "land: would approve $head as $(py fields "$tmp/me.json" login)"
+	echo "land: would run: $push"
+	kids="$(children)"
+	[ -z "$kids" ] || printf 'land: then retarget what is stacked on %s:\n%s\n' "$headref" "$kids"
+	exit "$refused"
 fi
+[ "$refused" -eq 0 ] || exit 1
 
-printf '\n#%s by %s. The diff is open in your browser.\n' "$number" "$author"
-printf 'Enter = approve and rebase-merge, Ctrl-C = stop: '
+GH_PAGER="cat" gh pr view "$n" --repo "github.com/$slug" --comments
+if command -v open >/dev/null; then
+	open "$html/files"
+elif command -v xdg-open >/dev/null; then
+	xdg-open "$html/files" >/dev/null 2>&1 &
+else
+	printf '\nOpen the diff yourself: %s/files\n' "$html"
+fi
+seen="$head"
+what="fast-forward main to ${head:0:12}"
+[ "$approve" -eq 0 ] || what="approve ${head:0:12} and $what"
+printf '\n#%s by %s. The diff is open in your browser.\n' "$n" "$(py fields "$tmp/pr.json" user.login)"
+printf 'Enter = %s, Ctrl-C = stop: ' "$what"
 read -r _
-gh pr review "$url" --approve
-gh pr merge "$url" --rebase --delete-branch
-git switch main
-git pull
+
+if [ "$approve" -eq 1 ]; then
+	api -X POST "repos/$slug/pulls/$n/reviews" -f commit_id="$head" -f event=APPROVE \
+		>/dev/null || die "the approval of $head failed; nothing landed"
+fi
+echo "land: checking again"
+gather
+judge
+[ "$refused" -eq 0 ] || die "refused on the second look; nothing landed"
+[ "$approve" -eq 0 ] || die "the forge does not show the approval of $head; nothing landed"
+[ "$head" = "$seen" ] || die "#$n moved to $head since you looked at $seen; nothing landed"
+# The rules the push relies on, to hold the rules on main against after it, and the checks
+# on the head as judged, whose runs and statuses alone are judged again after it.
+cp "$tmp/rules.json" "$tmp/rules.judged.json"
+cp "$tmp/checks.json" "$tmp/checks.judged.json"
+cp "$tmp/statuses.json" "$tmp/statuses.judged.json"
+
+destination
+echo "land: $push"
+if ! out="$(git push "$dest" "$head:refs/heads/main" 2>&1)"; then
+	printf '%s\n' "$out" >&2
+	case "$out" in
+	*GH013* | *"rule violation"*)
+		printf 'land: the rulesets on main refused the push. Remedy: %s\n' "$(py push-remedy "$tmp/me.json")" >&2
+		;;
+	esac
+	die "the push was refused; nothing landed"
+fi
+printf '%s\n' "$out"
+# The head is on main: what is stacked on it wants main as its base, whatever comes out
+# LOUD below, so the list comes first.
+kids="$(children)" ||
+	kids="  (list them yourself: gh pr list --repo github.com/$slug --base $headref)"
+[ -z "$kids" ] || printf 'land: retarget what is stacked on %s to main:\n%s\n' "$headref" "$kids"
+
+now="$(git ls-remote "$dest" refs/heads/main | cut -f1)"
+[ "$now" = "$head" ] || die "LOUD: main on the forge is ${now:-unreadable}, not $head; look before anything else lands"
+waited=0 limit="${FPL_LAND_WAIT:-30}"
+while :; do
+	api "repos/$slug/pulls/$n" >"$tmp/pr.json" || die "cannot read #$n after the push"
+	[ "$(py fields "$tmp/pr.json" merged)" != true ] || break
+	[ "$waited" -lt "$limit" ] ||
+		die "LOUD: main is $head, but GitHub does not show #$n as merged after ${limit}s; look at it before anything else lands"
+	sleep 3
+	waited=$((waited + 3))
+done
+echo "land: #$n is merged; main is $head"
+# The window, seen from the other side: what the push relied on, read again.
+read_reviews
+read_rules
+read_checks
+py still "$tmp" "$slug" "$head" "$n" ||
+	die "LOUD: main is $head, but what it was landed on changed during the push; look at #$n before anything else lands"

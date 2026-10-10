@@ -404,7 +404,7 @@ case "$mode" in
 	check_names "the commits" || found=1
 	scan_both git "--log-opts=--diff-merges=remerge $show $arg" "$gitdir" || found=1
 	# A merge of more than two parents has no remerge diff (git prints none), so what it
-	# adds would go unjudged: it is refused. The queue rebase-merges, so none lands.
+	# adds would go unjudged: it is refused. scripts/land refuses a merge, so none lands.
 	# shellcheck disable=SC2086
 	git rev-list --min-parents=3 $arg >"$tmp/octopus"
 	while read -r sha; do

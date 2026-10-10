@@ -42,7 +42,7 @@
 # then come from that commit, the branch from FPL_LINT_BRANCH (unset: gates 8
 # and 9 do not compare against a branch), FPL_AGENT_EMAILS adds accepted agent
 # addresses to the one in .git/agent-identity, and gate 10 is skipped.
-# A fixup!/squash!/amend! commit is rejected there: a rebase-merge would land it
+# A fixup!/squash!/amend! commit is rejected there: a fast-forward would land it
 # as it is.
 
 set -euo pipefail
