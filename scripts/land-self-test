@@ -1090,14 +1090,55 @@ then
 fi
 
 # Every gh command scripts/land printed in any case above, the remedies a person runs
-# included, names github.com: whoever runs one may have a GH_HOST of another host.
+# included, names exactly github.com: whoever runs one may have a GH_HOST of another host. A
+# line passes when every --hostname value is github.com, every --repo (or -R) value is
+# github.com/<owner>/<name>, and it names the host at least once per gh command it holds; a
+# look-alike such as github.com.evil is neither. The program is plain awk, which the BSD awk
+# and bash 3.2 of macOS read as well as bash 5 does.
+sweep='
+function bare(v) { sub(/[).,;:"`\047]+$/, "", v); return v }
+{
+	g = gsub(/gh (api|pr|run|auth) /, "&"); ok = 0; bad = 0
+	for (i = 1; i <= NF; i++) {
+		if ($i == "--hostname") v = bare($(i + 1))
+		else if (substr($i, 1, 11) == "--hostname=") v = bare(substr($i, 12))
+		else v = ""
+		if ($i == "--hostname" || v != "") { if (v == "github.com") ok++; else bad++ }
+		if ($i == "--repo" || $i == "-R") r = bare($(i + 1))
+		else if (substr($i, 1, 7) == "--repo=") r = bare(substr($i, 8))
+		else r = ""
+		if ($i == "--repo" || $i == "-R" || r != "") {
+			if (r ~ /^github\.com\/[^\/]+\/[^\/]+$/) ok++; else bad++
+		}
+	}
+	if (g > ok || (g > 0 && bad > 0)) print
+}'
 total=$((total + 1))
-if awk '{ g = gsub(/gh (api|pr|run|auth) /, "&"); h = gsub(/github\.com/, "&") } g > h' \
-	"$tmp/outputs" | grep -q .; then
+if awk "$sweep" "$tmp/outputs" | grep -q .; then
 	fails=$((fails + 1))
-	echo "self-test: a gh command it printed does not name github.com:" >&2
-	awk '{ g = gsub(/gh (api|pr|run|auth) /, "&"); h = gsub(/github\.com/, "&") } g > h' \
-		"$tmp/outputs" | sort -u | sed 's/^/    /' >&2
+	echo "self-test: a gh command it printed does not name exactly github.com:" >&2
+	awk "$sweep" "$tmp/outputs" | sort -u | sed 's/^/    /' >&2
+fi
+
+# The sweep itself: a look-alike host planted in a copy of the outputs, in either flag, is
+# caught, and so is a command naming no host; the real outputs pass, as the check above says.
+total=$((total + 1))
+planted="$tmp/planted"
+for line in 'gh api --hostname github.com.evil repos/o/r' \
+	'gh pr ready 7 --repo github.com.evil/o/r' \
+	'gh pr ready 7 --repo github.com/o' \
+	'gh api --hostname github.com --repo=other/r repos/o/r' \
+	'gh pr ready 7'; do
+	{ cat "$tmp/outputs"; echo "$line"; } >"$planted"
+	if ! awk "$sweep" "$planted" | grep -qxF "$line"; then
+		fails=$((fails + 1))
+		echo "self-test: the gh sweep lets this line pass: $line" >&2
+	fi
+done
+{ cat "$tmp/outputs"; echo 'gh api --hostname github.com repos/o/r (gh pr ready 7 --repo github.com/o/r)'; } >"$planted"
+if awk "$sweep" "$planted" | grep -q 'gh api --hostname github.com repos'; then
+	fails=$((fails + 1))
+	echo "self-test: the gh sweep refuses a command that names github.com exactly" >&2
 fi
 
 echo "land self-test: $fails of $total checks failed (bash $BASH_VERSION)"
