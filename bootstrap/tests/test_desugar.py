@@ -557,3 +557,11 @@ def test_a_slot_kind_disagreeing_within_an_arity_is_refused() -> None:
     with pytest.raises(FplError, match=r"^ERROR: 3:1 f/1/2 takes a thunk at 1, f/1/1 a value$"):
         run("f : x -- y\n\t1\nf : t: [ ] -- y\n\t2\n")
     assert run("f : x -- y\n\tdrop 1\nf : x -- y\n\tdrop 2\n5 f\n") == "2\n"
+
+
+def test_a_value_nested_too_deep_to_print_is_refused() -> None:
+    """Issue #95: a value built at run time deeper than the build can recurse to writes no
+    traceback; it is one error at the source's start, as the parser's nesting refusal is."""
+    with pytest.raises(FplError) as caught:
+        run("1" + " enclose" * 3000 + "\n")
+    assert str(caught.value) == "ERROR: 1:1 nesting too deep to print"

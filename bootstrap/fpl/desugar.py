@@ -1057,8 +1057,13 @@ def tests(clause: Define) -> Iterator[Define]:
 
 
 def listing(stacks: tuple[tuple[Value, ...], ...]) -> Program:
-    """One line per stack, each a program that pushes that stack."""
-    return Program(tuple(Line(sugared(tuple(map(Push, s))), (), START) for s in stacks), START)
+    """One line per stack, each a program that pushes that stack. A value nested deeper than
+    the build can recurse to is refused at the source's start, as the parser refuses such
+    source (issue #95)."""
+    try:
+        return Program(tuple(Line(sugared(tuple(map(Push, s))), (), START) for s in stacks), START)
+    except RecursionError:
+        raise FplError(START, "nesting too deep to print") from None
 
 
 def written(statement: Statement) -> Line:

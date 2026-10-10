@@ -12,6 +12,7 @@ and one empty line is the empty text.
 from typing import assert_never
 
 from fpl.ast_surface import Cell, Comment, Enclosure, Frame, Item, Line, Pair, Program, Text, Word
+from fpl.errors import FplError, Span
 
 DELIMITERS: dict[Pair, tuple[str, str]] = {
     "quotation": ("[", "]"),
@@ -24,9 +25,14 @@ DELIMITERS: dict[Pair, tuple[str, str]] = {
 def render(program: Program) -> str:
     """Canonical source for a program: parse(render(p)) == p for every tree the parser can
     give (cells hold items, an enclosure holds a frame, a program a line, and only its first
-    line is empty), and render∘parse is idempotent. One empty line is the empty text."""
+    line is empty), and render∘parse is idempotent. One empty line is the empty text. A tree
+    nested deeper than the build can recurse to is refused at the start, as the parser refuses
+    such source (issue #95)."""
     out = _Out()
-    out.lines(program.lines, 0)
+    try:
+        out.lines(program.lines, 0)
+    except RecursionError:
+        raise FplError(Span(1, 1), "nesting too deep to print") from None
     text = "".join(out.chunks)
     return text + "\n" if text else ""
 
