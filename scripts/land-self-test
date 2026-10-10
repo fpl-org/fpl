@@ -277,6 +277,7 @@ landing() {
 	verdict "$want" "$rc" "$what"
 }
 verdict() {
+	cat "$tmp/out" >>"$tmp/outputs"
 	if [ "$2" -ne "$1" ]; then
 		fails=$((fails + 1))
 		echo "self-test: $3: exit $2, want $1" >&2
@@ -333,7 +334,8 @@ lacks " -X " "a dry run writes nothing to the forge"
 forge
 children '{"number": 8}'
 expect 0 "a pull request stacked on it" --dry-run 7
-says "gh api -X PATCH repos/land-test/fpl/pulls/8 -f base=main" "the retarget is printed"
+says "gh api --hostname github.com -X PATCH repos/land-test/fpl/pulls/8 -f base=main" \
+	"the retarget is printed"
 says "you may push past ruleset 'set 1' as @psjg: always" "it names the account it judged"
 
 forge
@@ -358,11 +360,14 @@ forge
 pull open true main false
 expect 1 "a draft" --dry-run 7
 says "#7 is a draft" "it says why"
+says "gh pr ready 7 --repo github.com/land-test/fpl" "the remedy names the repository"
 
 forge
 pull open false "$BR-below" false
 expect 1 "a pull request on another base" --dry-run 7
 says "NO  land/base" "it names the rule"
+says "gh api --hostname github.com -X PATCH repos/land-test/fpl/pulls/7 -f base=main" \
+	"the retarget it prints names the host"
 
 forge
 git --git-dir="$REMOTE" update-ref refs/pull/7/head "$M0"
@@ -373,6 +378,7 @@ forge
 me psjg-claude
 expect 1 "the author lands his own pull request" --dry-run 7
 says "NO  land/author" "it names the rule"
+says "gh auth switch --hostname github.com --user <maintainer>" "the switch names the host"
 
 forge
 git --git-dir="$REMOTE" update-ref refs/heads/main "$MC"
@@ -403,6 +409,8 @@ reviews "$(review 1 psjg APPROVED "$H"), $(review 2 'coderabbitai[bot]' CHANGES_
 expect 1 "a standing request for changes, from a bot too" --dry-run 7
 says "NO  land/changes-requested" "it names the rule"
 says "review 2" "it names the review to dismiss"
+says "gh api --hostname github.com -X PUT repos/land-test/fpl/pulls/7/reviews/<review>/dismissals" \
+	"the dismissal names the host"
 reviews "$(review 1 psjg APPROVED "$H"), $(review 2 'coderabbitai[bot]' CHANGES_REQUESTED "$M0"),
 	$(review 3 'coderabbitai[bot]' DISMISSED "$M0")"
 expect 0 "a request for changes that was dismissed" --dry-run 7
@@ -433,6 +441,8 @@ runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed suc
 	$(run 3 zeta-check completed cancelled 2)"
 expect 1 "a success, then a cancelled latest run" --dry-run 7
 says "zeta-check's latest run on ${H:0:12} concluded cancelled" "the latest run decides"
+says "gh run rerun <run> --repo github.com/land-test/fpl (gh pr checks 7 --repo github.com/land-test/fpl)" \
+	"the rerun names the repository"
 
 forge
 runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed cancelled 1),
@@ -455,6 +465,7 @@ forge
 runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check in_progress null 1)"
 expect 1 "a check still running" --dry-run 7
 says "zeta-check is in_progress" "it says it is running"
+says "gh pr checks 7 --repo github.com/land-test/fpl --watch" "the wait names the repository"
 
 # A check run and a commit status that share a required name: GitHub wants both to pass.
 forge
@@ -777,7 +788,17 @@ says "gh pr view 7 --repo github.com/land-test/fpl --comments" "the conversation
 forge
 children '{"number": 8}'
 landing 0 "a pull request stacked on the landed one" 7
-says "gh api -X PATCH repos/land-test/fpl/pulls/8 -f base=main" "the retarget is printed"
+says "gh api --hostname github.com -X PATCH repos/land-test/fpl/pulls/8 -f base=main" \
+	"the retarget is printed"
+
+# When the pull requests stacked on it cannot be listed after the push, the command it
+# prints for that names the repository on github.com.
+forge
+rm "$FORGE/$(printf %s "repos/land-test/fpl/pulls?state=open&base=$BR&per_page=100" |
+	tr -c 'A-Za-z0-9._-' _).json"
+landing 0 "the pull requests stacked on the landed one cannot be listed" 7
+main_is "$H" "it landed"
+says "gh pr list --repo github.com/land-test/fpl --base $BR" "the listing names the repository"
 
 forge
 reviews ""
@@ -924,6 +945,7 @@ runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed fai
 landing 1 "a required check's run, judged a success, has failed on the head after the push" 7
 says "LOUD: land/checks: zeta-check's latest run on ${H:0:12} concluded failure" \
 	"the checks are judged again after the push, the rules unchanged"
+says "gh run rerun <run> --repo github.com/land-test/fpl" "the rerun after it names the repository"
 lacks "the rules on main changed" "the rules are the same"
 forge
 runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed failure 1),
@@ -938,7 +960,8 @@ runs "$(run 1 commit-lint completed success 1), $(run 2 zeta-check completed suc
 children '{"number": 8}'
 landing 0 "the push to main starts a run of a required check on the head" 7
 lacks "LOUD" "a run the push started is no change"
-says "gh api -X PATCH repos/land-test/fpl/pulls/8 -f base=main" "the retarget is printed"
+says "gh api --hostname github.com -X PATCH repos/land-test/fpl/pulls/8 -f base=main" \
+	"the retarget is printed"
 main_is "$H" "main is the head"
 forge
 statuses "[$(status 1 zeta-check pending)]" read3
@@ -1064,6 +1087,17 @@ PY
 then
 	fails=$((fails + 1))
 	echo "self-test: the header's land/rules entry runs two conditions into one sentence" >&2
+fi
+
+# Every gh command scripts/land printed in any case above, the remedies a person runs
+# included, names github.com: whoever runs one may have a GH_HOST of another host.
+total=$((total + 1))
+if awk '{ g = gsub(/gh (api|pr|run|auth) /, "&"); h = gsub(/github\.com/, "&") } g > h' \
+	"$tmp/outputs" | grep -q .; then
+	fails=$((fails + 1))
+	echo "self-test: a gh command it printed does not name github.com:" >&2
+	awk '{ g = gsub(/gh (api|pr|run|auth) /, "&"); h = gsub(/github\.com/, "&") } g > h' \
+		"$tmp/outputs" | sort -u | sed 's/^/    /' >&2
 fi
 
 echo "land self-test: $fails of $total checks failed (bash $BASH_VERSION)"

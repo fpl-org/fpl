@@ -110,7 +110,8 @@
 # scripts/land-self-test serves it from fixtures with a gh of its own first on PATH, and
 # git's fetches and pushes from a bare repository with a git of its own. Every gh call names
 # github.com, whatever GH_HOST or gh's configuration names, so the pull request, its
-# approvals, rules and checks are read where the push goes.
+# approvals, rules and checks are read where the push goes; so does every gh command it
+# prints for a person to run, who may have the same GH_HOST.
 # FPL_LAND_WAIT: seconds to wait for GitHub to show the merge (default 30).
 #
 # Exit 0: landed, or a dry run found nothing to refuse; 1: refused or failed; 2: usage.
@@ -271,7 +272,8 @@ def judge_pull(v, pr, me, fetched, repo):
         state = "merged" if pr.get("merged") else pr["state"]
         v.no("land/open", f"#{n} is {state}", "nothing to land; name an open pull request")
     elif pr.get("draft"):
-        v.no("land/open", f"#{n} is a draft", f"mark it ready first: gh pr ready {n}")
+        v.no("land/open", f"#{n} is a draft",
+             f"mark it ready first: gh pr ready {n} --repo github.com/{repo}")
     else:
         v.ok("land/open", f"#{n} is open")
     base = pr["base"]["ref"]
@@ -280,7 +282,7 @@ def judge_pull(v, pr, me, fetched, repo):
     else:
         v.no("land/base", f"it is based on {base}, not main",
              f"land #{n}'s base first, then retarget it:"
-             f" gh api -X PATCH repos/{repo}/pulls/{n} -f base=main")
+             f" gh api --hostname github.com -X PATCH repos/{repo}/pulls/{n} -f base=main")
     if fetched == head:
         v.ok("land/head", f"the forge's head {head[:12]} is the commit refs/pull/{n}/head holds")
     else:
@@ -290,7 +292,7 @@ def judge_pull(v, pr, me, fetched, repo):
     author = pr["user"]["login"]
     if me.lower() == author.lower():
         v.no("land/author", f"you are {me}, the author of #{n}",
-             "land as the maintainer: gh auth switch --user <maintainer>")
+             "land as the maintainer: gh auth switch --hostname github.com --user <maintainer>")
     else:
         v.ok("land/author", f"you are {me}; {author} wrote it")
 
@@ -316,7 +318,8 @@ def judge_reviews(v, d, pr, me, repo):
         v.no("land/changes-requested", "changes requested by "
              + ", ".join(f"@{w} (review {r.get('id')})" for w, r in asking),
              "they approve, or the review is dismissed with a reason:"
-             f" gh api -X PUT repos/{repo}/pulls/{n}/reviews/<review>/dismissals"
+             " gh api --hostname github.com -X PUT"
+             f" repos/{repo}/pulls/{n}/reviews/<review>/dismissals"
              " -f message=<reason>")
     else:
         v.ok("land/changes-requested", "nobody's standing verdict requests changes")
@@ -413,7 +416,7 @@ def ceiling(d):
             max((s["id"] for s in statuses), default=0))
 
 
-def judge_checks(v, d, rules, n, head, upto=None):
+def judge_checks(v, d, rules, repo, n, head, upto=None):
     """land/checks: each required name's latest check run on the head, per app that made
     one, and its newest commit status: when both carry the name, GitHub requires both.
     With upto, only the runs and statuses numbered at most that (check_answers)."""
@@ -447,10 +450,12 @@ def judge_checks(v, d, rules, n, head, upto=None):
         for what, latest, state, verdict in seen:
             if state != "completed":
                 v.no("land/checks", f"{what} is {state} on {h}",
-                     f"wait for it, then run this again: gh pr checks {n} --watch")
+                     "wait for it, then run this again:"
+                     f" gh pr checks {n} --repo github.com/{repo} --watch")
             elif verdict != "success":
                 v.no("land/checks", f"{what}'s {latest} on {h} concluded {verdict}",
-                     f"rerun it until it succeeds: gh run rerun <run> (gh pr checks {n})")
+                     f"rerun it until it succeeds: gh run rerun <run> --repo github.com/{repo}"
+                     f" (gh pr checks {n} --repo github.com/{repo})")
             else:
                 v.ok("land/checks", f"{what} succeeded on {h}")
 
@@ -634,7 +639,7 @@ def judge(d, repo, fetched, main, ancestor, merges):  # noqa: PLR0913, PLR0917
         v.no("land/rules", fault, "run this again; if it keeps failing, read the rules"
              " on main on the forge (Settings > Rules) and fix what the API does not show")
     else:
-        judge_checks(v, d, rules, pr["number"], pr["head"]["sha"])
+        judge_checks(v, d, rules, repo, pr["number"], pr["head"]["sha"])
     judge_history(v, main, pr["head"]["sha"], ancestor, merges)
     if not fault:
         judge_rules(v, d, rules, me)
@@ -683,7 +688,7 @@ def changed_rules(judged, now):
     return lines or ["a rule is listed a different number of times"]
 
 
-def still(d, head, n):
+def still(d, repo, head, n):
     """After the push, on what the forge says then: a code owner's approval of the head
     still stands, nobody's standing verdict requests changes, the rules on main are the
     ones judged before the push, every one of them is one judged here, and every check
@@ -723,7 +728,7 @@ def still(d, head, n):
             loud.append(("main has rules scripts/land does not judge: " + ", ".join(unjudged),
                          "teach scripts/land those rules before it lands anything else"))
         checks = Gathered()
-        judge_checks(checks, d, rules, n, head, ceiling(d))
+        judge_checks(checks, d, rules, repo, n, head, ceiling(d))
         loud.extend(checks.lines)
     for line, remedy in loud:
         print(f"land: LOUD: {line}")
@@ -938,7 +943,7 @@ children() {
 		>"$tmp/children.json" || die "cannot list the pull requests based on $headref"
 	local m
 	for m in $(py numbers "$tmp/children.json"); do
-		echo "  gh api -X PATCH repos/$slug/pulls/$m -f base=main"
+		echo "  gh api --hostname github.com -X PATCH repos/$slug/pulls/$m -f base=main"
 	done
 }
 
@@ -997,7 +1002,8 @@ fi
 printf '%s\n' "$out"
 # The head is on main: what is stacked on it wants main as its base, whatever comes out
 # LOUD below, so the list comes first.
-kids="$(children)" || kids="  (list them yourself: gh pr list --repo $slug --base $headref)"
+kids="$(children)" ||
+	kids="  (list them yourself: gh pr list --repo github.com/$slug --base $headref)"
 [ -z "$kids" ] || printf 'land: retarget what is stacked on %s to main:\n%s\n' "$headref" "$kids"
 
 now="$(git ls-remote "$dest" refs/heads/main | cut -f1)"
@@ -1016,5 +1022,5 @@ echo "land: #$n is merged; main is $head"
 read_reviews
 read_rules
 read_checks
-py still "$tmp" "$head" "$n" ||
+py still "$tmp" "$slug" "$head" "$n" ||
 	die "LOUD: main is $head, but what it was landed on changed during the push; look at #$n before anything else lands"
