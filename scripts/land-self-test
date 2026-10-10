@@ -113,10 +113,13 @@ set -euo pipefail
 echo "gh $*" >>"$FORGE/calls"
 [ "$1" = api ] || { echo "(the conversation of the pull request)"; exit 0; }
 shift
-method=GET path=""
+# As gh does, it takes the host from --hostname, else from GH_HOST, else github.com; any
+# other host is served from the forge's ghe/ directory.
+method=GET path="" host="${GH_HOST:-github.com}"
 while [ $# -gt 0 ]; do
 	case "$1" in
 	-X) method="$2"; shift 2 ;;
+	--hostname) host="$2"; shift 2 ;;
 	-f | -F) shift 2 ;;
 	--paginate | --slurp) shift ;;
 	*) path="$1"; shift ;;
@@ -128,12 +131,14 @@ if [ "$method" != GET ]; then
 	exit 0
 fi
 name="$(printf %s "$path" | tr -c 'A-Za-z0-9._-' _)"
-file="$FORGE/$name.json"
-[ ! -e "$FORGE/written" ] || [ ! -e "$FORGE/$name.after.json" ] || file="$FORGE/$name.after.json"
+dir="$FORGE"
+[ "$host" = github.com ] || dir="$FORGE/ghe"
+file="$dir/$name.json"
+[ ! -e "$FORGE/written" ] || [ ! -e "$dir/$name.after.json" ] || file="$dir/$name.after.json"
 # The k-th read of a path is served its `.read<k>` variant where there is one.
 reads=$(($(cat "$FORGE/$name.reads" 2>/dev/null || echo 0) + 1))
 echo "$reads" >"$FORGE/$name.reads"
-[ ! -e "$FORGE/$name.read$reads.json" ] || file="$FORGE/$name.read$reads.json"
+[ ! -e "$dir/$name.read$reads.json" ] || file="$dir/$name.read$reads.json"
 [ -e "$file" ] || { echo "gh: Not Found (HTTP 404) $path" >&2; exit 1; }
 merged=false
 if git --git-dir="$REMOTE" merge-base --is-ancestor "$HEAD_SHA" refs/heads/main 2>/dev/null; then
@@ -767,7 +772,7 @@ says "#7 is merged; main is $H" "it checks the forge shows the merge"
 called
 lacks " -X " "an approval at the head is not given again"
 says "open https://github.com/land-test/fpl/pull/7/files" "the diff is opened"
-says "gh pr view 7 --repo land-test/fpl --comments" "the conversation is shown"
+says "gh pr view 7 --repo github.com/land-test/fpl --comments" "the conversation is shown"
 
 forge
 children '{"number": 8}'
@@ -780,7 +785,7 @@ reviews "$(review 1 psjg APPROVED "$H")" after
 landing 0 "the code owner approves in this run" 7
 main_is "$H" "main is fast-forwarded to the head"
 called
-says "gh api -X POST repos/land-test/fpl/pulls/7/reviews -f commit_id=$H -f event=APPROVE" \
+says "gh api --hostname github.com -X POST repos/land-test/fpl/pulls/7/reviews -f commit_id=$H -f event=APPROVE" \
 	"the approval names the head"
 
 forge
@@ -798,6 +803,38 @@ says "Bypass list > Repository admin > Always" "it gives the owner's one-time st
 says "as another account than @psjg" "it names the push credential as a possible cause"
 main_is "$M0" "nothing landed"
 rm -f "$REMOTE/hooks/pre-receive"
+
+# GH_HOST names the host of every gh call that names none, and the pull request, its
+# approvals, rules and checks must be read where the push goes: on github.com. Here the
+# other host approves what github.com does not.
+forge
+mkdir "$FORGE/ghe"
+cp "$FORGE"/*.json "$FORGE/ghe/"
+me someone
+reviews ""
+GH_HOST=ghe.example expect 1 "GH_HOST names another host, which approves the head" --dry-run 7
+says "NO  land/approved" "the approvals are read on github.com"
+
+# Every call scripts/land makes to the forge names github.com, a landing's and the lookup
+# of the current branch's pull request among them.
+forge
+reviews ""
+reviews "$(review 1 psjg APPROVED "$H")" after
+children '{"number": 8}'
+echo '[[{"number": 7}]]' | fixture "repos/land-test/fpl/pulls?state=open&head=land-test:$BR&per_page=100"
+git switch -q "$BR"
+GH_HOST=ghe.example landing 0 "a landing under a GH_HOST of another host"
+git switch -q main
+main_is "$H" "it landed on github.com"
+called
+total=$((total + 1))
+if grep '^gh ' "$tmp/out" | grep -v -e '^gh api --hostname github.com ' \
+	-e '^gh pr view [0-9]* --repo github.com/' | grep -q .; then
+	fails=$((fails + 1))
+	echo "self-test: a gh call that does not name github.com:" >&2
+	grep '^gh ' "$tmp/out" | grep -v -e '^gh api --hostname github.com ' \
+		-e '^gh pr view [0-9]* --repo github.com/' | sed 's/^/    /' >&2
+fi
 
 # The window between the last read and the push cannot be closed from here: the approvals
 # and then the rules are the last reads before the push, and are read again after it.

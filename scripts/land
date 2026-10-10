@@ -108,7 +108,9 @@
 # The repository is the one --remote (default github) points at; its configured URL must be
 # on GitHub. The forge is read and written with `gh api` only (scripts/layer on github), so
 # scripts/land-self-test serves it from fixtures with a gh of its own first on PATH, and
-# git's fetches and pushes from a bare repository with a git of its own.
+# git's fetches and pushes from a bare repository with a git of its own. Every gh call names
+# github.com, whatever GH_HOST or gh's configuration names, so the pull request, its
+# approvals, rules and checks are read where the push goes.
 # FPL_LAND_WAIT: seconds to wait for GitHub to show the merge (default 30).
 #
 # Exit 0: landed, or a dry run found nothing to refuse; 1: refused or failed; 2: usage.
@@ -786,6 +788,10 @@ done
 	die "needs a terminal: landing is a person's decision (--dry-run needs none)"
 command -v gh >/dev/null || die "gh not found; scripts/layer on github"
 command -v python3 >/dev/null || die "python3 not found"
+# api: gh api on github.com, where destination() says git pushes. A call that names no host
+# goes to the one GH_HOST or gh's configuration names, which may be another forge, whose
+# approvals, rules and checks would then decide a push to GitHub.
+api() { gh api --hostname github.com "$@"; }
 
 # destination: land/remote. Sets slug, the repository the remote names, and dest, the one
 # URL git fetches it from and pushes it to; dies unless dest is that repository on GitHub
@@ -840,7 +846,7 @@ case "$target" in
 "")
 	branch="$(git branch --show-current)"
 	[ -n "$branch" ] || die "detached HEAD; name the pull request"
-	gh api --paginate --slurp \
+	api --paginate --slurp \
 		"repos/$slug/pulls?state=open&head=${slug%%/*}:$branch&per_page=100" >"$tmp/mine.json" ||
 		die "cannot list the pull requests of $branch"
 	n="$(py numbers "$tmp/mine.json")"
@@ -857,9 +863,9 @@ esac
 # who you are into $tmp, fetch main and the pull request's head, and set head, fetched, main
 # ancestor and merges. Run twice: before the question and after it, on the forge as it is then.
 gather() {
-	gh api "repos/$slug/pulls/$n" >"$tmp/pr.json" || die "cannot read #$n"
-	gh api user >"$tmp/me.json" || die "cannot read who you are"
-	gh api graphql --paginate --slurp -F owner="${slug%%/*}" -F name="${slug#*/}" \
+	api "repos/$slug/pulls/$n" >"$tmp/pr.json" || die "cannot read #$n"
+	api user >"$tmp/me.json" || die "cannot read who you are"
+	api graphql --paginate --slurp -F owner="${slug%%/*}" -F name="${slug#*/}" \
 		-F number="$n" -f query="$THREADS" >"$tmp/threads.json" ||
 		die "cannot read the review threads of #$n"
 	{ read -r head; read -r headref; read -r headrepo; read -r html; } <<<"$(
@@ -887,21 +893,21 @@ gather() {
 	read_rules
 }
 read_checks() {
-	gh api --paginate --slurp "repos/$slug/commits/$head/check-runs?filter=all&per_page=100" \
+	api --paginate --slurp "repos/$slug/commits/$head/check-runs?filter=all&per_page=100" \
 		>"$tmp/checks.json" || die "cannot read the checks on $head"
-	gh api --paginate --slurp "repos/$slug/commits/$head/statuses?per_page=100" \
+	api --paginate --slurp "repos/$slug/commits/$head/statuses?per_page=100" \
 		>"$tmp/statuses.json" || die "cannot read the statuses on $head"
 }
 read_reviews() {
-	gh api --paginate --slurp "repos/$slug/pulls/$n/reviews?per_page=100" >"$tmp/reviews.json" ||
+	api --paginate --slurp "repos/$slug/pulls/$n/reviews?per_page=100" >"$tmp/reviews.json" ||
 		die "cannot read the reviews of #$n"
 }
 read_rules() {
-	gh api --paginate --slurp "repos/$slug/rules/branches/main?per_page=100" >"$tmp/rules.json" ||
+	api --paginate --slurp "repos/$slug/rules/branches/main?per_page=100" >"$tmp/rules.json" ||
 		die "cannot read the rules on main"
 	local id
 	for id in $(py rulesets "$tmp/rules.json"); do
-		gh api "repos/$slug/rulesets/$id?includes_parents=true" >"$tmp/ruleset-$id.json" ||
+		api "repos/$slug/rulesets/$id?includes_parents=true" >"$tmp/ruleset-$id.json" ||
 			die "cannot read ruleset $id"
 	done
 }
@@ -928,7 +934,7 @@ judge
 # want only a new base.
 children() {
 	[ "$headrepo" = "$slug" ] || return 0
-	gh api --paginate --slurp "repos/$slug/pulls?state=open&base=$headref&per_page=100" \
+	api --paginate --slurp "repos/$slug/pulls?state=open&base=$headref&per_page=100" \
 		>"$tmp/children.json" || die "cannot list the pull requests based on $headref"
 	local m
 	for m in $(py numbers "$tmp/children.json"); do
@@ -946,7 +952,7 @@ if [ "$dry" -eq 1 ]; then
 fi
 [ "$refused" -eq 0 ] || exit 1
 
-GH_PAGER="cat" gh pr view "$n" --repo "$slug" --comments
+GH_PAGER="cat" gh pr view "$n" --repo "github.com/$slug" --comments
 if command -v open >/dev/null; then
 	open "$html/files"
 elif command -v xdg-open >/dev/null; then
@@ -962,7 +968,7 @@ printf 'Enter = %s, Ctrl-C = stop: ' "$what"
 read -r _
 
 if [ "$approve" -eq 1 ]; then
-	gh api -X POST "repos/$slug/pulls/$n/reviews" -f commit_id="$head" -f event=APPROVE \
+	api -X POST "repos/$slug/pulls/$n/reviews" -f commit_id="$head" -f event=APPROVE \
 		>/dev/null || die "the approval of $head failed; nothing landed"
 fi
 echo "land: checking again"
@@ -998,7 +1004,7 @@ now="$(git ls-remote "$dest" refs/heads/main | cut -f1)"
 [ "$now" = "$head" ] || die "LOUD: main on the forge is ${now:-unreadable}, not $head; look before anything else lands"
 waited=0 limit="${FPL_LAND_WAIT:-30}"
 while :; do
-	gh api "repos/$slug/pulls/$n" >"$tmp/pr.json" || die "cannot read #$n after the push"
+	api "repos/$slug/pulls/$n" >"$tmp/pr.json" || die "cannot read #$n after the push"
 	[ "$(py fields "$tmp/pr.json" merged)" != true ] || break
 	[ "$waited" -lt "$limit" ] ||
 		die "LOUD: main is $head, but GitHub does not show #$n as merged after ${limit}s; look at it before anything else lands"
