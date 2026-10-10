@@ -13,8 +13,9 @@ type Lines = tuple[tuple[int, Stack], ...]
 
 FUEL_DEFAULT = 1_000_000
 """The steps each run line may take, in a file run and in each REPL event alike (HOLES.md:
-fuel-scope): about 3.7 s of a word that calls itself forever, so a loop ends in seconds while
-any program the suite runs stays far inside it."""
+fuel-scope): about 2.3 s of a word that calls itself forever, once or twice a body (#144), so
+such a loop ends in seconds while any program the suite runs stays far inside it. Fuel counts
+steps, not their size: a loop that grows a list or the stack each round can take far longer."""
 
 
 def silent(_line: str) -> None:
