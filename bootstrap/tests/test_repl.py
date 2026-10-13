@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import override
 
 import pytest
-from hypothesis import HealthCheck, assume, example, given, settings
+from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 from test_desugar import programs
 from test_session import POOL
@@ -327,14 +327,15 @@ def test_a_body_at_the_margin(lines: list[str], made: list[str]) -> None:
     assert fed(lines) == made
 
 
-@given(
-    st.sampled_from(["f : -- x", "f : n -- n ; note"]),
-    st.from_regex(r"[^ \t\n\r].{0,8}", fullmatch=True),
-)
+# What str.isprintable admits: no character of the categories C* and Z*, but the space.
+PRINTABLE = st.characters(exclude_categories=("C", "Z"))
+BODIES = st.tuples(PRINTABLE, st.text(PRINTABLE | st.just(" "), max_size=8)).map("".join)
+
+
+@given(st.sampled_from(["f : -- x", "f : n -- n ; note"]), BODIES)
 def test_a_body_is_read_with_or_without_its_tab(header: str, body: str) -> None:
-    """[law: body-margin] the lines of a head, a body at the margin and a blank line make the
-    inputs they make with the body one tab in."""
-    assume(body.isprintable())
+    """[law: body-margin] the lines of a head, a printable body at the margin and a blank line
+    make the inputs they make with the body one tab in."""
     assert fed([header, body, ""]) == fed([header, "\t" + body, ""])
 
 
