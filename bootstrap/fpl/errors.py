@@ -37,3 +37,9 @@ class FplError(Exception):
 
 class FailError(FplError):
     """A miss: no row of a match fits, the +fail a guard counts as not fitting."""
+
+
+class UnresolvedError(FplError):
+    """A word no definition and no builtin names, at the word: unknown, or one the language's
+    examples call that nothing runs yet. The maintainer's `.expected` files still hold the
+    skeleton's blanket refusal for such a program, which tests/test_conformance.py keeps."""

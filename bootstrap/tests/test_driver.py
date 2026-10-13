@@ -24,7 +24,7 @@ def test_only_an_fpl_error_escapes(source: str) -> None:
 
 def test_a_parse_is_not_yet_a_run() -> None:
     with pytest.raises(FplError) as caught:
-        run("x\n")
+        run("$x\n")
     assert str(caught.value) == "ERROR: 1:1 no evaluator yet"
 
 

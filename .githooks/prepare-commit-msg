@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+#
+# .githooks/prepare-commit-msg — fill an empty commit message with what a person needs to
+# write it: the header skeleton, the trailers that can be known, and the rules.
+#
+# A person who typed `doc(readme): ...` or `docs(README): ...` was told only that the header was
+# wrong, and lost the message. This hook gives the rules before the message is written.
+# .githooks/commit-msg, which judges it, refuses a header that is still the skeleton.
+#
+# It acts when git opens an editor on an empty message: the source git passes in $2 is empty
+# (a plain `git commit`) or "template" (-t, commit.template) and nothing but comments is in
+# the file. It leaves alone "message" (-m, -F, which scripts/acommit uses), "merge", "squash"
+# and "commit" (-C, -c, --amend): those carry a message already.
+#
+# What it writes, at the top of the file:
+#     <type>(<scope>): <summary>
+#     (two empty lines: the body goes there)
+#     Stack: <name>        derived from the branch exactly as scripts/acommit derives it
+#     Human-Only: true     where no agent identity is set (scripts/agent-identity)
+# and the rules as comment lines, which git strips. They must never reach the commit, so where
+# they go depends on how git cleans the message up (git commit --help, --cleanup):
+#   a scissors line is in the file   git wrote it for -v or commit.cleanup=scissors, and drops
+#                                    what is below it: the rules go there, after git's own
+#                                    comment lines and before the diff of -v, if any
+#   strip (the default, with an editor)  the rules are comment lines, at the top
+#   whitespace, verbatim             comments are kept by these, so the rules are not written
+#                                    (a note says so); commit-msg's refusals carry them instead
+# A --cleanup option on the command line reaches no hook: the rules are written by the config's
+# reading, and .githooks/commit-msg takes them out of the file before git stores what such a
+# mode keeps. Only a commit that also skips commit-msg (--no-verify) can store them then.
+# core.commentChar and core.commentString name the comment prefix. Under the deprecated 'auto'
+# git has picked one before this hook runs, and the file shows it: git's own comment lines come
+# first in an empty message (none at all with commit.status=false, and then git picks '#').
+# The rules end in a marker line with a random id, and what was written is recorded for
+# .githooks/commit-msg (commit_template_state): git's prefix, and the rules block as written.
+# commit-msg takes out that block and nothing else, and reads the prefix from the record, since
+# the message as it comes back from the editor cannot show it.
+#
+# Usage (git runs it): prepare-commit-msg <message file> [<source> [<sha>]]
+
+set -euo pipefail
+
+file="$1"
+repo_root="$(git rev-parse --show-toplevel)"
+# shellcheck source=commit-rules
+. "$repo_root/.githooks/commit-rules"
+state="$(commit_template_state)"
+rm -f "$state"
+case "${2:-}" in
+"" | template) ;;
+*) exit 0 ;;
+esac
+
+prefix="$(commit_comment_prefix)"
+if [ -z "$prefix" ]; then
+	prefix="$(awk 'NF { c = substr($0, 1, 1); if (index("#;@!$%^&|:", c)) printf "%s", c; exit }' "$file")"
+	[ -n "$prefix" ] || prefix="#"
+fi
+
+# The scissors line, if git wrote one (-v, commit.cleanup=scissors).
+scissors="$(P="$prefix" awk 'BEGIN { p = ENVIRON["P"]; d = "------------------------" }
+	$0 == p " " d " >8 " d { print NR; exit }' "$file")"
+
+# Anything above the scissors line that is not a blank or a comment is a message already (a
+# template). Below it is git's: with -v, the diff of what is staged.
+if P="$prefix" S="${scissors:-0}" awk 'BEGIN { p = ENVIRON["P"]; s = ENVIRON["S"] + 0 }
+	s && NR >= s { exit }
+	NF && substr($0, 1, length(p)) != p { found = 1 } END { exit !found }' "$file"; then
+	exit 0
+fi
+mode="$(git config --get commit.cleanup || true)"
+if [ -z "$scissors" ]; then
+	case "$mode" in
+	"" | default | strip) ;;
+	*)
+		echo "prepare-commit-msg: commit.cleanup=$mode keeps comment lines, so the rules are not written into the message; see .agents/COMMITS.md" >&2
+		write_rules=0
+		;;
+	esac
+fi
+
+trailers=""
+stack="$(commit_stack_of_branch "$(git branch --show-current)")"
+[ -z "$stack" ] || trailers="Stack: $stack"
+if ! "$repo_root/scripts/agent-identity" show >/dev/null 2>&1; then
+	trailers="${trailers:+$trailers$'\n'}Human-Only: true"
+fi
+
+out="$(mktemp)"
+trap 'rm -f "$out" "$out.rules"' EXIT
+{
+	printf '%s\n' "$COMMIT_SKELETON" "" ""
+	[ -z "$trailers" ] || printf '\n%s\n' "$trailers"
+} >"$out"
+
+# The rules, as comment lines. They come from commit-rules, so they cannot drift from the gate.
+nonce="$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
+{
+	commit_rules_text
+	echo "(end of the rules, block $nonce)"
+} | P="$prefix" awk 'BEGIN { p = ENVIRON["P"] } { print p " " $0 }' >"$out.rules"
+
+if [ -n "$scissors" ]; then
+	# After the comment lines that follow the scissors line (git's own, "Do not modify..."),
+	# before the first line that is not one: the diff of -v.
+	end="$(P="$prefix" awk -v from="$scissors" 'BEGIN { p = ENVIRON["P"] }
+		NR > from && substr($0, 1, length(p)) != p { print NR - 1; found = 1; exit }
+		END { if (!found) print NR }' "$file")"
+	{
+		cat "$out"
+		head -n "$end" "$file"
+		cat "$out.rules"
+		tail -n +"$((end + 1))" "$file"
+	} >"$out.new"
+elif [ "${write_rules:-1}" -eq 1 ]; then
+	{
+		cat "$out"
+		cat "$out.rules"
+		cat "$file"
+	} >"$out.new"
+else
+	{
+		cat "$out"
+		cat "$file"
+	} >"$out.new"
+	: >"$out.rules"
+fi
+cat "$out.new" >"$file"
+{
+	printf '%s\n' "$prefix"
+	cat "$out.rules"
+} >"$state"
+rm -f "$out.new"

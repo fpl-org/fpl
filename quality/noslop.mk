@@ -7,13 +7,16 @@
 #
 #   make fix      rewrite what can be rewritten: ruff's safe fixes, then the formatter
 #   make quick    the inner loop, seconds: lint, format, and the tests, stopping at the first
-#   make check    the one gate; green here means done (AGENTS.md); its last step runs one
-#                 example from the root, through the entry a README points to (make run)
+#   make check    the one gate; green here means done (AGENTS.md). It begins by refusing config
+#                 files that differ from what flake.nix's lib.limits generates, and its last
+#                 step runs one example from the root, through the entry a README points to
+#                 (make run)
 #   make harden   the long search: 20x the examples, CrossHair on every property and every
 #                 contract, mutants
 #   make ready    check + harden + gates + a known-vulnerability audit; before a PR leaves draft
 #   make gates    proof that each check still bites: the harness's own lint, its self-tests,
-#                 and a bad example each check refuses. Also what the root runs, where there
+#                 and a bad example each check refuses; also that the files generated from
+#                 flake.nix's lib.limits are current. Also what the root runs, where there
 #                 is no code to judge: make -f quality/noslop.mk gates
 #   make tools    the tooling beside the language: every tools/<name>/ that holds a
 #                 pyproject.toml, a uv project of its own, judged as strictly as the code.
@@ -22,7 +25,7 @@
 #                 committed; no other lane runs it (scripts/diagrams)
 
 .DEFAULT_GOAL := check
-.PHONY: fix quick check harden ready gates tools map venv pristine clean-noslop rootrun
+.PHONY: fix quick check harden ready gates tools map venv ruff-limits config-fresh pristine clean-noslop rootrun
 
 # The root is where this file's directory sits one level down. It is read before anything
 # else is included, so it is this file's, wherever make runs and whatever includes it.
@@ -49,7 +52,23 @@ RUFF_ALL := --no-respect-gitignore
 $(BIN)/.synced: $(Q)/uv.lock $(Q)/pyproject.toml
 	uv sync --project $(Q) --frozen --python python3.12 --quiet
 	@touch $@
-venv: $(BIN)/.synced
+
+# Every lane that runs ruff needs the venv, so the venv is where ruff's width is checked: an
+# empty quality/ruff-limits.toml is valid TOML and silently gives ruff its default of 88.
+ruff-limits: $(BIN)/.synced
+	$(BIN)/python $(S)/ruff-limits
+venv: $(BIN)/.synced ruff-limits
+
+# The files generated from lib.limits in flake.nix are what the flake says; the remedy, in the
+# message of a difference, is nix run .#gen-config, and to commit them. A lane that cannot run
+# the generator stops, never skips: a flake change without regeneration, or a deleted
+# generated file, fails the everyday lane as it fails the gates.
+config-fresh:
+	@command -v nix >/dev/null 2>&1 || { \
+	  echo "config-fresh: nix is not on PATH; the generated config files cannot be checked without it" >&2; \
+	  echo "       enter the dev shell (.agents/DEVSHELL.md)" >&2; \
+	  exit 1; }
+	nix run $(ROOT)#gen-config -- --check
 
 fix: venv
 	$(BIN)/ruff check --config $(Q)/ruff.toml $(RUFF_ALL) --fix fpl tests
@@ -101,7 +120,7 @@ rootrun:
 	  echo "check: make run FILE=$(ROOT_EXAMPLE).fpl, run from the root, printed other than its .expected" >&2; \
 	  exit 1; }
 
-check: venv pristine
+check: venv pristine config-fresh
 	@mkdir -p $(OUT)
 	$(BIN)/ruff check --config $(Q)/ruff.toml $(RUFF_ALL) fpl tests
 	$(BIN)/ruff format --config $(Q)/ruff.toml $(RUFF_ALL) --check fpl tests
@@ -139,10 +158,12 @@ ready: harden gates
 	$(BIN)/pip-audit --progress-spinner off --requirement $(OUT)/requirements.txt --disable-pip
 
 # The harness's own Python, judged by the same ruff it judges others with.
-HARNESS := $(addprefix $(S)/,crap props escapes mutants gates forward-only diagrams) \
+HARNESS := $(addprefix $(S)/,crap props escapes mutants gates forward-only diagrams ruff-limits) \
            $(Q)/noslop_pytest.py
 
-gates: venv
+# config-fresh is a prerequisite, as it is of check; scripts/gen-config-self-test is the proof
+# that it still bites, and scripts/ruff-limits --self-test that the width check does.
+gates: venv config-fresh
 	$(BIN)/ruff check --config $(Q)/ruff.toml $(HARNESS)
 	$(BIN)/ruff format --config $(Q)/ruff.toml --check $(HARNESS)
 	$(BIN)/python $(S)/crap --self-test
@@ -151,10 +172,12 @@ gates: venv
 	$(BIN)/python $(S)/forward-only --self-test
 	$(BIN)/python $(S)/mutants --self-test
 	$(BIN)/python $(S)/diagrams --self-test
+	$(BIN)/python $(S)/ruff-limits --self-test
 	$(S)/leak-check --self-test
 	$(S)/pre-push-self-test
 	$(S)/boundary-self-test
 	$(S)/spec-guard-self-test
+	$(S)/gen-config-self-test
 	$(BIN)/python $(S)/gates
 
 # Each tool syncs its own locked environment into <tool>/.venv, so its dependencies never

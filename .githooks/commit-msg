@@ -3,13 +3,14 @@
 # .githooks/commit-msg — enforce .agents/COMMITS.md.
 #
 # Hard gates (reject on failure):
-#   1. header  <type>(<scope>)<!?>: <summary>  — type in the allowed set, scope
-#      [a-z0-9/._-]+, summary starts lower-case and has no trailing period,
-#      whole header <= 72 chars
+#   1. header  <type>(<scope>)<!?>: <summary>  — type, scope and the limits are
+#      in .githooks/commit-rules; the scope is required, the summary follows ': ' directly,
+#      starts lower-case and has no trailing period; '!' iff a non-empty BREAKING-CHANGE trailer
 #   2. line 2 blank whenever a body/trailer follows
-#   3. body lines <= 72 chars, except fenced code, table rows, and lines with no
-#      break opportunity after column 72 (a long URL or path)
-#   4. provenance: Assisted-By: + Session-Id: together, or a lone Human-Only: true
+#   3. body lines <= COMMIT_BODY_MAX chars, except fenced code, table rows, and lines with no
+#      break opportunity past it (a long URL or path)
+#   4. provenance: Assisted-By: + Session-Id: together, or a lone Human-Only: true, never
+#      both; all trailers are read from the trailer block git reads (interpret-trailers)
 #   5. known trailers appear in canonical order
 #   6. unless Human-Only, the commit author email equals .git/agent-identity
 #   7. oracle guard: editing docs/DESIGN.md, docs/SPEC.md, fpl/features/*/spec.md or
@@ -19,8 +20,8 @@
 #      requires the literal marker [policy], and such a commit may not also touch
 #      the code or tests of a project (fpl/ or tests/, at the root or in bootstrap/)
 #   8. stack record: on a stack branch, human or agent (scripts/branch-lint),
-#      the message carries 'Stack: <name>'; a Stack: value is always
-#      [a-z0-9][a-z0-9._-]*
+#      the message carries 'Stack: <name>'; a message holds at most one Stack:, whose
+#      value always matches COMMIT_STACK_RE
 #   9. agent territory: a commit that is not Human-Only sits on an agent branch
 #      (agent/<id>/... or the flat vendor form <id>/<slug>, .agents/BRANCHES.md).
 #      The branch <id> is the lead, not an exclusive author, so it is NOT
@@ -32,7 +33,9 @@
 # Leak gate (first, before any bypass: a merge message names branches): no private
 # term or secret in the message (scripts/leak-check; FPL_LEAK_GATE=warn overrides).
 #
-# Bypassed for merge/revert/fixup/squash messages.
+# Bypassed for a real merge, a real revert (see is_merge, is_revert) and, outside lint mode,
+# fixup!/squash!/amend! messages, which gates 7 and 7b still judge. A revert is real only when it holds the tree git revert
+# makes of the commit it names.
 #
 # Lint mode (scripts/commit-lint, CI): FPL_LINT_COMMIT=<sha> judges a commit that
 # already exists instead of the one being made. The author and the changed files
@@ -44,27 +47,308 @@
 
 set -euo pipefail
 
-msg_file="$1"
+given="$1"
 repo_root="$(git rev-parse --show-toplevel)"
-first="$(sed -n '1p' "$msg_file")"
+# The type list, the scope and Stack: patterns, the limits and the trailer order: one file.
+# shellcheck source=commit-rules
+. "$repo_root/.githooks/commit-rules"
 lint_commit="${FPL_LINT_COMMIT:-}"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+# A refusal names the rule that fired (the id is stable: it is what a self-test and a review
+# cite), the part that fails, and what to do about it. In hook mode it also says how to get the
+# typed message back: git keeps it in COMMIT_EDITMSG until the next commit, whether the message
+# came from an editor, -m, -F, a pathspec or an amend (measured, git 2.54), so there is no copy
+# to make and none to lose.
+reuse_hint() {
+	# shellcheck disable=SC2016 # the command is shown, for the person to run, not run here
+	local f='"$(git rev-parse --git-path COMMIT_EDITMSG)"'
+	[ -z "$lint_commit" ] || return 0
+	case "$given" in */COMMIT_EDITMSG | COMMIT_EDITMSG) ;; *) f="\"$given\"" ;; esac
+	{
+		echo "    your message is kept; to correct it in your editor:"
+		echo "        git commit -e -F $f"
+		echo "    (add --amend, -a or the paths if you meant them)"
+	} >&2
+}
+fail() { # fail <rule id> <what is wrong> <what to do>
+	{
+		echo "commit-msg [$1]: $2"
+		echo "    remedy: $3"
+		echo "    see .agents/COMMITS.md"
+	} >&2
+	reuse_hint
+	exit 1
+}
 
 # The private list is local, so there is nothing to judge a landed commit against in CI.
-[ -n "$lint_commit" ] || "$repo_root/scripts/leak-check" --message "$msg_file"
+if [ -z "$lint_commit" ]; then
+	"$repo_root/scripts/leak-check" --message "$given" || {
+		rc=$?
+		reuse_hint
+		exit "$rc"
+	}
+fi
 
-fail() {
-	echo "commit-msg: $1" >&2
-	echo "           see .agents/COMMITS.md" >&2
-	exit 1
+# effective_message <file>: the message in <file> as git will store it, on stdout.
+#
+# git runs this hook on the file the editor saw, and cleans it up afterwards (measured, git
+# 2.54): the status block it appended for the person, comment lines without a scissors line
+# unless -v or commit.cleanup=scissors asked for one, goes only after the hook. Judging the
+# file as it is refuses a message for lines the commit will not hold, and the lines of a
+# message git keeps (-F, -m, which strip nothing by default) are judged as written.
+#   commit.cleanup default   strip if an editor ran, whitespace if not
+#   strip                    comment lines out, then whitespace cleanup
+#   whitespace               blank-line and trailing-space cleanup only
+#   scissors                 whitespace, and cut at the scissors line if an editor ran
+#   verbatim                 as written
+# With -v git cuts at the scissors line it wrote, in every mode (measured, verbatim too). -v
+# does not reach this hook, so it cuts at a scissors line under 'scissors', and in any mode
+# where the first line below that line that is no comment starts 'diff --git', which is how
+# git's own verbose diff begins (its words are translated; a diff is not).
+# An editor ran unless git set GIT_EDITOR=: for this hook, as it does for -m, -F and -C. That
+# cannot be told from a person's editor named ':', which therefore reads as no editor: its
+# comment lines are judged, the reading that lets no long line into the stored message. A
+# --cleanup option on the command line is not visible here either (the config's reading
+# stands). Both are left to commit-lint on push, which reads the stored message. So is the
+# deprecated core.commentChar=auto: no hook learns which prefix git picked, so no line is taken
+# for a comment or a scissors line (commit_comment_prefix), the strict reading again.
+effective_message() {
+	local mode editor=1 prefix
+	[ "${GIT_EDITOR:-}" != : ] || editor=0
+	mode="$(git config --get commit.cleanup || true)"
+	case "$mode" in
+	"" | default) if [ "$editor" -eq 1 ]; then mode="strip"; else mode="whitespace"; fi ;;
+	esac
+	prefix="$(commit_comment_prefix)"
+	if [ "$editor" -eq 1 ]; then
+		P="$prefix" SM="$([ "$mode" = scissors ] && echo 1 || echo 0)" \
+			awk '
+			BEGIN { p0 = ENVIRON["P"]; sm = ENVIRON["SM"]
+				d = "------------------------"; t = " " d " >8 " d }
+			{ line[++n] = $0 }
+			END {
+				for (i = 1; i <= n && !cut; i++) {
+					l = line[i]; k = length(l) - length(t)
+					if (k < 1 || substr(l, k + 1) != t) continue
+					p = substr(l, 1, k)
+					if (p != p0) continue
+					if (sm) { cut = i; break }
+					for (j = i + 1; j <= n; j++) {
+						if (substr(line[j], 1, k) == p) continue
+						if (index(line[j], "diff --git ") == 1) cut = i
+						break
+					}
+				}
+				for (i = 1; i <= (cut ? cut - 1 : n); i++) print line[i]
+			}' "$1" >"$tmp/cut"
+	else
+		cp "$1" "$tmp/cut"
+	fi
+	case "$mode" in
+	verbatim) cat "$tmp/cut" ;;
+	strip)
+		P="$prefix" awk 'BEGIN { p = ENVIRON["P"] } !(length(p) && substr($0, 1, length(p)) == p)' "$tmp/cut" |
+			git stripspace
+		;;
+	*) git stripspace <"$tmp/cut" ;;
+	esac
+}
+
+# The rules .githooks/prepare-commit-msg writes above an empty message are comment lines, which
+# git strips by the config's reading. A --cleanup option on the command line (whitespace,
+# verbatim) keeps comment lines and reaches no hook, so the rules are taken out here, from the
+# file git stores: the block prepare-commit-msg recorded for this commit (commit_template_state),
+# exactly as written, its marker line with a random id last. Text that only reads like the rules
+# (a person quoting them, under any prefix) is the person's, and stays; so do git's own comment
+# lines, as git keeps them. The record also holds the comment prefix git picked under 'auto'.
+COMMIT_PICKED_PREFIX=""
+if [ -z "$lint_commit" ]; then
+	state="$(commit_template_state)"
+	if [ -f "$state" ]; then
+		COMMIT_PICKED_PREFIX="$(sed -n '1p' "$state")"
+		sed '1d' "$state" >"$tmp/rules"
+		rm -f "$state"
+		if [ -s "$tmp/rules" ] && awk 'NR == FNR { r[++n] = $0; next } { l[++m] = $0 }
+			END {
+				for (i = 1; i <= m; i++) {
+					ok = !cut && i + n - 1 <= m
+					for (j = 1; ok && j <= n; j++) ok = l[i + j - 1] == r[j]
+					if (ok) { i += n - 1; cut = 1; continue }
+					print l[i]
+				}
+				exit !cut
+			}' "$tmp/rules" "$given" >"$tmp/unruled"; then
+			cat "$tmp/unruled" >"$given"
+		fi
+	fi
+fi
+
+# What the rest of this hook judges: the message git will store. A commit that exists
+# already (lint mode) holds the stored text, and is judged as it is.
+msg_file="$tmp/message"
+if [ -n "$lint_commit" ]; then
+	cp "$given" "$msg_file"
+else
+	effective_message "$given" >"$msg_file"
+fi
+cp "$msg_file" "$tmp/judged" # as it stands before section 0 corrects it, for section 11
+first="$(sed -n '1p' "$msg_file")"
+
+# 7. oracle guard, 7b. policy guard -------------------------------------------
+# One pass over the paths the commit changes. They are read raw and NUL-separated: without
+# -z git quotes a name holding non-ASCII, quote, backslash or control characters, in quotes
+# and with escapes, so it starts with a quote and no pattern anchored at fpl/features/
+# or quality/ takes it. --no-renames: a rename would show its new name only, and a spec file
+# moved out of fpl/features/ would go unseen.
+protected='^(docs/DESIGN\.md|docs/SPEC\.md|fpl/features/[^/]+/spec\.md|fpl/features/[^/]+/examples/.+)$'
+policy='^(quality/.+|(bootstrap/)?(pyproject\.toml|Makefile|mutants\.allow))$'
+code='^(bootstrap/)?(fpl|tests)/'
+
+# judge_paths: NUL-separated paths on stdin. Sets
+#   touches_spec    1 if one is a protected spec file
+#   touches_policy  1 if one sets the gate's policy; policy_names holds the first three
+#   touches_code    1 if one is under fpl/ or tests/, at the root or in bootstrap/
+# It reads every path: a match must stay a match however long the list is (grep -q stops at
+# the first one, the writer takes SIGPIPE, and under pipefail the match reads as none). It
+# matches bytes: in a UTF-8 locale a byte that is no UTF-8 is not a character that `.` or
+# [^/] can match, and a name with one would slip past.
+judge_paths() {
+	local LC_ALL=C path n=0
+	touches_spec=0 touches_policy=0 touches_code=0 policy_names=""
+	while IFS= read -r -d '' path || [ -n "$path" ]; do
+		if [[ $path =~ $protected ]]; then touches_spec=1; fi
+		if [[ $path =~ $code ]]; then touches_code=1; fi
+		if [[ $path =~ $policy ]]; then
+			touches_policy=1
+			if [ "$n" -lt 3 ]; then policy_names="${policy_names:+$policy_names }$path"; fi
+			n=$((n + 1))
+		fi
+	done
+}
+
+# guard_paths: gates 7 and 7b over the paths the commit changes. Defined before the gates, as
+# it also judges a fixup!/squash!/amend! commit, which the other gates spare.
+guard_paths() {
+	paths="$tmp/paths"
+	if [ -n "$lint_commit" ]; then
+		git diff-tree --no-commit-id --name-only -r -z --no-renames --root "$lint_commit" >"$paths"
+	else
+		git diff --cached --name-only -z --no-renames >"$paths"
+	fi
+	judge_paths <"$paths"
+
+	if [ "$touches_spec" -eq 1 ]; then
+		grep -Fq '[spec]' "$msg_file" \
+			|| fail spec-guard "this commit edits a protected spec file" "add the marker [spec] to the message if the edit is intended"
+	fi
+
+	# 7b. The gate's strictness lives in files an attempt could otherwise loosen in the same
+	# breath as the code that needed it loosened (.agents/QUALITY.md). A change to them is
+	# named as one, and travels alone, so a reviewer sees it apart from any code.
+	if [ "$touches_policy" -eq 1 ]; then
+		grep -Fq '[policy]' "$msg_file" \
+			|| fail policy-guard "this commit changes the gate's policy ($policy_names)" "add the marker [policy] to the message if the change is intended"
+		if [ "$touches_code" -eq 1 ]; then
+			fail policy-split "a [policy] commit may not also change fpl/ or tests/ (or bootstrap/fpl/, bootstrap/tests/)" "split it: the policy change in one commit, the code in another"
+		fi
+	fi
 }
 
 case "$first" in
 "fixup! "*|"squash! "*|"amend! "*)
-	[ -z "$lint_commit" ] || fail "'${first%% *}' commit left in the branch; autosquash before landing"
+	[ -z "$lint_commit" ] || fail fixup-left "'${first%% *}' commit left in the branch; autosquash before landing" "run git rebase -i --autosquash, so the fixup is folded into the commit it amends"
+	# Spared the header and trailer gates while it waits for an autosquash, not the path
+	# guards: what it changes lands in the commit it folds into, and its message is the one
+	# place a [spec] or [policy] for it can be written now.
+	guard_paths
 	exit 0
 	;;
-"Merge "*|"Revert "*) exit 0 ;;
 esac
+
+# A merge and a revert are what git wrote, not what a person typed: their messages cannot
+# meet the header and trailer gates, and the diff of a merge is somebody else's work. They
+# pass unjudged. What makes one is the commit, never the word its message opens with, or
+# any commit could open with "Merge" and edit what it likes.
+#   merge   a subject "Merge ..." on a commit with more than one parent (lint mode), or
+#           with a merge in the making (MERGE_HEAD)
+#   revert  a line 'This reverts commit <id>' naming a commit the branch holds (an ancestor of
+#           the commit's parent), under any title, over the tree git revert makes of that
+#           commit (is_revert). git writes the line in two forms: '<sha>.' under its own
+#           title Revert "..." (Reapply "..." for the revert of a revert), and, with
+#           --reference or revert.reference=true, '<abbrev> (<subject>, <date>).' under the
+#           person's title or a comment line asking for one; the person may retitle either.
+#           The revert of a merge (-m N) ends the line in ', reversing' and names the parent
+#           on the next. The text alone is a sentence anyone can type: the tree is what makes
+#           the revert.
+# Not recognised: an amend of either. git tells commit-msg nothing of it (no argument, and
+# no variable but the author's, which a plain commit has too), so the amended message of a
+# merge or revert, reworded or not, is judged as a new commit and refused (an amend with
+# nothing staged changes nothing against HEAD, so is no revert of it either). Telling the
+# two apart would be a guess, and a guess is what a forger needs. The refusal below says how
+# to get past it.
+# Measured (git 2.54): `commit --amend -m/-F` and `commit -F` on a new commit give commit-msg
+# the same arguments and GIT_* variables, and prepare-commit-msg the same source (message);
+# `commit --amend` with no message and `commit -C HEAD` both give "commit HEAD". "HEAD has
+# two parents" is no sign of an amend: it is also true of every commit made on top of a merge.
+is_merge() {
+	case "$first" in "Merge "*) ;; *) return 1 ;; esac
+	if [ -n "$lint_commit" ]; then
+		# rev-list --parents prints the commit, then each of its parents.
+		local ids
+		read -r -a ids < <(git rev-list --parents -n 1 "$lint_commit")
+		[ "${#ids[@]}" -gt 2 ]
+	else
+		git rev-parse -q --verify MERGE_HEAD >/dev/null
+	fi
+}
+
+# is_revert: whether the commit judged is the one `git revert` makes of the commit its message
+# names. That is a tree, not a diff that agrees with it: git revert merges the parent of the
+# named commit into the commit's own parent, over the named commit as the base, and the result
+# is what the revert holds. The check makes the same merge (git merge-tree, git's merge, with
+# its renames: a revert follows a file renamed since) and compares the trees, so the reverted
+# lines must come back where they were. A comparison of diffs could not: git patch-id drops
+# the line numbers, and a removed line put back at the end of a protected file read as its
+# revert. A merge is undone against one of its parents (git revert -m N): any of them will do.
+# A root commit is undone against the empty tree. Not recognised, and judged as any commit: a
+# revert that did not merge cleanly (the person resolved it), one made with -X, and one that
+# changes nothing. git merge-tree takes a tree for the empty side from git 2.45 on.
+# The reference form names the commit by an abbreviated id: it must name one commit, and an id
+# that two commits share names none. It is read as an object id only (rev-parse --disambiguate
+# lists every object it starts), never as a ref that happens to be spelt in hex.
+is_revert() {
+	local reverted ids base made want i
+	reverted="$(sed -En '/^This reverts commit [0-9a-f]{4,64}( \(.*\))?(\.|, reversing)$/{s/^This reverts commit ([0-9a-f]*).*/\1/p;q;}' "$msg_file")"
+	[ -n "$reverted" ] || return 1
+	reverted="$(git rev-parse --disambiguate="$reverted" 2>/dev/null |
+		git cat-file --batch-check='%(objecttype) %(objectname)' | sed -n 's/^commit //p')"
+	case "$reverted" in "" | *$'\n'*) return 1 ;; esac
+	# The commit judged: its one parent and its tree (lint mode), or HEAD and what is staged.
+	if [ -n "$lint_commit" ]; then
+		read -r -a ids < <(git rev-list --parents -n 1 "$lint_commit")
+		[ "${#ids[@]}" -eq 2 ] || return 1
+		base="${ids[1]}"
+		made="$(git rev-parse "$lint_commit^{tree}")"
+	else
+		base="$(git rev-parse -q --verify HEAD)" || return 1
+		made="$(git write-tree 2>/dev/null)" || return 1
+	fi
+	[ "$made" != "$(git rev-parse "$base^{tree}")" ] || return 1
+	# The named commit is one the branch holds. Two commits made only to be named, one holding
+	# the forged tree and one undoing it back to the branch's, make any tree the "revert" of
+	# the second.
+	git merge-base --is-ancestor "$reverted" "$base" 2>/dev/null || return 1
+	read -r -a ids < <(git rev-list --parents -n 1 "$reverted")
+	if [ "${#ids[@]}" -eq 1 ]; then ids+=("$(git hash-object -t tree /dev/null)"); fi
+	for ((i = 1; i < ${#ids[@]}; i++)); do
+		want="$(git merge-tree --write-tree --merge-base="$reverted" "$base" "${ids[$i]}" 2>/dev/null)" || continue
+		[ "${want%%$'\n'*}" != "$made" ] || return 0
+	done
+	return 1
+}
+if is_merge || is_revert; then exit 0; fi
 
 # Who wrote it. In lint mode that is the commit's author, not the environment's.
 if [ -n "$lint_commit" ]; then
@@ -73,66 +357,272 @@ else
 	author_email="${GIT_AUTHOR_EMAIL:-$(git var GIT_AUTHOR_IDENT | sed -n 's/.*<\(.*\)>.*/\1/p')}"
 fi
 
+# 0. what can be corrected with no guess -------------------------------------------
+# A type or a scope in the wrong case, a known trailer key in the wrong case: what was meant is
+# not in doubt, so in hook mode the hook writes it right, into the file git commits, and says so
+# afterwards (see the end of this file). Git reads a trailer key without regard to case, this
+# repository writes one spelling, and a reader that tolerates the other spellings quietly makes
+# them a standard (RFC 9413), hence the scold, and the count of how often. In lint mode there is
+# nothing to edit: a key that differs in case only is accepted as that key, so landed history is
+# not refused for case alone, and a type or scope in the wrong case is refused as it was.
+# Anything else (an unknown type, a scope with a space) is a guess, so it is refused below.
+shape='^([^(!: ]+)(\(([^()]*)\))?(!)?: .+$'
+norm="$tmp/normalised" # kind, from, to: one tab-separated line for each correction
+: >"$norm"
+normalised() { printf '%s\t%s\t%s\n' "$1" "$2" "$3" >>"$norm"; }
+if [ -z "$lint_commit" ] && [[ $first =~ $shape ]]; then
+	n_type="${BASH_REMATCH[1]}" n_scope="${BASH_REMATCH[3]}" n_bang="${BASH_REMATCH[4]}"
+	n_has="${BASH_REMATCH[2]}"
+	n_rest="${first:$((${#n_type} + ${#n_has} + ${#n_bang} + 2))}"
+	low="$(commit_lower "$n_type")"
+	new_type="$n_type" new_scope="$n_scope"
+	if [ "$low" != "$n_type" ]; then
+		case " $COMMIT_TYPES " in *" $low "*) new_type="$low" ;; esac
+	fi
+	low="$(commit_lower "$n_scope")"
+	if [ -n "$n_has" ] && [ "$low" != "$n_scope" ] && printf '%s' "$low" | grep -Eq "^$(commit_scope_re)\$"; then
+		new_scope="$low"
+	fi
+	if [ "$new_type" != "$n_type" ] || [ "$new_scope" != "$n_scope" ]; then
+		[ "$new_type" = "$n_type" ] || normalised type "$n_type" "$new_type"
+		[ "$new_scope" = "$n_scope" ] || normalised scope "$n_scope" "$new_scope"
+		first="$new_type${n_has:+($new_scope)}$n_bang: $n_rest"
+		{ printf '%s\n' "$first"; sed '1d' "$msg_file"; } >"$tmp/rewritten"
+		cp "$tmp/rewritten" "$msg_file"
+	fi
+fi
+
+# The skeleton that .githooks/prepare-commit-msg writes for a person to complete is no header,
+# nor is one of its three placeholders left in its own place. Elsewhere they are only words
+# (a summary may speak of <type>): the type, the scope and the whole summary are what is judged.
+# Spaces around the summary's placeholder do not make it a summary.
+placeholder='^[[:space:]]*<summary>[[:space:]]*$'
+if [[ $first =~ $shape ]] \
+	&& { [ "${BASH_REMATCH[1]}" = "<type>" ] || [ "${BASH_REMATCH[3]}" = "<scope>" ] || [[ ${first#*: } =~ $placeholder ]]; }; then
+	fail skeleton "the header is still the skeleton: $first" \
+		"write a real type, scope and summary where <type>, <scope> and <summary> stand"
+fi
+
 # 1. header ----------------------------------------------------------------
-types='feat|fix|docs|refactor|perf|test|build|ci|chore|revert'
-printf '%s' "$first" | grep -Eq "^(${types})(\([a-z0-9/._-]+\))?!?: .+" \
-	|| fail "header must be '<type>(<scope>): <summary>' — got: $first"
-[ "${#first}" -le 72 ] || fail "header is ${#first} chars (>72)"
+types="$(commit_types_re)"
+if printf '%s' "$first" | grep -Eq '^[^:]*: [[:space:]]'; then
+	fail summary-space "summary must follow ': ' with no space before it — got: $first" \
+		"write the summary right after the ': '"
+fi
+if ! printf '%s' "$first" | grep -Eq "^(${types})\($(commit_scope_re)\)!?: .+"; then
+	# Name the part that fails: the type, then the scope, else the shape as a whole.
+	if [[ $first =~ $shape ]]; then
+		h_type="${BASH_REMATCH[1]}" h_scope="${BASH_REMATCH[3]}" h_has_scope="${BASH_REMATCH[2]}"
+		low_type="$(commit_lower "$h_type")"
+		case " $COMMIT_TYPES " in
+		*" $h_type "*) ;;
+		*" $low_type "*)
+			fail type-case "type must be lowercase: $h_type -> $low_type" "write the type in lower case: $low_type"
+			;;
+		*)
+			near="$(commit_nearest_type "$h_type")"
+			guess="" eg=""
+			if [ -n "$near" ]; then
+				guess=": did you mean '$near'?"
+				eg=" (for example $near($h_scope): ...)"
+			fi
+			fail type-unknown "unknown type '$h_type'$guess" "use one of: $COMMIT_TYPES$eg"
+			;;
+		esac
+		if [ -z "$h_has_scope" ]; then
+			fail scope-missing "the header has no scope: $first" \
+				"name the touched area in parentheses after the type, for example $h_type(hooks): ..."
+		fi
+		if ! printf '%s' "$h_scope" | grep -Eq "^$(commit_scope_re)\$"; then
+			low_scope="$(commit_lower "$h_scope")"
+			if [ -n "$h_scope" ] && printf '%s' "$low_scope" | grep -Eq "^$(commit_scope_re)\$"; then
+				fail scope-case "scope must be lowercase: $h_scope -> $low_scope" "write the scope in lower case: $low_scope"
+			fi
+			what="scope is empty"
+			[ -z "$h_scope" ] || what="scope '$h_scope' may hold only [$COMMIT_SCOPE_CHARS]"
+			fail scope-chars "$what" \
+				"name the touched area with lower-case letters, digits and / . _ - (for example hooks)"
+		fi
+	fi
+	note=""
+	case "${lint_commit:+lint}:$first" in
+	:"Merge "*|:'Revert "'*|:'Reapply "'*)
+		note=$'\n    a Merge, Revert or Reapply subject passes for a real merge or revert only; git does not tell this hook of an amend, so an amend of one, reworded or not, is judged as a new commit; to amend one: git commit --amend --no-verify'
+		;;
+	esac
+	fail header-shape "header must be '$COMMIT_SKELETON' — got: $first$note" \
+		"write the first line as <type>(<scope>): <summary>, for example fix(hooks): name the failing part"
+fi
+if [ "${#first}" -gt "$COMMIT_HEADER_MAX" ]; then
+	fail header-length "header is ${#first} chars (>$COMMIT_HEADER_MAX)" \
+		"shorten the summary by $((${#first} - COMMIT_HEADER_MAX)) characters; the body is for the detail"
+fi
 summary="${first#*: }"
 case "$summary" in
-[A-Z]*) fail "summary must start lower-case: $summary" ;;
-*.)     fail "summary must not end with a period: $summary" ;;
+[[:upper:]]*)
+	fail summary-case "summary must start lower-case: $summary -> $(commit_lower "${summary:0:1}")${summary:1}" \
+		"start the summary with a lower-case letter"
+	;;
+*.)
+	fail summary-period "summary must not end with a period: $summary" "drop the final period of the summary"
+	;;
 esac
 
 # 2. blank line 2 --------------------------------------------------------------
 if [ -n "$(sed -n '2p' "$msg_file")" ]; then
-	fail "line 2 must be blank (one blank line between header and body)"
+	fail blank-line-2 "line 2 must be blank (one blank line between header and body)" \
+		"put exactly one empty line under the header"
 fi
 
-# Split body / trailer block. The trailer block is the last paragraph when every
-# one of its lines looks like  Token: value  (or a folded continuation).
+# canonical_keys: the lines of git's trailer parse on stdin, each known key in its one spelling.
+canonical_keys() {
+	awk -v keys="$COMMIT_TRAILER_KEYS" '
+		BEGIN { n = split(keys, k, " "); for (i = 1; i <= n; i++) canon[tolower(k[i])] = k[i] }
+		{ c = index($0, ":"); if (c > 1 && (key = canon[tolower(substr($0, 1, c - 1))]) != "") $0 = key substr($0, c) }
+		{ print }'
+}
+
+# The trailer block: the last paragraph, when git reads it as one (commit_trailers: git
+# interpret-trailers --parse, ':' the separator, one 'Key: value' a line, continuations
+# unfolded), the block that `git log --format=%(trailers)` and a changelog generator read under
+# git's default separator. git takes a paragraph of trailers alone, or one of at least a quarter
+# trailers with one that git writes itself (Signed-off-by) beside lines of prose; it skips
+# trailing blank and comment lines to find it. Gates 4, 5, 8 and 9 judge its trailers and only
+# those: a line that looks like a trailer anywhere else is body text, which neither provides a
+# trailer nor breaks the order. The width gate spares the trailers of the block (a line git
+# splits at a ':' after a key, or a continuation), not a line of prose or a comment line beside
+# them, which git keeps in the message. --no-divider: a '---' line is text in a commit message,
+# as git log has it.
+#
+# git reads a key without regard to case (`%(trailers:key=Stack)` finds 'stack:' too), so the
+# known keys are read in their one spelling, and every gate below sees what git sees: an
+# 'assisted-by' is Assisted-By, and a 'session-id' above it is out of order.
+#
+# Lint mode reads the commits main held before this rule (at 7767dd7) as they were read when
+# they landed, every line that looks like a trailer, keys as written, the block being a last
+# paragraph of such lines alone, spared whole: one of them, 2843d5b, keeps its trailers in the
+# paragraph above a lone Signed-off-by.
 # Not mapfile: bash 3.2, still /bin/bash on macOS, lacks it, and pre-push reaches this hook
 # through scripts/commit-lint wherever a push is made.
 lines=()
 while IFS= read -r line || [ -n "$line" ]; do lines+=("$line"); done <"$msg_file"
 n=${#lines[@]}
 trailer_start=$n
-if [ "$n" -gt 0 ]; then
+landed=7767dd70f21308695f169b3c9c0931cc546fc09a
+spared='^([A-Za-z0-9-]+[[:space:]]*:|[[:space:]])' # a trailer, or a continuation of one
+legacy=1 comment=""
+: >"$tmp/parsed"
+if [ -n "$lint_commit" ] && git merge-base --is-ancestor "$lint_commit" "$landed" 2>/dev/null; then
+	trailers="$(sed -n 's/^\([A-Za-z][A-Za-z-]*\):[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1: \2/p' "$msg_file")"
 	i=$((n - 1))
-	# skip trailing blank lines
 	while [ "$i" -ge 0 ] && [ -z "${lines[$i]}" ]; do i=$((i - 1)); done
 	end=$i
 	while [ "$i" -ge 0 ] && [ -n "${lines[$i]}" ]; do i=$((i - 1)); done
-	blk_start=$((i + 1))
-	is_block=1
+	blk_start=$((i + 1)) is_block=1 spared='.'
 	for ((j = blk_start; j <= end; j++)); do
 		case "${lines[$j]}" in
-		[A-Za-z]*:\ *|[[:space:]]*) : ;;   # trailer or folded continuation
+		[A-Za-z]*:\ * | [[:space:]]*) : ;; # trailer or folded continuation
 		*) is_block=0; break ;;
 		esac
 	done
-	[ "$is_block" -eq 1 ] && [ "$blk_start" -gt 1 ] && trailer_start=$blk_start
+else
+	legacy=0
+	commit_trailers <"$msg_file" >"$tmp/parsed"
+	trailers="$(canonical_keys <"$tmp/parsed")"
+	comment="$(commit_comment_prefix)" # empty under 'auto': no line is taken for a comment
+	blank='^[[:space:]]*$'
+	i=$((n - 1))
+	while [ "$i" -ge 0 ] && { [[ ${lines[$i]} =~ $blank ]] ||
+		{ [ -n "$comment" ] && [ "${lines[$i]:0:${#comment}}" = "$comment" ]; }; }; do
+		i=$((i - 1))
+	done
+	while [ "$i" -ge 0 ] && ! [[ ${lines[$i]} =~ $blank ]]; do i=$((i - 1)); done
+	blk_start=$((i + 1)) is_block=0
+	[ -z "$trailers" ] || is_block=1
+fi
+[ "$is_block" -eq 1 ] && [ "$blk_start" -gt 1 ] && trailer_start=$blk_start
+
+# The keys of the trailer block, in their canonical spelling (section 0). One pass, with the
+# lookup built once: a process for each key and each known key took seconds for a hundred keys.
+# Only a line that git reads as a trailer is corrected: the trailers git parsed (the first
+# input, in order) are matched to the lines of the block by their keys, and any other line, a
+# comment line above all ('session-id: ...' under core.commentChar=s), stays as written, as
+# git stores it. Lines of a comment prefix are passed by in any case.
+awk -v from="$trailer_start" -v keys="$COMMIT_TRAILER_KEYS" -v norm="$norm" -v cp="$comment" '
+	BEGIN { n = split(keys, k, " "); for (i = 1; i <= n; i++) canon[tolower(k[i])] = k[i] }
+	FILENAME == ARGV[1] { c = index($0, ":"); if (c > 1) want[++w] = substr($0, 1, c - 1); next }
+	FNR > from && !(cp != "" && substr($0, 1, length(cp)) == cp) && match($0, /^[A-Za-z][^:]*: /) {
+		key = substr($0, 1, RLENGTH - 2)
+		if (j < w && key == want[j + 1]) {
+			j++
+			c = canon[tolower(key)]
+			if (c != "" && c != key) {
+				$0 = c substr($0, RLENGTH - 1)
+				printf "trailer-key\t%s\t%s\n", key, c >>norm
+			}
+		}
+	}
+	{ print }' "$tmp/parsed" "$msg_file" >"$tmp/keyed"
+cat "$tmp/keyed" >"$msg_file"
+# What the gates below judge is what git reads in the file as it now is: the same trailers. A
+# correction that changed the reading would be a message the person did not write.
+if [ "$legacy" -eq 0 ]; then
+	again="$(commit_trailers <"$msg_file" | canonical_keys)"
+	[ "$again" = "$trailers" ] \
+		|| fail trailer-rewrite "correcting the trailer keys changed the trailers git reads" \
+			"write the trailer keys in their canonical spelling yourself (Assisted-By, Session-Id, Stack, ...)"
 fi
 
 # 3. body width --------------------------------------------------------------
 in_fence=0
-for ((k = 2; k < trailer_start; k++)); do
+for ((k = 2; k < n; k++)); do
 	line="${lines[$k]:-}"
+	if [ "$k" -ge "$trailer_start" ] && [[ $line =~ $spared ]]; then continue; fi
 	case "$line" in '```'*) in_fence=$((1 - in_fence)); continue ;; esac
 	[ "$in_fence" -eq 1 ] && continue
 	case "$line" in '|'*) continue ;; esac
-	[ "${#line}" -le 72 ] && continue
-	# allowed only if there is no space at/after column 73 (unbreakable token)
-	rest="${line:72}"
-	case "$rest" in *" "*) fail "body line $((k + 1)) is ${#line} chars (>72): $line" ;; esac
+	[ "${#line}" -le "$COMMIT_BODY_MAX" ] && continue
+	# allowed only if there is no space past the limit (an unbreakable token)
+	rest="${line:$COMMIT_BODY_MAX}"
+	case "$rest" in *" "*)
+		fail body-width "body line $((k + 1)) is ${#line} chars (>$COMMIT_BODY_MAX): $line" \
+			"wrap it at $COMMIT_BODY_MAX columns (fenced code, table rows and a long URL or path are exempt)"
+		;;
+	esac
 done
 
+human=0
+if grep -q '^Human-Only: true$' <<<"$trailers"; then human=1; fi
+
+# 1b. a breaking change is marked twice, by '!' before the ':' and by a BREAKING-CHANGE trailer
+# that says what breaks: one without the other is a reader told half.
+bang=0 breaking=0
+case "${first%%: *}" in *!) bang=1 ;; esac
+if grep -Eq '^BREAKING-CHANGE: [^[:space:]]' <<<"$trailers"; then breaking=1; fi
+if [ "$bang" -eq 1 ] && [ "$breaking" -eq 0 ]; then
+	fail breaking-trailer "'!' marks a breaking change, and the message has no BREAKING-CHANGE trailer" \
+		"add a 'BREAKING-CHANGE: <what breaks>' trailer, or drop the '!'"
+fi
+if [ "$bang" -eq 0 ] && grep -q '^BREAKING-CHANGE:' <<<"$trailers"; then
+	fail breaking-bang "a BREAKING-CHANGE trailer, and no '!' in the header" \
+		"put '!' before the ':' of the header, or drop the trailer"
+fi
+
 # 4. provenance --------------------------------------------------------------
-if ! grep -Eq '^Human-Only:[[:space:]]*true[[:space:]]*$' "$msg_file"; then
-	grep -Eq '^Assisted-By:[[:space:]]*\S' "$msg_file" \
-		|| fail "missing 'Assisted-By:' trailer (or 'Human-Only: true')"
-	grep -Eq '^Session-Id:[[:space:]]*\S' "$msg_file" \
-		|| fail "missing 'Session-Id:' trailer (or 'Human-Only: true')"
+# One of two forms: an agent's (Assisted-By and Session-Id) or a person's (Human-Only: true),
+# never both. Human-Only switches off the author and territory gates, so beside an agent's
+# trailers it would let an agent commit claim to be a hand-made one.
+if [ "$human" -eq 1 ] && grep -Eq '^(Assisted-By|Session-Id): ' <<<"$trailers"; then
+	fail provenance-mixed "Human-Only: true beside Assisted-By or Session-Id; a commit is an agent's or a person's" \
+		"keep one form: drop 'Human-Only: true' from an agent's commit, or the agent trailers from yours"
+fi
+if [ "$human" -eq 0 ]; then
+	grep -Eq '^Assisted-By: [^[:space:]]' <<<"$trailers" \
+		|| fail provenance-assisted "missing 'Assisted-By:' trailer (or 'Human-Only: true')" \
+			"commit with scripts/acommit, or add the line 'Human-Only: true' to a commit you wrote yourself"
+	grep -Eq '^Session-Id: [^[:space:]]' <<<"$trailers" \
+		|| fail provenance-session "missing 'Session-Id:' trailer (or 'Human-Only: true')" \
+			"commit with scripts/acommit -S <session id>, or add 'Human-Only: true' to a commit you wrote yourself"
 
 	# 6. author identity ----------------------------------------------------
 	id_file="$(git rev-parse --git-dir)/agent-identity"
@@ -141,7 +631,8 @@ if ! grep -Eq '^Human-Only:[[:space:]]*true[[:space:]]*$' "$msg_file"; then
 	[ -z "$lint_commit" ] || want="$want ${FPL_AGENT_EMAILS:-}"
 	want="$(printf '%s' "$want" | xargs)" # trim
 	[ -n "$want" ] \
-		|| fail "agent identity unset; run scripts/agent-identity set <email> (or commit with 'Human-Only: true')"
+		|| fail agent-identity-unset "agent identity unset" \
+			"run scripts/agent-identity set <email> (or commit with 'Human-Only: true')"
 	known=0
 	# An array, not an unquoted $want: the shell would glob an address such as
 	# 41898282+claude[bot]@users.noreply.github.com against the working directory.
@@ -150,11 +641,12 @@ if ! grep -Eq '^Human-Only:[[:space:]]*true[[:space:]]*$' "$msg_file"; then
 		[ "$author_email" = "$w" ] && known=1
 	done
 	[ "$known" -eq 1 ] \
-		|| fail "author email is '$author_email', expected the machine account '$want' (use acommit, or -H for a human commit)"
+		|| fail author-email "author email is '$author_email', expected the machine account '$want'" \
+			"commit with scripts/acommit, or -H for a human commit"
 fi
 
 # 5. trailer order --------------------------------------------------------------
-order="Refs Stack BREAKING-CHANGE Advisor Assisted-By Reasoning-Effort Session-Id Co-Authored-By"
+order="$COMMIT_TRAILER_ORDER"
 prev=0
 while IFS= read -r tok; do
 	rank=0 idx=0
@@ -163,43 +655,27 @@ while IFS= read -r tok; do
 		[ "$tok" = "$known" ] && rank=$idx
 	done
 	[ "$rank" -eq 0 ] && continue
-	[ "$rank" -ge "$prev" ] || fail "trailer '$tok' is out of order (expected: $order)"
+	[ "$rank" -ge "$prev" ] || fail trailer-order "trailer '$tok' is out of order" "write the trailers in this order: $order"
 	prev=$rank
-done < <(sed -n 's/^\([A-Za-z][A-Za-z-]*\):[[:space:]].*/\1/p' "$msg_file")
+done < <(sed -n 's/^\([A-Za-z][A-Za-z-]*\):.*/\1/p' <<<"$trailers")
 
-# 7. oracle guard --------------------------------------------------------------
-protected='^(docs/DESIGN\.md|docs/SPEC\.md|fpl/features/[^/]+/spec\.md|fpl/features/[^/]+/examples/.+)$'
-if [ -n "$lint_commit" ]; then
-	changed="$(git diff-tree --no-commit-id --name-only -r --root "$lint_commit")"
-else
-	changed="$(git diff --cached --name-only)"
-fi
-if printf '%s\n' "$changed" | grep -Eq "$protected"; then
-	grep -Fq '[spec]' "$msg_file" \
-		|| fail "this commit edits a protected spec file; add [spec] to the message if intentional"
-fi
-
-# 7b. policy guard ---------------------------------------------------------------
-# The gate's strictness lives in files an attempt could otherwise loosen in the same
-# breath as the code that needed it loosened (.agents/QUALITY.md). A change to them is
-# named as one, and travels alone, so a reviewer sees it apart from any code.
-policy='^(quality/.+|(bootstrap/)?(pyproject\.toml|Makefile|mutants\.allow))$'
-if printf '%s\n' "$changed" | grep -Eq "$policy"; then
-	grep -Fq '[policy]' "$msg_file" \
-		|| fail "this commit changes the gate's policy ($(printf '%s\n' "$changed" | grep -E "$policy" | head -n3 | xargs)); add [policy] to the message if intentional"
-	if printf '%s\n' "$changed" | grep -Eq '^(bootstrap/)?(fpl|tests)/'; then
-		fail "a [policy] commit may not also change fpl/ or tests/ (or bootstrap/fpl/, bootstrap/tests/); split it"
-	fi
-fi
+# 7. oracle guard, 7b. policy guard (guard_paths, above) ---------------------------
+guard_paths
 
 # 8. stack record ------------------------------------------------------------
 # The refs of a landed stack get deleted and a linear landing leaves no merge
 # commit, so the trailer is the only in-repo record of which commits formed one
 # unit. Detached HEAD (mid-rebase) has no branch and is not judged.
-stack_val="$(sed -n 's/^Stack:[[:space:]]*//p' "$msg_file" | head -n1)"
-if [ -n "$stack_val" ]; then
-	printf '%s' "$stack_val" | grep -Eq '^[a-z0-9][a-z0-9._-]*$' \
-		|| fail "Stack: value '$stack_val' must match [a-z0-9][a-z0-9._-]*"
+# One stack a commit, so one Stack: trailer: a second, even of the same name, is a record that
+# reads two ways.
+n_stack="$(grep -c '^Stack:' <<<"$trailers" || true)"
+[ "$n_stack" -le 1 ] \
+	|| fail stack-many "the message holds $n_stack 'Stack:' trailers; a commit belongs to one stack" \
+		"keep one 'Stack:' trailer"
+stack_val="$(sed -n 's/^Stack: //p' <<<"$trailers")"
+if [ "$n_stack" -eq 1 ]; then
+	printf '%s' "$stack_val" | grep -Eq "^${COMMIT_STACK_RE}\$" \
+		|| fail stack-value "Stack: value '$stack_val' must match $COMMIT_STACK_RE" "name the stack in lower case, as the branch does"
 fi
 if [ -n "$lint_commit" ]; then
 	branch="${FPL_LINT_BRANCH:-}"
@@ -211,25 +687,76 @@ parsed=""
 want_stack="$(printf '%s\n' "$parsed" | sed -n 's/^stack=//p')"
 if [ -n "$want_stack" ]; then
 	[ "$stack_val" = "$want_stack" ] \
-		|| fail "on branch $branch the message needs 'Stack: $want_stack' (got '${stack_val:-none}'; acommit adds it)"
+		|| fail stack-missing "on branch $branch the message needs 'Stack: $want_stack' (got '${stack_val:-none}')" \
+			"add the line 'Stack: $want_stack' to the trailers (scripts/acommit does)"
 fi
 
 # 9. agent territory ------------------------------------------------------------
 # FPL_BRANCH_GATE = block (default) | warn | off, shared with the ref-name hooks.
 branch_gate="${FPL_BRANCH_GATE:-block}"
-if [ "$branch_gate" != "off" ] && [ -n "$branch" ] \
-	&& ! grep -Eq '^Human-Only:[[:space:]]*true[[:space:]]*$' "$msg_file"; then
+if [ "$branch_gate" != "off" ] && [ -n "$branch" ] && [ "$human" -eq 0 ]; then
 	branch_kind="$(printf '%s\n' "$parsed" | sed -n 's/^kind=//p')"
 	case "$branch_kind" in
 	agent-*|vendor) : ;;
 	*)
 		note="agent commit on '$branch', which is not an agent branch; work on agent/<id>/${branch} (.agents/BRANCHES.md)"
-		[ "$branch_gate" = "warn" ] && echo "commit-msg: $note" >&2 || fail "$note"
+		if [ "$branch_gate" = "warn" ]; then
+			echo "commit-msg [agent-territory]: $note" >&2
+		else
+			fail agent-territory "$note" "switch to an agent branch, or mark a hand-made commit with 'Human-Only: true'"
+		fi
 		;;
 	esac
 fi
 
 # 10. soft atomicity gate (LLM judge; fails open — see .githooks/atomic-check) ---
-[ -n "$lint_commit" ] || "$repo_root/.githooks/atomic-check" "$msg_file" || exit $?
+if [ -z "$lint_commit" ]; then
+	"$repo_root/.githooks/atomic-check" "$msg_file" || {
+		rc=$?
+		reuse_hint
+		exit "$rc"
+	}
+fi
+
+# 11. the corrections of section 0, now that nothing refuses the message: written into the
+# file git commits (git reads it again after this hook), logged, and scolded. Only the lines
+# corrected go back, each in its own place: the file still holds what git has yet to clean up
+# and every line the person wrote (a '#' line that a --cleanup option keeps, a line the
+# config's reading would strip), so the message as judged is never written over it. A line of
+# the file is the judged line it became when it equals it, trailing blanks aside (git strips
+# those); the judged lines come from the file in order, with only lines left out. The log is one
+# line each: date, kind, what was written, what it became; per clone, and kept in the git
+# directory of the worktree. Kept for the count that the scold shows, and for whoever wants to
+# know who keeps writing 'Human-only'.
+if [ -z "$lint_commit" ] && [ -s "$norm" ]; then
+	awk 'FILENAME == ARGV[1] { o[++n] = $0; next }
+		FILENAME == ARGV[2] { c[++m] = $0; next }
+		{
+			while (j < n && o[j + 1] == "") j++
+			t = $0
+			sub(/[ \t]+$/, "", t)
+			if (j < n && ($0 == o[j + 1] || t == o[j + 1])) {
+				j++
+				if (c[j] != o[j]) $0 = c[j] substr($0, length(o[j]) + 1)
+			}
+			print
+		}' "$tmp/judged" "$msg_file" "$given" >"$tmp/written"
+	cat "$tmp/written" >"$given"
+	logf="$(git rev-parse --git-path commit-msg-tolerated.log)"
+	now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+	while IFS=$'\t' read -r kind from to; do
+		printf '%s\t%s\t%s\t%s\n' "$now" "$kind" "$from" "$to" >>"$logf"
+		count="$(awk -F'\t' -v k="$kind" '$2 == k' "$logf" | wc -l | tr -d ' ')"
+		case "$count" in
+		*11 | *12 | *13) th="${count}th" ;;
+		*1) th="${count}st" ;;
+		*2) th="${count}nd" ;;
+		*3) th="${count}rd" ;;
+		*) th="${count}th" ;;
+		esac
+		echo "commit-msg [normalised]: wrote '$from' as '$to'; write the canonical spelling yourself ($th time in this clone: $kind)" >&2
+	done <"$norm"
+	echo "    (a reader that tolerates a spelling makes it the standard nobody wrote: RFC 9413)" >&2
+fi
 
 exit 0

@@ -5,6 +5,7 @@ loop enters what successive -e calls enter."""
 import builtins
 import contextlib
 import os
+import re
 import readline
 import shutil
 import tempfile
@@ -311,9 +312,30 @@ def test_the_loop_in_memory() -> None:
         "1 2",
         "1 2",
         "f",
-        "ERROR: 1:1 no evaluator yet",
+        "ERROR: 1:1 unknown word: f",
         "ERROR: unknown command",
     ]
+
+
+def test_the_loop_tells_an_unknown_word_at_the_word_in_its_input() -> None:
+    """The caret goes under the word in the input that holds it, not under the first input of
+    the session; the loop ends 0 as it does after any input that fails, a one-shot exits 1."""
+    typed = "2 | 3 +\nfoo\n1 debug\n"
+    assert called([], {}, typed) == (
+        0,
+        "5\nERROR: 1:1 unknown word: foo\nERROR: 1:3 no evaluator yet: debug\n",
+        "foo\n^\n1 debug\n  ^\n",
+    )
+    assert called(["-e", "foo"], {}) == (1, "ERROR: 1:1 unknown word: foo\n", "foo\n^\n")
+
+
+def test_the_loop_names_a_redefinition_once() -> None:
+    """The input that redefines a word names the input it moved on stderr; the inputs after
+    it name nothing."""
+    define = "plus-one : n -- n\n\t{} +\n\n"
+    code, out, err = called([], {}, define.format(1) + "3 plus-one\n" + define.format(2) + "1\n2\n")
+    assert (code, out) == (0, "4\n1\n2\n")
+    assert re.fullmatch(r"CHANGED 2 \$\S+\n", err)
 
 
 def test_the_loop_as_of_an_event() -> None:
