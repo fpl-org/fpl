@@ -258,7 +258,9 @@ def _body(text: str) -> str:
     of a block comment on its line counts, a head whose body has begun does not, and an input
     that does not parse so far is inside a pair left open (any other error has ended it, see
     `inputs`), where a line that reads as a head is only text, such as a line of a string. The
-    tabs are the physical line's, so a head under a directory is one deeper still."""
+    tabs are those of the physical line the head stands on, which its span names, so a head
+    under a directory is one deeper still, also when a block comment closed at the margin
+    stands between the head and its body."""
     program = _parsed(text)
     if program is None:
         return ""
@@ -267,8 +269,8 @@ def _body(text: str) -> str:
         line = line.block[-1]
     if not head(line):
         return ""
-    last = text.rstrip("\n").rpartition("\n")[2]
-    return "\t" * (len(last) - len(last.lstrip("\t")) + 1)
+    physical = text.split("\n")[line.span.line - 1]
+    return "\t" * (len(physical) - len(physical.lstrip("\t")) + 1)
 
 
 def _taken(text: str, line: str) -> str:
