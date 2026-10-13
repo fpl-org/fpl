@@ -316,11 +316,13 @@ def fed(lines: Sequence[str]) -> list[str]:
         (["a/", "2"], ["a/\n2\n"]),
         (["“", "f : -- x", "”", ""], ["“\nf : -- x\n”\n"]),
         (["⟦ note", "⟧ f : -- x", "2", ""], ["⟦ note\n⟧ f : -- x\n\t2\n"]),
+        (["a/", "\tf : -- x", "⟦ note", "⟧", "2", ""], ["a/\n\tf : -- x\n\t\t⟦ note\n⟧\n\t\t2\n"]),
     ],
 )
 def test_a_body_at_the_margin(lines: list[str], made: list[str]) -> None:
     """A line at the margin right after a definition head is the body's first, one tab deeper
-    than the head, also when the head follows the closer of a block comment on its line; one
+    than the head, also when the head follows the closer of a block comment on its line, and
+    when a block comment closed at the margin stands between a nested head and its body; one
     that starts with a space or a tab, one after the body's first line or a line that is no
     head, one after a blank line, and one after a line that only looks like a head inside an
     open string, are left as they were written."""
