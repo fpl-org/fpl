@@ -1,0 +1,76 @@
+# The brake: over the cap of open work, lock every branch but main (.agents/WORKFLOW.md,
+# "The cap"). A draft the owner installs (harness/workflows/README.md). It never runs a pull
+# request's code: the checkout is main, explicitly. The count reads with the workflow's own
+# token; only the flip holds the fpl-brake App's, minted with administration: write alone.
+#
+# There is no review trigger, on purpose: that event runs the workflow file of the merge ref
+# with the secrets, so a branch that edits this file could mint the App's token, and the event
+# has no _target variant. A review that asks for changes, or withdraws the ask, reaches the
+# drain list at the next scheduled run: every 15 minutes nominally, for the forge may delay one.
+name: brake
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, closed, ready_for_review, converted_to_draft]
+  schedule:
+    - cron: "*/15 * * * *"
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "read and report, write nothing"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+# One flip at a time; each run reads the live state, so the latest queued run is enough.
+concurrency:
+  group: brake
+  cancel-in-progress: false
+
+jobs:
+  brake:
+    runs-on: ubuntu-latest
+    environment: brake
+    timeout-minutes: 5
+    steps:
+      - name: Note the event's time, for the lag
+        id: since
+        env:
+          AT: ${{ github.event.pull_request.updated_at || github.event.head_commit.timestamp }}
+        run: |
+          if [ -n "$AT" ]; then echo "epoch=$(date -d "$AT" +%s)"; else echo "epoch=$(date +%s)"; fi >>"$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Count the open work
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FPL_WIP_REPO: ${{ github.repository }}
+        run: |
+          python3 scripts/wip-count --json >"$RUNNER_TEMP/count.json"
+          python3 scripts/wip-count --from "$RUNNER_TEMP/count.json" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Mint the fpl-brake token
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.BRAKE_APP_ID }}
+          private-key: ${{ secrets.BRAKE_APP_KEY }}
+          permission-administration: write
+
+      - name: Flip the brake
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          DRY: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run }}
+          SINCE: ${{ steps.since.outputs.epoch }}
+        run: |
+          if [ "$DRY" = true ]; then dry=--dry-run; else dry=; fi
+          python3 scripts/brake-flip "$RUNNER_TEMP/count.json" --since "$SINCE" $dry
