@@ -3,6 +3,7 @@
 # scripts/present-check — prove that a presented series is the series that was worked.
 #
 #   scripts/present-check [-B base] [-b branch] [--skip-quick] [W] P
+#   scripts/present-check classify [-B base] OLD NEW
 #
 # The work tip W is what the agents built and checked; the presented tip P is the same change
 # told as a short series a person reads (.agents/WORKFLOW.md). Telling it again may reword,
@@ -23,6 +24,10 @@
 # is what a pull request's CI has. At the end it prints the lemma list (hash, subject, seconds
 # per step) and, with W, `git range-diff W...P`. Seconds come from $SECONDS, which bash 3.2 has.
 #
+#   classify OLD NEW   print how a push changed a pull request, one word: unchanged (the same
+#                      commit), presentation (the same tree), relocation (every commit keeps
+#                      its patch-id, the base moved) or content
+#
 #   -B base       what the series is on top of (default main; CI passes origin/main)
 #   -b branch     judge the commits for this branch (default: P's name when it is one)
 #   --skip-quick  leave `make quick` out, for a docs-only series; touched paths' self-tests run
@@ -39,7 +44,7 @@ export GIT_NO_REPLACE_OBJECTS=1
 unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE
 
 here="$(cd "$(dirname "$0")" && pwd)"
-usage="usage: scripts/present-check [-B base] [-b branch] [--skip-quick] [W] P"
+usage="usage: scripts/present-check [-B base] [-b branch] [--skip-quick] [W] P | classify [-B base] OLD NEW"
 
 die() {
 	printf 'present-check: %s\n' "$*" >&2
@@ -52,7 +57,11 @@ red() {
 sha() { git rev-parse --verify -q "$1^{commit}" || die "not a commit: $1"; }
 short() { git rev-parse --short "$1"; }
 
-base=main branch="" skip_quick=0
+base=main branch="" skip_quick=0 mode=check
+[ "${1-}" = classify ] && {
+	mode=classify
+	shift
+}
 while [ $# -gt 0 ]; do
 	case "$1" in
 	-B | -b)
@@ -67,6 +76,29 @@ while [ $# -gt 0 ]; do
 done
 git rev-parse --git-dir >/dev/null 2>&1 || die "not inside a git repository"
 git rev-parse -q --verify "$base^{commit}" >/dev/null || die "no such base: $base"
+
+# patch_ids <tip>: the patch-id of each commit of base..tip, oldest first, one per line.
+patch_ids() {
+	local c
+	for c in $(git rev-list --reverse --no-merges "$(git merge-base "$base" "$1")..$1"); do
+		git diff-tree -p "$c" | git patch-id --stable | cut -d' ' -f1
+	done
+}
+
+if [ "$mode" = classify ]; then
+	[ $# -eq 2 ] || die "$usage"
+	old="$(sha "$1")" new="$(sha "$2")"
+	if [ "$old" = "$new" ]; then
+		echo unchanged
+	elif [ "$(git rev-parse "$old^{tree}")" = "$(git rev-parse "$new^{tree}")" ]; then
+		echo presentation
+	elif [ "$(patch_ids "$old")" = "$(patch_ids "$new")" ]; then
+		echo relocation
+	else
+		echo content
+	fi
+	exit 0
+fi
 
 case $# in
 1) w="" p="$(sha "$1")" ;;
