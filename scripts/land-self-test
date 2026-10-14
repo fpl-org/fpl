@@ -77,8 +77,57 @@ printf '* @psjg\ndocs/ @someone\n' >.github/CODEOWNERS
 git commit -q -am "owners by path"
 MC="$(git rev-parse HEAD)"
 git reset -q --hard "$M0"
+# For the rules on the range: MS, a main that holds scripts/series, HS above it with one
+# Series-Id, HN with none, MF a main past MS that carries HS's id; MP a main that adds p,
+# HP above it that removes p and adds it again, the patch of MP; HW a head that touches a
+# workflow, HG one a GPT model assisted, HB eleven commits, HL 601 lines.
+mkdir scripts
+printf '#!/bin/sh\necho d1g3st\n' >scripts/series
+chmod +x scripts/series
+git add -A
+git commit -q -m "series"
+MS="$(git rev-parse HEAD)"
+git commit -q --allow-empty -m "a series" -m "Series-Id: s-1"
+HS="$(git rev-parse HEAD)"
+git reset -q --hard "$MS"
+git commit -q --allow-empty -m "the same series, landed" -m "Series-Id: s-1"
+MF="$(git rev-parse HEAD)"
+git reset -q --hard "$MS"
+git commit -q --allow-empty -m "no series"
+HN="$(git rev-parse HEAD)"
+git reset -q --hard "$M0"
+echo p >p
+git add p
+git commit -q -m "add p"
+MP="$(git rev-parse HEAD)"
+git rm -q p
+git commit -q -m "remove p"
+echo p >p
+git add p
+git commit -q -m "add p again"
+HP="$(git rev-parse HEAD)"
+git reset -q --hard "$M0"
+mkdir -p .github/workflows
+echo 'on: push' >.github/workflows/x.yml
+git add -A
+git commit -q -m "a workflow"
+HW="$(git rev-parse HEAD)"
+git reset -q --hard "$M0"
+git commit -q --allow-empty -m "assisted" -m "Assisted-By: gpt-6.1-sol"
+HG="$(git rev-parse HEAD)"
+git reset -q --hard "$M0"
+for i in 1 2 3 4 5 6 7 8 9 10 11; do git commit -q --allow-empty -m "c$i"; done
+HB="$(git rev-parse HEAD)"
+git reset -q --hard "$M0"
+seq 601 >l
+git add l
+git commit -q -m "long"
+HL="$(git rev-parse HEAD)"
+git reset -q --hard "$M0"
 git push -q "$REMOTE" "$M0:refs/heads/main" "$H:refs/heads/$BR" "$M1:refs/heads/m1" \
-	"$MC:refs/heads/mc" "$H2:refs/heads/h2" "$HM:refs/heads/hm"
+	"$MC:refs/heads/mc" "$H2:refs/heads/h2" "$HM:refs/heads/hm" "$HS:refs/heads/hs" \
+	"$HN:refs/heads/hn" "$HP:refs/heads/hp" "$HW:refs/heads/hw" "$HG:refs/heads/hg" \
+	"$HB:refs/heads/hb" "$HL:refs/heads/hl" "$MF:refs/heads/mf"
 
 # The stand-ins: gh serves the forge, git sends the test's GitHub to the disk, open and
 # xdg-open only log.
@@ -103,6 +152,8 @@ fetch | push | ls-remote)
 		args+=("$a")
 	done
 	set -- "${args[@]}"
+	[ "$1" != push ] || [ -z "${GIT_CONFIG_KEY_0:-}" ] ||
+		echo "git push $GIT_CONFIG_KEY_0 ${GIT_CONFIG_VALUE_0:-}" >>"$FORGE/calls"
 	;;
 esac
 exec "$LAND_TEST_GIT" "$@"
@@ -126,6 +177,7 @@ while [ $# -gt 0 ]; do
 	esac
 done
 if [ "$method" != GET ]; then
+	[ ! -e "$FORGE/refuse-$method" ] || { echo "gh: refused (HTTP 422) $path" >&2; exit 1; }
 	: >"$FORGE/written"
 	echo '{}'
 	exit 0
@@ -180,9 +232,10 @@ at="$H"
 fixture() {
 	cat >"$FORGE/$(printf %s "$1" | tr -c 'A-Za-z0-9._-' _)${2:+.$2}.json"
 }
-pull() { # pull <state> <draft> <base> <merged>
+CARD='## What\n### What changes\n## How checked\n## Limits\n## Verdict'
+pull() { # pull <state> <draft> <base> <merged> [body]
 	fixture "repos/land-test/fpl/pulls/7" <<-EOF
-	{"number": 7, "state": "$1", "draft": $2, "merged": $4,
+	{"number": 7, "state": "$1", "draft": $2, "merged": $4, "body": "${5-$CARD}",
 	 "html_url": "https://github.com/land-test/fpl/pull/7", "user": {"login": "psjg-claude"},
 	 "base": {"ref": "$3"},
 	 "head": {"sha": "$at", "ref": "$BR", "repo": {"full_name": "land-test/fpl"}}}
@@ -190,8 +243,9 @@ pull() { # pull <state> <draft> <base> <merged>
 }
 me() { echo "{\"login\": \"$1\"}" | fixture user; }
 reviews() { echo "[[$1]]" | fixture "repos/land-test/fpl/pulls/7/reviews?per_page=100" ${2:+"$2"}; }
-review() { # review <id> <login> <state> <commit>
-	echo "{\"id\": $1, \"user\": {\"login\": \"$2\"}, \"state\": \"$3\", \"commit_id\": \"$4\"}"
+review() { # review <id> <login> <state> <commit> [body]
+	echo "{\"id\": $1, \"user\": {\"login\": \"$2\"}, \"state\": \"$3\", \"commit_id\": \"$4\",
+	  \"body\": \"${5:-}\"}"
 }
 threads() {
 	echo "[{\"data\": {\"repository\": {\"pullRequest\": {\"reviewThreads\": {\"nodes\": [$1],
@@ -217,8 +271,10 @@ rules() { # rules <required contexts> [approvals] [another rule] [pull_request p
 	  {"type": "deletion", "ruleset_id": 2}${3:+, $3}]]
 	EOF
 }
-ruleset() { # ruleset <id> <current_user_can_bypass>
-	echo "{\"name\": \"set $1\", \"current_user_can_bypass\": \"$2\"}" |
+LANDER='[{"actor_type": "Integration", "actor_id": 5318175, "bypass_mode": "always"}]'
+ruleset() { # ruleset <id> <current_user_can_bypass> [bypass actors, '' for none to see]
+	local actors="${3-$LANDER}"
+	echo "{\"name\": \"set $1\", \"current_user_can_bypass\": \"$2\"${actors:+, \"bypass_actors\": $actors}}" |
 		fixture "repos/land-test/fpl/rulesets/$1?includes_parents=true"
 }
 runs() { # runs <check runs as JSON objects> [total_count] [variant]: one page, counted right
@@ -1058,6 +1114,86 @@ pull open false main false
 landing 1 "GitHub does not show the pull request as merged" 7
 says "does not show #7 as merged" "it says so loudly"
 main_is "$H" "main moved all the same"
+
+# The rules on the range, in both modes. ---------------------------------------------------
+# range_case <head> <main> <exit> <text> <description>: a dry run of that head on that main.
+range_case() {
+	at="$1" HEAD_SHA="$1"
+	forge
+	git --git-dir="$REMOTE" update-ref refs/heads/main "$2"
+	expect "$3" "$5" --dry-run 7
+	says "$4" "$5: it says so"
+	at="$H" HEAD_SHA="$H"
+}
+forge
+expect 0 "the range rules on an ordinary head" --dry-run 7
+says "ok  land/series             skipped: main has no scripts/series" "no series yet: a notice"
+says "ok  land/card" "the card is there"
+range_case "$HS" "$MS" 0 "every commit carries Series-Id s-1" "one Series-Id on a main with scripts/series"
+range_case "$HN" "$MS" 1 "NO  land/series" "a commit without a Series-Id"
+range_case "$HS" "$MF" 1 "NO  land/series-fresh" "a Series-Id that is on main already"
+range_case "$HP" "$MP" 1 "NO  land/patch-fresh" "a patch that is on main already"
+range_case "$HW" "$M0" 1 "NO  land/workflows" "a commit that touches .github/workflows"
+range_case "$HB" "$M0" 1 "11 commits, 0 lines: over 10" "eleven commits"
+range_case "$HL" "$M0" 1 "1 commits, 601 lines: over" "601 lines"
+range_case "$HG" "$M0" 1 "NO  land/gpt" "a commit a GPT model assisted, no gpt-ok"
+at="$HG" HEAD_SHA="$HG"
+forge
+reviews "$(review 1 psjg APPROVED "$HG" "read it. gpt-ok: ${HG:0:7}")"
+expect 0 "a commit a GPT model assisted, with the owner's gpt-ok" --dry-run 7
+at="$H" HEAD_SHA="$H"
+forge
+pull open false main @MERGED@ '## What\n## What changes\n## How checked\n## Limits'
+expect 1 "a body without the card's Verdict" --dry-run 7
+says "the body has no heading Verdict" "it names the heading"
+
+# --ci: the App's mode. ---------------------------------------------------------------------
+forge
+expect 1 "--ci without a token" --ci --dry-run 7
+says "land/ci: --ci acts as the token in GH_TOKEN" "it names the rule"
+GH_TOKEN=t expect 0 "--ci dry run" --ci --dry-run 7
+says "lets App 5318175 past it: always" "it judges the App in the bypass list"
+says "would run: git push https://github.com/land-test/fpl.git $H:refs/heads/main" "it prints the push"
+ruleset 1 always '[{"actor_type": "RepositoryRole", "actor_id": 5, "bypass_mode": "always"}]'
+GH_TOKEN=t expect 1 "--ci, the App not in the bypass list" --ci --dry-run 7
+ruleset 1 always '[{"actor_type": "Integration", "actor_id": 5318175, "bypass_mode": "pull_request"}]'
+GH_TOKEN=t expect 1 "--ci, the App may bypass for pull requests only" --ci --dry-run 7
+says "NO  land/bypass" "it names the rule"
+ruleset 1 exempt ''
+GH_TOKEN=t expect 1 "--ci, no list to see and a token that is exempt, not always" --ci --dry-run 7
+forge
+reviews "$(review 1 psjg COMMENTED "$H")"
+GH_TOKEN=t expect 1 "--ci gives no approval of its own" --ci --dry-run 7
+says "NO  land/approved" "it names the rule"
+
+forge
+children '{"number": 8}'
+GH_TOKEN=t expect 0 "--ci lands without a terminal" --ci 7
+main_is "$H" "--ci fast-forwards main"
+lacks "Enter = " "--ci asks nothing"
+says "deleted $BR" "it deletes the landed branch"
+called
+lacks "open " "--ci opens no browser"
+says "git push http.https://github.com/.extraheader AUTHORIZATION: basic $(printf x-access-token:t | base64)" \
+	"the push carries the token"
+first "-X PATCH repos/land-test/fpl/pulls/8" "-X DELETE repos/land-test/fpl/git/refs/heads/$BR" \
+	"a child is retargeted before its base is deleted"
+lacks "fpl/series" "no receipt without scripts/series on main"
+forge
+children '{"number": 8}'
+: >"$FORGE/refuse-PATCH"
+GH_TOKEN=t expect 1 "--ci, a child that cannot be retargeted" --ci 7
+says "could not all be retargeted" "it says so loudly"
+called
+lacks "-X DELETE" "the branch stays"
+at="$HS" HEAD_SHA="$HS"
+forge
+git --git-dir="$REMOTE" update-ref refs/heads/main "$MS"
+GH_TOKEN=t expect 0 "--ci lands a series" --ci 7
+called
+says "-f name=fpl/series -f head_sha=$HS" "it writes the receipt on the head"
+says "series d1g3st" "with the digest scripts/series gives"
+at="$H" HEAD_SHA="$H"
 
 # The header's land/rules entry says two things, which it keeps in sentences of their own: the
 # requirements scripts/land does not make (which the bypass would leave unenforced), and the

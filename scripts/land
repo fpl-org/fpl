@@ -63,6 +63,26 @@
 #                           may be github.com-<alias>, a Host of the ssh config with no dot
 #                           in it, where ssh decides where it leads. Any other scheme, host
 #                           or user is refused
+#   land/size               at most 10 commits and 600 lines added plus removed
+#   land/workflows          no commit touches .github/workflows: those land by the owner path
+#   land/gpt                a commit whose Assisted-By names a GPT model is named by a line
+#                           gpt-ok: <sha> in a code owner's approval of the head
+#   land/series             once main holds scripts/series: one Series-Id on every commit
+#   land/series-fresh       and no commit on main carries it yet
+#   land/patch-fresh        no commit's `git patch-id --verbatim` is one on main already
+#   land/card               the body has the card's headings: What, What changes, How
+#                           checked, Limits, Verdict
+#
+# --ci is the lander App's mode (harness/workflows/land.yml): no terminal, no browser, no
+# keypress, and no approval given; it acts as the token in GH_TOKEN and refuses without one.
+# There land/approved wants a code owner's approval of the head standing, land/author that
+# it is not the author's, and land/bypass that each ruleset on main lists the App
+# (FPL_LAND_APP_ID, default 5318175, fpl-lander) with bypass mode always, or, where the token
+# cannot see that list, that the ruleset lets the token past always. Before the push it
+# writes the fpl/series check run on the head, when main holds scripts/series, with the
+# digest `scripts/series digest <main>..<head>` prints; the push carries the token. Once
+# GitHub shows the merge it retargets to main each pull request based on the landed branch,
+# and only then deletes the branch: deleting it first closes them.
 #
 # Then it prints the conversation, opens the diff in the browser and stops for a keypress.
 # After Enter it approves the head when it said it would, checks everything again, and pushes:
@@ -122,7 +142,7 @@ die() {
 	exit 1
 }
 usage() {
-	echo "usage: scripts/land [--dry-run] [--remote <name>] [<number | url>]" >&2
+	echo "usage: scripts/land [--ci] [--dry-run] [--remote <name>] [<number | url>]" >&2
 	exit 2
 }
 
@@ -130,7 +150,9 @@ usage() {
 # python3 because the default dev shell has it and no jq; bash 3.2 cannot hold JSON.
 read -r -d '' PY <<'PY' || :
 import json
+import os
 import re
+import subprocess
 import sys
 
 VERDICTS = ("APPROVED", "CHANGES_REQUESTED", "DISMISSED")
@@ -265,8 +287,8 @@ class Verdict:
         print(f"{PAD}remedy: {remedy}")
 
 
-def judge_pull(v, pr, me, fetched, repo):
-    """land/open, land/base, land/head and land/author."""
+def judge_pull(v, pr, me, fetched, repo, ci):
+    """land/open, land/base, land/head and, by hand, land/author (--ci: judge_reviews)."""
     n, head = pr["number"], pr["head"]["sha"]
     if pr.get("merged") or pr["state"] != "open":
         state = "merged" if pr.get("merged") else pr["state"]
@@ -290,7 +312,9 @@ def judge_pull(v, pr, me, fetched, repo):
              f"the forge reports head {head[:12]}, refs/pull/{n}/head holds {fetched[:12]}",
              "the branch moved while this ran; run it again")
     author = pr["user"]["login"]
-    if me.lower() == author.lower():
+    if ci:
+        pass
+    elif me.lower() == author.lower():
         v.no("land/author", f"you are {me}, the author of #{n}",
              "land as the maintainer: gh auth switch --hostname github.com --user <maintainer>")
     else:
@@ -307,9 +331,11 @@ def standing(d):
     return last
 
 
-def judge_reviews(v, d, pr, me, repo):
-    """land/codeowners, land/approved and land/changes-requested. True when the approval
-    is yours to give in this run."""
+def judge_reviews(v, d, pr, me, repo, ci):
+    """land/codeowners, land/approved and land/changes-requested, and with --ci land/author:
+    the approval that counts is not the author's. Returns whether the approval is yours to
+    give in this run (never with --ci, which gives none), and the texts of the code owners'
+    approvals of the head, where land/gpt reads its gpt-ok lines."""
     n, head = pr["number"], pr["head"]["sha"]
     h = head[:12]
     last = standing(d)
@@ -328,23 +354,34 @@ def judge_reviews(v, d, pr, me, repo):
     if owners is None:
         v.no("land/codeowners", why,
              "teach scripts/land that CODEOWNERS before it lands anything under it")
-        return False
+        return False, []
     v.ok("land/codeowners", "code owners: " + ", ".join(f"@{o}" for o in sorted(owners)))
     approved = [(w, r) for w, r in last.items()
                 if w.lower() in owners and r["state"] == "APPROVED"]
     at_head = [w for w, r in approved if r.get("commit_id") == head]
+    bodies = [r.get("body") or "" for w, r in approved if w in at_head]
     older = ", ".join(f"@{w} on {str(r.get('commit_id'))[:12]}" for w, r in approved)
+    author = pr["user"]["login"]
+    if ci:
+        mine = [w for w in at_head if w.lower() == author.lower()]
+        at_head = [w for w in at_head if w not in mine]
+        if mine and not at_head:
+            v.no("land/author", f"the only approval of {h} is by @{author}, its author",
+                 f"a code owner other than the author approves {h} on the forge")
+        else:
+            v.ok("land/author", f"{author} wrote it; the approval counted is another's")
     if at_head:
         v.ok("land/approved", f"code owner {', '.join('@' + w for w in at_head)} approved {h}")
-        return False
-    if me.lower() in owners and me.lower() != pr["user"]["login"].lower():
+        return False, bodies
+    if not ci and me.lower() in owners and me.lower() != author.lower():
         v.ok("land/approved", f"you, a code owner, approve {h} after the keypress"
              + (f" ({older} is not this head)" if older else ""))
-        return True
+        return True, bodies
     v.no("land/approved",
          f"no code owner approved {h}" + (f"; {older} is not this head" if older else ""),
-         f"a code owner approves {h}: one of them runs scripts/land {n}")
-    return False
+         f"a code owner approves {h} on the forge (Files changed > Review > Approve)"
+         if ci else f"a code owner approves {h}: one of them runs scripts/land {n}")
+    return False, bodies
 
 
 def judge_threads(v, d):
@@ -602,7 +639,7 @@ def unenforced(rule):
             if (not known[name](value) if name in known else value is not False)]
 
 
-def judge_rules(v, d, rules, me):
+def judge_rules(v, d, rules, me, ci):
     """land/rules and land/bypass: every rule is one judged here, and you, the account `me`
     that `gh api user` reports, may skip them."""
     unjudged = set()
@@ -614,25 +651,135 @@ def judge_rules(v, d, rules, me):
              "teach scripts/land those rules before it pushes past them")
     else:
         v.ok("land/rules", "scripts/land judges every rule on main")
+    app = int(os.environ.get("FPL_LAND_APP_ID", "5318175"))  # the fpl-lander App
     for rid in sorted({r["ruleset_id"] for r in rules if "ruleset_id" in r}):
         rs = load(f"{d}/ruleset-{rid}.json")
         can = rs.get("current_user_can_bypass") or "unknown"
-        if can in BYPASS:
+        actors = rs.get("bypass_actors")
+        if ci and isinstance(actors, list):
+            if any(a.get("actor_type") == "Integration" and a.get("actor_id") == app
+                   and a.get("bypass_mode") == "always" for a in actors):
+                v.ok("land/bypass", f"ruleset '{rs.get('name')}' lets App {app} past it: always")
+            else:
+                v.no("land/bypass", f"ruleset '{rs.get('name')}' does not let App {app} past"
+                     " it always", f"the owner's one-time step: in each ruleset on main,"
+                     f" Bypass list > the App {app} (fpl-lander) > Always")
+        elif ci and can != "always":  # the token cannot see the list: judge its own say
+            v.no("land/bypass", f"ruleset '{rs.get('name')}' lets this token past it {can}",
+                 f"run with the fpl-lander App's token, in Bypass list > Always")
+        elif can in BYPASS:
             v.ok("land/bypass", f"you may push past ruleset '{rs.get('name')}' as @{me}: {can}")
         else:
             v.no("land/bypass", f"ruleset '{rs.get('name')}' lets you (@{me}) past it {can}",
                  BYPASS_REMEDY)
 
 
-def judge(d, repo, fetched, main, ancestor, merges):  # noqa: PLR0913, PLR0917
+def git(*args, stdin=None):
+    return subprocess.run(("git", *args), input=stdin, capture_output=True, check=True).stdout
+
+
+def patch_ids(*revs):
+    """{commit: its `git patch-id --verbatim`} of the commits revs name; a merge, or a
+    commit whose diff is empty, has none."""
+    log = git("log", "-p", "--no-merges", "--format=commit %H", *revs)
+    lines = git("patch-id", "--verbatim", stdin=log).decode().splitlines()
+    return {c: p for p, c in (line.split() for line in lines)}
+
+
+def trailers(revs, key):
+    """[(commit, [its values of the trailer key])] for each commit revs name."""
+    out = git("log", f"--format=%H%x1f%(trailers:key={key},valueonly,separator=%x1f)%x1e",
+              revs).decode()
+    rows = [r.strip("\n").split("\x1f") for r in out.split("\x1e") if r.strip()]
+    return [(r[0], [x.strip() for x in r[1:] if x.strip()]) for r in rows]
+
+
+def judge_series(v, main, span):
+    """land/series and land/series-fresh, judged once main holds scripts/series: one
+    Series-Id on every commit, and no commit on main carries it yet."""
+    has = subprocess.run(("git", "cat-file", "-e", f"{main}:scripts/series"),
+                         capture_output=True).returncode == 0
+    if not has:
+        for rule in ("land/series", "land/series-fresh"):
+            v.ok(rule, "skipped: main has no scripts/series")
+        return
+    rows = trailers(span, "Series-Id")
+    ids = sorted({x for _, vals in rows for x in vals})
+    odd = [c[:12] for c, vals in rows if len(vals) != 1]
+    if odd or len(ids) != 1:
+        v.no("land/series", f"Series-Id {' '.join(ids) or 'none'}; not exactly one on"
+             f" {' '.join(odd) or 'every commit'}",
+             "scripts/series names the one series on every commit of the range")
+        return
+    v.ok("land/series", f"every commit carries Series-Id {ids[0]}")
+    if any(ids[0] in vals for _, vals in trailers(main, "Series-Id")):
+        v.no("land/series-fresh", f"Series-Id {ids[0]} is on main already",
+             "mint a new Series-Id: this one has landed")
+    else:
+        v.ok("land/series-fresh", f"Series-Id {ids[0]} is not on main yet")
+
+
+CARD = ("What", "What changes", "How checked", "Limits", "Verdict")
+MOST = (10, 600)  # land/size: commits, and lines added plus removed
+
+
+def judge_range(v, pr, main, head, bodies):
+    """land/size, land/workflows, land/gpt, land/series, land/series-fresh, land/patch-fresh
+    and land/card: the commits main..head, and the pull request's body."""
+    span, h = f"{main}..{head}", head[:12]
+    commits = git("rev-list", span).decode().split()
+    rows = [r.split("\t") for r in git("diff", "--numstat", main, head).decode().splitlines()]
+    lines = sum(int(r[0]) + int(r[1]) for r in rows if r[0] != "-")
+    if len(commits) <= MOST[0] and lines <= MOST[1]:
+        v.ok("land/size", f"{len(commits)} commits, {lines} lines")
+    else:
+        v.no("land/size", f"{len(commits)} commits, {lines} lines: over {MOST[0]} and"
+             f" {MOST[1]}", "split it into pull requests within both limits")
+    paths = git("log", "--format=", "--name-only", span).decode().split("\n")
+    flows = sorted({p for p in paths if p.startswith(".github/workflows/")})
+    if flows:
+        v.no("land/workflows", f"it touches {' '.join(flows)}",
+             "a workflow lands by the owner path: after a clean scripts/land --dry-run, the"
+             " owner pushes the head to main with his deploy key")
+    else:
+        v.ok("land/workflows", "it touches no file in .github/workflows")
+    oks = re.findall(r"gpt-ok:\s*([0-9a-f]{7,40})", "\n".join(bodies))
+    gpt = [c for c, vals in trailers(span, "Assisted-By")
+           if any("gpt" in x.lower() for x in vals) and not any(c.startswith(o) for o in oks)]
+    if gpt:
+        v.no("land/gpt", "a GPT model assisted " + " ".join(c[:12] for c in gpt),
+             f"the code owner reads each and approves {h} with a line gpt-ok: <sha> for it")
+    else:
+        v.ok("land/gpt", "no commit a GPT model assisted lacks the owner's gpt-ok")
+    judge_series(v, main, span)
+    known = set(patch_ids(main).values())
+    dup = [c[:12] for c, p in patch_ids(span).items() if p in known]
+    if dup:
+        v.no("land/patch-fresh", f"main holds the patch of {' '.join(dup)} already",
+             "drop those commits (git rebase main drops them) and push again")
+    else:
+        v.ok("land/patch-fresh", "no patch of the range is on main yet")
+    body = pr.get("body") or ""
+    heads = {" ".join(m.lower().split())
+             for m in re.findall(r"^#{1,6}[ \t]+(.+?)[ \t#]*$", body, re.M)}
+    missing = [c for c in CARD if c.lower() not in heads]
+    if missing:
+        v.no("land/card", "the body has no heading " + ", ".join(missing),
+             "put the card at the top of the body: " + ", ".join(CARD))
+    else:
+        v.ok("land/card", "the body holds the card")
+
+
+def judge(d, repo, fetched, main, ancestor, merges, ci):  # noqa: PLR0913, PLR0917
     """Print one line per check and return 1 when any refuses, 3 when none does but the
     approval is yours to give in this run, else 0."""
     pr = load(f"{d}/pr.json")
     me = load(f"{d}/me.json")["login"]
     rules = pages(f"{d}/rules.json")
     v = Verdict()
-    judge_pull(v, pr, me, fetched, repo)
-    approve = judge_reviews(v, d, pr, me, repo)
+    ci = ci == "1"
+    judge_pull(v, pr, me, fetched, repo, ci)
+    approve, bodies = judge_reviews(v, d, pr, me, repo, ci)
     judge_threads(v, d)
     fault = rules_fault(rules)
     if fault:  # nothing below can be judged against rules that are not there
@@ -641,8 +788,9 @@ def judge(d, repo, fetched, main, ancestor, merges):  # noqa: PLR0913, PLR0917
     else:
         judge_checks(v, d, rules, repo, pr["number"], pr["head"]["sha"])
     judge_history(v, main, pr["head"]["sha"], ancestor, merges)
+    judge_range(v, pr, main, fetched, bodies)
     if not fault:
-        judge_rules(v, d, rules, me)
+        judge_rules(v, d, rules, me, ci)
     if v.refused:
         print(f"land: #{pr['number']} refused by {', '.join(sorted(v.refused))}")
         return 1
@@ -779,9 +927,10 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
 }
 GQL
 
-dry=0 remote=github target=""
+ci=0 dry=0 remote=github target=""
 while [ $# -gt 0 ]; do
 	case "$1" in
+	--ci) ci=1 ;;
 	--dry-run) dry=1 ;;
 	--remote) [ $# -ge 2 ] || usage; remote="$2"; shift ;;
 	-*) usage ;;
@@ -789,8 +938,13 @@ while [ $# -gt 0 ]; do
 	esac
 	shift
 done
-[ "$dry" -eq 1 ] || { [ -t 0 ] && [ -t 1 ]; } ||
-	die "needs a terminal: landing is a person's decision (--dry-run needs none)"
+if [ "$ci" -eq 1 ]; then
+	[ -n "${GH_TOKEN:-}" ] || die "land/ci: --ci acts as the token in GH_TOKEN, and none is set;" \
+		"remedy: mint the fpl-lander App's token into GH_TOKEN (harness/workflows/land.yml)"
+else
+	[ "$dry" -eq 1 ] || { [ -t 0 ] && [ -t 1 ]; } ||
+		die "needs a terminal: landing is a person's decision (--dry-run and --ci need none)"
+fi
 command -v gh >/dev/null || die "gh not found; scripts/layer on github"
 command -v python3 >/dev/null || die "python3 not found"
 # api: gh api on github.com, where destination() says git pushes. A call that names no host
@@ -869,7 +1023,11 @@ esac
 # ancestor and merges. Run twice: before the question and after it, on the forge as it is then.
 gather() {
 	api "repos/$slug/pulls/$n" >"$tmp/pr.json" || die "cannot read #$n"
-	api user >"$tmp/me.json" || die "cannot read who you are"
+	if [ "$ci" -eq 1 ]; then # an App's token has no user: it is the App
+		printf '{"login": "%s"}\n' "${FPL_LAND_APP:-fpl-lander[bot]}" >"$tmp/me.json"
+	else
+		api user >"$tmp/me.json" || die "cannot read who you are"
+	fi
 	api graphql --paginate --slurp -F owner="${slug%%/*}" -F name="${slug#*/}" \
 		-F number="$n" -f query="$THREADS" >"$tmp/threads.json" ||
 		die "cannot read the review threads of #$n"
@@ -921,7 +1079,7 @@ read_rules() {
 # and the approval is yours to give in this run.
 judge() {
 	local rc=0
-	py judge "$tmp" "$slug" "$fetched" "$main" "$ancestor" "$merges" || rc=$?
+	py judge "$tmp" "$slug" "$fetched" "$main" "$ancestor" "$merges" "$ci" || rc=$?
 	refused=0 approve=0
 	case "$rc" in
 	0) ;;
@@ -953,10 +1111,12 @@ if [ "$dry" -eq 1 ]; then
 	echo "land: would run: $push"
 	kids="$(children)"
 	[ -z "$kids" ] || printf 'land: then retarget what is stacked on %s:\n%s\n' "$headref" "$kids"
+	[ "$ci" -eq 0 ] || [ "$headrepo" != "$slug" ] || echo "land: and then delete $headref"
 	exit "$refused"
 fi
 [ "$refused" -eq 0 ] || exit 1
 
+if [ "$ci" -eq 0 ]; then
 GH_PAGER="cat" gh pr view "$n" --repo "github.com/$slug" --comments
 if command -v open >/dev/null; then
 	open "$html/files"
@@ -982,14 +1142,31 @@ judge
 [ "$refused" -eq 0 ] || die "refused on the second look; nothing landed"
 [ "$approve" -eq 0 ] || die "the forge does not show the approval of $head; nothing landed"
 [ "$head" = "$seen" ] || die "#$n moved to $head since you looked at $seen; nothing landed"
+fi
 # The rules the push relies on, to hold the rules on main against after it, and the checks
 # on the head as judged, whose runs and statuses alone are judged again after it.
 cp "$tmp/rules.json" "$tmp/rules.judged.json"
 cp "$tmp/checks.json" "$tmp/checks.judged.json"
 cp "$tmp/statuses.json" "$tmp/statuses.judged.json"
 
+# fpl/series, with --ci: the receipt, written before the push so nothing lands without one.
+# Its digest is what main's scripts/series prints for `digest <main>..<head>`, one line:
+# the contract between the two scripts. Without scripts/series on main there is none.
+if [ "$ci" -eq 1 ] && git cat-file -e "$main:scripts/series" 2>/dev/null; then
+	git show "$main:scripts/series" >"$tmp/series" && chmod +x "$tmp/series"
+	digest="$("$tmp/series" digest "$main..$head")" || die "scripts/series digest failed; nothing landed"
+	api -X POST "repos/$slug/check-runs" -f name=fpl/series -f head_sha="$head" \
+		-f status=completed -f conclusion=success -f "output[title]=series $digest" \
+		-f "output[summary]=manifest digest $digest of $main..$head, approved on $head" \
+		>/dev/null || die "cannot write the fpl/series check run; nothing landed"
+fi
+
 destination
 echo "land: $push"
+if [ "$ci" -eq 1 ]; then # git pushes as the token's App; the checkout persists no other
+	GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+	export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader GIT_CONFIG_VALUE_0
+fi
 if ! out="$(git push "$dest" "$head:refs/heads/main" 2>&1)"; then
 	printf '%s\n' "$out" >&2
 	case "$out" in
@@ -1001,10 +1178,10 @@ if ! out="$(git push "$dest" "$head:refs/heads/main" 2>&1)"; then
 fi
 printf '%s\n' "$out"
 # The head is on main: what is stacked on it wants main as its base, whatever comes out
-# LOUD below, so the list comes first.
-kids="$(children)" ||
+# LOUD below, so the list comes first. --ci retargets them itself, below.
+[ "$ci" -eq 1 ] || kids="$(children)" ||
 	kids="  (list them yourself: gh pr list --repo github.com/$slug --base $headref)"
-[ -z "$kids" ] || printf 'land: retarget what is stacked on %s to main:\n%s\n' "$headref" "$kids"
+[ -z "${kids:-}" ] || printf 'land: retarget what is stacked on %s to main:\n%s\n' "$headref" "$kids"
 
 now="$(git ls-remote "$dest" refs/heads/main | cut -f1)"
 [ "$now" = "$head" ] || die "LOUD: main on the forge is ${now:-unreadable}, not $head; look before anything else lands"
@@ -1018,6 +1195,25 @@ while :; do
 	waited=$((waited + 3))
 done
 echo "land: #$n is merged; main is $head"
+# retarget, with --ci: each pull request stacked on the landed branch goes to main, and only
+# then is the branch deleted, once GitHub shows the merge: a branch deleted first closes the
+# pull requests based on it (measured 2026-10-14).
+retarget() {
+	[ "$headrepo" = "$slug" ] || return 0
+	api --paginate --slurp "repos/$slug/pulls?state=open&base=$headref&per_page=100" \
+		>"$tmp/children.json" || return 1
+	local m
+	for m in $(py numbers "$tmp/children.json"); do
+		api -X PATCH "repos/$slug/pulls/$m" -f base=main >/dev/null || return 1
+		echo "land: retargeted #$m to main"
+	done
+	api -X DELETE "repos/$slug/git/refs/heads/$headref" >/dev/null || return 1
+	echo "land: deleted $headref"
+}
+[ "$ci" -eq 0 ] || retarget ||
+	die "LOUD: #$n landed, but its children could not all be retargeted, so $headref stays;" \
+		"retarget each (gh api --hostname github.com -X PATCH repos/$slug/pulls/<n> -f base=main)," \
+		"then delete it"
 # The window, seen from the other side: what the push relied on, read again.
 read_reviews
 read_rules
