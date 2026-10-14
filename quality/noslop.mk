@@ -175,6 +175,7 @@ gates: venv config-fresh
 	$(BIN)/python $(S)/ruff-limits --self-test
 	$(S)/leak-check --self-test
 	$(S)/pre-push-self-test
+	$(S)/whoami-check-self-test
 	$(S)/boundary-self-test
 	$(S)/spec-guard-self-test
 	$(S)/gen-config-self-test
