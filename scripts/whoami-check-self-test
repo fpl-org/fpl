@@ -21,17 +21,18 @@ mkdir "$tmp/bin"
 {
 	printf '#!/bin/sh\n[ -n "$PUSH" ] || exit 1\ncat >/dev/null\nprintf "protocol=https\\nhost=github.com\\nusername=%%s\\npassword=SECRET-PW\\n" "$PUSH"\n' >"$tmp/bin/git"
 	printf '#!/bin/sh\n[ -n "$GH" ] || exit 1\nprintf "github.com\\n  \\342\\234\\223 Logged in to github.com account other (keyring)\\n  - Active account: false\\n\\n  \\342\\234\\223 Logged in to github.com account %%s (keyring)\\n  - Active account: true\\n" "$GH"\n' >"$tmp/bin/gh"
-	printf '#!/bin/sh\n[ -n "$SSH" ] || exit 255\nprintf "Hi %%s! You have successfully authenticated, but GitHub does not provide shell access.\\n" "$SSH"\nexit 1\n' >"$tmp/bin/ssh"
+	printf '#!/bin/sh\necho "$*" >>"$0.log"\n[ -n "$SSH" ] || exit 255\nprintf "Hi %%s! You have successfully authenticated, but GitHub does not provide shell access.\\n" "$SSH"\nexit 1\n' >"$tmp/bin/ssh"
 	# timeout is not on a stock Mac; the script must work with or without it.
 	printf '#!/bin/sh\nshift\nexec "$@"\n' >"$tmp/bin/timeout"
 }
 chmod +x "$tmp/bin/"*
 
 fails=0
-# expect <bash> <name> <PUSH> <GH> <SSH> <nag: yes|no> <extra grep -F pattern or ''>
+# expect <bash> <name> <PUSH> <GH> <SSH> <nag: yes|no> <extra grep -F pattern or ''> [URL]
 expect() {
 	local sh="$1" name="$2" out rc=0
-	out="$(PATH="$tmp/bin:$PATH" PUSH="$3" GH="$4" SSH="$5" "$sh" "$root/scripts/whoami-check" 2>&1)" || rc=$?
+	out="$(PATH="$tmp/bin:$PATH" PUSH="$3" GH="$4" SSH="$5" "$sh" "$root/scripts/whoami-check" ${8:+"$8"} 2>&1)" || rc=$?
+	case "$out" in *TOKEN-IN-URL*) echo "FAIL $name ($sh): the URL was printed"; fails=$((fails + 1)) ;; esac
 	if [ "$rc" -ne 0 ]; then echo "FAIL $name ($sh): exit $rc"; fails=$((fails + 1)); fi
 	case "$out" in *SECRET-PW*) echo "FAIL $name ($sh): the password was printed"; fails=$((fails + 1)) ;; esac
 	if [ "$6" = yes ]; then
@@ -53,8 +54,26 @@ run() {
 	expect "$sh" only-ssh psjg-claude psjg-claude psjg yes "ssh:      psjg"
 	expect "$sh" all-fail "" "" "" no "unknown"
 	expect "$sh" mixed-fail psjg-claude "" "" no "username=psjg-claude"
+	# Given the destination URL, only the identity its transport uses is judged.
+	expect "$sh" url-https-admin-helper psjg psjg-claude psjg-claude yes "goes by https" "https://github.com/o/r.git"
+	expect "$sh" url-https-machine-helper psjg-claude psjg psjg no "goes by https" "https://github.com/o/r.git"
+	expect "$sh" url-ssh-machine-key psjg psjg psjg-claude no "goes by ssh" "git@github.com:o/r.git"
+	expect "$sh" url-ssh-admin-key psjg-claude psjg-claude psjg yes "goes by ssh" "ssh://git@github.com/o/r.git"
+	expect "$sh" url-token psjg psjg psjg no "credentials in the URL" "https://x-access-token:TOKEN-IN-URL@github.com/o/r.git"
+	expect "$sh" url-https-bare-user psjg psjg-claude psjg-claude yes "goes by https" "https://psjg@github.com/o/r.git"
+	expect "$sh" url-other psjg psjg-claude psjg-claude yes "username=psjg" "rad://zabc/o/r"
+	# The ssh probe is never interactive and is not run for a destination that does not use ssh.
+	local log="$tmp/bin/ssh.log" out
+	rm -f "$log"
+	expect "$sh" ssh-probe-run psjg psjg-claude psjg-claude yes "ssh:      psjg"
+	case "$(cat "$log" 2>/dev/null)" in
+	*BatchMode=yes*ConnectTimeout=5*) : ;;
+	*) echo "FAIL ssh-probe-flags ($sh): not BatchMode=yes with ConnectTimeout=5"; fails=$((fails + 1)) ;;
+	esac
+	rm -f "$log"
+	expect "$sh" ssh-probe-skipped psjg-claude psjg psjg no "not used by this push" "https://github.com/o/r.git"
+	if [ -e "$log" ]; then echo "FAIL ssh-probe-skipped ($sh): ssh ran for an https destination"; fails=$((fails + 1)); fi
 	# The admin list is configurable.
-	local out
 	out="$(PATH="$tmp/bin:$PATH" PUSH=bob GH=bob SSH=bob FPL_ADMIN_ACCOUNTS="bob" "$sh" "$root/scripts/whoami-check" 2>&1)"
 	case "$out" in *NAG*) : ;; *) echo "FAIL admins-env ($sh): no NAG"; fails=$((fails + 1)) ;; esac
 	# Without timeout on PATH it still works (a stock Mac).
@@ -66,12 +85,13 @@ run() {
 
 # The hook runs it as a message: before the gates, and its failure cannot refuse a push.
 hook="$root/.githooks/pre-push"
-if ! grep -q 'scripts/whoami-check" >&2 || :$' "$hook"; then
+if ! grep -q 'scripts/whoami-check" "${2:-}" >&2 || :$' "$hook"; then
 	echo "FAIL hook: .githooks/pre-push does not run scripts/whoami-check as a message"
 	fails=$((fails + 1))
 fi
-if [ "$(grep -n 'scripts/whoami-check' "$hook" | tail -n 1 | cut -d: -f1)" -gt \
-	"$(grep -n 'scripts/leak-check' "$hook" | tail -n 1 | cut -d: -f1)" ]; then
+# Anchored on the calls, not the comments that name the scripts: the first call of each.
+if [ "$(grep -n '^[^#]*"\$top/scripts/whoami-check"' "$hook" | head -n 1 | cut -d: -f1)" -gt \
+	"$(grep -n '^[^#]*"\$top/scripts/leak-check"' "$hook" | head -n 1 | cut -d: -f1)" ]; then
 	echo "FAIL hook: whoami-check runs after the gates"
 	fails=$((fails + 1))
 fi

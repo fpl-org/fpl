@@ -17,6 +17,15 @@
 #   FPL_ADMIN_ACCOUNTS   space-separated logins that count as admin (default: psjg)
 #   FPL_MACHINE_ACCOUNT  the account the remedy names (default: psjg-claude)
 #
+# Usage: whoami-check [DESTINATION-URL]. Run by hand it judges all three. Given the URL a
+# push goes to (.githooks/pre-push passes its $2), it judges only the identity that URL's
+# transport uses, so a push that already follows the remedy is not nagged: https without
+# credentials uses the git credential helper; ssh uses the ssh key; an https URL that carries
+# its own credentials (user:password@) uses neither (it is not judged: the credentials are not
+# read); a bare user@ still goes through the helper. The URL is only classified, never printed.
+# A URL of any other shape is judged as if none were given. A probe whose identity the URL does
+# not use is not run, so an https push never wakes the ssh key.
+#
 # Each probe is a plain command found on PATH (git, gh, ssh), which is how the self-test
 # stubs them. Runs under bash 3.2.
 
@@ -35,25 +44,48 @@ gh_acct="$(gh auth status 2>&1 | awk '
 	/Logged in to .* account / { for (i = 1; i < NF; i++) if ($i == "account") acct = $(i + 1) }
 	/Active account: true/ { print acct; exit }')" || gh_acct=""
 
+# via: which transport the destination uses, hence which identities decide the push.
+url="${1:-}"
+c_push=1 c_gh=1 c_ssh=1 via=""
+case "$url" in
+https://* | http://*)
+	auth="${url#*://}"
+	auth="${auth%%/*}"
+	c_gh=0 c_ssh=0 via="https"
+	# A password after a colon in the userinfo is what makes the URL carry its own credentials;
+	# a bare user@ still asks the helper for the password.
+	case "$auth" in *@*) case "${auth%@*}" in *:*) c_push=0 via="https with credentials in the URL" ;; esac ;; esac
+	;;
+ssh://* | git@*:* | *@*:*) c_push=0 c_gh=0 via="ssh" ;;
+esac
+[ -z "$via" ] || printf 'whoami-check: this push goes by %s\n' "$via"
+
 # ssh: "Hi <login>! You've successfully authenticated ...". ssh exits 1 on success here.
-ssh_cmd=(ssh -o BatchMode=yes -o ConnectTimeout=10 -T git@github.com)
-if command -v timeout >/dev/null 2>&1; then ssh_cmd=(timeout 10 "${ssh_cmd[@]}"); fi
-ssh_acct="$("${ssh_cmd[@]}" 2>&1 </dev/null | sed -n 's/^Hi \([^!]*\)!.*/\1/p' | head -n 1)" ||
-	ssh_acct=""
+# Never interactive: BatchMode=yes forbids every prompt, ConnectTimeout=5 bounds the connect,
+# and timeout bounds the whole probe, so a key that waits on a Touch ID tap is cut off at 10 s,
+# not waited for. Not run at all when the destination does not use ssh.
+ssh_acct=""
+if [ "$c_ssh" -eq 1 ]; then
+	ssh_cmd=(ssh -o BatchMode=yes -o ConnectTimeout=5 -T git@github.com)
+	if command -v timeout >/dev/null 2>&1; then ssh_cmd=(timeout 10 "${ssh_cmd[@]}"); fi
+	ssh_acct="$("${ssh_cmd[@]}" 2>&1 </dev/null | sed -n 's/^Hi \([^!]*\)!.*/\1/p' | head -n 1)" ||
+		ssh_acct=""
+fi
 
 nag=0
-show() { # show <label> <login>: label "username" prints as username=<login>, others as label: <login>
+show() { # show <label> <login> <counts>: label "username" prints as username=<login>, others as label: <login>
 	local who="${2:-}" a
 	if [ -z "$who" ]; then
-		printf 'whoami-check: %s unknown\n' "$1"
+		if [ "${3:-1}" -eq 1 ]; then printf 'whoami-check: %sunknown\n' "$1"; else printf 'whoami-check: %snot used by this push\n' "$1"; fi
 		return
 	fi
 	printf 'whoami-check: %s%s\n' "$1" "$who"
+	[ "${3:-1}" -eq 1 ] || return 0
 	for a in $admins; do [ "$who" = "$a" ] && nag=1; done
 }
-show "username=" "$push"
-show "gh:       " "$gh_acct"
-show "ssh:      " "$ssh_acct"
+show "username=" "$push" "$c_push"
+show "gh:       " "$gh_acct" "$c_gh"
+show "ssh:      " "$ssh_acct" "$c_ssh"
 
 if [ "$nag" -eq 1 ]; then
 	echo "whoami-check: NAG: an admin account ($admins) is among these; a push would go out as it, not as $machine."
