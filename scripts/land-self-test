@@ -158,6 +158,9 @@ fetch | push | ls-remote)
 		args+=("$a")
 	done
 	set -- "${args[@]}"
+	[ "$1" != push ] || [ -z "${GIT_CONFIG_KEY_0:-}" ] ||
+		echo "git push $GIT_CONFIG_KEY_0 ${GIT_CONFIG_VALUE_0:-}" >>"$FORGE/calls"
+	case "$*" in *--force-with-lease*) echo "git $*" >>"$FORGE/calls" ;; esac
 	;;
 esac
 exec "$LAND_TEST_GIT" "$@"
@@ -181,6 +184,7 @@ while [ $# -gt 0 ]; do
 	esac
 done
 if [ "$method" != GET ]; then
+	[ ! -e "$FORGE/refuse-$method" ] || { echo "gh: refused (HTTP 422) $path" >&2; exit 1; }
 	: >"$FORGE/written"
 	echo '{}'
 	exit 0
@@ -310,6 +314,7 @@ forge() {
 	git --git-dir="$OTHER" update-ref -d refs/heads/main 2>/dev/null || :
 	pull open false main @MERGED@
 	me psjg
+	echo '{"delete_branch_on_merge": false}' | fixture repos/land-test/fpl
 	reviews "$(review 1 psjg APPROVED "$at")"
 	threads "$(thread true https://forge/t1)"
 	rules '{"context": "commit-lint", "integration_id": 15368},
@@ -1165,8 +1170,12 @@ expect 1 "--ci without a token" --ci --dry-run 7
 says "land/ci: --ci acts as the token in GH_TOKEN" "it names the rule"
 GH_TOKEN=pat expect 1 "--ci with a person's token" --ci --dry-run 7
 says "land/ci: GH_TOKEN is a person's" "it names the rule"
+echo '{"delete_branch_on_merge": true}' | fixture repos/land-test/fpl
+GH_TOKEN=t expect 1 "--ci, the repository deletes head branches on merge" --ci --dry-run 7
+says "NO  land/autodelete" "it names the rule"
 forge
 GH_TOKEN=t expect 0 "--ci dry run" --ci --dry-run 7
+says "ok  land/autodelete" "it judges the setting"
 says "lets App 5318175 past it: always" "it judges the App in the bypass list"
 says "would run: git push https://github.com/land-test/fpl.git $H:refs/heads/main" "it prints the push"
 ruleset 1 always '[{"actor_type": "RepositoryRole", "actor_id": 5, "bypass_mode": "always"}]'
@@ -1182,8 +1191,39 @@ GH_TOKEN=t expect 1 "--ci gives no approval of its own" --ci --dry-run 7
 says "NO  land/approved" "it names the rule"
 
 forge
-GH_TOKEN=t expect 1 "--ci without --dry-run lands nothing yet" --ci 7
-says "land/ci: --ci only judges so far" "it says so"
+children '{"number": 8}'
+GH_TOKEN=t expect 0 "--ci lands without a terminal" --ci 7
+main_is "$H" "--ci fast-forwards main"
+lacks "Enter = " "--ci asks nothing"
+says "deleted $BR" "it deletes the landed branch"
+called
+lacks "open " "--ci opens no browser"
+says "git push http.https://github.com/.extraheader AUTHORIZATION: basic $(printf x-access-token:t | base64)" \
+	"the push carries the token"
+first "-X PATCH repos/land-test/fpl/pulls/8" "--force-with-lease=refs/heads/$BR:$H :refs/heads/$BR" \
+	"a child is retargeted before its base is deleted"
+lacks "fpl/series" "no receipt without scripts/series on main"
+forge
+children '{"number": 8}'
+: >"$FORGE/refuse-PATCH"
+GH_TOKEN=t expect 1 "--ci, a child that cannot be retargeted" --ci 7
+says "could not all be retargeted" "it says so loudly"
+called
+lacks "--force-with-lease" "the branch stays"
+forge
+git --git-dir="$REMOTE" update-ref refs/heads/$BR "$M1"
+GH_TOKEN=t expect 0 "--ci, the branch moved past the head that landed" --ci 7
+main_is "$H" "it lands all the same"
+says "kept $BR" "it keeps the branch and says so"
+lacks "deleted $BR" "it deletes nothing"
+at="$HS" HEAD_SHA="$HS"
+forge
+git --git-dir="$REMOTE" update-ref refs/heads/main "$MS"
+GH_TOKEN=t expect 0 "--ci lands a series" --ci 7
+called
+says "-f name=fpl/series -f head_sha=$HS" "it writes the receipt on the head"
+says "series d1g3st" "with the digest scripts/series gives"
+at="$H" HEAD_SHA="$H"
 
 # The header's land/rules entry says two things, which it keeps in sentences of their own: the
 # requirements scripts/land does not make (which the bypass would leave unenforced), and the
