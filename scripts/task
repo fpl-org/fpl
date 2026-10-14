@@ -3,7 +3,7 @@
 
     scripts/task new "<title>" [-d <description>] [-b <id>]... [-p <id>]   open a task
     scripts/task list [--all]        open tasks; --all includes done and dropped
-    scripts/task ready               tasks nothing is waiting on; exit 1 if a loop is left
+    scripts/task ready               tasks nothing is waiting on (not lanes); exit 1 if a loop is left
     scripts/task show <id>
     scripts/task start|done|drop|reopen <id>
     scripts/task block [-f] <id> <by>  <id> must wait for <by>;  unblock removes it
@@ -239,10 +239,13 @@ def main(argv):
             actions.append({"type": "part", "of": graph.resolve(args.part_of)})
         print(graph.act(None, f"open: {args.title}", *actions)[:7])
     elif args.cmd in ("list", "ready"):
+        parents = {t.get("partOf") for t in graph.tasks.values()}
         for oid in sorted(graph.tasks, key=lambda o: (graph.tasks[o].get("opened", 0), o)):
             state = graph.tasks[oid]["state"]
-            if args.cmd == "ready" and (state not in OPEN_STATES or graph.waiting_on(oid)):
-                continue
+            if args.cmd == "ready" and (
+                state not in OPEN_STATES or graph.waiting_on(oid) or oid in parents
+            ):
+                continue  # a lane or group is never what is picked up; its parts are
             if args.cmd == "list" and not args.all and state not in OPEN_STATES:
                 continue
             print(line(graph, oid))
@@ -388,6 +391,8 @@ def self_test():
               json.loads(task("show", lane).stdout)["id"])
         check("a label names a task", task("show", "lane-X").returncode == 0)
         check("part loop refused", task("part", lane, "X1", ok=False).returncode == 2)
+
+        check("a lane is not ready", lane not in task("ready").stdout)
 
         # A loop is allowed to be recorded; what it may not do is make `ready` go quiet.
         left = task("new", "span: pick the representation").stdout.strip()
