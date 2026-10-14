@@ -92,6 +92,36 @@
             packages = unique (packagesOf [ ] name);
           }) raw;
 
+      # Everything the harness and an implementation worktree need, and nothing that
+      # talks to a forge: the default shell must be enough to do all the work offline
+      # and against any remote.
+      basePackages = pkgs: [
+        # The harness: scripts/ and .githooks/ are bash >= 4 (mapfile) and were written
+        # against GNU userland; macOS ships bash 3.2 and BSD tools.
+        pkgs.bashInteractive
+        pkgs.coreutils
+        pkgs.gnugrep
+        pkgs.gnused
+        pkgs.gawk
+        pkgs.git
+        pkgs.jujutsu # optional workflow, .agents/JJ.md
+        pkgs.diff2html-cli # scripts/review renders a branch as a page
+        # scripts/leak-check, which the hooks run on every commit and push: the
+        # repository is public, so it cannot wait in an opt-in layer.
+        pkgs.gitleaks
+
+        # The implementation stack, .agents/STACK.md, and the noslop gate, .agents/QUALITY.md.
+        # A bare Python 3.12, and uv, which syncs Lark and the gate's Python tools into
+        # each worktree's .venv at the versions quality/uv.lock pins: several of them
+        # (import-linter, deptry, CrossHair) are not in nixpkgs. pyright stays here,
+        # since it is a Node program; ruff too, for the root and for editors.
+        pkgs.python312
+        pkgs.uv
+        pkgs.ruff
+        pkgs.pyright
+        pkgs.gnumake
+      ];
+
       # The one place the line limits live. Everything that states one is generated from here
       # by `nix run .#gen-config`: .editorconfig, quality/ruff-limits.toml (which
       # quality/ruff.toml extends) and .githooks/commit-limits (which .githooks/commit-rules
@@ -226,35 +256,7 @@
       devShells = forAllSystems (
         pkgs:
         let
-          # Everything the harness and an implementation worktree need, and nothing that
-          # talks to a forge: the default shell must be enough to do all the work offline
-          # and against any remote.
-          base = [
-            # The harness: scripts/ and .githooks/ are bash >= 4 (mapfile) and were written
-            # against GNU userland; macOS ships bash 3.2 and BSD tools.
-            pkgs.bashInteractive
-            pkgs.coreutils
-            pkgs.gnugrep
-            pkgs.gnused
-            pkgs.gawk
-            pkgs.git
-            pkgs.jujutsu # optional workflow, .agents/JJ.md
-            pkgs.diff2html-cli # scripts/review renders a branch as a page
-            # scripts/leak-check, which the hooks run on every commit and push: the
-            # repository is public, so it cannot wait in an opt-in layer.
-            pkgs.gitleaks
-
-            # The implementation stack, .agents/STACK.md, and the noslop gate, .agents/QUALITY.md.
-            # A bare Python 3.12, and uv, which syncs Lark and the gate's Python tools into
-            # each worktree's .venv at the versions quality/uv.lock pins: several of them
-            # (import-linter, deptry, CrossHair) are not in nixpkgs. pyright stays here,
-            # since it is a Node program; ruff too, for the root and for editors.
-            pkgs.python312
-            pkgs.uv
-            pkgs.ruff
-            pkgs.pyright
-            pkgs.gnumake
-          ];
+          base = basePackages pkgs;
 
           mkFplShell =
             extra:
