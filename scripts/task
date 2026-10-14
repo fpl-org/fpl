@@ -27,6 +27,7 @@ went through `rad init`. `--self-test` runs the whole thing in a throwaway Radic
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -233,6 +234,25 @@ def read_units(path):
     return units
 
 
+def leak_gate(units):
+    """Every title and brief through scripts/leak-check --text, before anything is written.
+
+    A task is signed and replicated, and a COB cannot be taken back out of a peer's store,
+    so a refusal here names the unit and nothing has been written yet.
+    """
+    for label_, _, _, title, brief in units:
+        with tempfile.NamedTemporaryFile("w", suffix=".txt") as handle:
+            handle.write(f"{title}\n\n{brief}\n")
+            handle.flush()
+            done = subprocess.run(
+                [os.path.join(HERE, "leak-check"), "--text", handle.name],
+                capture_output=True,
+                text=True,
+            )
+        if done.returncode != 0:
+            die(f"{label_}: leak-check refused its title or brief; nothing written\n{done.stderr.strip()}")
+
+
 def load(graph, path, dry):
     """Create the tasks of a unit file that do not exist yet, then the links between them.
 
@@ -241,6 +261,7 @@ def load(graph, path, dry):
     adds only a link that is missing. Returns (created, linked).
     """
     units = read_units(path)
+    leak_gate(units)
     ids = {label(t): oid for oid, t in graph.tasks.items()}
     created = 0
     for label_, _, _, title, brief in units:
@@ -538,6 +559,14 @@ def self_test():
             handle.write("Q1\t-\t\tname\tmentions zztermzz\n")
         refused = task("load", bad + "x", ok=False)
         check("a missing file is refused", refused.returncode == 2)
+        with open(f"{repo}/.git/leak-patterns", "w") as handle:
+            handle.write("zztermzz\n")
+        if shutil.which("gitleaks"):
+            leaked = task("load", bad, ok=False)
+            check("a private term stops the load before a write",
+                  leaked.returncode == 2 and "Q1" in leaked.stderr and "Q1" not in task("list").stdout)
+        else:
+            print("task: self-test: no gitleaks on PATH, leak refusal not exercised", file=sys.stderr)
 
         # A loop is allowed to be recorded; what it may not do is make `ready` go quiet.
         left = task("new", "span: pick the representation").stdout.strip()
