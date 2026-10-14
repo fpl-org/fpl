@@ -5,12 +5,14 @@
 # worktree of its own (scripts/present-check), so a series is judged lemma by lemma. It posts
 # one comment: whether the push changed the presentation (the same tree, another story),
 # relocated the series (the same patches, a moved base) or changed its content, the lemma list
-# with seconds, and the range-diff against the head the push replaced.
+# with seconds, and the range-diff against the head the push replaced. When the owner approves,
+# a relay dispatches land.yml on main with the pull request number; until that workflow
+# arrives (a later unit) the relay fails loudly and changes nothing.
 #
-# Two jobs, split by what they may do: `check` runs the pull request's code and only reads;
+# Three jobs, split by what they may do: `check` runs the pull request's code and only reads;
 # `comment` holds the one write, to the conversation, and runs none of that code (a fork's
-# token cannot write, so for a fork the text goes to the run's summary page instead).
-# The judge is main's, as in commit-lint.yml: present-check
+# token cannot write, so for a fork the text goes to the run's summary page instead); `relay` holds
+# actions: write and nothing else. The judge is main's, as in commit-lint.yml: present-check
 # runs from a worktree of main, so a pull request cannot loosen its own verdict. Refs, SHAs and
 # numbers reach the shell through env, never through an expression in the script text. There is
 # no secret here; the jobs use the token GitHub gives each run.
@@ -21,6 +23,8 @@ on:
     # "edited" is how GitHub reports a retargeted base: a stacked PR retargeted to main gets a
     # longer range without a new head. The job below skips edits that did not move the base.
     types: [opened, synchronize, reopened, edited]
+  pull_request_review:
+    types: [submitted]
 
 permissions:
   contents: read
@@ -127,3 +131,26 @@ jobs:
           # The target comes from the event, never from the artifact: the artifact is written
           # by the pull request's own code.
           gh api "repos/$REPO/issues/$PR/comments" -F body=@series/comment.md >/dev/null
+
+  relay:
+    if: >-
+      github.event_name == 'pull_request_review'
+      && github.event.review.state == 'approved'
+      && github.event.review.user.login == 'psjg'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch land.yml on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          # Fails loudly while land.yml is not on main, and has changed nothing by then.
+          gh workflow view land.yml --repo "$REPO" --ref main >/dev/null 2>&1 || {
+            echo "::error::land.yml is not on main yet; nothing was dispatched for pull request $PR"
+            exit 1
+          }
+          gh workflow run land.yml --repo "$REPO" --ref main -f pr="$PR"
