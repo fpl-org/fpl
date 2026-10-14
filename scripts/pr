@@ -9,7 +9,21 @@
 #   scripts/pr -t <title> -b <text>
 #   scripts/pr -B <parent>         stack on the branch of an open pull request (below)
 #   scripts/pr --draft             open it as a draft
+#   scripts/pr --body-file FILE    the body from a file, not generated
 #   scripts/pr -n                  dry run: print what would be sent
+#
+# And four things to do to a pull request that is open, by its number:
+#
+#   scripts/pr --update-body N FILE   replace its body with the file
+#   scripts/pr --ready N              take it out of draft, once the bots are quiet
+#   scripts/pr --reviewer N LOGIN     ask LOGIN to review it
+#
+# The body, a file or generated, and a new body go through the leak gate first. --ready
+# looks at the head commit: it waits, up to FPL_PR_WAIT seconds (default 900, polling every
+# FPL_PR_POLL, default 15), until no check run or status is pending and no review is
+# requested and unanswered, and otherwise stops and names what is still pending. A bot
+# that has not yet started a check is not pending to the forge: run it after a push has
+# had a minute to start its checks. No labels are set or read.
 #
 # A pull request is based on main. It is based on another branch only when that is a stack
 # the author chose: -B <parent> names the head branch of a pull request that is open, and
@@ -45,10 +59,23 @@ die() {
 	exit 1
 }
 
-usage="usage: scripts/pr [-n] [--draft] [-t <title>] [-b <text>] [-B <parent>] [<branch>]"
-base="" title="" body="" dry=0 draft=0
+usage="usage: scripts/pr [-n] [--draft] [-t <title>] [-b <text>|--body-file <file>] [-B <parent>] [<branch>]
+       scripts/pr --update-body <number> <file> | --ready <number> | --reviewer <number> <login>"
+base="" title="" body="" bodyfile="" dry=0 draft=0 mode=create num="" arg=""
 while [ $# -gt 0 ]; do
 	case "$1" in
+	--body-file)
+		[ $# -ge 2 ] || die "$1 needs a file; $usage"
+		bodyfile="$2" && shift 2
+		;;
+	--update-body | --reviewer)
+		[ $# -ge 3 ] || die "$1 needs two values; $usage"
+		mode="${1#--}" num="$2" arg="$3" && shift 3
+		;;
+	--ready)
+		[ $# -ge 2 ] || die "$1 needs a number; $usage"
+		mode=ready num="$2" && shift 2
+		;;
 	-t | -b | -B)
 		[ $# -ge 2 ] || die "$1 needs a value; $usage"
 		case "$1" in -t) title="$2" ;; -b) body="$2" ;; *) base="$2" ;; esac
@@ -61,20 +88,30 @@ while [ $# -gt 0 ]; do
 	esac
 done
 [ $# -le 1 ] || die "$usage"
+if [ "$mode" != create ]; then
+	case "$num" in '' | *[!0-9]*) die "'$num' is not a pull request number; $usage" ;; esac
+	[ $# -eq 0 ] && [ -z "$base$title$body$bodyfile" ] && [ "$draft$dry" = 00 ] ||
+		die "$mode takes only its own arguments; $usage"
+fi
+[ -z "$body" ] || [ -z "$bodyfile" ] || die "-b and --body-file both give the body; take one"
+[ -z "$bodyfile" ] || [ -r "$bodyfile" ] || die "cannot read '$bodyfile'"
 
 top="$(git rev-parse --show-toplevel)"
-branch="${1:-$(git branch --show-current)}"
-[ -n "$branch" ] || die "detached HEAD; name the branch to file"
-git rev-parse -q --verify "refs/heads/$branch" >/dev/null ||
-	die "no local branch '$branch'"
-parsed="$("$top/scripts/branch-lint" --parse "$branch")" ||
-	die "branch '$branch' does not parse"
-kind="$(sed -n 's/^kind=//p' <<<"$parsed")"
-stack="$(sed -n 's/^stack=//p' <<<"$parsed")"
-case "$kind" in
-agent-* | vendor) ;;
-*) die "'$branch' is not an agent branch; a human files their own pull request" ;;
-esac
+branch="" stack=""
+if [ "$mode" = create ]; then
+	branch="${1:-$(git branch --show-current)}"
+	[ -n "$branch" ] || die "detached HEAD; name the branch to file"
+	git rev-parse -q --verify "refs/heads/$branch" >/dev/null ||
+		die "no local branch '$branch'"
+	parsed="$("$top/scripts/branch-lint" --parse "$branch")" ||
+		die "branch '$branch' does not parse"
+	kind="$(sed -n 's/^kind=//p' <<<"$parsed")"
+	stack="$(sed -n 's/^stack=//p' <<<"$parsed")"
+	case "$kind" in
+	agent-* | vendor) ;;
+	*) die "'$branch' is not an agent branch; a human files their own pull request" ;;
+	esac
+fi
 
 # The machine account: the login inside the noreply address of .git/agent-identity.
 identity="$("$top/scripts/agent-identity" show)" ||
@@ -87,10 +124,11 @@ login="${login%@*}"
 # The forge is the remote the branch tracks, else the one main tracks: a branch stacked on
 # another agent branch usually tracks nothing. Failing both, a clone with a single remote
 # has only one forge to mean.
-remote="$(git config "branch.$branch.remote" ||
-	git config branch.main.remote ||
-	{ [ "$(git remote | wc -l)" -eq 1 ] && git remote; })" ||
-	die "cannot tell the forge: '$branch' and main track no remote, and there is more than one"
+remote=""
+[ -z "$branch" ] || remote="$(git config "branch.$branch.remote" || true)"
+[ -n "$remote" ] || remote="$(git config branch.main.remote || true)"
+[ -n "$remote" ] || { [ "$(git remote | wc -l)" -eq 1 ] && remote="$(git remote)"; } ||
+	die "cannot tell the forge: ${branch:+'$branch' and }main track no remote, and there is more than one"
 
 # .git/agent-credentials, if it is there: a git credential-store file holding one
 # https://<login>:<token>@github.com line for the machine account (.agents/WORKFLOW.md).
@@ -137,7 +175,7 @@ esac
 # The forge side, one python program for every call: pyapi <command> <argument>...
 # It first checks that the token is the machine account's, whichever command follows.
 read -r -d '' pysrc <<'PY' || true
-import json, os, sys, urllib.error, urllib.request
+import json, os, sys, time, urllib.error, urllib.request
 
 slug, login, token = os.environ["FPL_SLUG"], os.environ["FPL_LOGIN"], os.environ["FPL_TOKEN"]
 root = os.environ.get("FPL_API_URL", "https://api.github.com")
@@ -194,12 +232,71 @@ elif command == "create":
         {"title": title, "body": body, "head": branch, "base": base, "draft": draft == "1"},
     )
     print(created["html_url"])
+elif command == "update-body":
+    api(f"/repos/{slug}/pulls/{args[0]}", {"body": open(args[1]).read()}, "PATCH")
+    print(f"pr: body of #{args[0]} replaced", file=sys.stderr)
+elif command == "reviewer":
+    api(f"/repos/{slug}/pulls/{args[0]}/requested_reviewers", {"reviewers": [args[1]]})
+    print(f"pr: asked {args[1]} to review #{args[0]}", file=sys.stderr)
+elif command == "ready":
+    number = args[0]
+    wait, poll = float(os.environ["FPL_PR_WAIT"]), float(os.environ["FPL_PR_POLL"])
+    deadline = time.monotonic() + wait
+    while True:
+        pull = api(f"/repos/{slug}/pulls/{number}")
+        if pull["state"] != "open":
+            die(f"#{number} is {pull['state']}")
+        if not pull["draft"]:
+            print(f"pr: #{number} is ready already", file=sys.stderr)
+            raise SystemExit(0)
+        sha = pull["head"]["sha"]
+        pending = [f"review requested from {u['login']}" for u in pull["requested_reviewers"]]
+        pending += [f"review requested from team {t['slug']}" for t in pull["requested_teams"]]
+        runs = api(f"/repos/{slug}/commits/{sha}/check-runs?per_page=100")["check_runs"]
+        pending += [f"check {r['name']} is {r['status']}" for r in runs if r["status"] != "completed"]
+        statuses = api(f"/repos/{slug}/commits/{sha}/status?per_page=100")["statuses"]
+        pending += [f"status {s['context']} is pending" for s in statuses if s["state"] == "pending"]
+        if not pending:
+            break
+        if time.monotonic() >= deadline:
+            die(f"#{number} at {sha[:7]} is not quiet after {wait:g}s: " + "; ".join(pending))
+        time.sleep(min(poll, max(deadline - time.monotonic(), 0)))
+    marked = api(
+        "/graphql",
+        {
+            "query": "mutation($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id})"
+            " { pullRequest { isDraft } } }",
+            "variables": {"id": pull["node_id"]},
+        },
+    )
+    if marked.get("errors"):
+        die(f"#{number} stays a draft: {marked['errors'][0].get('message')}")
+    print(f"pr: #{number} is ready, the bots are quiet at {sha[:7]}", file=sys.stderr)
 else:
     die(f"no command '{command}'")
 PY
 pyapi() {
-	FPL_SLUG="$slug" FPL_LOGIN="$login" FPL_TOKEN="$token" python3 -c "$pysrc" "$@"
+	FPL_SLUG="$slug" FPL_LOGIN="$login" FPL_TOKEN="$token" FPL_PR_WAIT="${FPL_PR_WAIT:-900}" \
+		FPL_PR_POLL="${FPL_PR_POLL:-15}" python3 -c "$pysrc" "$@"
 }
+
+# The modes that work on a pull request already open need no branch.
+case "$mode" in
+update-body)
+	[ -r "$arg" ] || die "cannot read '$arg'"
+	"$top/scripts/leak-check" --text "$arg" || die "nothing was sent"
+	pyapi update-body "$num" "$arg"
+	exit 0
+	;;
+ready)
+	pyapi ready "$num"
+	exit 0
+	;;
+reviewer)
+	pyapi reviewer "$num" "$arg"
+	exit 0
+	;;
+esac
 
 here="$(git rev-parse "refs/heads/$branch")"
 there="$(git_forge ls-remote "$remote" "refs/heads/$branch" | cut -f1)"
@@ -228,19 +325,24 @@ if [ "$base" != main ] && [ -z "$(pyapi open-url "$base")" ]; then
 	die "'$base' is not the branch of an open pull request; a pull request is based on main: git rebase --onto $remote/main $remote/$base $branch, push, and run this again without -B"
 fi
 
-first="$(git rev-list --reverse "$remote/$base..$here" | head -n1)"
+first="$(git rev-list --reverse "$remote/$base..$here" | sed -n 1p)"
 [ -n "$first" ] || die "no commits between $remote/$base and $branch"
 count="$(git rev-list --count "$remote/$base..$here")"
 [ -n "$title" ] || title="$(git log -1 --format=%s "$first")"
 # Default body: the first paragraph of the first commit's body, as one line.
 [ -n "$body" ] || body="$(git log -1 --format=%b "$first" |
 	awk 'NF==0{exit} {printf "%s%s", sep, $0; sep=" "}')"
+[ -z "$bodyfile" ] || body="$(cat "$bodyfile")"
 # One commit speaks for itself. More than one: the first commit's paragraph describes only
 # the first change, so list them all.
 subjects=""
 [ "$count" = 1 ] || subjects="$(git log --reverse --format='- %s' "$remote/$base..$here")"$'\n\n'
-text="$(printf '%s%s\n\n%slanding: fast-forward by the lander after review.' \
-	"${stack:+Stack: $stack$'\n\n'}" "$body" "$subjects")"
+if [ -n "$bodyfile" ]; then
+	text="$body"
+else
+	text="$(printf '%s%s\n\n%slanding: fast-forward by the lander after review.' \
+		"${stack:+Stack: $stack$'\n\n'}" "$body" "$subjects")"
+fi
 
 # The forge is public: the title, the text and the branch name go through the leak gate
 # first (scripts/leak-check; FPL_LEAK_GATE=warn overrides), dry run or not.
