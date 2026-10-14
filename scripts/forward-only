@@ -665,7 +665,9 @@ def hook(t: Path, run: Callable[[list[str], Case], Any]) -> list[tuple[str, bool
     pre_push = [str(repo / ".githooks" / "pre-push"), "github", URL]
     # The gates after this one list the URL with git ls-remote. Git reads the remote on disk
     # in its place, whose main holds the commit, so nothing reaches the network.
+    # The hook's whoami message asks gh and ssh who they are; this test judges what the gate asks.
     local = {
+        "FPL_WHOAMI_CHECK": "off",
         "GIT_CONFIG_COUNT": "1",
         "GIT_CONFIG_KEY_0": f"url.{t / 'remote.git'}.insteadOf",
         "GIT_CONFIG_VALUE_0": URL,
