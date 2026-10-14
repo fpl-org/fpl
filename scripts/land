@@ -848,6 +848,9 @@ def judge(d, repo, fetched, main, ancestor, merges, ci, dest):  # noqa: PLR0913,
     if v.refused == {"land/workflows"}:
         print(f"land: #{pr['number']} is refused by land/workflows alone, and every other rule"
               " holds; it lands by the owner path, not by this script:")
+        if approve:  # this script gives no approval for a range it does not push
+            print(f"land: {fetched[:12]} has no approval yet: a code owner gives it on the"
+                  " forge (Files changed > Review changes > Approve) before this line is run:")
         print(f"land: {owner_push(repo, fetched)}")
         return 4
     if v.refused:

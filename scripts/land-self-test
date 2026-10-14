@@ -1214,6 +1214,13 @@ called
 lacks " -X " "nothing is written to the forge"
 main_is "$M0" "main stays"
 forge
+reviews "$(review 1 psjg COMMENTED "$HW")"
+expect 1 "a workflow, the approval still to give" --dry-run 7
+says "${HW:0:12} has no approval yet: a code owner gives it on the forge" \
+	"the owner's line waits for the approval"
+says "land: $owner" "his line is still printed"
+lacks "would approve" "this script gives none for a range it does not push"
+forge
 pull open true main false
 expect 1 "a workflow in a draft" --dry-run 7
 says "NO  land/open" "the other refusal is named"
