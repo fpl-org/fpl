@@ -160,6 +160,7 @@ fetch | push | ls-remote)
 	set -- "${args[@]}"
 	[ "$1" != push ] || [ -z "${GIT_CONFIG_KEY_0:-}" ] ||
 		echo "git push $GIT_CONFIG_KEY_0 ${GIT_CONFIG_VALUE_0:-}" >>"$FORGE/calls"
+	case "$*" in *--force-with-lease*) echo "git $*" >>"$FORGE/calls" ;; esac
 	;;
 esac
 exec "$LAND_TEST_GIT" "$@"
@@ -1199,7 +1200,7 @@ called
 lacks "open " "--ci opens no browser"
 says "git push http.https://github.com/.extraheader AUTHORIZATION: basic $(printf x-access-token:t | base64)" \
 	"the push carries the token"
-first "-X PATCH repos/land-test/fpl/pulls/8" "-X DELETE repos/land-test/fpl/git/refs/heads/$BR" \
+first "-X PATCH repos/land-test/fpl/pulls/8" "--force-with-lease=refs/heads/$BR:$H :refs/heads/$BR" \
 	"a child is retargeted before its base is deleted"
 lacks "fpl/series" "no receipt without scripts/series on main"
 forge
@@ -1208,7 +1209,13 @@ children '{"number": 8}'
 GH_TOKEN=t expect 1 "--ci, a child that cannot be retargeted" --ci 7
 says "could not all be retargeted" "it says so loudly"
 called
-lacks "-X DELETE" "the branch stays"
+lacks "--force-with-lease" "the branch stays"
+forge
+git --git-dir="$REMOTE" update-ref refs/heads/$BR "$M1"
+GH_TOKEN=t expect 0 "--ci, the branch moved past the head that landed" --ci 7
+main_is "$H" "it lands all the same"
+says "kept $BR" "it keeps the branch and says so"
+lacks "deleted $BR" "it deletes nothing"
 at="$HS" HEAD_SHA="$HS"
 forge
 git --git-dir="$REMOTE" update-ref refs/heads/main "$MS"

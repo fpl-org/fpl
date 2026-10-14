@@ -85,7 +85,8 @@
 # writes the fpl/series check run on the head, when main holds scripts/series, with the
 # digest `scripts/series digest <main>..<head>` prints; the push carries the token. Once
 # GitHub shows the merge it retargets to main each pull request based on the landed branch,
-# and only then deletes the branch: deleting it first closes them.
+# and only then deletes the branch, if it still is at the head that landed: deleting it
+# first closes them.
 #
 # Then it prints the conversation, opens the diff in the browser and stops for a keypress.
 # After Enter it approves the head when it said it would, checks everything again, and pushes:
@@ -1231,8 +1232,14 @@ retarget() {
 		api -X PATCH "repos/$slug/pulls/$m" -f base=main >/dev/null || return 1
 		echo "land: retargeted #$m to main"
 	done
-	api -X DELETE "repos/$slug/git/refs/heads/$headref" >/dev/null || return 1
-	echo "land: deleted $headref"
+	# Deleted only where it still is the head that landed: a push to it since is no one's
+	# review, and the lease refuses to take it down.
+	if git push "$dest" "--force-with-lease=refs/heads/$headref:$head" ":refs/heads/$headref" \
+		>/dev/null 2>&1; then
+		echo "land: deleted $headref"
+	else
+		echo "land: kept $headref: it is no longer at $head, or could not be deleted" >&2
+	fi
 }
 [ "$ci" -eq 0 ] || retarget ||
 	die "LOUD: #$n landed, but its children could not all be retargeted, so $headref stays;" \
