@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+#
+# scripts/present-check-self-test — proof that scripts/present-check refuses each thing it is
+# there to refuse and passes what it should. Run by `make gates`.
+#
+# The fixture is a small repository in a temp directory, git's global and system config pointed
+# away from the maintainer's. Where a /bin/bash other than the running bash exists (3.2 on a
+# Mac), the run is made again with it first on PATH.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+pc="$root/scripts/present-check"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/present-check-self-test.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+: >"$tmp/gitconfig"
+export GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home" \
+	GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t \
+	GIT_COMMITTER_EMAIL=t@example.invalid
+unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_CONFIG_COUNT
+mkdir -p "$HOME"
+
+repo="$tmp/repo"
+git init -q -b main "$repo"
+cd "$repo"
+total=0 fails=0
+
+commit() {
+	if [ -n "${2-}" ]; then git commit -q -m "$1" -m "$2"; else git commit -q -m "$1"; fi
+}
+add() { # add <path> [<mode>]: a file whose content is its path and the branch
+	mkdir -p "$(dirname "$1")"
+	echo "$1 $(git branch --show-current)" >"$1"
+	[ -z "${2-}" ] || chmod "$2" "$1"
+	git add "$1"
+}
+echo base >base
+git add base
+commit base
+git tag base
+
+fail() { # fail <message>: count it and say it
+	fails=$((fails + 1))
+	printf 'self-test: %s\n' "$*" >&2
+}
+# run <name> <exit> <must-say>... -- <args>: present-check with args; assert exit and text.
+run() {
+	local name="$1" want="$2" out code=0 text needs=()
+	shift 2
+	while [ "$1" != -- ]; do needs+=("$1") && shift; done
+	shift
+	out="$("$pc" "$@" 2>&1)" || code=$?
+	total=$((total + 1))
+	if [ "$code" -ne "$want" ]; then
+		fail "$name: exit $code, wanted $want"$'\n'"$out"
+		return 0
+	fi
+	for text in ${needs[@]+"${needs[@]}"}; do
+		printf '%s\n' "$out" | grep -qF -- "$text" || fail "$name: output lacks \"$text\""$'\n'"$out"
+	done
+}
+
+# The work: three commits on main. The presentation: the same tree in two, reworded.
+git checkout -q -b work main
+add f1 && commit "feat(x): one"
+add f2 && commit "feat(x): two"
+add f3 && commit "feat(x): three"
+git checkout -q -b pres main
+git checkout -q work -- f1 f2
+commit "feat(x): one and two"
+git checkout -q work -- f3
+commit "feat(x): three, told last"
+run presentation 0 "trees equal" "merge-base equal" "range-diff" "told last" "green" -- work pres
+run "empty -B" 2 "usage" -- -B "" work pres
+run "one ref" 2 "usage" -- pres
+
+git checkout -q -b extra pres
+add f4 && commit "feat(x): four"
+run "trees differ" 1 "trees differ" -- work extra
+
+# Merge-base differs, trees equal: main moves by an empty commit; the series is told again on it.
+git checkout -q -b main2 main
+git commit -q --allow-empty -m "chore(x): move main"
+git checkout -q -b moved main2
+git checkout -q work -- f1 f2 f3
+commit "feat(x): everything"
+run "merge-base" 1 "merge-base differs" -- -B main2 work moved
+
+echo "present-check self-test: $fails of $total checks failed (bash $BASH_VERSION)"
+if [ -z "${PRESENT_CHECK_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ] && ! [ /bin/bash -ef "$BASH" ]; then
+	mkdir -p "$tmp/shim"
+	ln -s /bin/bash "$tmp/shim/bash"
+	PATH="$tmp/shim:$PATH" PRESENT_CHECK_SELF_TEST_SHIM=1 /bin/bash "$root/scripts/present-check-self-test" ||
+		fails=$((fails + 1))
+fi
+[ "$fails" -eq 0 ]
