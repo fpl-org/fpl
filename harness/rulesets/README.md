@@ -20,3 +20,10 @@ Import it (owner): Settings > Rules > Rulesets > New ruleset > Import a ruleset,
 branches but `main`, the rules "Restrict creations" and "Restrict updates", and the two bypass
 actors (both "Always allow"). Create it: nothing is enforced yet. To switch the brake on, set
 Enforcement status to Active.
+
+## Checking
+
+    scripts/ruleset-check          # exit 0 in sync, 1 drift, 2 cannot read; --json for machines
+
+It only reads. As the machine account: `GH_TOKEN=$(gh auth token --user psjg-claude)`. Until
+`brake.json` is imported it reports the brake as `NOT LIVE` and exits 1.
