@@ -137,8 +137,8 @@ is wrong, say so and let the maintainer decide — don't route around it.
   approved head, so the SHAs stay (never the merge button, never a local merge). The
   `Stack:` trailer on every commit keeps the grouping in the repo once the refs are deleted.
 - Authorship model (machine account + `claude[bot]` App): `.agents/COMMITS.md`.
-- The task graph (`scripts/task`, Radicle COBs in the repository): `.agents/TASKS.md`. The store
-  exists; no task has been written to it yet.
+- The task graph (`scripts/task`, Radicle COBs in the repository): `.agents/TASKS.md`. The harness
+  redo's units are in `.agents/tasks/redo.tsv`; `scripts/task load` writes them, `tree` shows them.
 
 ## Coding standards
 
