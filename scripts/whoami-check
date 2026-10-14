@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+#
+# scripts/whoami-check — which account would a push from here use? A message, never a gate.
+#
+# Three identities can write to GitHub from one Mac, and they are not always the same one:
+#
+#   push   what git's credential helper hands out for https://github.com (the username line
+#          only: the password is never read into a variable, let alone printed);
+#   gh     the account `gh auth status` marks active;
+#   ssh    the login GitHub greets for `ssh -T git@github.com`.
+#
+# When the owner's own (admin) account is any of them, an agent's push would go out under it
+# and not under the machine account, so a NAG line says so and names the remedy. The script
+# prints and exits 0 whatever it finds or cannot find: .githooks/pre-push runs it first as a
+# message, and a refusal there would be a gate on the wrong thing.
+#
+#   FPL_ADMIN_ACCOUNTS   space-separated logins that count as admin (default: psjg)
+#   FPL_MACHINE_ACCOUNT  the account the remedy names (default: psjg-claude)
+#
+# Each probe is a plain command found on PATH (git, gh, ssh), which is how the self-test
+# stubs them. Runs under bash 3.2.
+
+set -u
+
+admins="${FPL_ADMIN_ACCOUNTS:-psjg}"
+machine="${FPL_MACHINE_ACCOUNT:-psjg-claude}"
+
+# push: git's answer for https://github.com, the username line and nothing else.
+push="$(printf 'protocol=https\nhost=github.com\n\n' |
+	GIT_TERMINAL_PROMPT=0 git credential fill 2>/dev/null |
+	sed -n 's/^username=//p' | head -n 1)" || push=""
+
+# gh: the account whose block says "Active account: true"; the block opens with the login.
+gh_acct="$(gh auth status 2>&1 | awk '
+	/Logged in to .* account / { for (i = 1; i < NF; i++) if ($i == "account") acct = $(i + 1) }
+	/Active account: true/ { print acct; exit }')" || gh_acct=""
+
+# ssh: "Hi <login>! You've successfully authenticated ...". ssh exits 1 on success here.
+# Never interactive: BatchMode=yes forbids every prompt, ConnectTimeout=5 bounds the connect,
+# and timeout bounds the whole probe, so a key that waits on a Touch ID tap is cut off at 10 s,
+# not waited for.
+ssh_cmd=(ssh -o BatchMode=yes -o ConnectTimeout=5 -T git@github.com)
+if command -v timeout >/dev/null 2>&1; then ssh_cmd=(timeout 10 "${ssh_cmd[@]}"); fi
+ssh_acct="$("${ssh_cmd[@]}" 2>&1 </dev/null | sed -n 's/^Hi \([^!]*\)!.*/\1/p' | head -n 1)" ||
+	ssh_acct=""
+
+nag=0
+show() { # show <label> <login>: label "username" prints as username=<login>, others as label: <login>
+	local who="${2:-}" a
+	if [ -z "$who" ]; then
+		printf 'whoami-check: %sunknown\n' "$1"
+		return
+	fi
+	printf 'whoami-check: %s%s\n' "$1" "$who"
+	for a in $admins; do [ "$who" = "$a" ] && nag=1; done
+}
+show "username=" "$push"
+show "gh:       " "$gh_acct"
+show "ssh:      " "$ssh_acct"
+
+if [ "$nag" -eq 1 ]; then
+	echo "whoami-check: NAG: an admin account ($admins) is among these; a push would go out as it, not as $machine."
+	echo "whoami-check: remedy: push with the machine account token URL:"
+	echo "whoami-check:   TOKEN=\$(gh auth token --user $machine); git push \"https://x-access-token:\$TOKEN@github.com/<owner>/<repo>.git\" HEAD:refs/heads/<branch>"
+	echo "whoami-check:   or log the admin account out of gh and the credential helper."
+fi
+exit 0
