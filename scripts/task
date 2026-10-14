@@ -3,7 +3,8 @@
 
     scripts/task new "<title>" [-d <description>] [-b <id>]... [-p <id>]   open a task
     scripts/task list [--all]        open tasks; --all includes done and dropped
-    scripts/task ready               tasks nothing is waiting on; exit 1 if a loop is left
+    scripts/task ready               tasks nothing is waiting on (not lanes); exit 1 if a loop is left
+    scripts/task load [-n] <file>    create the tasks a file lists; a rerun creates nothing
     scripts/task tree                every task under what it is part of, with what it waits on
     scripts/task show <id>
     scripts/task start|done|drop|reopen <id>
@@ -26,6 +27,7 @@ went through `rad init`. `--self-test` runs the whole thing in a throwaway Radic
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -200,6 +202,96 @@ def line(graph, oid):
     return f"{oid[:7]}  {task['state']:<7}  {task['title']}{who}{tail}"
 
 
+def read_units(path):
+    """The rows of a unit file: (label, part, blockers, title, brief), checked against each other.
+
+    Five tab-separated columns; blank lines and lines starting with '#' are skipped. The title
+    is '<label> <name>'. Every label a row names as parent or blocker must be a row.
+    """
+    try:
+        lines = open(path, encoding="utf-8").read().splitlines()
+    except OSError as err:
+        die(f"{path}: {err.strerror}")
+    units = []
+    for n, raw in enumerate(lines, 1):
+        if not raw.strip() or raw.startswith("#"):
+            continue
+        cols = raw.split("\t")
+        if len(cols) != 5 or not cols[0] or not cols[3] or not cols[4]:
+            die(f"{path}:{n}: want label, partOf, blockedBy, name, brief, tab-separated")
+        label_, part, blockers, name, brief = cols
+        units.append(
+            (label_, None if part in ("", "-") else part,
+             [b for b in blockers.split(",") if b], f"{label_} {name}", brief)
+        )
+    names = [u[0] for u in units]
+    if len(set(names)) != len(names):
+        die(f"{path}: a label is listed twice")
+    for label_, part, blockers, _, _ in units:
+        for ref in ([part] if part else []) + blockers:
+            if ref not in names:
+                die(f"{path}: {label_} names {ref}, which is not a row")
+    return units
+
+
+def leak_gate(units):
+    """Every title and brief through scripts/leak-check --text, before anything is written.
+
+    A task is signed and replicated, and a COB cannot be taken back out of a peer's store,
+    so a refusal here names the unit and nothing has been written yet.
+    """
+    for label_, _, _, title, brief in units:
+        with tempfile.NamedTemporaryFile("w", suffix=".txt") as handle:
+            handle.write(f"{title}\n\n{brief}\n")
+            handle.flush()
+            done = subprocess.run(
+                [os.path.join(HERE, "leak-check"), "--text", handle.name],
+                capture_output=True,
+                text=True,
+            )
+        if done.returncode != 0:
+            die(f"{label_}: leak-check refused its title or brief; nothing written\n{done.stderr.strip()}")
+
+
+def load(graph, path, dry):
+    """Create the tasks of a unit file that do not exist yet, then the links between them.
+
+    Two passes, so the file may list a blocker after what it blocks. A unit counts as
+    existing when a task's first word is its label, so a second run creates nothing and
+    adds only a link that is missing. Returns (created, linked).
+    """
+    units = read_units(path)
+    leak_gate(units)
+    ids = {label(t): oid for oid, t in graph.tasks.items()}
+    created = 0
+    for label_, _, _, title, brief in units:
+        if label_ in ids:
+            continue
+        print(f"{'would create' if dry else 'create'}  {title}")
+        created += 1
+        if not dry:
+            ids[label_] = graph.act(None, f"open: {title}", {"type": "open", "title": title, "description": brief})
+    names = {oid: label(t) for oid, t in graph.tasks.items()}
+    linked = 0
+    for label_, part, blockers, _, _ in units:
+        old = graph.tasks.get(ids.get(label_), {})
+        held = {names.get(b) for b in old.get("blockedBy", [])}
+        todo = [b for b in blockers if b not in held]
+        reparent = part is not None and names.get(old.get("partOf")) != part
+        for b in todo:
+            print(f"{'would link' if dry else 'link'}  {label_} <- {b}")
+        if reparent:
+            print(f"{'would link' if dry else 'link'}  {label_} part of {part}")
+        linked += len(todo) + reparent
+        if (todo or reparent) and not dry:
+            actions = [{"type": "block", "by": ids[b]} for b in todo]
+            if reparent:
+                actions.append({"type": "part", "of": ids[part]})
+            graph.act(ids[label_], f"link {label_}", *actions)
+    print(f"task: {created} created, {linked} links{' (dry run, nothing written)' if dry else ''}")
+    return created, linked
+
+
 def tree(graph):
     """Every task under what it is part of; each open leaf says `ready` or what it waits on.
 
@@ -224,7 +316,7 @@ def tree(graph):
         mark = ""
         if task["state"] in OPEN_STATES and oid not in kids:
             waiting = graph.waiting_on(oid)
-            mark = f"  <- {' '.join(name(b) for b in waiting)}" if waiting else "  ready"
+            mark = f"  <- {' '.join(name(b) for b in sorted(waiting, key=name))}" if waiting else "  ready"
         print(f"{indent}{oid[:7]}  {task['state']:<7}  {task['title']}{mark}")
         for child in kids.get(oid, []):
             walk(child, indent + "    ")
@@ -247,6 +339,9 @@ def main(argv):
     new.add_argument("-b", "--blocked-by", action="append", default=[])
     new.add_argument("-p", "--part-of")
     sub.add_parser("tree")
+    loading = sub.add_parser("load")
+    loading.add_argument("file")
+    loading.add_argument("-n", "--dry-run", action="store_true")
     part = sub.add_parser("part")
     part.add_argument("id")
     part.add_argument("of", help="a task, or 'none' to clear")
@@ -279,10 +374,13 @@ def main(argv):
             actions.append({"type": "part", "of": graph.resolve(args.part_of)})
         print(graph.act(None, f"open: {args.title}", *actions)[:7])
     elif args.cmd in ("list", "ready"):
+        parents = {t.get("partOf") for t in graph.tasks.values()}
         for oid in sorted(graph.tasks, key=lambda o: (graph.tasks[o].get("opened", 0), o)):
             state = graph.tasks[oid]["state"]
-            if args.cmd == "ready" and (state not in OPEN_STATES or graph.waiting_on(oid)):
-                continue
+            if args.cmd == "ready" and (
+                state not in OPEN_STATES or graph.waiting_on(oid) or oid in parents
+            ):
+                continue  # a lane or group is never what is picked up; its parts are
             if args.cmd == "list" and not args.all and state not in OPEN_STATES:
                 continue
             print(line(graph, oid))
@@ -299,6 +397,8 @@ def main(argv):
                 print(f"# waiting on each other, nothing here can start: {ids}")
             if loops:
                 return 1
+    elif args.cmd == "load":
+        load(graph, args.file, args.dry_run)
     elif args.cmd == "tree":
         return tree(graph)
     elif args.cmd == "part":
@@ -437,6 +537,36 @@ def self_test():
         task("part", lexer, "none")
         task("block", unit, parser)
         check("tree names a blocker by its label", any(l.endswith("<- parser") for l in task("tree").stdout.splitlines()))
+
+        check("a lane is not ready", lane not in task("ready").stdout)
+
+        # load: a file of units, twice over, then a refusal before anything is written.
+        units = f"{tmp}/units.tsv"
+        with open(units, "w") as handle:
+            handle.write("# a comment\n"
+                         "L9\t-\t\tlane\tThe lane.\n"
+                         "L2\tL9\tL1\tsecond\tListed before what it waits on.\n"
+                         "L1\tL9\t\tfirst\tThe first.\n")
+        dry = task("load", "-n", units)
+        check("load -n writes nothing", "3 created, 3 links" in dry.stdout and "L9" not in task("list").stdout)
+        first = task("load", units)
+        check("load creates the units and links them", "3 created, 3 links" in first.stdout)
+        tree_out = task("tree").stdout
+        check("loaded tree nests and orders", "    " in tree_out and "L2 second  <- L1" in tree_out)
+        check("a second load creates nothing", "0 created, 0 links" in task("load", units).stdout)
+        bad = f"{tmp}/bad.tsv"
+        with open(bad, "w") as handle:
+            handle.write("Q1\t-\t\tname\tmentions zztermzz\n")
+        refused = task("load", bad + "x", ok=False)
+        check("a missing file is refused", refused.returncode == 2)
+        with open(f"{repo}/.git/leak-patterns", "w") as handle:
+            handle.write("zztermzz\n")
+        if shutil.which("gitleaks"):
+            leaked = task("load", bad, ok=False)
+            check("a private term stops the load before a write",
+                  leaked.returncode == 2 and "Q1" in leaked.stderr and "Q1" not in task("list").stdout)
+        else:
+            print("task: self-test: no gitleaks on PATH, leak refusal not exercised", file=sys.stderr)
 
         # A loop is allowed to be recorded; what it may not do is make `ready` go quiet.
         left = task("new", "span: pick the representation").stdout.strip()
