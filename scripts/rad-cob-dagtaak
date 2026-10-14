@@ -25,6 +25,7 @@ State of a task:
     title, description   text
     state                todo | doing | done | dropped
     blockedBy            ids of tasks that must be done (or dropped) first
+    partOf               id of the task this one is a part of (a lane, a group), or null
     assignee             DID of whoever works on it, or null
     author               DID that opened it
     opened, updated      timestamps of the first and of the last applied operation
@@ -38,6 +39,7 @@ Actions (the JSONL lines given to `rad cob create|update`):
     {"type": "state",   "state": todo|doing|done|dropped}       author, assignee
     {"type": "block",   "by": <task id>}                        author, assignee
     {"type": "unblock", "by": <task id>}                        author, assignee
+    {"type": "part",    "of": <task id> | null}                 author
 
 Who may act is decided here, because an external COB has no other authorisation: the
 author may do anything, the assignee may move the task and its blockers, anybody else is
@@ -86,6 +88,7 @@ def apply(task, action, actor):
             description=description,
             state="todo",
             blockedBy=[],
+            partOf=None,
             assignee=None,
             author=actor,
         )
@@ -116,6 +119,16 @@ def apply(task, action, actor):
     if kind == "state" and is_worker:
         if action.get("state") in STATES:
             task["state"] = action["state"]
+            return True
+        return False
+
+    if kind == "part" and is_author:
+        # One parent, set or cleared. The reducer sees one task at a time, so it cannot
+        # tell a part-of loop from a tree; scripts/task refuses to close one and `tree`
+        # reports one that arrives anyway, as `ready` does for blockers.
+        of = action.get("of")
+        if of is None or (isinstance(of, str) and OID.match(of)):
+            task["partOf"] = of
             return True
         return False
 
@@ -222,6 +235,12 @@ def self_test():
     check("assignee cannot edit or assign", state["title"] == "lexer")
     op(alice, {"type": "block", "by": a}, {"type": "block", "by": "zz"}, {"type": "block"})
     check("bad or repeated blockers ignored", state["blockedBy"] == [a])
+    op(bob, {"type": "part", "of": a})
+    check("only the author sets partOf", state.get("partOf") is None)
+    op(alice, {"type": "part", "of": a}, {"type": "part", "of": "zz"}, {"type": "part", "of": 3})
+    check("author sets partOf; bad parents ignored", state["partOf"] == a)
+    op(alice, {"type": "part", "of": None})
+    check("partOf clears", state["partOf"] is None)
     op(alice, {"type": "unblock", "by": a}, {"type": "state", "state": "finished"})
     check("unblock, bad state ignored", state["blockedBy"] == [] and state["state"] == "doing")
     before = dict(state)
