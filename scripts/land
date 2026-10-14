@@ -73,8 +73,8 @@
 #   land/card               the body has the card's headings: What, What changes, How
 #                           checked, Limits, Verdict
 #
-# --ci is the lander App's mode: no terminal, no browser, no keypress, and no approval
-# given; it acts as the token in GH_TOKEN and refuses without one,
+# --ci is the lander App's mode (harness/workflows/land.yml): no terminal, no browser, no
+# keypress, and no approval given; it acts as the token in GH_TOKEN and refuses without one,
 # and a token the forge shows a user for (land/ci: an App's installation token has none).
 # There land/approved wants a code owner's approval of the head standing, land/author that
 # it is not the author's, and land/bypass that each ruleset on main lists the App
@@ -960,7 +960,7 @@ while [ $# -gt 0 ]; do
 done
 if [ "$ci" -eq 1 ]; then
 	[ -n "${GH_TOKEN:-}" ] || die "land/ci: --ci acts as the token in GH_TOKEN, and none is set;" \
-		"remedy: mint the fpl-lander App's token into GH_TOKEN"
+		"remedy: mint the fpl-lander App's token into GH_TOKEN (harness/workflows/land.yml)"
 else
 	[ "$dry" -eq 1 ] || { [ -t 0 ] && [ -t 1 ]; } ||
 		die "needs a terminal: landing is a person's decision (--dry-run and --ci need none)"
@@ -1046,7 +1046,7 @@ gather() {
 	if [ "$ci" -eq 1 ]; then # an App's token has no user: it is the App
 		if api user >/dev/null 2>&1; then
 			die "land/ci: GH_TOKEN is a person's, the forge shows a user for it;" \
-				"remedy: --ci acts as the fpl-lander App's installation token"
+				"remedy: --ci acts as the fpl-lander App's installation token (harness/workflows/land.yml)"
 		fi
 		api "repos/$slug" >"$tmp/repo.json" || die "cannot read the repository $slug"
 		printf '{"login": "%s"}\n' "${FPL_LAND_APP:-fpl-lander[bot]}" >"$tmp/me.json"
