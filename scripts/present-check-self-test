@@ -4,8 +4,11 @@
 # there to refuse and passes what it should. Run by `make gates`.
 #
 # The fixture is a small repository in a temp directory, git's global and system config pointed
-# away from the maintainer's. Where a /bin/bash other than the running bash exists (3.2 on a
-# Mac), the run is made again with it first on PATH.
+# away from the maintainer's. FPL_PRESENT_QUICK and FPL_PRESENT_LINT stand in for make quick
+# (it logs the commit it ran on, and fails where a file `red` exists, so "never built" is read
+# from the log) and for commit-lint (it logs its arguments, and fails where `lint-fail` exists).
+# Where a /bin/bash other than the running bash exists (3.2 on a Mac), the run is made again
+# with it first on PATH.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -19,9 +22,18 @@ export GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home"
 unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_CONFIG_COUNT
 mkdir -p "$HOME"
 
+export LOG="$tmp/quick.log" LINTLOG="$tmp/lint.log" FLAG="$tmp/flag"
+export LEFT="$tmp/left.log"
+export FPL_PRESENT_QUICK='git rev-parse --short HEAD >>"$LOG"; test ! -e leftover || echo x >>"$LEFT"; touch leftover; test ! -e red'
+printf '%s\n' '#!/bin/sh' 'echo "$*" >>"$LINTLOG"' '[ ! -e "$FLAG/lint-fail" ] || exit 1' \
+	'echo "commit-lint: 0 of 1 commits failed"' >"$tmp/lint"
+chmod +x "$tmp/lint"
+export FPL_PRESENT_LINT="$tmp/lint"
+
 repo="$tmp/repo"
 git init -q -b main "$repo"
 cd "$repo"
+mkdir -p "$FLAG"
 total=0 fails=0
 
 commit() {
@@ -48,6 +60,7 @@ run() {
 	shift 2
 	while [ "$1" != -- ]; do needs+=("$1") && shift; done
 	shift
+	: >"$LOG" && : >"$LINTLOG" && : >"$LEFT"
 	out="$("$pc" "$@" 2>&1)" || code=$?
 	total=$((total + 1))
 	if [ "$code" -ne "$want" ]; then
@@ -58,6 +71,13 @@ run() {
 		printf '%s\n' "$out" | grep -qF -- "$text" || fail "$name: output lacks \"$text\""$'\n'"$out"
 	done
 }
+check() { # check <name> <condition command...>: a fact about the logs
+	local name="$1"
+	shift
+	total=$((total + 1))
+	"$@" || fail "$name"
+}
+lines() { [ "$(wc -l <"$1" | tr -d ' ')" -eq "$2" ]; }
 
 # The work: three commits on main. The presentation: the same tree in two, reworded.
 git checkout -q -b work main
@@ -69,13 +89,21 @@ git checkout -q work -- f1 f2
 commit "feat(x): one and two"
 git checkout -q work -- f3
 commit "feat(x): three, told last"
-run presentation 0 "trees equal" "merge-base equal" "range-diff" "told last" "green" -- work pres
-run "empty -B" 2 "usage" -- -B "" work pres
-run "one ref" 2 "usage" -- pres
+run presentation 0 "trees equal" "merge-base equal" "ok    commit-lint" \
+	"lemmas of main" "1. " "2. " "quick=" "range-diff" "told last" "green, 2 commits" -- work pres
+check "presentation: quick ran once per presented commit" lines "$LOG" 2
+check "presentation: the second lemma did not see the first one's leftovers" test ! -s "$LEFT"
+check "presentation: commit-lint named the branch" grep -q -- '-b pres main..' "$LINTLOG"
+run "empty -B" 2 "usage" -- -B "" pres
+run "empty -b" 2 "usage" -- -b "" pres
+run "one ref" 0 "green, 2 commits" -- pres
+run "a sha is no branch" 0 -- "$(git rev-parse pres)"
+check "a sha: commit-lint got no -b" grep -vq -- '-b ' "$LINTLOG"
 
 git checkout -q -b extra pres
 add f4 && commit "feat(x): four"
 run "trees differ" 1 "trees differ" -- work extra
+check "trees differ: no lemma was built" lines "$LOG" 0
 
 # Merge-base differs, trees equal: main moves by an empty commit; the series is told again on it.
 git checkout -q -b main2 main
@@ -84,6 +112,19 @@ git checkout -q -b moved main2
 git checkout -q work -- f1 f2 f3
 commit "feat(x): everything"
 run "merge-base" 1 "merge-base differs" -- -B main2 work moved
+
+# Red in the middle: the third commit is never built.
+git checkout -q -b redmid main
+add g1 && commit "feat(y): one"
+add red && commit "feat(y): breaks"
+add g3 && commit "feat(y): after"
+run "red middle" 1 "quick is red" "breaks" -- redmid
+check "red middle: first two built, third never" lines "$LOG" 2
+
+touch "$FLAG/lint-fail"
+run "lint red" 1 "commit-lint refuses" -- pres
+check "lint red: nothing built" lines "$LOG" 0
+rm "$FLAG/lint-fail"
 
 echo "present-check self-test: $fails of $total checks failed (bash $BASH_VERSION)"
 if [ -z "${PRESENT_CHECK_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ] && ! [ /bin/bash -ef "$BASH" ]; then
