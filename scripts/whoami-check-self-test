@@ -83,6 +83,19 @@ run() {
 	chmod +x "$tmp/bin/timeout"
 }
 
+# The hook runs it as a message: before the gates, and its failure cannot refuse a push.
+hook="$root/.githooks/pre-push"
+if ! grep -q 'scripts/whoami-check" "${2:-}" >&2 || :$' "$hook"; then
+	echo "FAIL hook: .githooks/pre-push does not run scripts/whoami-check as a message"
+	fails=$((fails + 1))
+fi
+# Anchored on the calls, not the comments that name the scripts: the first call of each.
+if [ "$(grep -n '^[^#]*"\$top/scripts/whoami-check"' "$hook" | head -n 1 | cut -d: -f1)" -gt \
+	"$(grep -n '^[^#]*"\$top/scripts/leak-check"' "$hook" | head -n 1 | cut -d: -f1)" ]; then
+	echo "FAIL hook: whoami-check runs after the gates"
+	fails=$((fails + 1))
+fi
+
 run "$(command -v bash)"
 if [ -x /bin/bash ] && [ "$(/bin/bash -c 'echo $BASH_VERSION')" != "$BASH_VERSION" ]; then
 	run /bin/bash

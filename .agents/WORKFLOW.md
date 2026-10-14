@@ -437,7 +437,9 @@ owner's admin account is any of them, a push from an agent's worktree goes out u
 `scripts/whoami-check` prints all three (username, gh, ssh) and a NAG line with the remedy when
 one is an admin account: push with the machine account token URL
 (`TOKEN=$(gh auth token --user <machine account>)`) or log the admin account out. It always
-exits 0.
+exits 0, and `.githooks/pre-push` runs it first as a message, never as a refusal. The hook hands
+it the destination URL, so only the identity that transport uses is judged: a push to an https
+URL that carries its own credentials, as the remedy does, is not nagged.
 
 ## Why this and not a feature branch
 

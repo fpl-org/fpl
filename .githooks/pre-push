@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# .githooks/pre-push — four gates on what reaches a remote:
+# .githooks/pre-push — four gates on what reaches a remote, after a message (scripts/whoami-check)
+# naming the account the push goes out as:
 #
 #   1. No private term or secret in what is pushed (scripts/leak-check --push): the
 #      patches, file names, identities and messages of every commit the remote does not
@@ -50,6 +51,11 @@ top="$(git rev-parse --show-toplevel)"
 # ships bash 3.2 as /bin/bash. Each gate gets it as a here-string, not through a pipe, so a
 # gate that exits without reading cannot fail the push by SIGPIPE under pipefail.
 updates="$(cat)"
+
+# 0. whose push is this? A message, never a refusal: scripts/whoami-check always exits 0, and
+# names the admin account a push to this URL ($2) would go out under, with the remedy.
+# FPL_WHOAMI_CHECK=off skips it (the probes ask the network; the hook's self-test sets it).
+[ "${FPL_WHOAMI_CHECK:-on}" = "off" ] || "$top/scripts/whoami-check" "${2:-}" >&2 || :
 
 # 1. leak gate -------------------------------------------------------------------------
 # It is handed the URL ($2), not the remote's name ($1): ls-remote of a name lists the
