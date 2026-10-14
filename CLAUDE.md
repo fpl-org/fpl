@@ -10,7 +10,8 @@ Read it first. This file only covers Claude Code tooling that lives under `.clau
   [`.agents/CONVENTIONS.md`](.agents/CONVENTIONS.md) — the commands don't define anything the doc
   doesn't.
 - **Subagents** (`.claude/agents/`): `spec-guardian` (read-only code-vs-spec drift review),
-  `feature-impl` (implements one feature to a green `make check`).
+  `feature-impl` (implements one feature to a green `make check`), `presenter` (rewrites a
+  finished work branch into the series the maintainer reads, and writes its review card).
 - **Skill** (`.claude/skills/fpl-conventions/`): loads `AGENTS.md` + `.agents/CONVENTIONS.md` +
   `.agents/COMMITS.md` + `.agents/WORKFLOW.md` for Claude. The docs are the source of truth; the
   skill is just a trigger.
