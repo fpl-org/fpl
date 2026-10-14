@@ -214,11 +214,30 @@ def bodies(patch):
 
 
 def find(patches, mark):
+    """The patch whose description ends in the marker the importer wrote.
+
+    Only the footer counts: the marker as the last line (as pushed, after the title), or as
+    the line above the pull request's link (as edited, after its text). A whole line, never
+    a substring: `GitHub-PR: o/r#1` must not find the patch of `#10`. And never a line
+    higher up, which is the author's text or title and can say anything.
+    """
     for oid, patch in patches.items():
         for revision in patch["revisions"].values():
-            if any(mark in d["body"] for d in revision["description"]):
+            if any(footed(d["body"], mark) for d in revision["description"]):
                 return oid
     return None
+
+
+def footed(description, mark):
+    """Whether the description ends in the importer's footer for this marker."""
+    lines = description.rstrip().splitlines()
+    return lines[-1:] == [mark] or (lines[-2:-1] == [mark] and lines[-1].startswith("https://"))
+
+
+def describe(pr, mark):
+    """The description the patch carries: the pull request's own text, then the footer."""
+    body = (pr.get("body") or "").replace("\r\n", "\n").strip()
+    return "\n\n".join(x for x in [body, f"{mark}\n{pr['html_url']}"] if x)
 
 
 def have(commit):
@@ -329,10 +348,8 @@ def import_one(repo, remote, bundle, patches):
         oid = repo.push(head, base, "refs/patches", [title, mark])
         if not oid:
             die(f"#{number}: rad did not say which patch it opened")
-        body = (pr.get("body") or "").replace("\r\n", "\n").strip()
-        description = "\n\n".join(x for x in [body, f"{mark}\n{pr['html_url']}"] if x)
         repo.act(oid, "Import the description", {"type": "revision.edit", "revision": oid,
-                                                  "description": description})
+                                                  "description": describe(pr, mark)})
         print(f"#{number}: opened patch {oid[:7]}", file=sys.stderr)
     patch = repo.show(oid)
     by_oid = {r["oid"]: rid for rid, r in patch["revisions"].items()}
@@ -444,6 +461,24 @@ def self_test():
 
     def check(name, ok):
         checks.append((name, bool(ok)))
+
+    ten = {"p10": {"revisions": {"r": {"description": [{"body": "pr 10\n\nGitHub-PR: o/r#10"}]}}}}
+    check("a marker is not found inside a longer one", find(ten, marker("o/r", 1)) is None)
+    check("a marker is found as a whole line", find(ten, marker("o/r", 10)) == "p10")
+
+    # The text of a pull request is its author's: a line in it that looks like another pull
+    # request's marker must not make that pull request's patch the one that is found.
+    forged = {"title": "pr 10", "body": "see\n\nGitHub-PR: o/r#1\n\nmore",
+              "html_url": "https://github.com/o/r/pull/10"}
+    forging = {"p10": {"revisions": {"r": {"description": [
+        {"body": f"{forged['title']}\n\n{marker('o/r', 10)}"},
+        {"body": describe(forged, marker("o/r", 10))}]}}}}
+    check("a marker in a pull request's own text is not found",
+          find(forging, marker("o/r", 1)) is None)
+    check("and the importer's own footer still is", find(forging, marker("o/r", 10)) == "p10")
+    titled = {"p10": {"revisions": {"r": {"description": [
+        {"body": f"{marker('o/r', 1)}\n\n{marker('o/r', 10)}"}]}}}}
+    check("a marker in a title is not found", find(titled, marker("o/r", 1)) is None)
 
     with tempfile.TemporaryDirectory() as tmp:
         env = dict(os.environ, RAD_HOME=f"{tmp}/home", RAD_PASSPHRASE="self-test",

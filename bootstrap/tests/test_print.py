@@ -240,3 +240,14 @@ def test_print_keeps_the_tree_of_the_corpus(program: Path) -> None:
 )
 def test_the_canonical_layout(source: str, printed: str) -> None:
     assert render(parse(source)) == printed
+
+
+def test_a_tree_nested_too_deep_to_render_is_refused() -> None:
+    """Issue #95: a tree deeper than the build can recurse to renders no traceback; it is one
+    error at the start, as the parser's nesting refusal is."""
+    frame = Frame((Cell((word("1"),), AT),), AT)
+    for _ in range(3000):
+        frame = Frame((Cell((Enclosure("quotation", (frame,), AT),), AT),), AT)
+    with pytest.raises(FplError) as caught:
+        render(Program((Line((frame,), (), AT),), AT))
+    assert str(caught.value) == "ERROR: 1:1 nesting too deep to print"

@@ -11,6 +11,12 @@ from fpl.types import Goal, elaborate, reported
 
 type Lines = tuple[tuple[int, Stack], ...]
 
+FUEL_DEFAULT = 1_000_000
+"""The steps each run line may take, in a file run and in each REPL event alike (HOLES.md:
+fuel-scope): about 2.3 s of a word that calls itself forever, once or twice a body (#144), so
+such a loop ends in seconds while any program the suite runs stays far inside it. Fuel counts
+steps, not their size: a loop that grows a list or the stack each round can take far longer."""
+
 
 def silent(_line: str) -> None:
     """Goals go nowhere."""
@@ -38,8 +44,9 @@ def printed(left: Lines) -> str:
 
 def run(source: str, report: Callable[[str], None] = silent) -> str:
     """What running the program prints. Definitions print nothing; each goal met is handed to
-    `report` before any line runs."""
+    `report` before any line runs; each run line has FUEL_DEFAULT steps, so a program without
+    end stops with out of fuel at its line."""
     statements, goals = checked(source)
     for goal in goals:
         report(reported(goal))
-    return printed(stacks(statements))
+    return printed(stacks(statements, FUEL_DEFAULT))

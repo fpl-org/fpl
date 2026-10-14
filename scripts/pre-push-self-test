@@ -772,6 +772,14 @@ fi
 
 
 
+same() { # same <description> <expected> <actual>
+	total=$((total + 1))
+	[ "$2" = "$3" ] || {
+		fails=$((fails + 1))
+		echo "self-test: $1:" >&2
+		printf '%s\n' "--- want" "$2" "--- got" "$3" | sed 's/^/    /' >&2
+	}
+}
 # ---- commit-msg and prepare-commit-msg, through git itself --------------------------------
 # A real `git commit` in the throwaway clone, with GIT_EDITOR a script that plays the person:
 # it writes ED_MSG in place of the message in the file git prepared and keeps git's comment
@@ -854,6 +862,72 @@ gate 1 "a person's ';' line last, under core.commentChar=auto: judged, so the tr
 says "missing 'Assisted-By:'" "the ';' line is judged as the message's last paragraph"
 gate 1 "the same, with -F: git strips nothing under auto without an editor" \
 	git -c core.commentChar=auto commit -q --allow-empty -F "$tmp/with-comment"
+# commit.cleanup=scissors (which scripts/setup sets) cuts at git's scissors line. Under 'auto' git
+# has picked the character by the time prepare-commit-msg runs, and the status block it appended
+# shows which: for -e -F and an amend too, where no template is written (the pick is recorded
+# all the same). Without it the hook judged the text git cuts away (CodeRabbit on #150).
+gate 0 "text below git's scissors line, -e -F, under commit.cleanup=scissors and core.commentChar=auto" \
+	env ED_MSG= ED_TAIL="$long"$'\n' git -c commit.cleanup=scissors -c core.commentChar=auto commit -q --allow-empty -e -F "$tmp/ok-msg"
+same "-e -F, scissors, auto: the message given is stored" "$ok" "$(stored)"
+printf '%s\n\n%s\n\n%s\n%s\n' 'feat(x): fine' '# typed by the person, so git picks another character' 'Stack: t' 'Human-Only: true' >"$tmp/hash-msg"
+gate 0 "the same where the message has a '#' line, so git picks another character" \
+	env ED_MSG= ED_TAIL="${long/#\#/;}"$'\n' git -c commit.cleanup=scissors -c core.commentChar=auto commit -q --allow-empty -e -F "$tmp/hash-msg"
+same "-e -F, scissors, auto, a '#' line: the message given is stored" "$(cat "$tmp/hash-msg")" "$(stored)"
+gate 0 "an amend, the same" \
+	env ED_MSG= ED_TAIL="$long"$'\n' git -c commit.cleanup=scissors -c core.commentChar=auto commit -q --allow-empty --amend
+# A scissors line the person typed is git's too when it is made of the character git picked: git
+# cuts at the first such line (measured, git 2.54). One of another character is text, and kept.
+printf '%s\n\n%s\n%s\n\nStack: t\nHuman-Only: true\n' 'feat(x): fine' "${sc/#\#/;}" "$long" >"$tmp/semi-below"
+gate 1 "a scissors line the person typed in git's own character, -e -F: git cuts there" \
+	git -c commit.cleanup=scissors -c core.commentChar=auto commit -q --allow-empty -e -F "$tmp/below-scissors"
+says "missing 'Assisted-By:'" "what is left above the typed scissors line is what is judged"
+gate 1 "a typed scissors line in another character, -e -F: not git's, so the text is kept" \
+	git -c commit.cleanup=scissors -c core.commentChar=auto commit -q --allow-empty -e -F "$tmp/semi-below"
+says "body line" "the line below the typed ';' scissors line is judged"
+# A scissors line the person typed shows git's pick only where git wrote a status block below it,
+# and git writes none when no editor runs (-F, -m, -C: GIT_EDITOR=: for the hook), nor under
+# --no-status, which reaches no hook. The text below a typed scissors line is the person's then,
+# and git, which picked '#', stores it: the hook took it for the status block and stripped it
+# (a cross-family review of #150). The pick is read from a scissors line only where git writes
+# one into the status block, commit.cleanup=scissors, or from the diff of -v.
+printf '%s\n\n%s\n%s\n\n%s\n%s\n' 'feat(x): fine' 'Stack: t' 'Human-Only: true' \
+	"${sc/#\#/;}" "${long/#\#/;}" >"$tmp/semi-tail"
+gate 1 "a typed ';' scissors line and a long ';' line, -F without an editor, auto, strip: git stores them" \
+	git -c core.commentChar=auto -c commit.cleanup=strip commit -q --allow-empty -F "$tmp/semi-tail"
+says "body line" "the long ';' line git stores is judged (-F)"
+gate 1 "the same with -e -F --no-status, where git writes no status block" \
+	env ED_MSG= git -c core.commentChar=auto -c commit.cleanup=strip commit -q --allow-empty --no-status -e -F "$tmp/semi-tail"
+says "body line" "the long ';' line git stores is judged (-e -F --no-status)"
+# Under commit.cleanup=scissors, --no-status and an editor, the file git shows holds nothing a hook
+# can tell from the person's own text, so this one is left to commit-lint, which reads the
+# message as stored. The same holds for a scissors line and a quoted diff the person typed, with
+# commit.verbose=false: no -v, so git cuts nowhere.
+env ED_MSG= git -c core.hooksPath=/dev/null -c core.commentChar=auto -c commit.cleanup=scissors \
+	commit -q --allow-empty --no-status -e -F "$tmp/semi-tail"
+gate 1 "commit-lint on a typed ';' scissors line git did not cut at (--no-status, scissors, auto)" \
+	scripts/commit-lint -b agent/claude/stack/t HEAD^..HEAD
+says "[body-width]" "commit-lint judges the ';' line git stored"
+git reset -q --hard HEAD^
+printf '%s\n\n%s\n%s\n\n%s\ndiff --git a/x b/x\n%s\n' 'feat(x): fine' 'Stack: t' 'Human-Only: true' "$sc" \
+	"$(overlong "a line typed below a quoted diff, which git stores as it is")" >"$tmp/hash-tail"
+gate 1 "a typed scissors line and a quoted diff, -F without an editor, commit.verbose=false" \
+	git -c commit.cleanup=strip -c commit.verbose=false commit -q --allow-empty -F "$tmp/hash-tail"
+says "missing 'Assisted-By:'" "the quoted diff git stores follows the trailers, so they are no block (-F)"
+env ED_MSG= ED_SED= git -c core.hooksPath=/dev/null -c commit.cleanup=strip -c commit.verbose=false \
+	commit -q --allow-empty --no-status -e -F "$tmp/hash-tail"
+gate 1 "commit-lint on a typed scissors line and a quoted diff git did not cut at (--no-status)" \
+	scripts/commit-lint -b agent/claude/stack/t HEAD^..HEAD
+says "[provenance-assisted]" "commit-lint reads the trailers where git does, above the quoted diff it stored"
+git reset -q --hard HEAD^
+# With -v the pick is still read, from git's scissors line above its diff, under any cleanup.
+lf="a file name with spaces that is long enough to pass the seventy-two column limit.txt"
+base="$(git rev-parse HEAD)"
+: >"$lf"
+git add "$lf"
+gate 0 "-v -e -F, auto, strip: git's status block is read for its pick, so its long 'new file:' line is not judged" \
+	env ED_MSG= ED_SED= git -c core.commentChar=auto -c commit.cleanup=strip commit -q -v -e -F "$tmp/ok-msg"
+git reset -q --hard "$base"
+rm -f "$lf"
 # The same separators, set for one command: git hands them to the hook (GIT_CONFIG_PARAMETERS).
 gate 0 "a valid message, committed under git -c trailer.separators='='" \
 	git -c trailer.separators='=' commit -q --allow-empty -F "$tmp/ok-msg"
@@ -862,24 +936,77 @@ gate 0 "a valid message, committed under git -c trailer.separators='='" \
 # after the trailer block, so the scan for the block must skip it too, or the block it finds is
 # the comment's paragraph and a long trailer is judged as body text (Codex review of #138: the
 # hook read core.commentChar alone). With -F git keeps the comment line in the commit.
+# A git before 2.45 ignores core.commentString: it keeps a '//' line, edited or not, and reads
+# no trailer block above one, so the hook must not honour it there (Codex review of #138, round
+# 2: under git 2.44.2 a long '//' line, edited, passed the hook and was stored). Whether this git
+# reads it is asked of git itself, hooks off, by the line it keeps: an oracle apart from the
+# hook's own probe. Where it does not, every case below is refused, by git's own reading.
+env ED_MSG="$ok" ED_TAIL=$'// a comment line\n' \
+	git -c core.hooksPath=/dev/null -c core.commentString=// commit -q --allow-empty
+cs=0 # the exit the cases git reads under core.commentString want
+if stored | grep -q '^// a comment line$'; then cs=1; fi
+git reset -q --hard HEAD^
+total=$((total + 1))
+[ "$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.commentString GIT_CONFIG_VALUE_0=// bash -c \
+	'. .githooks/commit-rules && if commit_comment_string_known; then echo 0; else echo 1; fi')" = "$cs" ] ||
+	{ fails=$((fails + 1)); echo "self-test: commit-rules reads core.commentString where this git does not, or the reverse" >&2; }
 cotrailer="$(overlong "Co-Authored-By: A Person <a.person@example.invalid>")"
 printf '%s\n\n%s\n%s\n%s\n\n%s\n' 'feat(x): fine' 'Stack: t' 'Human-Only: true' "$cotrailer" \
 	'// a note after the trailers' >"$tmp/slash-comment"
-gate 0 "a '//' line after a long trailer, under core.commentString=//" \
+gate "$cs" "a '//' line after a long trailer, under core.commentString=//" \
 	git -c core.commentString=// commit -q --allow-empty -F "$tmp/slash-comment"
-gate 0 "the same under core.commentChar=; then core.commentString=//: the last set wins" \
+gate "$cs" "the same under core.commentChar=; then core.commentString=//: the last set wins" \
 	git -c core.commentChar=';' -c core.commentString=// commit -q --allow-empty -F "$tmp/slash-comment"
 gate 1 "the same under core.commentString=// then core.commentChar=;: the '//' line is text" \
 	git -c core.commentString=// -c core.commentChar=';' commit -q --allow-empty -F "$tmp/slash-comment"
 says "body line" "the trailers above a paragraph of text are no block, so the long one is judged"
-gate 0 "a long '//' comment line, edited, under core.commentString=//" \
+gate "$cs" "a long '//' comment line, edited, under core.commentString=//" \
 	env ED_MSG="$ok" ED_TAIL="//${long#\#}"$'\n' git -c core.commentString=// commit -q --allow-empty
 # git commit -v: the diff below the scissors line is git's, and long lines of it are no fault.
 printf '%s\n' "$(overlong "x$(printf '%0*d' "$COMMIT_BODY_MAX" 0) with a space")" >wide.txt
 git add wide.txt
 gate 0 "git commit -v over a staged diff with a long line" \
 	env ED_MSG="$ok" git commit -q -v
+# The diff left in the file, as an editor shows it: cut where git cuts, in every mode, under
+# -vv, and in an amend and with -e -F, sources for which prepare-commit-msg writes no template
+# but records the scissors line all the same (commit_cut_state).
+vfix='1s/.*/feat(x): fine/'
+git reset -q --soft HEAD^
+for mode in strip whitespace verbatim; do
+	gate 0 "git commit -v, the diff with its long line left in, under commit.cleanup=$mode" \
+		env ED_SED="$vfix" git -c commit.cleanup="$mode" commit -q -v
+	git reset -q --soft HEAD^
+done
+printf '%s\n' "$(overlong "y$(printf '%0*d' "$COMMIT_BODY_MAX" 0) with a space")" >>wide.txt
+gate 0 "git commit -vv, a long line in the unstaged diff too" env ED_SED="$vfix" git commit -q -vv
+gate 0 "an amend with -v, the diff left in" env ED_SED= git commit -q --amend -v
+git reset -q --soft HEAD^
+gate 0 "-v -e -F, the diff left in" env ED_MSG= ED_SED= git commit -q -v -e -F "$tmp/ok-msg"
 git reset -q --hard HEAD
+# A scissors line and a quoted diff the person typed, without -v: git cuts nowhere and stores
+# them, so the text below them is judged. A guess from that text took it for the diff of -v and
+# let a long line past the hook (Codex review of #138, round 2).
+hw="$(overlong "a line typed below a quoted diff, which git stores as it is") and more"
+typed=$'\n'"$sc"$'\ndiff --git a/x b/x\n'"$hw"$'\n'
+for mode in strip whitespace verbatim; do
+	gate 1 "a typed scissors line and a quoted diff, edited, under commit.cleanup=$mode" \
+		env ED_MSG="$ok" ED_TAIL="$typed" git -c commit.cleanup="$mode" commit -q --allow-empty
+	says "body line" "the line below the quoted diff is judged ($mode)"
+done
+# The same text in a message given to git with -e -F: git's status block follows it, so it is
+# not the diff of -v, and with commit.status=false git writes no diff for -v at all.
+printf '%s\n\n%s\n%s\n%s' 'feat(x): fine' 'Stack: t' 'Human-Only: true' "$typed" >"$tmp/typed-msg"
+for st in true false; do
+	gate 1 "a given message ending in a scissors line and a quoted diff, -e -F, commit.status=$st" \
+		env ED_MSG= ED_SED= git -c commit.status="$st" commit -q --allow-empty -e -F "$tmp/typed-msg"
+	says "body line" "the line below the quoted diff is judged (-e -F, commit.status=$st)"
+done
+# What git stores is what commit-lint, the push gate, judges: the same message, committed with
+# the hooks off, is refused there as well.
+env ED_MSG="$ok" ED_TAIL="$typed" git -c core.hooksPath=/dev/null commit -q --allow-empty
+gate 1 "commit-lint on that message as git stored it" scripts/commit-lint -b agent/claude/stack/t HEAD^..HEAD
+says "[body-width]" "commit-lint judges the line below the quoted diff"
+git reset -q --hard HEAD^
 # An editor of ':' leaves nothing to tell it from -m: judged as unedited, the strict reading.
 printf '%s\n\n%s\n\nStack: t\nHuman-Only: true\n' 'feat(x): fine' "$long" >"$tmp/tmpl"
 gate 1 "an editor that is ':' (as -m runs the hook): the comment line is judged" \
@@ -1047,14 +1174,6 @@ GIT_EDITOR=: reuse "a message given with -m" -m $'doc(x): typed\n\nbody line\n\n
 # only in case is accepted as that key, so landed history is not refused for case alone.
 logf="$(git rev-parse --git-path commit-msg-tolerated.log)"
 rm -f "$logf"
-same() { # same <description> <expected> <actual>
-	total=$((total + 1))
-	[ "$2" = "$3" ] || {
-		fails=$((fails + 1))
-		echo "self-test: $1:" >&2
-		printf '%s\n' "--- want" "$2" "--- got" "$3" | sed 's/^/    /' >&2
-	}
-}
 canon=$'docs(readme): fine\n\nStack: t\nHuman-Only: true'
 sloppy=$'Docs(README): fine\n\nStack: t\nHuman-only: true'
 gate 0 "a capitalised type, a capitalised scope and a trailer key in the wrong case, edited" \
@@ -1083,6 +1202,20 @@ gate 0 "the same in an amend" env ED_ALL="$sloppy" git commit -q --allow-empty -
 same "the edit sticks in an amend" "$canon" "$(stored)"
 gate 0 "the same in an amend with -m" env GIT_EDITOR=: git commit -q --allow-empty --amend -m "$sloppy"
 same "the edit sticks in an amend with -m" "$canon" "$(stored)"
+# git reads 'Key:value', 'Key:<tab>value' and 'Key :value' as the trailer 'Key: value'
+# (find_separator in trailer.c), so the provenance gate passed them, and the key was left in
+# the wrong case: the correction wanted ': ' (Codex review of #138, round 2). Only the key
+# changes; the rest of the line is the person's. A key may open with a digit ('1x'), and git
+# reads it too: the correction counts it, or it falls out of step with git's trailers.
+for k in 'human-only:true' $'human-only:\ttrue' 'human-only :true' $'1x: a\nhuman-only: true'; do
+	l="${k//$'\t'/<tab>}" # the line as the description shows it
+	l="${l//$'\n'/ | }"
+	gate 0 "a trailer key in the wrong case, written '$l', with -m" \
+		env GIT_EDITOR=: git commit -q --allow-empty -m $'docs(readme): fine\n\nStack: t\n'"$k"
+	says "wrote 'human-only' as 'Human-Only'" "the scold names the key written '$l'"
+	same "only the key of '$l' is corrected" \
+		$'docs(readme): fine\n\nStack: t\n'"${k/human-only/Human-Only}" "$(stored)"
+done
 # The block corrected is the one git reads, prose and all: a key in it is a trailer to git.
 sobbed=$'docs(readme): fine\n\nSigned-off-by: t <t@example.invalid>\na line of prose in the block\nStack: t\n'
 gate 0 "a trailer key in the wrong case, in a block with prose git reads" \
