@@ -159,7 +159,7 @@ ready: harden gates
 
 # The harness's own Python, judged by the same ruff it judges others with.
 HARNESS := $(addprefix $(S)/,crap props escapes mutants gates forward-only diagrams ruff-limits \
-             wip-count) \
+             wip-count brake-flip) \
            $(Q)/noslop_pytest.py
 
 # config-fresh is a prerequisite, as it is of check; scripts/gen-config-self-test is the proof
@@ -175,6 +175,7 @@ gates: venv config-fresh
 	$(BIN)/python $(S)/diagrams --self-test
 	$(BIN)/python $(S)/ruff-limits --self-test
 	$(BIN)/python $(S)/wip-count --self-test
+	$(BIN)/python $(S)/brake-flip --self-test
 	$(S)/leak-check --self-test
 	$(S)/pre-push-self-test
 	$(S)/boundary-self-test
