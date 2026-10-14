@@ -1,0 +1,5 @@
+main-pr-only-linear.json and main-review-blockers.json are the live rulesets of fpl-org/fpl
+(ids 23694844 and 24293860) as the machine account's token reads them, 2026-10-14. That token
+is not shown bypass_actors (the field is absent, not null or empty), so the exports record
+none and scripts/ruleset-check lists it as unchecked for them. A maintainer's token sees the
+field: copy its arrays into the two files and the check compares them from then on.
