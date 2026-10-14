@@ -431,6 +431,14 @@ The maintainer creates it (the account's settings, then approve the request as a
 the organisation) and writes the file. It expires; a push then fails with 403 and a new token
 is made the same way. Agents read it through git and never print it.
 
+Which account a push uses is not always the one meant. One Mac can hold three identities that
+write to GitHub: git's credential helper, the active `gh` account and the ssh key. When the
+owner's admin account is any of them, a push from an agent's worktree goes out under it.
+`scripts/whoami-check` prints all three (username, gh, ssh) and a NAG line with the remedy when
+one is an admin account: push with the machine account token URL
+(`TOKEN=$(gh auth token --user <machine account>)`) or log the admin account out. It always
+exits 0, and `.githooks/pre-push` runs it first as a message, never as a refusal.
+
 ## Why this and not a feature branch
 
 A feature branch bundles N changes into one review. A stack keeps each change small enough to
