@@ -14,6 +14,8 @@
 #   merge-base  both fork from `base` at the same commit
 #   commit-lint scripts/commit-lint over base..P, judged for the branch when P is a local
 #               branch or -b names one (else its Stack: and agent-branch gates are left out)
+#   Series-Id   when scripts/series exists in P's tree, every commit of base..P carries a
+#               Series-Id trailer and the range holds exactly one distinct value
 #   each lemma  `make quick` in a detached worktree of the commit and, when it touches
 #               scripts/ or .githooks/, the self-tests that cover the touched path
 #
@@ -108,6 +110,22 @@ echo "ok    commit-lint ($(tail -n 1 "$lint_out"))"
 
 commits="$(git rev-list --reverse --no-merges "$base..$p")"
 [ -n "$commits" ] || die "no commits in $base..$p"
+
+if git cat-file -e "$p:scripts/series" 2>/dev/null; then
+	ids="" c=""
+	for c in $commits; do
+		v="$(git log -1 --format='%(trailers:key=Series-Id,valueonly,unfold)' "$c" | sed '/^$/d')"
+		[ -n "$v" ] || red "commit $(short "$c") has no Series-Id trailer"
+		[ "$(printf '%s\n' "$v" | wc -l)" -eq 1 ] || red "commit $(short "$c") has more than one Series-Id"
+		ids="$ids$v
+"
+	done
+	[ "$(printf '%s' "$ids" | sort -u | wc -l)" -eq 1 ] ||
+		red "the range holds more than one Series-Id: $(printf '%s' "$ids" | sort -u | tr '\n' ' ')"
+	echo "ok    Series-Id ($(printf '%s' "$ids" | sort -u))"
+else
+	echo "skip  Series-Id (no scripts/series in $(short "$p"))"
+fi
 
 # selftests <worktree>: the self-tests that cover what the commit at <worktree> touched, one
 # command per line, relative to the worktree, from the mapping the gates lane implies.
