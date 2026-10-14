@@ -11,7 +11,7 @@ from hypothesis import strategies as st
 from fpl.ast_core import Bind, Call, Define, Effect, Match, Node, Push, Row, Run, Symbol, Wild
 from fpl.driver import run
 from fpl.errors import FplError, Span
-from fpl.eval import State, running, step
+from fpl.eval import State, final, running, step
 from fpl.types import (
     ARROWS,
     Arrow,
@@ -145,6 +145,15 @@ def test_a_goal_run_is_refused_where_it_stands() -> None:
     with pytest.raises(FplError) as caught:
         run("f : x -- y\n\t?\n1 f\n")
     assert str(caught.value) == "ERROR: 2:2 unfilled goal"
+
+
+def test_a_goal_no_count_fills_is_refused_at_it() -> None:
+    """A goal whose rest ends at too few values whatever it leaves, a hole in the rest clearing
+    the stack, is refused at it, the search bounded by what the rest can take."""
+    source = "f : x -- y\n\t?\n\tmatch\n\t\t_\t?\n\t1 drop\n1 f\n"
+    with pytest.raises(FplError) as caught:
+        run(source)
+    assert str(caught.value) == "ERROR: 2:2 cannot infer ? : no count it leaves ends at 1"
 
 
 @pytest.mark.parametrize(
@@ -291,6 +300,19 @@ def test_a_step_keeps_the_sorts_a_state_leaves(program: tuple[tuple[Define, ...]
     while running(state):
         state = step(state)
         assert typed(state, arrows) == expected
+
+
+@given(programs())
+def test_final_leaves_what_stepping_the_whole_state_leaves(
+    program: tuple[tuple[Define, ...], Run],
+) -> None:
+    """[law: final] final steps each node alone and holds the waiting code itself (#144); that
+    is no other walk: the stack it leaves is the one stepping the whole state leaves."""
+    _, state = states(*program)
+    whole = state
+    while running(whole):
+        whole = step(whole)
+    assert final(state) == whole.stack
 
 
 def test_a_symbol_is_no_number() -> None:

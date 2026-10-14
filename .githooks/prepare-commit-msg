@@ -34,7 +34,11 @@
 # The rules end in a marker line with a random id, and what was written is recorded for
 # .githooks/commit-msg (commit_template_state): git's prefix, and the rules block as written.
 # commit-msg takes out that block and nothing else, and reads the prefix from the record, since
-# the message as it comes back from the editor cannot show it.
+# the message as it comes back from the editor cannot show it. For a source that gets no template
+# (-e -F, an amend) the prefix is recorded alone, read from the status block git appended: its
+# scissors line, then comment lines to the end of the file. That is looked for only where git
+# writes such a line, an editor under commit.cleanup=scissors, and from the diff of -v; with no
+# editor the file holds the message alone, and its lines are never taken for git's.
 #
 # Usage (git runs it): prepare-commit-msg <message file> [<source> [<sha>]]
 
@@ -45,7 +49,73 @@ repo_root="$(git rev-parse --show-toplevel)"
 # shellcheck source=commit-rules
 . "$repo_root/.githooks/commit-rules"
 state="$(commit_template_state)"
-rm -f "$state"
+cut_state="$(commit_cut_state)"
+rm -f "$state" "$cut_state"
+
+# The scissors line of git commit -v, recorded for commit-msg (commit_cut_state), for every
+# source: -v is given to an amend and to -e -F as well. What git writes for -v comes last
+# (measured, git 2.54: the file this hook gets is the file the editor gets): its scissors line,
+# its own comment lines, then the diff, the first line of which opens 'diff --git', down to the
+# end of the file (-vv adds comment lines and a second diff). Without -v the file ends in git's
+# status block, comment lines, and with commit.status=false git writes no diff for -v at all.
+# So the last scissors line is recorded only when a diff follows it and runs to the end: a
+# message given to git (-e -F, an amend, a template) that holds a scissors line and a quoted
+# diff of its own is followed by git's status block, and is not taken for -v. --no-status on
+# the command line reaches no hook; with it, such a message reads as -v, and commit-lint judges
+# what git stored. The prefix is the repository's or, under 'auto', any one git may pick; a
+# line of the diff that ends like a scissors line ('+# ----... >8 ...') is passed by.
+# None of this is looked for where no editor runs: git sets GIT_EDITOR=: for this hook then (-m,
+# -F, -C) and writes nothing into the file but the message, every line of which is the person's.
+if [ "${GIT_EDITOR:-}" != : ] && [ "$(git config --type=bool --get commit.status || true)" != false ]; then
+	P="$(commit_comment_prefix)" awk '
+		BEGIN { p0 = ENVIRON["P"]; d = "------------------------"; t = " " d " >8 " d }
+		{ line[++n] = $0; if (NF) last = n }
+		END {
+			for (i = n; i >= 1; i--) {
+				l = line[i]; k = length(l) - length(t)
+				if (k < 1 || substr(l, k + 1) != t) continue
+				p = substr(l, 1, k)
+				if (p0 != "" ? p != p0 : !(k == 1 && index("#;@!$%^&|:", p))) continue
+				for (j = i + 1; j <= n && substr(line[j], 1, k) == p; j++) continue
+				if (j <= n && index(line[j], "diff --git ") == 1 && substr(line[last], 1, k) != p) print l
+				exit
+			}
+		}' "$file" >"$cut_state"
+	# Under the deprecated core.commentChar=auto git has picked the comment character by now, and
+	# the file shows it, whatever the source (-e -F, an amend, a template): the status block git
+	# appended last is its scissors line and then comment lines only, down to the end of the file
+	# (with -v the diff follows, and the line recorded above has the character). The pick is
+	# recorded for commit-msg (commit_template_state), which cuts at git's scissors line and
+	# strips git's comment lines by it; with none recorded no line is taken for either, the strict
+	# reading. Only commit.cleanup=scissors has git write a scissors line of its own into the status
+	# block, so only there is one looked for in the file: under any other cleanup a scissors line
+	# in it is the person's, and one typed in a character other than git's pick, with comment
+	# lines below it, was taken for the status block and those lines were stripped, where git
+	# stores them (a cross-family review of #150). Under scissors a typed line that only comment
+	# lines follow still reads as git's when --no-status is given, which no hook sees: commit-lint
+	# on push reads what git stored, and judges what the hook let through. A scissors line the
+	# person typed is passed by unless only comment lines follow it.
+	if [ "$(commit_comment_raw)" = auto ]; then
+		picked="$(sed -n '1s/^\(.\).*/\1/p' "$cut_state")"
+		[ -n "$picked" ] || [ "$(git config --get commit.cleanup || true)" != scissors ] || picked="$(awk '
+			BEGIN { d = "------------------------"; t = " " d " >8 " d }
+			{ line[++n] = $0 }
+			END {
+				for (i = n; i >= 1; i--) {
+					l = line[i]
+					if (length(l) != length(t) + 1 || substr(l, 2) != t) continue
+					p = substr(l, 1, 1)
+					if (!index("#;@!$%^&|:", p)) continue
+					for (j = i + 1; j <= n; j++) if (length(line[j]) && substr(line[j], 1, 1) != p) break
+					if (j > n) print p
+					exit
+				}
+			}' "$file")"
+		[ -z "$picked" ] || printf '%s\n' "$picked" >"$state"
+	fi
+fi
+[ -s "$cut_state" ] || rm -f "$cut_state"
+
 case "${2:-}" in
 "" | template) ;;
 *) exit 0 ;;

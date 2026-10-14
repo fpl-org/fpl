@@ -236,7 +236,7 @@ def filled(
     """A ? takes the stack under it and leaves values of no known sort, as many as the rest
     takes, and a goal with those values' sorts; a _ is nothing, when the rest takes the stack
     as it is, else refused at it."""
-    arrow = Arrow(resolved(typing.stack, typing), wanted(typing, rest, arrows, need))
+    arrow = Arrow(resolved(typing.stack, typing), wanted(typing, node, rest, arrows, need))
     if node.name == "?":
         stack = (Kind.VALUE,) * len(arrow.outs)
         return replace(typing, stack=stack, goals=(*typing.goals, Goal(node.span, arrow)))
@@ -246,19 +246,47 @@ def filled(
 
 
 def wanted(
-    typing: Typing, rest: tuple[Node, ...], arrows: Mapping[str, Arrow], need: int | None
+    typing: Typing,
+    hole: Call,
+    rest: tuple[Node, ...],
+    arrows: Mapping[str, Arrow],
+    need: int | None,
 ) -> tuple[Sort, ...]:
     """The sorts of the fewest values the rest runs on, ending at `need` values when known; a
-    value the rest puts no sort on is of none."""
-    count = 0
-    while True:
+    value the rest puts no sort on is of none; refused at the hole when no count does.
+
+    Past `reach(rest)` values nothing underflows, and each value more is either left on top or
+    cleared by a hole in the rest: `reach(rest) + need` values end at `need` when any count
+    does."""
+    for count in range(reach(rest, arrows) + (need or 0) + 1):
         start = Typing(tuple(map(Input, range(count))), typing.env, {})
         with suppress(UnderflowError):
             end = after(start, rest, arrows, need)
             if need is None or len(end.stack) >= need:
                 found = resolved(start.stack, end)
                 return tuple(Kind.VALUE if isinstance(s, Input) else s for s in found)
-        count += 1
+    ending = "runs" if need is None else f"ends at {need}"
+    raise FplError(hole.span, f"cannot infer {hole.name} : no count it leaves {ending}")
+
+
+def reach(code: tuple[Node, ...], arrows: Mapping[str, Arrow]) -> int:
+    """The most values code can take from under it: what each node takes, summed, a match's
+    most taking row counted; a hole takes none, since it takes only what is there."""
+    total = 0
+    for node in code:
+        match node:
+            case Call():
+                total += len(arrows[node.name].ins) if node.name in arrows else 0
+            case Bind():
+                total += 1 + reach(node.body, arrows)
+            case Match():
+                total += len(node.rows[0].patterns)
+                total += max(reach(row.body, arrows) for row in node.rows)
+            case Push() | Keyed() | Refuse():
+                pass
+            case _:
+                assert_never(node)
+    return total
 
 
 def shown(arrow: Arrow) -> str:

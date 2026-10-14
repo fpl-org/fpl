@@ -133,11 +133,23 @@ commit_rules_text() {
 commit_trailers() { git -c trailer.separators=: interpret-trailers --parse --no-divider; }
 
 # commit_comment_raw: what the repository sets as git's comment prefix (core.commentChar or
-# core.commentString, the last one set wins), '#' when neither is.
+# core.commentString, the last one set wins), '#' when neither is. core.commentString is read
+# only where the running git knows it (2.45 on): an older git ignores it and strips, parses and
+# stores by core.commentChar, so a hook that honoured it cut '//' lines git stores (measured,
+# git 2.44.2: an over-long '//' line passed the hook and landed; Codex review of #138).
 commit_comment_raw() {
-	local cc
-	cc="$(git config --get-regexp '^core\.comment(char|string)$' | sed -n '$s/^[^ ]* //p')" || cc=""
+	local cc keys='^core\.comment(char|string)$'
+	commit_comment_string_known || keys='^core\.commentchar$'
+	cc="$(git config --get-regexp "$keys" | sed -n '$s/^[^ ]* //p')" || cc=""
 	printf '%s' "${cc:-#}"
+}
+
+# commit_comment_string_known: whether the running git reads core.commentString. Asked of git
+# itself, which a version number cannot be trusted to tell (vendor builds, release candidates),
+# and only where a commentString is set, so the common case costs no process.
+commit_comment_string_known() {
+	! git config --get core.commentString >/dev/null ||
+		[ "$(printf 'a\n' | git -c core.commentString=';;' stripspace --comment-lines)" = ';; a' ]
 }
 
 # commit_comment_prefix: the prefix of the comment lines git strips from a message, which the
@@ -146,7 +158,7 @@ commit_comment_raw() {
 # which, since a line the person wrote may start with any of them (a guess from the last line
 # took a person's ';' line for a comment). With no prefix known, no line is taken for one.
 # COMMIT_PICKED_PREFIX, when set, is git's pick as .githooks/prepare-commit-msg saw it before
-# the editor opened (commit_template_state).
+# the editor opened (commit_template_state): in the status block git appended, whatever the source.
 commit_comment_prefix() {
 	local raw
 	raw="$(commit_comment_raw)"
@@ -159,3 +171,11 @@ commit_comment_prefix() {
 # removed by prepare-commit-msg as it starts and by commit-msg once read, so it belongs to one
 # commit; it lives in the git directory, where no message can put it.
 commit_template_state() { git rev-parse --git-path commit-msg-template; }
+
+# commit_cut_state: the file in which .githooks/prepare-commit-msg leaves .githooks/commit-msg the
+# scissors line git wrote above the diff of git commit -v (or commit.verbose), exactly as written,
+# when the file held one before the editor opened. git cuts the message at its first scissors
+# line under -v, and -v reaches no hook; what the message holds after the editor cannot show it,
+# since a person may type a scissors line and a quoted diff (Codex review of #138, round 2).
+# Like commit_template_state it belongs to one commit and lives in the git directory.
+commit_cut_state() { git rev-parse --git-path commit-msg-cut; }

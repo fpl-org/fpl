@@ -41,7 +41,7 @@ a file and pass. The file `.github/agent-emails` serves the local hooks (`commit
 lacks. Add an address to the workflow first (an agent's token cannot push
 `.github/workflows/`, so the owner does), then to the file.
 
-Judged after the fact, a `fixup!`, `squash!` or `amend!` commit fails (a rebase-merge would
+Judged after the fact, a `fixup!`, `squash!` or `amend!` commit fails (a fast-forward would
 land it as it is), and the atomicity check is skipped. When it is made, such a commit is
 spared every gate but the path guards: one that edits a protected spec or policy file carries
 its own marker (`git commit --fixup=<commit> -m "[spec]"`).
