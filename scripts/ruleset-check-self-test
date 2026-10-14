@@ -1,0 +1,253 @@
+#!/usr/bin/env bash
+#
+# scripts/ruleset-check-self-test — proof that scripts/ruleset-check says when the live rulesets
+# and the files in harness/rulesets differ, and only then. Run by `make gates`.
+#
+# A stand-in forge serves rulesets from disk on 127.0.0.1 (FPL_RULESET_API), made from the
+# committed files plus the noise a forge adds (ids, timestamps, links, reordered rules and lists,
+# an update rule without parameters). Checked: in sync through that noise; each kind of
+# difference named by path and both values; bypass_actors compared only when both sides have it;
+# the JSON report; a failing forge and bad files (exit 2, nothing on stdout); that every request
+# was a GET; that brake.json is the lock the plan names. Run under bash 5 and, on a Mac,
+# /bin/bash 3.2 (either missing fails the run).
+
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+
+# --- the driver -----------------------------------------------------------------------------
+if [ -z "${RULESET_CHECK_SELF_TEST_RUN:-}" ]; then
+	tmp="$(mktemp -d "${TMPDIR:-/tmp}/ruleset-check-self-test.XXXXXX")"
+	trap 'rm -rf "$tmp"' EXIT
+	# shellcheck disable=SC2016 # expanded by the bash asked, not by this one
+	major() { "$1" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null || echo 0; }
+	bashes="" missing=0
+	b5="$(command -v bash || :)"
+	if [ -n "$b5" ] && [ "$(major "$b5")" -ge 5 ]; then
+		bashes="$b5"
+	else
+		echo "ruleset-check self-test: needs a bash >= 5 first on PATH (nix develop); found ${b5:-none}" >&2
+		missing=1
+	fi
+	if [ "$(uname -s)" = Darwin ]; then
+		if [ -x /bin/bash ] && [ "$(major /bin/bash)" -eq 3 ]; then
+			bashes="$bashes /bin/bash"
+		else
+			echo "ruleset-check self-test: needs /bin/bash 3.2 on a Mac" >&2
+			missing=1
+		fi
+	else
+		echo "ruleset-check self-test: bash 3.2 is not covered on $(uname -s)"
+	fi
+	[ "$missing" -eq 0 ] || exit 1
+	runs=0 failed=0
+	for b in $bashes; do
+		runs=$((runs + 1))
+		mkdir -p "$tmp/bin-$runs"
+		ln -s "$b" "$tmp/bin-$runs/bash"
+		PATH="$tmp/bin-$runs:$PATH" RULESET_CHECK_SELF_TEST_RUN=1 "$b" "$0" || failed=$((failed + 1))
+	done
+	echo "ruleset-check self-test: $failed of $runs runs failed"
+	[ "$failed" -eq 0 ]
+	exit
+fi
+
+# --- the suite ------------------------------------------------------------------------------
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/ruleset-check-self-test.XXXXXX")"
+srv=""
+trap '[ -z "$srv" ] || { kill "$srv"; wait "$srv"; } 2>/dev/null || :; rm -rf "$tmp"' EXIT
+export HOME="$tmp/home" GH_CONFIG_DIR="$tmp/gh" GH_TOKEN=not-a-token
+unset GITHUB_TOKEN
+mkdir -p "$HOME" "$GH_CONFIG_DIR"
+check="$root/scripts/ruleset-check" files="$root/harness/rulesets" work="$tmp/files" state="$tmp/state.json"
+
+# The forge: the list and each ruleset by id from state.json (name -> ruleset), the file `fail`
+# beside it makes every answer a 500, every request goes to the log.
+cat >"$tmp/forge.py" <<'PY'
+import http.server, json, os, sys
+state, log = sys.argv[1:]
+
+
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        open(log, "a").write(f"GET {self.path}\n")
+        if os.path.exists(state + ".fail"):
+            return self.send_error(500)
+        rss = list(json.load(open(state)).values())
+        tail = self.path.split("?")[0].rsplit("/", 1)[1]
+        body = rss if tail == "rulesets" else next((r for r in rss if str(r["id"]) == tail), None)
+        if body is None:
+            return self.send_error(404)
+        data = json.dumps(body).encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def other(self):
+        open(log, "a").write(f"{self.command} {self.path}\n")
+        self.send_error(405)
+
+    do_POST = do_PUT = do_PATCH = do_DELETE = other
+
+    def log_message(self, *a):
+        pass
+
+
+s = http.server.HTTPServer(("127.0.0.1", 0), H)
+print(s.server_address[1], flush=True)
+s.serve_forever()
+PY
+# The fixture tool: `fx CODE` runs CODE on the forge's state as `s` (name -> ruleset); build(dir,
+# visible) makes the state from the files in dir with the forge's noise, the bypass actors kept
+# only if visible; add(name) puts up a ruleset no file names.
+cat >"$tmp/fx.py" <<'PY'
+import copy, json, os, sys
+
+path, code = sys.argv[1:]
+s = json.load(open(path)) if os.path.exists(path) else {}
+noise = dict(node_id="x", created_at="t", updated_at="t", source="o/r", source_type="Repository",
+             current_user_can_bypass="never", _links={"self": {"href": "https://x.invalid"}})
+
+
+def build(d, visible=False):
+    s.clear()
+    for n, f in enumerate(sorted(os.listdir(d)), 1):
+        r = dict(json.load(open(os.path.join(d, f))), id=100 + n, **noise)
+        r["rules"] = r["rules"][::-1]
+        r["conditions"]["ref_name"]["include"].reverse()
+        for rule in r["rules"]:
+            p = rule.get("parameters", {})
+            if p == {"update_allows_fetch_and_merge": False}:
+                del rule["parameters"]  # the forge answers an update rule so, measured
+            for k in ("allowed_merge_methods", "required_status_checks"):
+                p[k] = p.get(k, [])[::-1] if k in p else p.get(k)
+                if p[k] is None:
+                    del p[k]
+        if not visible:
+            r.pop("bypass_actors", None)
+        s[r["name"]] = r
+
+
+def add(name):
+    s[name] = dict(id=999, name=name, target="branch", enforcement="active", rules=[], **noise,
+                   conditions={"ref_name": {"include": ["~ALL"], "exclude": []}})
+
+
+exec(code)
+json.dump(s, open(path, "w"))
+PY
+
+fails=0 total=0 last=""
+fail() { fails=$((fails + 1)); echo "self-test: $*" >&2; }
+fx() { python3 -I "$tmp/fx.py" "$state" "$1"; }
+# build [visible]: the files copied to $work, and a forge that matches them
+build() {
+	rm -rf "$work" "$state.fail"
+	mkdir -p "$work"
+	cp "$files"/*.json "$work/"
+	fx "build('$work', ${1:+True})"
+}
+# expect <label> <text>: the last output has the text
+expect() { total=$((total + 1)); printf '%s' "$last" | grep -qF -- "$2" || fail "$1: lacks '$2': $last"; }
+# run <want exit> <label> <text stdout must contain, or ""> [args]: the check on $work
+run() {
+	local want="$1" label="$2" needle="$3" got=0
+	shift 3
+	total=$((total + 1))
+	last="$(python3 -I "$check" --dir "$work" "$@" 2>"$tmp/err")" || got=$?
+	if [ "$got" -ne "$want" ]; then
+		fail "$label: exit $got, wanted $want; stdout: $last; stderr: $(cat "$tmp/err")"
+	elif [ "$want" -eq 2 ] && [ -n "$last" ]; then
+		fail "$label: a check that cannot judge printed on stdout: $last"
+	elif [ -n "$needle" ]; then
+		expect "$label" "$needle"
+		total=$((total - 1))
+	fi
+}
+BRAKE="brake: all branches except main" LINEAR="main: PR-only, linear"
+BLOCKERS="review blockers: main and current stack bases"
+
+: >"$tmp/log"
+python3 -I "$tmp/forge.py" "$state" "$tmp/log" >"$tmp/port" &
+srv=$!
+for _ in $(seq 100); do [ -s "$tmp/port" ] && break; sleep 0.1; done
+[ -s "$tmp/port" ] || { echo "self-test: the stand-in forge did not start" >&2; exit 1; }
+export FPL_RULESET_API="http://127.0.0.1:$(cat "$tmp/port")"
+
+# in sync, through the noise
+build
+run 0 "files against a forge made from them" "ruleset-check fpl-org/fpl: in sync"
+expect "bypass_actors hidden from the token" "unchecked: bypass_actors (the forge does not show it to this token)"
+build visible
+fx "s['$LINEAR']['bypass_actors'] = s['$BLOCKERS']['bypass_actors'] = []"
+run 0 "bypass actors shown by the forge" "$BRAKE  (brake.json): in sync"
+expect "exports that record no bypass_actors" "unchecked: bypass_actors (the file does not record it)"
+
+# differences, each named by path and both values
+d() { build "${3:-}"; fx "$2"; run 1 "$1" "${4:-}"; }
+d "changed enforcement" "s['$LINEAR']['enforcement'] = 'evaluate'" "" "enforcement: file active, live evaluate"
+d "changed nested parameter" "[r for r in s['$BLOCKERS']['rules'] if r['type'] == 'pull_request'][0]['parameters']['required_approving_review_count'] = 2" "" "rules.pull_request.required_approving_review_count: file 1, live 2"
+d "update that allows fetch-and-merge" "[r for r in s['$BRAKE']['rules'] if r['type'] == 'update'][0]['parameters'] = {'update_allows_fetch_and_merge': True}" "" "rules.update.update_allows_fetch_and_merge: file false, live true"
+d "rule missing live" "s['$BRAKE']['rules'] = [r for r in s['$BRAKE']['rules'] if r['type'] != 'creation']" "" "rules.creation: file {}, live <absent>"
+d "status check missing live" "[r for r in s['$LINEAR']['rules'] if r['type'] == 'required_status_checks'][0]['parameters']['required_status_checks'].pop()" "" "rules.required_status_checks"
+d "main no longer excluded" "s['$BRAKE']['conditions']['ref_name']['exclude'] = []" "" 'conditions.ref_name.exclude: file ["refs/heads/main"], live []'
+d "file without a live ruleset" "del s['$BRAKE']" "" "NOT LIVE"
+d "live ruleset without a file" "add('extra')" "" "NO FILE"
+d "bypass actor more, live" "s['$BRAKE']['bypass_actors'].append({'actor_id': 9, 'actor_type': 'Integration', 'bypass_mode': 'always'})" visible "bypass_actors.Integration 9"
+d "bypass mode changed, live" "s['$BRAKE']['bypass_actors'][0]['bypass_mode'] = 'pull_request'" visible "bypass_actors.RepositoryRole 5: file always, live pull_request"
+
+# the output for machines
+build
+fx "s['$LINEAR']['enforcement'] = 'disabled'"
+run 1 "--json" "" --json
+total=$((total + 1))
+printf '%s' "$last" | python3 -I -c 'import json, sys
+r = json.load(sys.stdin)
+s = {x["name"]: x for x in r["rulesets"]}
+assert r["in_sync"] is False and r["repo"] == "fpl-org/fpl", r
+assert s["main: PR-only, linear"]["differences"] == [{"path": "enforcement", "file": "active", "live": "disabled"}], s
+assert s["review blockers: main and current stack bases"]["state"] == "in_sync", s' || fail "--json is not as documented: $last"
+
+# cannot read: exit 2, nothing on stdout
+build
+touch "$state.fail"
+run 2 "a forge that answers 500" ""
+rm -f "$state.fail"
+echo '{not json' >"$work/broken.json"
+run 2 "a file that is not JSON" ""
+echo '[1]' >"$work/broken.json"
+run 2 "a file that is not a ruleset" ""
+cp "$work/brake.json" "$work/broken.json"
+run 2 "two files with one name" ""
+rm -rf "$work"
+mkdir -p "$work"
+run 2 "no files at all" ""
+
+# read-only: every request the check made was a GET
+total=$((total + 1))
+[ -s "$tmp/log" ] || fail "the stand-in forge saw no request"
+! grep -qv '^GET ' "$tmp/log" || fail "a request that is not a GET: $(grep -v '^GET ' "$tmp/log" | head -1)"
+
+# the committed files
+total=$((total + 1))
+python3 -I - "$files" <<'PY' || fail "harness/rulesets is not as the plan names it"
+import glob, json, sys
+
+b = json.load(open(sys.argv[1] + "/brake.json"))
+assert b["name"] == "brake: all branches except main" and b["target"] == "branch", b
+assert b["enforcement"] == "disabled", b["enforcement"]
+assert b["conditions"]["ref_name"] == {"include": ["~ALL"], "exclude": ["refs/heads/main"]}, b
+assert b["rules"] == [{"type": "creation"}, {"type": "update", "parameters": {"update_allows_fetch_and_merge": False}}], b
+actors = sorted((a["actor_type"], a["actor_id"], a["bypass_mode"]) for a in b["bypass_actors"])
+assert actors == [("Integration", 5318175, "always"), ("RepositoryRole", 5, "always")], actors
+for f in glob.glob(sys.argv[1] + "/main-*.json"):
+    d = json.load(open(f))
+    assert d["enforcement"] == "active" and d["rules"], f
+    assert not {"id", "node_id", "created_at", "updated_at", "_links", "source"} & d.keys(), f
+PY
+total=$((total + 1))
+grep -q 'ruleset-check-self-test' "$root/quality/noslop.mk" || fail "make gates does not run this test"
+
+echo "ruleset-check self-test: $((total - fails)) of $total checks passed under bash ${BASH_VERSION%%.*}"
+[ "$fails" -eq 0 ]
