@@ -226,9 +226,10 @@ at="$H"
 fixture() {
 	cat >"$FORGE/$(printf %s "$1" | tr -c 'A-Za-z0-9._-' _)${2:+.$2}.json"
 }
-pull() { # pull <state> <draft> <base> <merged>
+CARD='## What\n### What changes\n## How checked\n## Limits\n## Verdict'
+pull() { # pull <state> <draft> <base> <merged> [body]
 	fixture "repos/land-test/fpl/pulls/7" <<-EOF
-	{"number": 7, "state": "$1", "draft": $2, "merged": $4,
+	{"number": 7, "state": "$1", "draft": $2, "merged": $4, "body": "${5-$CARD}",
 	 "html_url": "https://github.com/land-test/fpl/pull/7", "user": {"login": "psjg-claude"},
 	 "base": {"ref": "$3"},
 	 "head": {"sha": "$at", "ref": "$BR", "repo": {"full_name": "land-test/fpl"}}}
@@ -1118,6 +1119,7 @@ range_case() {
 forge
 expect 0 "the range rules on an ordinary head" --dry-run 7
 says "ok  land/series             skipped: main has no scripts/series" "no series yet: a notice"
+says "ok  land/card" "the card is there"
 range_case "$HS" "$MS" 0 "every commit carries Series-Id s-1" "one Series-Id on a main with scripts/series"
 range_case "$HN" "$MS" 1 "NO  land/series" "a commit without a Series-Id"
 range_case "$HS" "$MF" 1 "NO  land/series-fresh" "a Series-Id that is on main already"
@@ -1125,6 +1127,11 @@ range_case "$HP" "$MP" 1 "NO  land/patch-fresh" "a patch that is on main already
 range_case "$HW" "$M0" 1 "NO  land/workflows" "a commit that touches .github/workflows"
 range_case "$HB" "$M0" 1 "11 commits, 0 lines: over 10" "eleven commits"
 range_case "$HL" "$M0" 1 "1 commits, 601 lines: over" "601 lines"
+at="$H" HEAD_SHA="$H"
+forge
+pull open false main @MERGED@ '## What\n## What changes\n## How checked\n## Limits'
+expect 1 "a body without the card's Verdict" --dry-run 7
+says "the body has no heading Verdict" "it names the heading"
 
 # The header's land/rules entry says two things, which it keeps in sentences of their own: the
 # requirements scripts/land does not make (which the bypass would leave unenforced), and the
