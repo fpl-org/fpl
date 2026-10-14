@@ -359,7 +359,6 @@ def judge_reviews(v, d, pr, me, repo, ci):
     approved = [(w, r) for w, r in last.items()
                 if w.lower() in owners and r["state"] == "APPROVED"]
     at_head = [w for w, r in approved if r.get("commit_id") == head]
-    bodies = [r.get("body") or "" for w, r in approved if w in at_head]
     older = ", ".join(f"@{w} on {str(r.get('commit_id'))[:12]}" for w, r in approved)
     author = pr["user"]["login"]
     if ci:
@@ -370,6 +369,8 @@ def judge_reviews(v, d, pr, me, repo, ci):
                  f"a code owner other than the author approves {h} on the forge")
         else:
             v.ok("land/author", f"{author} wrote it; the approval counted is another's")
+    # After the author's approval is out: land/gpt reads the texts of the approvals counted.
+    bodies = [r.get("body") or "" for w, r in approved if w in at_head]
     if at_head:
         v.ok("land/approved", f"code owner {', '.join('@' + w for w in at_head)} approved {h}")
         return False, bodies
