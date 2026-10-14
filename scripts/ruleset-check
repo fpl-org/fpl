@@ -40,6 +40,7 @@ import sys
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 DROPPED = {"id", "node_id", "created_at", "updated_at", "_links", "source", "source_type"}
@@ -53,16 +54,22 @@ class UnreadableError(Exception):
     """The forge did not answer, or a file is not a ruleset: there is nothing to judge by."""
 
 
-def token() -> str:
-    """A token to read the forge with, or "" to read it anonymously."""
+def token(api: str) -> str:
+    """A token to read the forge at `api` with, or "" to read it anonymously."""
     for name in ("GH_TOKEN", "GITHUB_TOKEN"):
         if os.environ.get(name):
             return os.environ[name]
     if not shutil.which("gh"):
         return ""
+    # gh's own default host is not necessarily the one `api` is: ask for the token of its host.
+    host = (urlparse(api).hostname or "").removeprefix("api.")
     try:
         done = subprocess.run(
-            ["gh", "auth", "token"], capture_output=True, text=True, check=False, timeout=10
+            ["gh", "auth", "token", "--hostname", host],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
         )
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -152,7 +159,10 @@ def entry(name: str, file: str | None, state: str, diff: Any = (), unchecked: An
 
 def judge(name: str, file: str, wanted: dict[str, Any], live: dict[str, Any]) -> dict[str, Any]:
     """The report on one ruleset that has both a file and a live twin."""
-    a, b = normal(wanted), normal(live)
+    try:
+        a, b = normal(wanted), normal(live)
+    except (AttributeError, TypeError) as e:
+        raise UnreadableError(f"{name}: not shaped like a ruleset ({e})") from e
     unchecked = []
     if "bypass_actors" not in a or "bypass_actors" not in b:
         seen = (
@@ -187,11 +197,14 @@ def load(directory: Path) -> dict[str, tuple[str, dict[str, Any]]]:
 
 def check(repo: str, directory: Path, api: str) -> dict[str, Any]:
     """The report on every ruleset of `repo` against the files in `directory`."""
-    files, secret = load(directory), token()
+    files, secret = load(directory), token(api)
     listing = get(api, f"repos/{repo}/rulesets?includes_parents=false&per_page=100", secret)
     if not isinstance(listing, list) or len(listing) >= 100:
         raise UnreadableError("GitHub: the list of rulesets is not one page of a list")
-    ids = {k: int(v) for k, v in keyed(listing, "name", "ruleset", lambda r: r["id"]).items()}
+    try:
+        ids = {k: int(v) for k, v in keyed(listing, "name", "ruleset", lambda r: r["id"]).items()}
+    except (KeyError, TypeError, ValueError) as e:
+        raise UnreadableError(f"GitHub: a ruleset in the list has no numeric id ({e!r})") from e
     found = []
     for name, (fname, wanted) in files.items():
         live = get(api, f"repos/{repo}/rulesets/{ids[name]}", secret) if name in ids else None

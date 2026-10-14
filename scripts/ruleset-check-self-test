@@ -21,17 +21,17 @@ if [ -z "${RULESET_CHECK_SELF_TEST_RUN:-}" ]; then
 	trap 'rm -rf "$tmp"' EXIT
 	# shellcheck disable=SC2016 # expanded by the bash asked, not by this one
 	major() { "$1" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null || echo 0; }
-	bashes="" missing=0
+	bashes=() missing=0
 	b5="$(command -v bash || :)"
 	if [ -n "$b5" ] && [ "$(major "$b5")" -ge 5 ]; then
-		bashes="$b5"
+		bashes=("$b5")
 	else
 		echo "ruleset-check self-test: needs a bash >= 5 first on PATH (nix develop); found ${b5:-none}" >&2
 		missing=1
 	fi
 	if [ "$(uname -s)" = Darwin ]; then
 		if [ -x /bin/bash ] && [ "$(major /bin/bash)" -eq 3 ]; then
-			bashes="$bashes /bin/bash"
+			bashes+=(/bin/bash)
 		else
 			echo "ruleset-check self-test: needs /bin/bash 3.2 on a Mac" >&2
 			missing=1
@@ -41,7 +41,7 @@ if [ -z "${RULESET_CHECK_SELF_TEST_RUN:-}" ]; then
 	fi
 	[ "$missing" -eq 0 ] || exit 1
 	runs=0 failed=0
-	for b in $bashes; do
+	for b in "${bashes[@]}"; do
 		runs=$((runs + 1))
 		mkdir -p "$tmp/bin-$runs"
 		ln -s "$b" "$tmp/bin-$runs/bash"
@@ -146,7 +146,7 @@ build() {
 	rm -rf "$work" "$state.fail"
 	mkdir -p "$work"
 	cp "$files"/*.json "$work/"
-	fx "build('$work', ${1:+True})"
+	WORK="$work" fx "build(os.environ['WORK'], ${1:+True})"
 }
 # expect <label> <text>: the last output has the text
 expect() { total=$((total + 1)); printf '%s' "$last" | grep -qF -- "$2" || fail "$1: lacks '$2': $last"; }
@@ -220,9 +220,31 @@ echo '[1]' >"$work/broken.json"
 run 2 "a file that is not a ruleset" ""
 cp "$work/brake.json" "$work/broken.json"
 run 2 "two files with one name" ""
+build
+python3 -I -c 'import json, sys
+p = sys.argv[1] + "/brake.json"
+d = json.load(open(p))
+d["conditions"] = []
+json.dump(d, open(p, "w"))' "$work"
+run 2 "a file whose conditions are not an object" ""
+build
+fx "del s['$BRAKE']['id']"
+run 2 "a listed ruleset without an id" ""
+build
+fx "s['$BRAKE']['id'] = 'seven'"
+run 2 "a listed ruleset with an id that is no number" ""
 rm -rf "$work"
 mkdir -p "$work"
 run 2 "no files at all" ""
+
+# without GH_TOKEN the token is gh's, asked for the host of the API root, not gh's default one
+build
+mkdir "$tmp/fakegh"
+printf '#!/bin/sh\necho "$*" >"%s/gh-args"\necho fake-token\n' "$tmp" >"$tmp/fakegh/gh"
+chmod +x "$tmp/fakegh/gh"
+GH_TOKEN="" PATH="$tmp/fakegh:$PATH" run 0 "a token from gh" ""
+total=$((total + 1))
+[ "$(cat "$tmp/gh-args" 2>/dev/null)" = "auth token --hostname 127.0.0.1" ] || fail "gh was asked: $(cat "$tmp/gh-args" 2>/dev/null)"
 
 # read-only: every request the check made was a GET
 total=$((total + 1))
@@ -247,7 +269,8 @@ for f in glob.glob(sys.argv[1] + "/main-*.json"):
     assert not {"id", "node_id", "created_at", "updated_at", "_links", "source"} & d.keys(), f
 PY
 total=$((total + 1))
-grep -q 'ruleset-check-self-test' "$root/quality/noslop.mk" || fail "make gates does not run this test"
+awk '/^gates:/ { g = 1; next } /^[^\t]/ { g = 0 } g' "$root/quality/noslop.mk" |
+	grep -qxF "$(printf '\t')\$(S)/ruleset-check-self-test" || fail "the gates recipe does not run this test"
 
 echo "ruleset-check self-test: $((total - fails)) of $total checks passed under bash ${BASH_VERSION%%.*}"
 [ "$fails" -eq 0 ]
