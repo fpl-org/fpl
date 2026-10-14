@@ -149,6 +149,18 @@ is missing: `crosshair-tool` on `aarch64-linux`), and the loader that PyPI wheel
 `/lib` and `/lib64`, which a Nix-only root lacks (`ruff` from `uv sync` fails with "No such
 file or directory" without it). It carries no credentials: pass them as the run's environment.
 
+```
+make image                       # nix build .#packages.<linux system>.oci -> ./result-oci
+docker load < result-oci
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD":/work fpl-dev make quick
+```
+
+On Linux `make image` is `nix build .#oci`. On a Mac it builds the Linux system of the same
+architecture, which needs a Linux builder; `make image HOST_SYSTEM=x86_64-linux` picks the
+other one. Run the container as yourself, as above: as root `make quick` has one test fail,
+`test_a_path_refused` on an unwritable path, since root can write there. `HOME` is `/tmp` so
+that any uid has a home for the `uv` and `git` caches.
+
 ## Known trap: interactive `nix develop` on a Mac
 
 direnv (above) is the recommended route into the shell — the trap below is what happens
