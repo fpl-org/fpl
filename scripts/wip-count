@@ -1,0 +1,279 @@
+#!/usr/bin/env python3
+"""scripts/wip-count — how much work waits for review: the commits on open pull requests.
+
+    scripts/wip-count             N/50, nog M
+    scripts/wip-count --json      the count, each pull request, and the drain list, as JSON
+    scripts/wip-count --from F    the text line of a count already saved by --json (no reads)
+    scripts/wip-count --self-test
+
+The cap (.agents/WORKFLOW.md, "The cap") is on work the owner has to read: every commit of
+every open pull request of fpl-org/fpl that is not a draft. A draft is not counted: the owner
+decided that work parked as a draft does not yet ask for his time. A pull request stacked on
+another counts its own commits only, the ones between its base and its head, so a stack is
+not counted twice.
+
+The text line is the nag: run it before opening a pull request, and see how much room is
+left. Over the cap it says by how much; the brake workflow (harness/workflows/brake.yml)
+then locks every branch but main, except the drain list: the heads of open pull requests,
+drafts included, where the owner's standing verdict asks for changes. Of his reviews that
+approve, request changes or were dismissed, the latest counts; a comment leaves a verdict
+standing. A head in another repository (a fork) is left out: a ruleset here cannot lock it.
+
+It only reads, with GET requests to the REST API, and needs nothing but python3 (no gh, no
+jq), so it runs in the default dev shell and on a bare runner. The token is the first of
+GH_TOKEN, GITHUB_TOKEN and gh's for the machine account psjg-claude; with none it reads
+anonymously, which a public repository allows at a low rate. It always exits 0, so a nag in
+a prompt or a status line never breaks what runs it. When the forge cannot be read the line
+says so, and the JSON says `"ok": false` with the reason: the brake reads that field and
+changes nothing on an unreadable count.
+
+    FPL_WIP_REPO   owner/name (default fpl-org/fpl)
+    FPL_WIP_CAP    the cap (default 50)
+    FPL_WIP_OWNER  whose request for changes keeps a branch pushable (default psjg)
+"""
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from collections.abc import Callable
+from typing import Any
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+API = "https://api.github.com"
+VERDICTS = frozenset({"APPROVED", "CHANGES_REQUESTED", "DISMISSED"})
+SHAPE = (LookupError, TypeError, ValueError, AttributeError)  # an answer of another shape
+Get = Callable[[str], Any]
+
+
+class UnreadableError(Exception):
+    """The forge did not answer, or not in the shape asked for."""
+
+
+def token() -> str:
+    """A token to read the forge with, or "" to read it anonymously."""
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        if os.environ.get(name):
+            return os.environ[name]
+    if not shutil.which("gh"):
+        return ""
+    try:
+        done = subprocess.run(
+            ["gh", "auth", "token", "--user", "psjg-claude"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return done.stdout.strip() if done.returncode == 0 else ""
+
+
+def getter(secret: str) -> Get:
+    """GET one REST path; a list is followed through every `Link: rel="next"` page."""
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "fpl-wip-count"}
+    if secret:
+        headers["Authorization"] = f"Bearer {secret}"
+
+    def get(path: str) -> Any:
+        url, items = f"{API}/{path}", None
+        while url:
+            try:
+                with urlopen(Request(url, headers=headers, method="GET"), timeout=20) as answer:
+                    page = json.load(answer)
+                    link = answer.headers.get("Link") or ""
+            except HTTPError as e:
+                raise UnreadableError(f"GitHub answered {e.code} {e.reason}") from e
+            except (OSError, ValueError) as e:
+                raise UnreadableError(f"GitHub: {getattr(e, 'reason', None) or e}") from e
+            if not isinstance(page, list):
+                return page
+            items = [*(items or []), *page]
+            more = re.search(r'<([^>]+)>;\s*rel="next"', link)
+            url = more[1] if more and more[1].startswith(f"{API}/") else ""
+        return items
+
+    return get
+
+
+def asks_changes(reviews: list[dict[str, Any]], owner: str) -> bool:
+    """Whether `owner`'s standing verdict asks for changes. The forge lists reviews oldest
+    first, so his last approval, request for changes or dismissal is the one that stands."""
+    last = ""
+    for r in reviews:
+        if (r.get("user") or {}).get("login") == owner and r.get("state") in VERDICTS:
+            last = r["state"]
+    return last == "CHANGES_REQUESTED"
+
+
+def count(get: Get, repo: str, cap: int, owner: str) -> dict[str, Any]:
+    """The count, the pull requests it is made of, and the drain list, read from `get`."""
+    prs, drain, total = [], [], 0
+    for pr in get(f"repos/{repo}/pulls?state=open&per_page=100"):
+        number, draft, head = int(pr["number"]), bool(pr["draft"]), pr["head"]
+        commits = 0 if draft else int(get(f"repos/{repo}/pulls/{number}")["commits"])
+        total += commits
+        prs.append({"number": number, "draft": draft, "head": head["ref"], "commits": commits})
+        here = (head.get("repo") or {}).get("full_name") == repo
+        if here and asks_changes(get(f"repos/{repo}/pulls/{number}/reviews?per_page=100"), owner):
+            drain.append(head["ref"])
+    return {
+        "ok": True,
+        "repo": repo,
+        "count": total,
+        "cap": cap,
+        "left": max(cap - total, 0),
+        "over": total > cap,
+        "prs": prs,
+        "drain": sorted(drain),
+    }
+
+
+def line(result: dict[str, Any]) -> str:
+    """The nag, one line."""
+    if not result["ok"]:
+        return f"?/{result['cap']}, onbekend: {result['error']}"
+    n, cap = result["count"], result["cap"]
+    over = f" ({n - cap} boven de cap: de rem staat aan)" if result["over"] else ""
+    return f"{n}/{cap}, nog {result['left']}{over}"
+
+
+def measure(get: Get, repo: str, cap: int, owner: str) -> dict[str, Any]:
+    """`count`, or `"ok": false` with the reason when the forge cannot be read."""
+    try:
+        return count(get, repo, cap, owner)
+    except UnreadableError as e:
+        return {"ok": False, "repo": repo, "cap": cap, "error": str(e)}
+    except SHAPE as e:
+        return {"ok": False, "repo": repo, "cap": cap, "error": f"an answer of another shape: {e}"}
+
+
+def saved(path: str) -> dict[str, Any]:
+    """A count saved by --json, or `"ok": false` when the file cannot be read as one."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            result = json.load(f)
+        line(result)
+        return result  # type: ignore[no-any-return]
+    except (OSError, *SHAPE) as e:
+        return {"ok": False, "cap": "?", "error": f"no saved count: {e}"}
+
+
+def main(argv: list[str]) -> int:
+    if argv == ["--self-test"]:
+        return self_test()
+    if len(argv) == 2 and argv[0] == "--from":
+        print(line(saved(argv[1])))
+        return 0
+    if argv not in ([], ["--json"]):
+        print("usage: scripts/wip-count [--json | --from FILE | --self-test]", file=sys.stderr)
+        return 0
+    repo = os.environ.get("FPL_WIP_REPO") or "fpl-org/fpl"
+    owner = os.environ.get("FPL_WIP_OWNER") or "psjg"
+    try:
+        result = measure(getter(token()), repo, int(os.environ.get("FPL_WIP_CAP") or "50"), owner)
+    except ValueError:  # the cap is no number
+        result = {"ok": False, "repo": repo, "cap": "?", "error": "FPL_WIP_CAP is no number"}
+    print(json.dumps(result, indent=2) if argv else line(result))
+    return 0
+
+
+# --- self-test: a forge of fixtures, served by path ------------------------------------------
+
+R = "fpl-org/fpl"
+
+
+def pr(n: int, commits: int, draft: bool = False, fork: bool = False, *reviews: Any) -> Any:
+    """One open pull request as the forge lists it, with its detail and its reviews."""
+    head = {"ref": f"agent/claude/stack/p{n}", "repo": {"full_name": "x/fpl" if fork else R}}
+    return n, {"number": n, "draft": draft, "head": head}, commits, list(reviews)
+
+
+def rv(login: str, state: str) -> dict[str, Any]:
+    return {"user": {"login": login}, "state": state}
+
+
+def forge(*open_prs: Any) -> Get:
+    paths: dict[str, Any] = {f"repos/{R}/pulls?state=open&per_page=100": [p[1] for p in open_prs]}
+    for n, _, commits, reviews in open_prs:
+        paths[f"repos/{R}/pulls/{n}"] = {"number": n, "commits": commits}
+        paths[f"repos/{R}/pulls/{n}/reviews?per_page=100"] = reviews
+    return lambda path: paths[path]
+
+
+def down(_path: str) -> Any:
+    raise UnreadableError("GitHub answered 502 Bad Gateway")
+
+
+CR, OK, CM, DI = "CHANGES_REQUESTED", "APPROVED", "COMMENTED", "DISMISSED"
+CASES: list[tuple[str, Get, str, list[str]]] = [
+    ("no open pull request", forge(), "0/50, nog 50", []),
+    ("a draft is not counted", forge(pr(1, 3), pr(2, 40, True)), "3/50, nog 47", []),
+    ("at the cap is not over it", forge(pr(1, 30), pr(2, 20)), "50/50, nog 0", []),
+    (
+        "over the cap says by how much",
+        forge(pr(1, 30), pr(2, 23)),
+        "53/50, nog 0 (3 boven de cap: de rem staat aan)",
+        [],
+    ),
+    ("the owner asks changes: drained", forge(pr(1, 2, False, False, rv("psjg", CR))), "", ["1"]),
+    (
+        "a comment leaves it standing",
+        forge(pr(1, 2, False, False, rv("psjg", CR), rv("psjg", CM))),
+        "",
+        ["1"],
+    ),
+    (
+        "a later approval clears it",
+        forge(pr(1, 2, False, False, rv("psjg", CR), rv("psjg", OK))),
+        "",
+        [],
+    ),
+    (
+        "a dismissal clears it",
+        forge(pr(1, 2, False, False, rv("psjg", CR), rv("psjg", DI))),
+        "",
+        [],
+    ),
+    ("another reviewer is not the owner", forge(pr(1, 2, False, False, rv("bot", CR))), "", []),
+    ("a draft is drained too", forge(pr(1, 2, True, False, rv("psjg", CR))), "0/50, nog 50", ["1"]),
+    ("a fork's head is not drained", forge(pr(1, 2, False, True, rv("psjg", CR))), "", []),
+    ("an unreadable forge says so", down, "?/50, onbekend: GitHub answered 502 Bad Gateway", []),
+    (
+        "an answer of another shape",
+        lambda _p: [{"no": 1}],
+        "?/50, onbekend: an answer of another shape: 'number'",
+        [],
+    ),
+]
+
+
+def self_test() -> int:
+    """Each case: the line it must print (when given) and the pull requests it must drain."""
+    failed = 0
+    for name, get, want, drain in CASES:
+        result = measure(get, R, 50, "psjg")
+        got_drain = [h.rsplit("p", 1)[1] for h in result.get("drain", [])]
+        if (want and line(result) != want) or got_drain != drain:
+            failed += 1
+            print(f"wip-count self-test: FAIL {name}: {line(result)!r} drain {got_drain}")
+    with tempfile.TemporaryDirectory() as d:  # the file --json writes, read back by --from
+        path = os.path.join(d, "count.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(measure(forge(pr(1, 3)), R, 50, "psjg"), f)
+        files = [(path, "3/50, nog 47"), (d + "/none.json", "?/?, onbekend: no saved count")]
+        for file, want in files:
+            if not line(saved(file)).startswith(want):
+                failed += 1
+                print(f"wip-count self-test: FAIL --from {file}: {line(saved(file))!r}")
+    print(f"wip-count self-test: {len(CASES) + 2 - failed}/{len(CASES) + 2} cases pass")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
