@@ -299,27 +299,30 @@ names `github.com`, as `scripts/land` does. What names `land.yml` or a Series-Id
 the lander and `scripts/series` are on `main`; until then those steps have no automation to
 replace.
 
-**Open a draft.** Push with the token in the URL, never through the credential helper, then
+**Open a draft.** Push with the token in the URL and the helper list emptied (`-c credential.helper=`, so no
+helper is handed the token to store), then
 open the pull request as a draft on `main`. Its body opens with the card's headings (What,
 What changes, How checked, Limits, Verdict), which `land/card` wants.
 
 ```
-git push "https://x-access-token:$TOKEN@github.com/<o>/<n>.git" HEAD:refs/heads/<branch>
+git -c credential.helper= push "https://x-access-token:$TOKEN@github.com/<o>/<n>.git" HEAD:refs/heads/<branch>
 scripts/leak-check --text card.md        # nothing private in a public body
 GH_TOKEN="$TOKEN" gh pr create --repo github.com/<o>/<n> --draft --base main \
   --head <branch> --title "<conventional title>" --body-file card.md
 ```
 
 **Present.** Presenting rewrites the work branch W into the series a reader meets, P, before
-anyone has said anything on the pull request. Keep W under a ref of its own, rewrite, and
-prove two things: the tree is the same, and every commit is green alone.
+anyone has said anything on the pull request. Keep W under a tag of its own, rewrite, and
+prove two things: the tree is the same, and every commit is green alone. A tag, not a
+branch: `scripts/setup` turns `rebase.updateRefs` on, and a branch pointing into the range
+being rewritten would move with it, leaving the proof to compare P with P.
 
 ```
-git branch attempt/<series> <branch>                    # W, kept so anyone can repeat the proof
+git tag unpresented/<series> <branch>                   # W, kept so anyone can repeat the proof
 # … rewrite <branch> into P: git rebase -i, or reset and recommit …
-git diff --quiet attempt/<series> <branch>              # exit 0: tree(W) == tree(P)
+git diff --quiet unpresented/<series> <branch>          # exit 0: tree(W) == tree(P)
 git rebase --exec 'make quick' github/main              # green on every commit
-git push --force-with-lease=<branch>:<old head> \
+git -c credential.helper= push --force-with-lease=<branch>:<old head> \
   "https://x-access-token:$TOKEN@github.com/<o>/<n>.git" <branch>:refs/heads/<branch>
 ```
 
@@ -348,7 +351,8 @@ gh api --hostname github.com repos/<o>/<n>/pulls/<number>/reviews \
 ```
 
 **Check.** `scripts/land --dry-run <number>` makes every check the lander makes, from the
-forge as it is, with no terminal, and changes nothing. It prints a line for each rule, `ok`,
+forge as it is, with no terminal, and writes nothing to the forge (it keeps temporary files
+and fetches the pull request's head into this clone's object store). It prints a line for each rule, `ok`,
 `NO` with its remedy, or `--` with the reason when an answer the rule rests on is missing;
 the count; the approval it would give; the exact push; the retarget of what is stacked on the
 head; and the `git ls-remote` that shows `main` is the head afterwards. A rule refused: do
