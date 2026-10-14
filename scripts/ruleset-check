@@ -1,0 +1,244 @@
+#!/usr/bin/env python3
+"""scripts/ruleset-check — do the rulesets live on the forge still match the files that name them?
+
+    scripts/ruleset-check [--json] [--repo OWNER/REPO] [--dir DIR]
+
+harness/rulesets/*.json hold the repository rulesets as the project means them. A ruleset on
+the forge is changed in a settings page, where no review sees it, so this reads the live ones
+and compares each with its file, matched by `name`. It only reads (GET requests, python3 and
+nothing else, as scripts/forward-only does) and never writes: the owner mends a drift in the
+settings page, from the file.
+
+What is compared is what the forge enforces, not how it spells it. Dropped from both sides: id,
+node_id, the timestamps, _links, source, source_type and current_user_can_bypass. Order means
+nothing (rules are keyed by type, bypass actors by actor, status checks by context, lists of
+values are sorted). An `update` rule without parameters is one with
+update_allows_fetch_and_merge=false (measured on fpl-org/harness-proef: the forge answers one
+for the other), and a missing conditions.ref_name.exclude is an empty one.
+
+`bypass_actors` is not in the forge's answer to a token without admin rights (the machine
+accounts'), and a file made with such a token does not record it: it is compared only when both
+sides have it, and listed as unchecked otherwise.
+
+    exit 0   every file has its live ruleset, every live ruleset its file, no difference
+    exit 1   a difference: a field, a ruleset live without a file, or a file not live
+    exit 2   the forge or a file could not be read: nothing to judge by
+
+With --json the report is one object: {"repo", "in_sync", "rulesets": [{"name", "file",
+"state", "differences": [{"path", "file", "live"}], "unchecked": [{"field", "reason"}]}]},
+state being in_sync, drift, missing_live or missing_file. The token is the first of GH_TOKEN,
+GITHUB_TOKEN and gh's, else the read is anonymous; the machine account's is
+GH_TOKEN=$(gh auth token --user psjg-claude). FPL_RULESET_API names another API root.
+"""
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+DROPPED = {"id", "node_id", "created_at", "updated_at", "_links", "source", "source_type"}
+DROPPED |= {"current_user_can_bypass"}
+# Parameters a rule has when it is written without any, as the forge answers for them.
+DEFAULTS: dict[str, dict[str, Any]] = {"update": {"update_allows_fetch_and_merge": False}}
+ABSENT = "<absent>"
+
+
+class UnreadableError(Exception):
+    """The forge did not answer, or a file is not a ruleset: there is nothing to judge by."""
+
+
+def token() -> str:
+    """A token to read the forge with, or "" to read it anonymously."""
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        if os.environ.get(name):
+            return os.environ[name]
+    if not shutil.which("gh"):
+        return ""
+    try:
+        done = subprocess.run(
+            ["gh", "auth", "token"], capture_output=True, text=True, check=False, timeout=10
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return done.stdout.strip() if done.returncode == 0 else ""
+
+
+def get(api: str, path: str, secret: str) -> Any:
+    """The JSON the forge answers to a GET of `path`."""
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "fpl-ruleset-check"}
+    if secret:
+        headers["Authorization"] = f"Bearer {secret}"
+    try:
+        with urlopen(Request(f"{api}/{path}", headers=headers, method="GET"), timeout=20) as r:
+            return json.load(r)
+    except HTTPError as e:
+        raise UnreadableError(f"GitHub answered {e.code} {e.reason} for {path}") from e
+    except (OSError, ValueError) as e:
+        raise UnreadableError(f"GitHub: {getattr(e, 'reason', None) or e}") from e
+
+
+def canon(value: Any) -> Any:
+    """`value` with every list in it as a set: sorted, objects by their JSON."""
+    if isinstance(value, dict):
+        return {k: canon(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return sorted((canon(v) for v in value), key=lambda v: json.dumps(v, sort_keys=True))
+    return value
+
+
+def keyed(items: Any, key: str, kind: str, value: Any = lambda i: i) -> dict[str, Any]:
+    """A list of objects as an object by field `key` (the second of a kind is `k#2`)."""
+    out: dict[str, Any] = {}
+    for item in items or []:
+        if not isinstance(item, dict) or key not in item:
+            raise UnreadableError(f"a {kind} without a {key}: {json.dumps(item)[:80]}")
+        name = str(item[key])
+        out[name if name not in out else f"{name}#{len(out)}"] = value(item)
+    return out
+
+
+def rule(r: dict[str, Any]) -> Any:
+    """A rule as its parameters, a rule without any as its defaults."""
+    params = canon(r.get("parameters") or DEFAULTS.get(r["type"], {}))
+    if "required_status_checks" in params:
+        params["required_status_checks"] = keyed(
+            params["required_status_checks"],
+            "context",
+            "status check",
+            lambda c: c.get("integration_id"),
+        )
+    return params
+
+
+def normal(ruleset: dict[str, Any]) -> dict[str, Any]:
+    """What the forge enforces for `ruleset`, comparable: see the top of this file."""
+    out = canon({k: v for k, v in ruleset.items() if k not in DROPPED})
+    out.setdefault("conditions", {}).setdefault("ref_name", {}).setdefault("exclude", [])
+    out["rules"] = keyed(ruleset.get("rules"), "type", "rule", rule)
+    if isinstance(ruleset.get("bypass_actors"), list):
+        by = lambda a: f"{a.get('actor_type')} {a.get('actor_id')}"  # noqa: E731
+        out["bypass_actors"] = {by(a): a.get("bypass_mode") for a in ruleset["bypass_actors"]}
+    else:
+        out.pop("bypass_actors", None)
+    return out
+
+
+def differences(file: Any, live: Any, path: str = "") -> list[dict[str, Any]]:
+    """Every place two normalised values differ, as {"path", "file", "live"}."""
+    if not (isinstance(file, dict) and isinstance(live, dict)):
+        return [] if file == live else [{"path": path, "file": file, "live": live}]
+    found: list[dict[str, Any]] = []
+    for k in sorted(file.keys() | live.keys()):
+        found += differences(file.get(k, ABSENT), live.get(k, ABSENT), f"{path}.{k}".strip("."))
+    return found
+
+
+def entry(name: str, file: str | None, state: str, diff: Any = (), unchecked: Any = ()) -> Any:
+    """One ruleset's line of the report."""
+    return {
+        "name": name,
+        "file": file,
+        "state": state,
+        "differences": list(diff),
+        "unchecked": list(unchecked),
+    }
+
+
+def judge(name: str, file: str, wanted: dict[str, Any], live: dict[str, Any]) -> dict[str, Any]:
+    """The report on one ruleset that has both a file and a live twin."""
+    a, b = normal(wanted), normal(live)
+    unchecked = []
+    if "bypass_actors" not in a or "bypass_actors" not in b:
+        seen = (
+            "the file does not record it"
+            if "bypass_actors" in b
+            else "the forge does not show it to this token"
+        )
+        unchecked = [{"field": "bypass_actors", "reason": seen}]
+        a.pop("bypass_actors", None)
+        b.pop("bypass_actors", None)
+    diff = differences(a, b)
+    return entry(name, file, "drift" if diff else "in_sync", diff, unchecked)
+
+
+def load(directory: Path) -> dict[str, tuple[str, dict[str, Any]]]:
+    """The ruleset files of `directory` by ruleset name, each with its file name."""
+    out: dict[str, tuple[str, dict[str, Any]]] = {}
+    for f in sorted(directory.glob("*.json")):
+        try:
+            data = json.loads(f.read_text())
+        except (OSError, ValueError) as e:
+            raise UnreadableError(f"{f.name}: {e}") from e
+        if not isinstance(data, dict) or not isinstance(data.get("name"), str):
+            raise UnreadableError(f"{f.name}: not a ruleset (no name)")
+        if data["name"] in out:
+            raise UnreadableError(f"{f.name}: the name of {out[data['name']][0]} too")
+        out[data["name"]] = (f.name, data)
+    if not out:
+        raise UnreadableError(f"{directory}: no ruleset files")
+    return out
+
+
+def check(repo: str, directory: Path, api: str) -> dict[str, Any]:
+    """The report on every ruleset of `repo` against the files in `directory`."""
+    files, secret = load(directory), token()
+    listing = get(api, f"repos/{repo}/rulesets?includes_parents=false&per_page=100", secret)
+    if not isinstance(listing, list) or len(listing) >= 100:
+        raise UnreadableError("GitHub: the list of rulesets is not one page of a list")
+    ids = {k: int(v) for k, v in keyed(listing, "name", "ruleset", lambda r: r["id"]).items()}
+    found = []
+    for name, (fname, wanted) in files.items():
+        live = get(api, f"repos/{repo}/rulesets/{ids[name]}", secret) if name in ids else None
+        found.append(
+            judge(name, fname, wanted, live) if live else entry(name, fname, "missing_live")
+        )
+    found += [entry(n, None, "missing_file") for n in sorted(ids.keys() - files.keys())]
+    return {"repo": repo, "in_sync": all(r["state"] == "in_sync" for r in found), "rulesets": found}
+
+
+def text(report: dict[str, Any]) -> str:
+    """The report for a person."""
+    said = {
+        "in_sync": "in sync",
+        "drift": "DRIFT",
+        "missing_live": "NOT LIVE: no ruleset of that name on the forge",
+        "missing_file": "NO FILE: live on the forge, and no file in harness/rulesets names it",
+    }
+    shown = lambda v: v if isinstance(v, str) else json.dumps(v, sort_keys=True)  # noqa: E731
+    lines = [f"ruleset-check {report['repo']}: {'in sync' if report['in_sync'] else 'differs'}"]
+    for r in report["rulesets"]:
+        lines.append(f"{r['name']}  ({r['file'] or 'no file'}): {said[r['state']]}")
+        lines += [
+            f"  {d['path']}: file {shown(d['file'])}, live {shown(d['live'])}"
+            for d in r["differences"]
+        ]
+        lines += [f"  unchecked: {u['field']} ({u['reason']})" for u in r["unchecked"]]
+    return "\n".join(lines)
+
+
+def main(argv: list[str]) -> int:
+    """Read, compare, report; the exit code is the verdict (see the top of this file)."""
+    ap = argparse.ArgumentParser(prog="ruleset-check", description="Live rulesets against files.")
+    ap.add_argument("--json", action="store_true", help="the report as one JSON object")
+    ap.add_argument("--repo", default="fpl-org/fpl", help="OWNER/REPO (default fpl-org/fpl)")
+    here = Path(__file__).resolve().parent.parent / "harness" / "rulesets"
+    ap.add_argument("--dir", type=Path, default=here, help="the files (default harness/rulesets)")
+    args = ap.parse_args(argv)
+    api = os.environ.get("FPL_RULESET_API", "https://api.github.com").rstrip("/")
+    try:
+        report = check(args.repo, args.dir, api)
+    except UnreadableError as e:
+        print(f"ruleset-check: cannot judge: {e}", file=sys.stderr)
+        return 2
+    print(json.dumps(report, indent=2, sort_keys=True) if args.json else text(report))
+    return 0 if report["in_sync"] else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
