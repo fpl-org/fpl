@@ -1112,6 +1112,11 @@ printf '%s\n' "other@example.invalid" >"$(git rev-parse --git-path agent-identit
 refuse hook author-email "author email is 't@example.invalid'" "docs(x): a"$'\n\n'"Stack: t"$'\n'"Assisted-By: claude"$'\n'"Session-Id: s"
 rm -f "$(git rev-parse --git-path agent-identity)"
 refuse hook trailer-order "trailer 'Refs' is out of order" "docs(x): a"$'\n\n'"Stack: t"$'\n'"Refs: x"$'\n'"Human-Only: true"
+# Presented-By is the line of the agent that presents a series for review, written after the
+# builder's trailers, so it comes last, after Co-Authored-By too.
+refuse hook trailer-order "trailer 'Co-Authored-By' is out of order" "docs(x): a"$'\n\n'"Stack: t"$'\n'"Presented-By: claude s"$'\n'"Co-Authored-By: A <a@example.invalid>"$'\n'"Human-Only: true"
+printf '%s\n' "docs(x): a"$'\n\n'"Stack: t"$'\n'"Co-Authored-By: A <a@example.invalid>"$'\n'"Presented-By: claude s"$'\n'"Human-Only: true" >"$tmp/m"
+gate 0 "Presented-By after Co-Authored-By is in order" .githooks/commit-msg "$tmp/m"
 refuse hook stack-value "Stack: value 'Bad' must match" "docs(x): a"$'\n\n'"Stack: Bad"$'\n'"Human-Only: true"
 refuse hook stack-missing "on branch agent/claude/stack/t the message needs 'Stack: t'" "docs(x): a"$'\n\n'"Human-Only: true"
 refuse hook stack-many "holds 2 'Stack:' trailers" "docs(x): a"$'\n\n'"Stack: t"$'\n'"Stack: t"$'\n'"Human-Only: true"
