@@ -116,6 +116,12 @@ git reset -q --hard "$M0"
 git commit -q --allow-empty -m "assisted" -m "Assisted-By: gpt-6.1-sol"
 HG="$(git rev-parse HEAD)"
 git reset -q --hard "$M0"
+echo '* @psjg @psjg-claude' >.github/CODEOWNERS
+git commit -q -am "owners: the author too"
+MO="$(git rev-parse HEAD)"
+git commit -q --allow-empty -m "assisted" -m "Assisted-By: gpt-6.1-sol"
+HGO="$(git rev-parse HEAD)"
+git reset -q --hard "$M0"
 for i in 1 2 3 4 5 6 7 8 9 10 11; do git commit -q --allow-empty -m "c$i"; done
 HB="$(git rev-parse HEAD)"
 git reset -q --hard "$M0"
@@ -127,7 +133,7 @@ git reset -q --hard "$M0"
 git push -q "$REMOTE" "$M0:refs/heads/main" "$H:refs/heads/$BR" "$M1:refs/heads/m1" \
 	"$MC:refs/heads/mc" "$H2:refs/heads/h2" "$HM:refs/heads/hm" "$HS:refs/heads/hs" \
 	"$HN:refs/heads/hn" "$HP:refs/heads/hp" "$HW:refs/heads/hw" "$HG:refs/heads/hg" \
-	"$HB:refs/heads/hb" "$HL:refs/heads/hl" "$MF:refs/heads/mf"
+	"$HB:refs/heads/hb" "$HL:refs/heads/hl" "$MF:refs/heads/mf" "$HGO:refs/heads/hgo"
 
 # The stand-ins: gh serves the forge, git sends the test's GitHub to the disk, open and
 # xdg-open only log.
@@ -179,6 +185,9 @@ if [ "$method" != GET ]; then
 	echo '{}'
 	exit 0
 fi
+# An App's installation token has no user; a person's token (GH_TOKEN=pat) does.
+[ "$path" != user ] || [ -z "${GH_TOKEN:-}" ] || [ "$GH_TOKEN" = pat ] ||
+	{ echo "gh: Resource not accessible by integration (HTTP 403) user" >&2; exit 1; }
 name="$(printf %s "$path" | tr -c 'A-Za-z0-9._-' _)"
 dir="$FORGE"
 [ "$host" = github.com ] || dir="$FORGE/ghe"
@@ -268,8 +277,10 @@ rules() { # rules <required contexts> [approvals] [another rule] [pull_request p
 	  {"type": "deletion", "ruleset_id": 2}${3:+, $3}]]
 	EOF
 }
-ruleset() { # ruleset <id> <current_user_can_bypass>
-	echo "{\"name\": \"set $1\", \"current_user_can_bypass\": \"$2\"}" |
+LANDER='[{"actor_type": "Integration", "actor_id": 5318175, "bypass_mode": "always"}]'
+ruleset() { # ruleset <id> <current_user_can_bypass> [bypass actors, '' for none to see]
+	local actors="${3-$LANDER}"
+	echo "{\"name\": \"set $1\", \"current_user_can_bypass\": \"$2\"${actors:+, \"bypass_actors\": $actors}}" |
 		fixture "repos/land-test/fpl/rulesets/$1?includes_parents=true"
 }
 runs() { # runs <check runs as JSON objects> [total_count] [variant]: one page, counted right
@@ -1110,7 +1121,7 @@ landing 1 "GitHub does not show the pull request as merged" 7
 says "does not show #7 as merged" "it says so loudly"
 main_is "$H" "main moved all the same"
 
-# The rules on the range. --------------------------------------------------------------
+# The rules on the range, in both modes. ---------------------------------------------------
 # range_case <head> <main> <exit> <text> <description>: a dry run of that head on that main.
 range_case() {
 	at="$1" HEAD_SHA="$1"
@@ -1136,11 +1147,43 @@ at="$HG" HEAD_SHA="$HG"
 forge
 reviews "$(review 1 psjg APPROVED "$HG" "read it. gpt-ok: ${HG:0:7}")"
 expect 0 "a commit a GPT model assisted, with the owner's gpt-ok" --dry-run 7
+at="$HGO" HEAD_SHA="$HGO"
+forge
+git --git-dir="$REMOTE" update-ref refs/heads/main "$MO"
+reviews "$(review 1 psjg-claude APPROVED "$HGO" "gpt-ok: ${HGO:0:7}"), $(review 2 psjg APPROVED "$HGO" "fine")"
+GH_TOKEN=t expect 1 "--ci, the author's gpt-ok is no owner's attestation" --ci --dry-run 7
+says "NO  land/gpt" "it names the rule"
 at="$H" HEAD_SHA="$H"
 forge
 pull open false main @MERGED@ '## What\n## What changes\n## How checked\n## Limits'
 expect 1 "a body without the card's Verdict" --dry-run 7
 says "the body has no heading Verdict" "it names the heading"
+
+# --ci: the App's mode. ---------------------------------------------------------------------
+forge
+expect 1 "--ci without a token" --ci --dry-run 7
+says "land/ci: --ci acts as the token in GH_TOKEN" "it names the rule"
+GH_TOKEN=pat expect 1 "--ci with a person's token" --ci --dry-run 7
+says "land/ci: GH_TOKEN is a person's" "it names the rule"
+forge
+GH_TOKEN=t expect 0 "--ci dry run" --ci --dry-run 7
+says "lets App 5318175 past it: always" "it judges the App in the bypass list"
+says "would run: git push https://github.com/land-test/fpl.git $H:refs/heads/main" "it prints the push"
+ruleset 1 always '[{"actor_type": "RepositoryRole", "actor_id": 5, "bypass_mode": "always"}]'
+GH_TOKEN=t expect 1 "--ci, the App not in the bypass list" --ci --dry-run 7
+ruleset 1 always '[{"actor_type": "Integration", "actor_id": 5318175, "bypass_mode": "pull_request"}]'
+GH_TOKEN=t expect 1 "--ci, the App may bypass for pull requests only" --ci --dry-run 7
+says "NO  land/bypass" "it names the rule"
+ruleset 1 exempt ''
+GH_TOKEN=t expect 1 "--ci, no list to see and a token that is exempt, not always" --ci --dry-run 7
+forge
+reviews "$(review 1 psjg COMMENTED "$H")"
+GH_TOKEN=t expect 1 "--ci gives no approval of its own" --ci --dry-run 7
+says "NO  land/approved" "it names the rule"
+
+forge
+GH_TOKEN=t expect 1 "--ci without --dry-run lands nothing yet" --ci 7
+says "land/ci: --ci only judges so far" "it says so"
 
 # The header's land/rules entry says two things, which it keeps in sentences of their own: the
 # requirements scripts/land does not make (which the bypass would leave unenforced), and the
