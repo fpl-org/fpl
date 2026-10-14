@@ -1,0 +1,35 @@
+# The units of the harness redo as tasks: ids and English briefs only. Load with
+#   scripts/task load .agents/tasks/redo.tsv
+# One unit per line, five tab-separated columns:
+#   label  partOf  blockedBy  name  brief
+# partOf is a label or '-'; blockedBy is a comma-separated list of labels. The task title is
+# '<label> <name>', and a label that is already a task's first word is not created twice.
+lane-A	-		lock and identities	The cap on unmerged work and the identity checks that keep agent pushes off the maintainer account.
+lane-C	-		review layer	Draft-first pull requests, series ids, present-check and the lander: how work reaches review and then main.
+lane-T	-		tooling and cleanup	Tooling and cleanup that does not depend on the other lanes.
+A1	lane-A		whoami-check	scripts/whoami-check prints the account git would push as, gh's active account and the SSH greeting; exit 0 always; nags when one of them is an admin and prints the token-URL push form; wired as a pre-push message; self-test under bash 3.2 and 5.
+A2	lane-A		ruleset-brake	harness/rulesets/brake.json (all refs but main, creation and update, bypass for admins, the lander App and the deploy key, enforcement disabled), JSON exports of the live rulesets, and scripts/ruleset-check, a read-only drift check that exits 1 on drift.
+A3	lane-A	A2	brake-flipper	scripts/wip-count (commits on open non-draft pull requests; prints N/50, M left) and a workflow draft that flips the brake ruleset on events and on a 15-minute schedule, idempotently, never checking out pull-request code; --dry-run; the lag goes to the job summary.
+A4	lane-A		nag-patch	A staged patch for the local work-in-progress check: count commits on open pull requests, print the distance, never refuse; with sha256 and install and rollback lines; a replay over past commands gives 0 refusals. Staged only, never installed by an agent.
+A5	lane-A		scratch-proofs	Complete the proof table on the scratch repository (rulesets, App permissions, dismissal behaviour) from forge reads: each row measured, or marked owner-only. Feeds A3 and A6a.
+A6a	lane-A	C3,C4a	lander-core	A --ci mode of scripts/land and a land workflow: workflow_dispatch with concurrency, a verify job without secrets and a land job in an environment with the lander App token; an approval on the exact head SHA is mandatory; writes the series check run, fast-forwards main, retargets children, deletes the head branch.
+A6b	lane-A	A6a	land-by-hand	scripts/land --dry-run N prints every rule and the plain git sequence; every automated step is documented as a by-hand command; a range that touches workflows is routed to the owner path.
+A6c	lane-A	A6a,C3	relocate	When an approved head is not an ancestor of main: cherry-pick it onto main in a verify job, require per-commit tree and pair equality in the land job, push main and then the head with a lease, post the old-to-new map. A differing pair goes to a candidate ref with a range-diff, never over the reviewed head.
+C1	lane-C		pr-redo	scripts/pr bases on main by default (-B only for a real dependency on an open PR), opens as draft, and takes --body-file, --update-body and --ready through leak-check --text and the identity check; the FIFO and the pre-push gate-4 comment go; no labels.
+C2	lane-C	C3	branch-grammar	Kernel-style topic-path branch names with no fixed leaf and no provenance; stack/ is legacy only; branch-lint, BRANCHES.md and every consumer (hooks, acommit, new-worktree, pr) follow, in three sub-series: grammar and lint, consumers, docs.
+C3	lane-C		series	A Series-Id trailer after Stack in the trailer order, and scripts/series with mint, stamp, check, manifest (patch-id and message hash, digest, JSON), range and revert; commit-msg refuses two ids; series-self-test in make gates.
+C4a	lane-C	C3	present-check	scripts/series present-check (tree equality, make quick per commit in a detached worktree, commit-lint, one Series-Id; prints the lemma list and range-diff) and a series workflow draft without secrets that labels pushes, posts the range-diff and relays an approving review as a land dispatch.
+C4b	lane-C	C1,C3,C4a	presenter	A presenter agent definition and an AGENTS.md pointer: a fresh session, never the builder, rewrites the work branch into the literate series, one lemma per commit, then the trailers, present-check, manifest and the review card through scripts/pr --update-body and --ready.
+C5a	lane-C	C1,C2,C3,C4a,C4b	docs-landed	WORKFLOW.md, AGENTS.md, COMMITS.md, the CODEOWNERS comment and CLAUDE.md describe only what has landed (draft default, no FIFO, Series-Id, present-check, presenter, revert); stale claims removed.
+C5b	lane-C	A6a,A6b,A6c	docs-lander	The landing section: the App lands fast-forward, relocation, approve means land, the deploy-key owner path; no live mention of rebase-merge as a path.
+C7	lane-C	A6a	review-page-adapt	The review page orders its queue by dependency instead of first in first out, and the approve-and-rebase-merge button becomes approve in the UI, with the lander landing it.
+T1	lane-T		pijul-remove	Remove scripts/mirror, import-pr, mirror-self-test, the pijul layer in flake.nix, the WORKFLOW.md mirror section and the in-repo references.
+T2	lane-T		oci-image	packages.oci in flake.nix (dockerTools.buildLayeredImage of the dev-shell closure), make image and a DEVSHELL.md note; make quick passes inside the container.
+T3	lane-T		claude-md-refactor	Shrink the maintainer's own agent-instruction file to a short core and give every rule a home elsewhere, with a table of where each paragraph went. Outside this repository.
+T4	lane-T		atomic-local-model	Benchmark local models against the hosted one for the atomic-commit check on a labelled corpus of commits; report accuracy, latency and cost per model.
+T4b	lane-T	T4	atomic-local-hook	The atomic-check hook calls the chosen local model with the same {atomic, reason} contract, fails open with a loud warning, FPL_ATOMIC_STRICT=1 opts in to refusing, and keeps the verdict cache.
+T5a	lane-T		taskdag-own	This list of units as scripts/task tasks (Radicle COBs, blockedBy and partOf), with task ready and task tree; every title and body goes through leak-check --text first.
+T5b	lane-T		taskdag-issues	The same DAG as a map issue with sub-issues and blocked-by relations on the scratch repository, with a gh one-liner that prints the tree.
+T5c	lane-T	T5a,T5b	taskdag-sync	Marker-based two-way sync between the Radicle store and the issue map, after both have been tried; a round trip leaves both stores equal.
+T6	lane-T		sweep-inventory	scripts/sweep --dry-run lists every worktree and branch (merged, patch-new, dirty, PR state, owner, proposed action) with a do-not-touch list; --apply only on explicit maintainer approval, tags before removal.
+T7	lane-T		sync-gate-spec	Spec and pure-function tests for a sync-before-launch gate: a scope file (fixes, defers, never touches) acknowledged by its hash; a staged patch for the owner to install.
