@@ -158,7 +158,8 @@ ready: harden gates
 	$(BIN)/pip-audit --progress-spinner off --requirement $(OUT)/requirements.txt --disable-pip
 
 # The harness's own Python, judged by the same ruff it judges others with.
-HARNESS := $(addprefix $(S)/,crap props escapes mutants gates forward-only diagrams ruff-limits) \
+HARNESS := $(addprefix $(S)/,crap props escapes mutants gates forward-only diagrams ruff-limits \
+                             ruleset-check) \
            $(Q)/noslop_pytest.py
 
 # config-fresh is a prerequisite, as it is of check; scripts/gen-config-self-test is the proof
@@ -179,6 +180,7 @@ gates: venv config-fresh
 	$(S)/spec-guard-self-test
 	$(S)/gen-config-self-test
 	$(S)/land-self-test
+	$(S)/ruleset-check-self-test
 	$(BIN)/python $(S)/gates
 
 # Each tool syncs its own locked environment into <tool>/.venv, so its dependencies never

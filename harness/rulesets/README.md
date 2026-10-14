@@ -26,4 +26,5 @@ Enforcement status to Active.
     scripts/ruleset-check          # exit 0 in sync, 1 drift, 2 cannot read; --json for machines
 
 It only reads. As the machine account: `GH_TOKEN=$(gh auth token --user psjg-claude)`. Until
-`brake.json` is imported it reports the brake as `NOT LIVE` and exits 1.
+`brake.json` is imported it reports the brake as `NOT LIVE` and exits 1. Its proof is
+`scripts/ruleset-check-self-test`, run by `make gates`.
