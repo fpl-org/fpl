@@ -317,6 +317,7 @@ def fed(lines: Sequence[str]) -> list[str]:
         (["“", "f : -- x", "”", ""], ["“\nf : -- x\n”\n"]),
         (["⟦ note", "⟧ f : -- x", "2", ""], ["⟦ note\n⟧ f : -- x\n\t2\n"]),
         (["a/", "\tf : -- x", "⟦ note", "⟧", "2", ""], ["a/\n\tf : -- x\n\t\t⟦ note\n⟧\n\t\t2\n"]),
+        (["a/", "\t⟦ note ⟧\tf : -- x", "2", ""], ["a/\n\t⟦ note ⟧\tf : -- x\n\t\t\t2\n"]),
     ],
 )
 def test_a_body_at_the_margin(lines: list[str], made: list[str]) -> None:

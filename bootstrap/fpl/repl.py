@@ -11,6 +11,7 @@ import os
 import re
 import sys
 from argparse import ArgumentParser
+from bisect import bisect_left
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -20,6 +21,7 @@ from fpl.ast_surface import Line, Program
 from fpl.desugar import plain
 from fpl.driver import FUEL_DEFAULT
 from fpl.errors import FplError
+from fpl.lex import Lines, prelex
 from fpl.log import ASCII, U64, Event, Log, RefusedError, Who, keyed, load, locked, resolve, write
 from fpl.multihash import Multihash
 from fpl.parse import parse
@@ -258,9 +260,10 @@ def _body(text: str) -> str:
     of a block comment on its line counts, a head whose body has begun does not, and an input
     that does not parse so far is inside a pair left open (any other error has ended it, see
     `inputs`), where a line that reads as a head is only text, such as a line of a string. The
-    tabs are those of the physical line the head stands on, which its span names, so a head
-    under a directory is one deeper still, also when a block comment closed at the margin
-    stands between the head and its body."""
+    tabs are the depth the pre-lexer gives the head's line, the tabs that lead the line of code
+    it stands on once the block comments are gone: so a head under a directory is one deeper
+    still, also when a block comment stands between the head and its body, or before the head
+    on its own line."""
     program = _parsed(text)
     if program is None:
         return ""
@@ -269,8 +272,10 @@ def _body(text: str) -> str:
         line = line.block[-1]
     if not head(line):
         return ""
-    physical = text.split("\n")[line.span.line - 1]
-    return "\t" * (len(physical) - len(physical.lstrip("\t")) + 1)
+    lexed = prelex(text)
+    at = bisect_left(lexed.origin, Lines(text).starts[line.span.line - 1] + line.span.col - 1)
+    code_line = lexed.code[lexed.code.rfind("\n", 0, at) + 1 :]
+    return "\t" * (len(code_line) - len(code_line.lstrip("\t")) + 1)
 
 
 def _taken(text: str, line: str) -> str:
