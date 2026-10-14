@@ -131,6 +131,13 @@ is wrong, say so and let the maintainer decide — don't route around it.
   LLM `atomic-check` blocks commits that bundle unrelated changes.
 - Work in **stacked commits** — small, ordered, individually reviewable; **`scripts/restack`**
   rebases the stack when the base moves. See `.agents/WORKFLOW.md`. Prefer `jj`? `.agents/JJ.md`.
+- **Present before review.** The maintainer reads a pull request commit by commit, so a work
+  branch is told again before he reads it: a fresh session, never the one that built it and
+  never a GPT-family model, rewrites it into a literate series (one claim per commit, in the
+  order concept, invariant, mechanism, behaviour, gaps; at most 10 commits and 600 lines), with
+  the same tree, and puts the review card in the body. The brief is
+  `.claude/agents/presenter.md` (any harness can follow it), the card `.agents/REVIEW-CARD.md`;
+  each presented commit carries a `Presented-By:` trailer (`.agents/COMMITS.md`).
 - **An approved PR is frozen.** Rewrite freely until the maintainer approves; after that,
   fix forward in a new PR on top (`.agents/WORKFLOW.md` rule 10; `.githooks/pre-push` refuses).
 - **Land through a GitHub PR, always**, with `scripts/land`: a fast-forward of `main` to the
