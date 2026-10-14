@@ -188,6 +188,9 @@ if [ "$method" != GET ]; then
 	echo '{}'
 	exit 0
 fi
+# An App's installation token has no user; a person's token (GH_TOKEN=pat) does.
+[ "$path" != user ] || [ -z "${GH_TOKEN:-}" ] || [ "$GH_TOKEN" = pat ] ||
+	{ echo "gh: Resource not accessible by integration (HTTP 403) user" >&2; exit 1; }
 name="$(printf %s "$path" | tr -c 'A-Za-z0-9._-' _)"
 dir="$FORGE"
 [ "$host" = github.com ] || dir="$FORGE/ghe"
@@ -310,6 +313,7 @@ forge() {
 	git --git-dir="$OTHER" update-ref -d refs/heads/main 2>/dev/null || :
 	pull open false main @MERGED@
 	me psjg
+	echo '{"delete_branch_on_merge": false}' | fixture repos/land-test/fpl
 	reviews "$(review 1 psjg APPROVED "$at")"
 	threads "$(thread true https://forge/t1)"
 	rules '{"context": "commit-lint", "integration_id": 15368},
@@ -1163,7 +1167,14 @@ says "the body has no heading Verdict" "it names the heading"
 forge
 expect 1 "--ci without a token" --ci --dry-run 7
 says "land/ci: --ci acts as the token in GH_TOKEN" "it names the rule"
+GH_TOKEN=pat expect 1 "--ci with a person's token" --ci --dry-run 7
+says "land/ci: GH_TOKEN is a person's" "it names the rule"
+echo '{"delete_branch_on_merge": true}' | fixture repos/land-test/fpl
+GH_TOKEN=t expect 1 "--ci, the repository deletes head branches on merge" --ci --dry-run 7
+says "NO  land/autodelete" "it names the rule"
+forge
 GH_TOKEN=t expect 0 "--ci dry run" --ci --dry-run 7
+says "ok  land/autodelete" "it judges the setting"
 says "lets App 5318175 past it: always" "it judges the App in the bypass list"
 says "would run: git push https://github.com/land-test/fpl.git $H:refs/heads/main" "it prints the push"
 ruleset 1 always '[{"actor_type": "RepositoryRole", "actor_id": 5, "bypass_mode": "always"}]'

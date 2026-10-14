@@ -74,11 +74,14 @@
 #                           checked, Limits, Verdict
 #
 # --ci is the lander App's mode (harness/workflows/land.yml): no terminal, no browser, no
-# keypress, and no approval given; it acts as the token in GH_TOKEN and refuses without one.
+# keypress, and no approval given; it acts as the token in GH_TOKEN and refuses without one,
+# and a token the forge shows a user for (land/ci: an App's installation token has none).
 # There land/approved wants a code owner's approval of the head standing, land/author that
 # it is not the author's, and land/bypass that each ruleset on main lists the App
 # (FPL_LAND_APP_ID, default 5318175, fpl-lander) with bypass mode always, or, where the token
-# cannot see that list, that the ruleset lets the token past always. Before the push it
+# cannot see that list, that the ruleset lets the token past always, and land/autodelete that
+# the repository does not delete a branch when its pull request merges: that would close the
+# pull requests stacked on it before they are retargeted. Before the push it
 # writes the fpl/series check run on the head, when main holds scripts/series, with the
 # digest `scripts/series digest <main>..<head>` prints; the push carries the token. Once
 # GitHub shows the merge it retargets to main each pull request based on the landed branch,
@@ -771,6 +774,19 @@ def judge_range(v, pr, main, head, bodies):
         v.ok("land/card", "the body holds the card")
 
 
+def judge_autodelete(v, d):
+    """land/autodelete: the repository setting "Automatically delete head branches" is off;
+    anything but a plain false (unset, unreadable) refuses."""
+    on = load(f"{d}/repo.json").get("delete_branch_on_merge")
+    if on is False:
+        v.ok("land/autodelete", "GitHub deletes no branch when its pull request merges")
+    else:
+        v.no("land/autodelete", f"the repository's delete_branch_on_merge is {on}: GitHub"
+             " would delete the landed branch before its children are retargeted",
+             "the owner turns off Settings > General > Pull Requests > Automatically delete"
+             " head branches")
+
+
 def judge(d, repo, fetched, main, ancestor, merges, ci):  # noqa: PLR0913, PLR0917
     """Print one line per check and return 1 when any refuses, 3 when none does but the
     approval is yours to give in this run, else 0."""
@@ -780,6 +796,8 @@ def judge(d, repo, fetched, main, ancestor, merges, ci):  # noqa: PLR0913, PLR09
     v = Verdict()
     ci = ci == "1"
     judge_pull(v, pr, me, fetched, repo, ci)
+    if ci:
+        judge_autodelete(v, d)
     approve, bodies = judge_reviews(v, d, pr, me, repo, ci)
     judge_threads(v, d)
     fault = rules_fault(rules)
@@ -1025,6 +1043,11 @@ esac
 gather() {
 	api "repos/$slug/pulls/$n" >"$tmp/pr.json" || die "cannot read #$n"
 	if [ "$ci" -eq 1 ]; then # an App's token has no user: it is the App
+		if api user >/dev/null 2>&1; then
+			die "land/ci: GH_TOKEN is a person's, the forge shows a user for it;" \
+				"remedy: --ci acts as the fpl-lander App's installation token (harness/workflows/land.yml)"
+		fi
+		api "repos/$slug" >"$tmp/repo.json" || die "cannot read the repository $slug"
 		printf '{"login": "%s"}\n' "${FPL_LAND_APP:-fpl-lander[bot]}" >"$tmp/me.json"
 	else
 		api user >"$tmp/me.json" || die "cannot read who you are"
