@@ -26,10 +26,16 @@
 #                                   --verbatim of its diff) and the SHA-256 of author and raw
 #                                   message, plus a digest over all (patch id, message) pairs.
 #                                   Byte-stable: no clock, no config of the caller's in the diff.
+#   series range <id>               the first-parent range <base>..<tip> on main whose commits
+#                                   carry <id>; refused when they are not one contiguous run.
+#   series revert <id> [branch]     one commit, on a new branch off main, that undoes the whole
+#                                   series: a new Series-Id and the trailer Refs: series <id>.
 #
-# Environment: SERIES_GH (the gh to ask the forge; default gh), SERIES_REPO (fpl-org/fpl),
-# SERIES_OWNER (the login whose word freezes a branch; psjg). The forge is only read, with the
-# machine account's token. Plain bash 3.2: no mapfile, no associative arrays.
+# Environment: SERIES_MAIN (the ref of main; default github/main, else origin/main, else main;
+# once set it must resolve, it never falls back), SERIES_GH (the gh to ask the forge; default
+# gh), SERIES_REPO (fpl-org/fpl), SERIES_OWNER (the login whose word freezes a branch; psjg). The
+# forge is only read, with the machine account's token. Plain bash 3.2: no mapfile, no
+# associative arrays.
 
 set -euo pipefail
 
@@ -49,6 +55,22 @@ die() {
 }
 
 sha256() { if command -v sha256sum >/dev/null; then sha256sum; else shasum -a 256; fi | cut -d' ' -f1; }
+
+# main_ref: where main is: SERIES_MAIN when set (and then it must resolve: an explicit choice
+# that is wrong is an error, never a quiet fallback to another history), else the first of
+# github/main, origin/main, main.
+main_ref() {
+	local c
+	if [ -n "${SERIES_MAIN:-}" ]; then
+		git rev-parse -q --verify "$SERIES_MAIN^{commit}" >/dev/null \
+			|| die main-ref "SERIES_MAIN='$SERIES_MAIN' is not a commit here" "fix or unset SERIES_MAIN"
+		printf '%s' "$SERIES_MAIN"; return
+	fi
+	for c in github/main origin/main main; do
+		git rev-parse -q --verify "$c^{commit}" >/dev/null && { printf '%s' "$c"; return; }
+	done
+	die main-ref "no ref for main" "set SERIES_MAIN"
+}
 
 # revs <range>: the commits of a linear range, oldest first; refuses an empty one or a merge.
 revs() {
@@ -211,7 +233,67 @@ cmd_manifest() { # manifest <range>
 	printf '\n  ],\n  "digest": "%s"\n}\n' "$digest"
 }
 
+cmd_range() { # range <id>
+	local id="${1:-}" main c n=0 newest="" oldest=""
+	[ -n "$id" ] || die usage "an id is needed" "series range <id>"
+	main="$(main_ref)"
+	for c in $(git log --first-parent --format=%H --fixed-strings --grep="Series-Id: $id" "$main"); do
+		ids_of "$c" | grep -qx -- "$id" || continue
+		n=$((n + 1)); oldest="$c"; [ -n "$newest" ] || newest="$c"
+	done
+	[ "$n" -gt 0 ] || die range-none "no commit on $main carries $id" "check the id: series check <range>"
+	[ "$(git rev-list --first-parent --count "$oldest..$newest")" = "$((n - 1))" ] \
+		|| die range-gap "the commits carrying $id are not one run on $main (between $(git rev-parse --short "$oldest") and $(git rev-parse --short "$newest"))" "revert them by hand"
+	git rev-parse -q --verify "$oldest^" >/dev/null || die range-root "the series starts at the root commit" "revert by hand"
+	printf '%s..%s\n' "$(git rev-parse "$oldest^")" "$newest"
+}
+
+# revert_undo <from> <branch>: leave no trace of a revert that could not be committed: the staged
+# inverse goes, the checkout returns to <from>, the new branch is deleted.
+revert_undo() {
+	git revert --abort >/dev/null 2>&1 || true
+	git reset -q --hard
+	git switch -q "$1" 2>/dev/null || git switch -q --detach "$1"
+	git branch -q -D "$2"
+}
+
+cmd_revert() { # revert <id> [branch]
+	local id="${1:-}" range main branch body new from marks="" m err
+	range="$(cmd_range "$id")"
+	main="$(main_ref)"
+	git diff --quiet HEAD -- || die dirty "the tree has uncommitted changes" "commit or stash them"
+	branch="${2:-agent/${FPL_AGENT_ID:-claude}/stack/revert-$id}"
+	from="$(git branch --show-current)"; [ -n "$from" ] || from="$(git rev-parse HEAD)"
+	git switch -q --no-track -c "$branch" "$main"
+	if ! git revert -n --no-edit "$range" >/dev/null 2>&1; then
+		revert_undo "$from" "$branch"
+		die revert-conflict "a later change on $main no longer lets $range be undone cleanly" "revert by hand"
+	fi
+	# One commit holds one side (scripts/boundary), and the hooks do not judge that at commit
+	# time but commit-lint does at push: judge the inverse now, as a loose commit nothing refers to.
+	if ! err="$("$repo_root/scripts/boundary" "$(git commit-tree -p "$main" -m probe "$(git write-tree)")" 2>&1)"; then
+		revert_undo "$from" "$branch"
+		printf '%s\n' "$err" >&2
+		die revert-mixed "the series spans harness and implementation paths, so its undo cannot be one commit" "undo the harness commits and the implementation commits apart, by hand"
+	fi
+	new="$(mint_of "$branch")"
+	body="$(git log --reverse --format='- %h %s' "$range" | cut -c1-70)"
+	# The undo touches what the series touched, so it carries the markers the hooks ask for.
+	for m in '[spec]' '[policy]'; do
+		git log --format=%B "$range" | grep -Fq -- "$m" && marks="$marks$m "
+	done
+	set -- -t revert -s series -m "undo series $id" -b "Undoes every commit of the series, in one commit:" -b "$body" -r "series $id"
+	[ -z "$marks" ] || set -- "$@" -b "Carries the ${marks% } of the series it undoes."
+	if ! err="$("$repo_root/scripts/acommit" "$@" 2>&1)"; then
+		revert_undo "$from" "$branch"
+		printf '%s\n' "$err" >&2
+		die revert-refused "the hooks refused the undo of $range as one commit (above); the checkout is as it was" "undo the sides apart (harness commits, implementation commits, policy apart from code) by hand"
+	fi
+	cmd__amend "$new"
+	printf '%s %s\n' "$branch" "$new"
+}
+
 case "${1:-}" in
-mint | stamp | check | manifest | _amend) c="cmd_${1}"; shift; "$c" "$@" ;;
-*) die usage "series {mint|stamp|check|manifest} ..." "see the header of scripts/series" ;;
+mint | stamp | check | manifest | range | revert | _amend) c="cmd_${1}"; shift; "$c" "$@" ;;
+*) die usage "series {mint|stamp|check|manifest|range|revert} ..." "see the header of scripts/series" ;;
 esac
