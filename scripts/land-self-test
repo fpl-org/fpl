@@ -80,7 +80,7 @@ git reset -q --hard "$M0"
 # For the rules on the range: MS, a main that holds scripts/series, HS above it with one
 # Series-Id, HN with none, MF a main past MS that carries HS's id; MP a main that adds p,
 # HP above it that removes p and adds it again, the patch of MP; HW a head that touches a
-# workflow, HB eleven commits, HL 601 lines.
+# workflow, HG one a GPT model assisted, HB eleven commits, HL 601 lines.
 mkdir scripts
 printf '#!/bin/sh\necho d1g3st\n' >scripts/series
 chmod +x scripts/series
@@ -113,6 +113,9 @@ git add -A
 git commit -q -m "a workflow"
 HW="$(git rev-parse HEAD)"
 git reset -q --hard "$M0"
+git commit -q --allow-empty -m "assisted" -m "Assisted-By: gpt-6.1-sol"
+HG="$(git rev-parse HEAD)"
+git reset -q --hard "$M0"
 for i in 1 2 3 4 5 6 7 8 9 10 11; do git commit -q --allow-empty -m "c$i"; done
 HB="$(git rev-parse HEAD)"
 git reset -q --hard "$M0"
@@ -123,7 +126,7 @@ HL="$(git rev-parse HEAD)"
 git reset -q --hard "$M0"
 git push -q "$REMOTE" "$M0:refs/heads/main" "$H:refs/heads/$BR" "$M1:refs/heads/m1" \
 	"$MC:refs/heads/mc" "$H2:refs/heads/h2" "$HM:refs/heads/hm" "$HS:refs/heads/hs" \
-	"$HN:refs/heads/hn" "$HP:refs/heads/hp" "$HW:refs/heads/hw" \
+	"$HN:refs/heads/hn" "$HP:refs/heads/hp" "$HW:refs/heads/hw" "$HG:refs/heads/hg" \
 	"$HB:refs/heads/hb" "$HL:refs/heads/hl" "$MF:refs/heads/mf"
 
 # The stand-ins: gh serves the forge, git sends the test's GitHub to the disk, open and
@@ -237,8 +240,9 @@ pull() { # pull <state> <draft> <base> <merged> [body]
 }
 me() { echo "{\"login\": \"$1\"}" | fixture user; }
 reviews() { echo "[[$1]]" | fixture "repos/land-test/fpl/pulls/7/reviews?per_page=100" ${2:+"$2"}; }
-review() { # review <id> <login> <state> <commit>
-	echo "{\"id\": $1, \"user\": {\"login\": \"$2\"}, \"state\": \"$3\", \"commit_id\": \"$4\"}"
+review() { # review <id> <login> <state> <commit> [body]
+	echo "{\"id\": $1, \"user\": {\"login\": \"$2\"}, \"state\": \"$3\", \"commit_id\": \"$4\",
+	  \"body\": \"${5:-}\"}"
 }
 threads() {
 	echo "[{\"data\": {\"repository\": {\"pullRequest\": {\"reviewThreads\": {\"nodes\": [$1],
@@ -1127,6 +1131,11 @@ range_case "$HP" "$MP" 1 "NO  land/patch-fresh" "a patch that is on main already
 range_case "$HW" "$M0" 1 "NO  land/workflows" "a commit that touches .github/workflows"
 range_case "$HB" "$M0" 1 "11 commits, 0 lines: over 10" "eleven commits"
 range_case "$HL" "$M0" 1 "1 commits, 601 lines: over" "601 lines"
+range_case "$HG" "$M0" 1 "NO  land/gpt" "a commit a GPT model assisted, no gpt-ok"
+at="$HG" HEAD_SHA="$HG"
+forge
+reviews "$(review 1 psjg APPROVED "$HG" "read it. gpt-ok: ${HG:0:7}")"
+expect 0 "a commit a GPT model assisted, with the owner's gpt-ok" --dry-run 7
 at="$H" HEAD_SHA="$H"
 forge
 pull open false main @MERGED@ '## What\n## What changes\n## How checked\n## Limits'
