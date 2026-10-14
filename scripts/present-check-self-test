@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # scripts/present-check-self-test — proof that scripts/present-check refuses each thing it is
-# there to refuse and passes what it should. Run by `make gates`.
+# there to refuse, passes what it should, and that the draft Action under harness/workflows
+# keeps the properties its header promises. Run by `make gates`.
 #
 # The fixture is a small repository in a temp directory, git's global and system config pointed
 # away from the maintainer's. FPL_PRESENT_QUICK and FPL_PRESENT_LINT stand in for make quick
@@ -176,6 +177,33 @@ git checkout -q -b reloc main3
 for f in f1 f2 f3; do git checkout -q work -- "$f"; commit "feat(x): $f"; done
 check "classify relocation" test "$("$pc" classify -B main3 work reloc)" = relocation
 check "classify content" test "$("$pc" classify work extra)" = content
+
+# series.yml: the properties its header promises, read from the file itself.
+# The draft sits under harness/workflows; once the owner has installed it, under .github/workflows.
+yml="$root/harness/workflows/series.yml"
+[ -f "$yml" ] || yml="$root/.github/workflows/series.yml"
+audit() { # audit <file>: print each broken promise; the exit status is whether there is none
+	local body="$tmp/audit.body" bad=0 needle
+	grep -vE '^[[:space:]]*#' "$1" >"$body"
+	if grep -E 'uses:' "$body" | grep -vE '@[0-9a-f]{40}([[:space:]]|$)'; then bad=1; fi
+	if grep -E 'secrets[.]' "$body"; then bad=1; fi
+	for needle in 'synchronize' 'reopened' 'edited' 'persist-credentials: false' 'head.repo.full_name' "needs.check.result != 'cancelled'"; do
+		grep -qF "$needle" "$body" || { echo "lacks: $needle" && bad=1; }
+	done
+	awk '
+		/^jobs:/ { injobs = 1; next }
+		injobs && /^  [a-z][a-z0-9_-]*:/ { job = $1; jobs[job] = 1 }
+		/timeout-minutes:/ { timed[job] = 1 }
+		END { for (j in jobs) if (!timed[j]) print "no timeout-minutes: " j }' "$body" | { ! grep .; } || bad=1
+	return "$bad"
+}
+check "series.yml keeps its promises" audit "$yml"
+refuses() { ! "$@"; }
+for broken in 's/timeout-minutes/timeout-hours/' 's/\(uses: [^@]*\)@[0-9a-f]\{40\}/\1@v4/' \
+	's/github[.]token/secrets.TOKEN/' 's/persist-credentials: false/persist-credentials: true/'; do
+	sed -e "$broken" "$yml" >"$tmp/broken.yml"
+	check "the audit refuses: $broken" refuses audit "$tmp/broken.yml" >/dev/null
+done
 
 echo "present-check self-test: $fails of $total checks failed (bash $BASH_VERSION)"
 if [ -z "${PRESENT_CHECK_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ] && ! [ /bin/bash -ef "$BASH" ]; then

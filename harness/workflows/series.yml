@@ -1,0 +1,129 @@
+# DRAFT of the series Action, kept here because an agent's token cannot push under
+# .github/workflows (.agents/WORKFLOW.md, rule 8): the owner installs it (README.md).
+#
+# On every push to a pull request it runs `make quick` on each commit of the range, in a
+# worktree of its own (scripts/present-check), so a series is judged lemma by lemma. It posts
+# one comment: whether the push changed the presentation (the same tree, another story),
+# relocated the series (the same patches, a moved base) or changed its content, the lemma list
+# with seconds, and the range-diff against the head the push replaced.
+#
+# Two jobs, split by what they may do: `check` runs the pull request's code and only reads;
+# `comment` holds the one write, to the conversation, and runs none of that code (a fork's
+# token cannot write, so for a fork the text goes to the run's summary page instead).
+# The judge is main's, as in commit-lint.yml: present-check
+# runs from a worktree of main, so a pull request cannot loosen its own verdict. Refs, SHAs and
+# numbers reach the shell through env, never through an expression in the script text. There is
+# no secret here; the jobs use the token GitHub gives each run.
+name: series
+
+on:
+  pull_request:
+    # "edited" is how GitHub reports a retargeted base: a stacked PR retargeted to main gets a
+    # longer range without a new head. The job below skips edits that did not move the base.
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    if: >-
+      github.event_name == 'pull_request'
+      && (github.event.action != 'edited' || github.event.changes.base != null)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: series-check-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+      - name: Every commit passes, and what the push changed
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+          ACTION: ${{ github.event.action }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -u
+          out="$RUNNER_TEMP/series"
+          mkdir -p "$out"
+          git fetch --no-tags origin main
+          git worktree add --detach "$RUNNER_TEMP/trusted" FETCH_HEAD
+          cd "$RUNNER_TEMP/trusted"
+          # The previous head by SHA; a force push can age it out of reach, and the comment says so.
+          label="new" diff=""
+          if [ "$ACTION" = synchronize ]; then
+            if git fetch --no-tags origin "$BEFORE_SHA" 2>/dev/null; then
+              label="$(scripts/present-check classify -B "$BASE_SHA" "$BEFORE_SHA" "$HEAD_SHA")"
+              old="$(git merge-base "$BASE_SHA" "$BEFORE_SHA")"
+              new="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
+              diff="$(git range-diff "$old..$BEFORE_SHA" "$new..$HEAD_SHA" 2>&1 || true)"
+            else
+              label="unknown"
+              diff="the previous head $BEFORE_SHA can no longer be fetched, so there is no range-diff"
+            fi
+          fi
+          set +e
+          nix develop -c scripts/present-check -B "$BASE_SHA" -b "$HEAD_REF" "$HEAD_SHA" >"$out/run.txt" 2>&1
+          status=$?
+          set -e
+          # Backticks out of untrusted text so no subject closes the fence; the fence stops pings.
+          {
+            echo "push: **$label**"
+            echo
+            if [ "$status" -eq 0 ]; then echo "every commit of the range is green"; else echo "RED"; fi
+            echo
+            echo '```text'
+            tr '`' "'" <"$out/run.txt" | tail -n 120
+            if [ -n "$diff" ]; then
+              echo
+              echo "range-diff against the previous head:"
+              printf '%s\n' "$diff" | tr '`' "'" | head -n 200
+            fi
+            echo '```'
+          } | head -c 60000 >"$out/comment.md"
+          # A fork's token cannot comment; the run's summary page carries the same text.
+          cat "$out/comment.md" >>"$GITHUB_STEP_SUMMARY"
+          exit "$status"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: series-comment
+          path: ${{ runner.temp }}/series
+          if-no-files-found: error
+
+  comment:
+    # A newer push cancels this run's check (the concurrency group above); the newer run
+    # comments, and a cancelled check leaves nothing to post.
+    needs: check
+    if: >-
+      always() && github.event_name == 'pull_request'
+      && needs.check.result != 'skipped' && needs.check.result != 'cancelled'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: series-comment
+          path: series
+      - name: One comment on the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          # The target comes from the event, never from the artifact: the artifact is written
+          # by the pull request's own code.
+          gh api "repos/$REPO/issues/$PR/comments" -F body=@series/comment.md >/dev/null
