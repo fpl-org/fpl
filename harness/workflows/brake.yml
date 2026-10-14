@@ -2,6 +2,11 @@
 # "The cap"). A draft the owner installs (harness/workflows/README.md). It never runs a pull
 # request's code: the checkout is main, explicitly. The count reads with the workflow's own
 # token; only the flip holds the fpl-brake App's, minted with administration: write alone.
+#
+# There is no review trigger, on purpose: that event runs the workflow file of the merge ref
+# with the secrets, so a branch that edits this file could mint the App's token, and the event
+# has no _target variant. A review that asks for changes, or withdraws the ask, reaches the
+# drain list at the next scheduled run: every 15 minutes nominally, for the forge may delay one.
 name: brake
 
 on:
@@ -51,7 +56,7 @@ jobs:
           FPL_WIP_REPO: ${{ github.repository }}
         run: |
           python3 scripts/wip-count --json >"$RUNNER_TEMP/count.json"
-          python3 scripts/wip-count | tee -a "$GITHUB_STEP_SUMMARY"
+          python3 scripts/wip-count --from "$RUNNER_TEMP/count.json" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Mint the fpl-brake token
         id: app
