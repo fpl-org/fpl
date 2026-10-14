@@ -183,12 +183,31 @@ key, so landed history is not refused for case alone; a type or scope in the wro
   | --- | --- | --- |
   | `Refs` | path / issue / feature this commit serves (repeatable) | `Refs: .agents/STACK.md` |
   | `Stack` | the stack this commit landed as part of (`.agents/WORKFLOW.md`) | `Stack: typed-let` |
+  | `Series-Id` | the identity of the series this commit is part of, kept through rewrites (below) | `Series-Id: typed-let-3fa91c2` |
   | `BREAKING-CHANGE` | required iff `!` in header | `BREAKING-CHANGE: core drops Let node` |
   | `Advisor` | an external model whose output informed the change (repeatable) | `Advisor: fable-5.1` |
   | `Assisted-By` | the model that produced the change, stable slug | `Assisted-By: claude-sonnet-5` |
   | `Reasoning-Effort` | that model's reasoning-effort setting | `Reasoning-Effort: low` |
   | `Session-Id` | the agent session id, for forensics | `Session-Id: d94ffb13-…` |
   | `Co-Authored-By` | co-author, GitHub-parseable form (repeatable) | `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>` |
+
+### Series-Id
+
+`Stack:` is the readable name of a stack and stays so. `Series-Id:` is its identity: minted once,
+`<topic>-<7 hex digits of the tip it was minted at>`, and carried by every commit of the series
+through every rebase, reorder and move, which a branch name and a SHA are not. At most one a
+commit, in the form `COMMIT_SERIES_RE` fixes (`series-many`, `series-value`). `scripts/series`
+holds the tooling: `mint` the id, `stamp` it onto a range (refused once the maintainer has
+reviewed or commented on the pull request of the branch, or of any branch the rebase moves with
+it), `check` that a range carries exactly one,
+`manifest` a range as JSON, `range` to find a series on main, `revert` a whole series at once.
+
+There is no `Patch-Id:` trailer, on purpose: a patch id stored in a message goes stale as soon
+as a move shifts the context lines, and a stale identity is a false one. The manifest computes
+it instead, per commit: `git patch-id --verbatim` of the commit's diff (`--stable` gave one id
+for a re-indented Python file) and the SHA-256 of author and raw message, which a reviewer
+reads too, plus one digest over all pairs. Equal digests mean the same patches, in the same
+order, with the same authors and messages; the SHAs are listed but left out of the digest.
 
 ## Atomicity
 
