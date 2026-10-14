@@ -7,6 +7,9 @@
 # in series.yml dispatches it), since a single concurrency group drops the dispatches queued
 # behind a running one.
 #
+# Both jobs check out the commit of main the dispatch started from, not the moving ref: what
+# verify proved is what land runs with the key.
+#
 # Two jobs. verify holds no secret, no environment and no cache: it runs what can be checked
 # without the key (today main's lander proving itself; the relocation of a stale head joins
 # it later). land runs in the environment `land`, whose policy admits main alone, mints the
@@ -39,7 +42,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: main
+          ref: ${{ github.sha }}
           persist-credentials: false
       - run: scripts/land-self-test
 
@@ -60,16 +63,18 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
           permission-checks: write
+          permission-statuses: read
       # No persisted credential: scripts/land --ci gives the push the App's token itself,
       # and a second Authorization header would make GitHub refuse it.
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: main
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: land the first pull request the rules let through
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
+          FPL_LAND_APP: ${{ steps.token.outputs.app-slug }}[bot]
           PR: ${{ inputs.pr }}
           REPO: ${{ github.repository }}
         run: |
