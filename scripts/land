@@ -64,7 +64,11 @@
 #                           in it, where ssh decides where it leads. Any other scheme, host
 #                           or user is refused
 #   land/size               at most 10 commits and 600 lines added plus removed
-#   land/workflows          no commit touches .github/workflows: those land by the owner path
+#   land/workflows          no commit touches .github/workflows: those land by the owner path.
+#                           The App's token cannot push a workflow, and an agent's must not,
+#                           so the remedy is the owner's line, `git push
+#                           git@github-fpl-deploy:<owner>/<name>.git <head>:refs/heads/main`,
+#                           his deploy key, after a dry run that refuses nothing else
 #   land/gpt                a commit whose Assisted-By names a GPT model is named by a line
 #                           gpt-ok: <sha> in a code owner's approval of the head
 #   land/series             once main holds scripts/series: one Series-Id on every commit
@@ -125,6 +129,13 @@
 # the forge; it needs no terminal. A landing needs one: it is for a person. It is a rail, not
 # a lock: whoever can push to main as an admin can do so without it.
 #
+# The dry run is also the by-hand route's rule table (.agents/WORKFLOW.md, "By hand"): one
+# line for each of the rules above, `ok`, `NO` with its remedy, or `--` where an answer the
+# rule rests on is missing; a count; and then the lines a person types, in order: the
+# approval it would give, the push, the retarget of what is stacked on the head and the
+# check that main is the head. When land/workflows is the only refusal, the push line is
+# the owner's, printed instead of this script's own.
+#
 # The repository is the one --remote (default github) points at; its configured URL must be
 # on GitHub. The forge is read and written with `gh api` only (scripts/layer on github), so
 # scripts/land-self-test serves it from fixtures with a gh of its own first on PATH, and
@@ -134,7 +145,8 @@
 # prints for a person to run, who may have the same GH_HOST.
 # FPL_LAND_WAIT: seconds to wait for GitHub to show the merge (default 30).
 #
-# Exit 0: landed, or a dry run found nothing to refuse; 1: refused or failed; 2: usage.
+# Exit 0: landed, or a dry run found nothing to refuse; 1: refused or failed, which includes
+# land/workflows alone (the owner's push line is printed, nothing is pushed); 2: usage.
 set -euo pipefail
 
 die() {
@@ -162,6 +174,16 @@ JUDGED = ("deletion", "non_fast_forward", "required_linear_history", "pull_reque
           "required_status_checks")
 BYPASS = ("always", "exempt")
 PAD = " " * 28
+# Every rule, in the order judge() prints them: a dry run's table holds each one, whether it
+# was judged or not (Verdict.close), and the self-test holds this list to the header's.
+RULES = ("land/remote", "land/open", "land/base", "land/head", "land/author",
+         "land/changes-requested", "land/codeowners", "land/approved", "land/threads",
+         "land/checks", "land/ancestor", "land/linear", "land/size", "land/workflows",
+         "land/gpt", "land/series", "land/series-fresh", "land/patch-fresh", "land/card",
+         "land/rules", "land/bypass")
+# The owner's route for what this script does not push: his deploy key, through the alias
+# of his ssh config, which asks for a touch (.agents/WORKFLOW.md, "By hand").
+DEPLOY_ALIAS = "github-fpl-deploy"
 BYPASS_REMEDY = (
     "the owner's one-time step, on GitHub: Settings > Rules > Rulesets, in each ruleset"
     " on main, Bypass list > Repository admin > Always (not 'For pull requests only')"
@@ -277,14 +299,33 @@ class Verdict:
 
     def __init__(self):
         self.refused = set()
+        self.passed = set()
+        self.skipped = {}
 
     def ok(self, rule, what):
+        self.passed.add(rule)
         print(f"  ok  {rule:<23} {what}")
 
     def no(self, rule, what, remedy):
         self.refused.add(rule)
         print(f"  NO  {rule:<23} {what}")
         print(f"{PAD}remedy: {remedy}")
+
+    def skip(self, rule, why):
+        """A rule that cannot be judged because an answer it rests on is missing."""
+        self.skipped.setdefault(rule, why)
+
+    def close(self):
+        """The rule table's last lines: a line for each rule that has none yet, so that a
+        dry run names every rule, and the count. A rule judged more than once (one line
+        per required check) counts once; one with a single NO among its lines is refused."""
+        for rule in RULES:
+            if rule not in self.passed | self.refused:
+                why = self.skipped.get(rule, "an earlier rule stopped the judgement")
+                print(f"  --  {rule:<23} not judged: {why}")
+        ok = len(self.passed - self.refused)
+        left = len(RULES) - ok - len(self.refused)
+        print(f"land: {len(RULES)} rules: {ok} ok, {len(self.refused)} NO, {left} not judged")
 
 
 def judge_pull(v, pr, me, fetched, repo, ci):
@@ -354,6 +395,8 @@ def judge_reviews(v, d, pr, me, repo, ci):
     if owners is None:
         v.no("land/codeowners", why,
              "teach scripts/land that CODEOWNERS before it lands anything under it")
+        for rule in ("land/author", "land/approved"):
+            v.skip(rule, "main's CODEOWNERS does not say whose approval counts")
         return False, []
     v.ok("land/codeowners", "code owners: " + ", ".join(f"@{o}" for o in sorted(owners)))
     approved = [(w, r) for w, r in last.items()
@@ -723,7 +766,13 @@ CARD = ("What", "What changes", "How checked", "Limits", "Verdict")
 MOST = (10, 600)  # land/size: commits, and lines added plus removed
 
 
-def judge_range(v, pr, main, head, bodies):
+def owner_push(repo, head):
+    """The line the owner runs to land `head` by his deploy key, the one route for a range
+    that touches a workflow: the lander App's token has no Workflows permission."""
+    return f"git push git@{DEPLOY_ALIAS}:{repo}.git {head}:refs/heads/main"
+
+
+def judge_range(v, pr, main, head, bodies, repo):
     """land/size, land/workflows, land/gpt, land/series, land/series-fresh, land/patch-fresh
     and land/card: the commits main..head, and the pull request's body."""
     span, h = f"{main}..{head}", head[:12]
@@ -739,8 +788,8 @@ def judge_range(v, pr, main, head, bodies):
     flows = sorted({p for p in paths if p.startswith(".github/workflows/")})
     if flows:
         v.no("land/workflows", f"it touches {' '.join(flows)}",
-             "a workflow lands by the owner path: after a clean scripts/land --dry-run, the"
-             " owner pushes the head to main with his deploy key")
+             "a workflow lands by the owner path: once every other rule holds"
+             " (scripts/land --dry-run), the owner runs " + owner_push(repo, head))
     else:
         v.ok("land/workflows", "it touches no file in .github/workflows")
     oks = re.findall(r"gpt-ok:\s*([0-9a-f]{7,40})", "\n".join(bodies))
@@ -770,14 +819,16 @@ def judge_range(v, pr, main, head, bodies):
         v.ok("land/card", "the body holds the card")
 
 
-def judge(d, repo, fetched, main, ancestor, merges, ci):  # noqa: PLR0913, PLR0917
-    """Print one line per check and return 1 when any refuses, 3 when none does but the
-    approval is yours to give in this run, else 0."""
+def judge(d, repo, fetched, main, ancestor, merges, ci, dest):  # noqa: PLR0913, PLR0917
+    """Print one line per rule and return 1 when any refuses, 4 when the only one is
+    land/workflows (the range is the owner's to push), 3 when none does but the approval
+    is yours to give in this run, else 0."""
     pr = load(f"{d}/pr.json")
     me = load(f"{d}/me.json")["login"]
     rules = pages(f"{d}/rules.json")
     v = Verdict()
     ci = ci == "1"
+    v.ok("land/remote", f"git fetches from and pushes to {dest}, the repository {repo}")
     judge_pull(v, pr, me, fetched, repo, ci)
     approve, bodies = judge_reviews(v, d, pr, me, repo, ci)
     judge_threads(v, d)
@@ -785,12 +836,20 @@ def judge(d, repo, fetched, main, ancestor, merges, ci):  # noqa: PLR0913, PLR09
     if fault:  # nothing below can be judged against rules that are not there
         v.no("land/rules", fault, "run this again; if it keeps failing, read the rules"
              " on main on the forge (Settings > Rules) and fix what the API does not show")
+        for rule in ("land/checks", "land/bypass"):
+            v.skip(rule, "the rules on main could not be read")
     else:
         judge_checks(v, d, rules, repo, pr["number"], pr["head"]["sha"])
     judge_history(v, main, pr["head"]["sha"], ancestor, merges)
-    judge_range(v, pr, main, fetched, bodies)
+    judge_range(v, pr, main, fetched, bodies, repo)
     if not fault:
         judge_rules(v, d, rules, me, ci)
+    v.close()
+    if v.refused == {"land/workflows"}:
+        print(f"land: #{pr['number']} is refused by land/workflows alone, and every other rule"
+              " holds; it lands by the owner path, not by this script:")
+        print(f"land: {owner_push(repo, fetched)}")
+        return 4
     if v.refused:
         print(f"land: #{pr['number']} refused by {', '.join(sorted(v.refused))}")
         return 1
@@ -1075,15 +1134,17 @@ read_rules() {
 	done
 }
 
-# judge: print every check; sets refused=1 when one refuses, and approve=1 when none does
-# and the approval is yours to give in this run.
+# judge: print every rule; sets refused=1 when one refuses, routed=1 when the only one is
+# land/workflows (the range is the owner's to push), and approve=1 when none does and the
+# approval is yours to give in this run.
 judge() {
 	local rc=0
-	py judge "$tmp" "$slug" "$fetched" "$main" "$ancestor" "$merges" "$ci" || rc=$?
-	refused=0 approve=0
+	py judge "$tmp" "$slug" "$fetched" "$main" "$ancestor" "$merges" "$ci" "$dest" || rc=$?
+	refused=0 approve=0 routed=0
 	case "$rc" in
 	0) ;;
 	3) approve=1 ;;
+	4) refused=1 routed=1 ;;
 	*) refused=1 ;;
 	esac
 }
@@ -1106,12 +1167,19 @@ children() {
 }
 
 if [ "$dry" -eq 1 ]; then
-	[ "$refused" -eq 0 ] || echo "land: nothing would be pushed until the refusals are gone; then:"
-	[ "$approve" -eq 0 ] || echo "land: would approve $head as $(py fields "$tmp/me.json" login)"
-	echo "land: would run: $push"
+	# What a person types, in order. A range the owner pushes has its own line, printed with
+	# the verdict above: this script's push is not the one.
+	if [ "$routed" -eq 0 ]; then
+		[ "$refused" -eq 0 ] || echo "land: nothing would be pushed until the refusals are gone; then:"
+		[ "$approve" -eq 0 ] || echo "land: would approve $head as $(py fields "$tmp/me.json" login)"
+		echo "land: would run: $push"
+	fi
 	kids="$(children)"
 	[ -z "$kids" ] || printf 'land: then retarget what is stacked on %s:\n%s\n' "$headref" "$kids"
 	[ "$ci" -eq 0 ] || [ "$headrepo" != "$slug" ] || echo "land: and then delete $headref"
+	if [ "$refused" -eq 0 ] || [ "$routed" -eq 1 ]; then
+		echo "land: then check that main is the head: git ls-remote $dest refs/heads/main"
+	fi
 	exit "$refused"
 fi
 [ "$refused" -eq 0 ] || exit 1
