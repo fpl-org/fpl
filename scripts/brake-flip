@@ -1,0 +1,280 @@
+#!/usr/bin/env python3
+"""scripts/brake-flip — set the brake ruleset to what the count of open work says.
+
+    scripts/brake-flip COUNT.json [--dry-run] [--since EPOCH]
+    scripts/brake-flip --self-test
+
+COUNT.json is what `scripts/wip-count --json` printed. Over the cap the ruleset named
+`brake: all branches except main` is set active, and its excluded refs become main plus the
+drain list: the heads of open pull requests where the owner asks for changes, so a fix he
+asked for can still be pushed while every other branch is locked. At or under the cap it is
+set disabled and the exclusions go back to main alone.
+
+It is idempotent: the ruleset is read first, and written only when its enforcement or its
+excluded refs differ from what they should be. The write is a PUT of `enforcement` and
+`conditions` alone, with the included refs copied from what was read; `rules` and
+`bypass_actors` are not sent, so the forge keeps them. A count that says `"ok": false`, a
+ruleset that is not there, and an answer of another shape change nothing and exit 1: an
+unreadable count must never let the brake off.
+
+The token (GH_TOKEN) must be allowed to administer the repository: in the workflow it is
+the fpl-brake App's. With --dry-run it reads, says what it would write, and writes nothing.
+Where GITHUB_STEP_SUMMARY is set the count, the decision, the rules and bypass actors seen
+before and after (a tripwire for a PUT that dropped them), and the lag go there; the lag is
+the seconds from --since (the event's time) to the end of the run.
+
+    FPL_BRAKE_REPO      owner/name (default: the count's repo)
+    FPL_BRAKE_RULESET   the ruleset's name (default: brake: all branches except main)
+"""
+
+import json
+import os
+import sys
+import time
+from collections.abc import Callable
+from typing import Any
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+API = "https://api.github.com"
+NAME = "brake: all branches except main"
+MAIN = "refs/heads/main"
+Call = Callable[[str, str, Any], Any]  # (method, path, body) -> the answer's JSON
+
+
+def caller(secret: str) -> Call:
+    """One REST call with the token, its answer's JSON; any failure raises OSError."""
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "fpl-brake-flip"}
+    headers["Authorization"] = f"Bearer {secret}"
+
+    def call(method: str, path: str, body: Any) -> Any:
+        data = None if body is None else json.dumps(body).encode()
+        request = Request(f"{API}/{path}", data=data, headers=headers, method=method)
+        try:
+            with urlopen(request, timeout=20) as answer:
+                return json.load(answer)
+        except HTTPError as e:
+            raise OSError(f"GitHub answered {e.code} {e.reason} to {method} {path}") from e
+
+    return call
+
+
+def listed(call: Call, path: str) -> list[Any]:
+    """Every item of a list endpoint: the forge pages at 100, so ask page after page until a
+    short one, and never conclude from a first page that a ruleset is not there."""
+    items: list[Any] = []
+    for page in range(1, 101):
+        got = call("GET", f"{path}?per_page=100&page={page}", None)
+        items += got
+        if len(got) < 100:
+            return items
+    raise ValueError(f"{path} lists more than 10000 items: nothing changed")
+
+
+def wanted(count: dict[str, Any]) -> tuple[str, list[str]]:
+    """The enforcement and the excluded refs the count asks for: the numbers decide, never a
+    stored `over`, so a count that contradicts itself cannot lift the brake."""
+    if count["count"] <= count["cap"]:
+        return "disabled", [MAIN]
+    return "active", [MAIN, *sorted(f"refs/heads/{h}" for h in count["drain"])]
+
+
+def flip(call: Call, count: dict[str, Any], repo: str, name: str, dry: bool) -> list[str]:
+    """Bring the ruleset to what `count` asks; the lines of the report. Raises on refusal."""
+    if not count.get("ok"):
+        raise ValueError(f"the count is unreadable ({count.get('error')}): nothing changed")
+    if any(type(count.get(k)) is not int for k in ("count", "cap")):
+        raise ValueError("the count has no whole number count and cap: nothing changed")
+    found = [r for r in listed(call, f"repos/{repo}/rulesets") if r["name"] == name]
+    if len(found) != 1:
+        raise ValueError(f"{len(found)} rulesets named {name!r} on {repo}: nothing changed")
+    path = f"repos/{repo}/rulesets/{found[0]['id']}"
+    now = call("GET", path, None)
+    ref = now["conditions"]["ref_name"]
+    enforcement, exclude = wanted(count)
+    report = [
+        f"count: {count['count']}/{count['cap']} (over: {count['count'] > count['cap']})",
+        f"ruleset {now['id']}: {now['enforcement']}, exclude {ref['exclude']}",
+        f"seen: {len(now.get('rules', []))} rules, bypass_actors {tripwire(now)}",
+    ]
+    if now["enforcement"] == enforcement and sorted(ref["exclude"]) == sorted(exclude):
+        return [*report, "unchanged: nothing to write"]
+    body = {
+        "enforcement": enforcement,
+        "conditions": {"ref_name": {"include": ref["include"], "exclude": exclude}},
+    }
+    if dry:
+        return [*report, f"dry run, would PUT {json.dumps(body)}"]
+    after = call("PUT", path, body)
+    if any(after.get(k) != now.get(k) for k in ("rules", "bypass_actors")):
+        raise ValueError("the write changed the rules or the bypass actors: read the ruleset now")
+    return [
+        *report,
+        f"set: {after['enforcement']}, exclude {after['conditions']['ref_name']['exclude']}",
+        f"after: {len(after.get('rules', []))} rules, bypass_actors {tripwire(after)}",
+    ]
+
+
+def tripwire(ruleset: dict[str, Any]) -> str:
+    """How many bypass actors a ruleset shows, or that the token is not shown them."""
+    actors = ruleset.get("bypass_actors")
+    return "not shown" if actors is None else str(len(actors))
+
+
+def summary(lines: list[str]) -> None:
+    """Print the report, and add it to the job's summary where there is one."""
+    print("\n".join(lines))
+    out = os.environ.get("GITHUB_STEP_SUMMARY")
+    if out:
+        with open(out, "a", encoding="utf-8") as f:
+            f.write("## brake\n\n" + "".join(f"- {x}\n" for x in lines))
+
+
+def main(argv: list[str]) -> int:
+    if argv == ["--self-test"]:
+        return self_test()
+    args = [a for a in argv if a != "--dry-run"]
+    if len(args) == 3 and args[1] == "--since":
+        args = [args[0], args[2]]
+    if len(args) not in (1, 2) or not os.environ.get("GH_TOKEN"):
+        print("usage: GH_TOKEN=... scripts/brake-flip COUNT.json [--dry-run] [--since EPOCH]")
+        return 2
+    try:
+        since = float(args[1]) if len(args) == 2 else None
+        with open(args[0], encoding="utf-8") as f:
+            count = json.load(f)
+        repo = os.environ.get("FPL_BRAKE_REPO") or count.get("repo") or "fpl-org/fpl"
+        name = os.environ.get("FPL_BRAKE_RULESET") or NAME
+        lines = flip(caller(os.environ["GH_TOKEN"]), count, repo, name, "--dry-run" in argv)
+    except (OSError, LookupError, TypeError, ValueError, AttributeError) as e:
+        summary([f"brake-flip: refused, {e}"])
+        return 1
+    lag = "" if since is None else f"lag: {time.time() - since:.0f} s from the event"
+    summary([*lines, *([lag] if lag else [])])
+    return 0
+
+
+# --- self-test: a forge in memory that logs every write ---------------------------------------
+
+R = "fpl-org/fpl"
+
+
+def forge(
+    enforcement: str, exclude: list[str], named: int = 1, pad: int = 0, drop: bool = False
+) -> tuple[Call, list[Any]]:
+    """A forge with `named` rulesets called NAME, the first in the given state, after `pad`
+    others; it lists 100 to a page, as the real one can."""
+    state = {
+        "id": 7,
+        "name": NAME,
+        "enforcement": enforcement,
+        "conditions": {"ref_name": {"include": ["~ALL"], "exclude": exclude}},
+        "rules": [{"type": "creation"}, {"type": "update"}],
+    }
+    writes: list[Any] = []
+
+    def call(method: str, path: str, body: Any) -> Any:
+        if path.startswith(f"repos/{R}/rulesets?per_page=100&page="):
+            every = [{"id": 9, "name": "main"}] * (pad + 1) + [{"id": 7, "name": NAME}] * named
+            at = (int(path.rsplit("=", 1)[1]) - 1) * 100
+            return every[at : at + 100]
+        assert path == f"repos/{R}/rulesets/7", path
+        if method == "PUT":
+            writes.append(body)
+            state.update(body)
+            if drop:
+                state["rules"] = []
+        return json.loads(json.dumps(state))
+
+    return call, writes
+
+
+def n(count: int, *drain: str, ok: bool = True) -> dict[str, Any]:
+    return {
+        "ok": ok,
+        "repo": R,
+        "count": count,
+        "cap": 50,
+        "over": count > 50,
+        "drain": list(drain),
+    }
+
+
+ON = ["refs/heads/main", "refs/heads/a", "refs/heads/b"]
+CASES: list[tuple[str, tuple[Any, ...], dict[str, Any], bool, Any]] = [
+    # name, forge (enforcement, exclude, rulesets so named), count, dry run, writes or error
+    (
+        "over the cap locks, drain excluded",
+        ("disabled", [MAIN], 1),
+        n(51, "b", "a"),
+        False,
+        ("active", ON),
+    ),
+    ("under the cap unlocks to main alone", ("active", ON, 1), n(50), False, ("disabled", [MAIN])),
+    ("already locked as asked: no write", ("active", ON[::-1], 1), n(60, "a", "b"), False, None),
+    ("already open: no write", ("disabled", [MAIN], 1), n(3), False, None),
+    ("a new drain head is a write", ("active", [MAIN], 1), n(60, "a"), False, ("active", ON[:2])),
+    ("a dry run writes nothing", ("disabled", [MAIN], 1), n(60), True, None),
+    ("an unreadable count changes nothing", ("active", ON, 1), n(0, ok=False), False, "unreadable"),
+    (
+        "a ruleset past the first page is found",
+        ("disabled", [MAIN], 1, 230),
+        n(51),
+        False,
+        ("active", [MAIN]),
+    ),
+    (
+        "a count that contradicts itself still locks",
+        ("disabled", [MAIN], 1),
+        {**n(99), "over": False},
+        False,
+        ("active", [MAIN]),
+    ),
+    ("a count of another shape changes nothing", ("active", ON, 1), {"ok": True}, False, "whole"),
+    (
+        "a write that dropped the rules is loud",
+        ("disabled", [MAIN], 1, 0, True),
+        n(60),
+        False,
+        "changed the rules",
+    ),
+    ("no brake ruleset changes nothing", ("disabled", [MAIN], 0), n(60), False, "0 rulesets"),
+    ("two brake rulesets change nothing", ("disabled", [MAIN], 2), n(60), False, "2 rulesets"),
+]
+
+
+def trial(start: tuple[Any, ...], count: dict[str, Any], dry: bool) -> tuple[Any, str]:
+    """The writes one case made, and its error or ""; a second run must write nothing."""
+    call, writes = forge(*start)
+    try:
+        flip(call, count, R, NAME, dry)
+    except ValueError as e:
+        return writes, str(e)
+    again = len(writes)
+    flip(call, count, R, NAME, dry)
+    return writes, "" if len(writes) == again else "a second run wrote again"
+
+
+def self_test() -> int:
+    """Each case: the one write it must make, none, or the refusal it must give."""
+    failed = 0
+    for name, start, count, dry, want in CASES:
+        writes, error = trial(start, count, dry)
+        got: Any = error or None
+        if error and writes and "changed" not in error:  # a refusal comes before any write
+            got = f"wrote {writes} before refusing"
+        if writes and not error:
+            body = writes[0]
+            got = (body["enforcement"], body["conditions"]["ref_name"]["exclude"])
+            if set(body) != {"enforcement", "conditions"} or len(writes) != 1:
+                got = f"wrote {writes}"
+        good = want in got if isinstance(want, str) and isinstance(got, str) else got == want
+        if not good:
+            failed += 1
+            print(f"brake-flip self-test: FAIL {name}: {got!r}, want {want!r}")
+    print(f"brake-flip self-test: {len(CASES) - failed}/{len(CASES)} cases pass")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
