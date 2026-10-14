@@ -1,0 +1,19 @@
+{
+  "name": "brake: all branches except main",
+  "target": "branch",
+  "enforcement": "disabled",
+  "conditions": {
+    "ref_name": {
+      "include": ["~ALL"],
+      "exclude": ["refs/heads/main"]
+    }
+  },
+  "rules": [
+    {"type": "creation"},
+    {"type": "update", "parameters": {"update_allows_fetch_and_merge": false}}
+  ],
+  "bypass_actors": [
+    {"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"},
+    {"actor_id": 5318175, "actor_type": "Integration", "bypass_mode": "always"}
+  ]
+}
