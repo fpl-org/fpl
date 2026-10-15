@@ -522,6 +522,8 @@ def self_test():
             "-m",
             "init",
         )
+        if tree_bytes(f"{decoy}/.git") != before:  # stop before rad init can write there too
+            sys.exit("self-test: the fixture's git reached the repository GIT_DIR names")
         sh(
             "rad",
             "init",
