@@ -296,6 +296,18 @@ git log --grep='^Stack: typed-let$'       # the whole stack, years later, forge 
 because the record belongs on a forge; rule 7 keeps the switch to an in-repo review system
 cheap.
 
+## The cap
+
+Open work is capped at 50 commits: those of every open pull request that is not a draft,
+each counted once. The owner's review is what is scarce, and a draft does not ask for it yet.
+The nag, `scripts/wip-count`, prints `N/50, nog M`: run it before opening a pull request or
+taking one out of draft. Over the cap the lock follows: the `brake` workflow
+(`harness/workflows/brake.yml`) activates the ruleset `brake: all branches except main`, and
+every push that creates or updates a branch is refused, the machine accounts' included, except
+to main (so landing brings the count down) and to the head of a pull request where the owner
+asks for changes (so his fix can be pushed). Back at the cap or under it, the next run lifts
+the lock. A refused push over the cap is the brake: drain the queue, do not route around it.
+
 ## A public mirror of a pijul channel
 
 Not in use yet: this repository still lives in git. `scripts/mirror` and `scripts/import-pr`
