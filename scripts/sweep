@@ -93,6 +93,7 @@ export GIT_OPTIONAL_LOCKS=0
 base="${SWEEP_BASE:-main}"
 fresh="${SWEEP_FRESH_MIN:-60}"
 case "$fresh" in "" | *[!0-9]*) die "SWEEP_FRESH_MIN is minutes, a number: '$fresh'" ;; esac
+fresh=$((10#$fresh)) # 08 is a number of minutes, not a bad octal one
 git rev-parse --verify -q "$base^{commit}" >/dev/null || die "no base '$base'"
 root="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
 self="$(git rev-parse --show-toplevel)"

@@ -240,6 +240,8 @@ printf 'x\n' >"$repo/worktrees/young/loose.txt"
 unset SWEEP_FRESH_MIN
 sw
 check "a worktree touched a moment ago is review, not archive" '[ "$(action worktrees/young)/$(action worktrees/old)" = review/review ] && grep -q "touched in the last 60 min" "$tmp/out"'
+SWEEP_FRESH_MIN=08 sw
+check "SWEEP_FRESH_MIN=08 is eight minutes, not a bad octal number" '[ "$rc" -eq 0 ] && grep -q "touched in the last 8 min" "$tmp/out"'
 old_gitdir="$(git -C "$repo/worktrees/old" rev-parse --absolute-git-dir)"
 touch -t 202001010000 "$old_gitdir/HEAD"
 sw
