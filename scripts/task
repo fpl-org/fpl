@@ -27,6 +27,7 @@ went through `rad init`. `--self-test` runs the whole thing in a throwaway Radic
 import argparse
 import json
 import os
+import runpy
 import shutil
 import subprocess
 import sys
@@ -178,10 +179,13 @@ class Graph:
             )
             return oid
 
+    def show(self, oid):
+        """The state of `oid` as the reducer reads it now, after what this run wrote."""
+        return json.loads(rad("cob", "show", "--repo", self.rid, "--type", TYPE, "--object", oid))
+
     def must_change(self, oid, field, expected):
         """The reducer skips what is not allowed without an error; say so here."""
-        state = json.loads(rad("cob", "show", "--repo", self.rid, "--type", TYPE, "--object", oid))
-        if state.get(field) != expected:
+        if self.show(oid).get(field) != expected:
             die(
                 f"{oid[:7]}: not applied. Only the author, or the assignee for state and "
                 f"blockers, may do that (scripts/rad-cob-dagtaak)"
@@ -227,6 +231,14 @@ def read_units(path):
     names = [u[0] for u in units]
     if len(set(names)) != len(names):
         die(f"{path}: a label is listed twice")
+    # The reducer's own `apply` decides, so its limits are written down once.
+    reducer = runpy.run_path(os.path.join(HERE, "rad-cob-dagtaak"), run_name="rad-cob-dagtaak")
+    for label_, _, _, title, brief in units:
+        if not reducer["apply"]({}, {"type": "open", "title": title, "description": brief}, None):
+            die(
+                f"{path}: {label_}: the reducer would not open it; a title takes at most "
+                f"{reducer['MAX_TITLE']} characters, a brief {reducer['MAX_DESCRIPTION']}"
+            )
     for label_, part, blockers, _, _ in units:
         for ref in ([part] if part else []) + blockers:
             if ref not in names:
@@ -304,7 +316,10 @@ def load(graph, path, dry):
         print(f"{'would create' if dry else 'create'}  {title}")
         created += 1
         if not dry:
-            ids[label_] = graph.act(None, f"open: {title}", {"type": "open", "title": title, "description": brief})
+            oid = graph.act(None, f"open: {title}", {"type": "open", "title": title, "description": brief})
+            if not graph.show(oid).get("title"):
+                die(f"{label_}: {oid[:7]} was written but the reducer did not open it; nothing after it")
+            ids[label_] = oid
     names = {oid: label(t) for oid, t in graph.tasks.items()}
     linked = 0
     for label_, part, blockers, _, _ in units:
@@ -653,16 +668,18 @@ def self_test():
             handle.write("Q1\t-\t\tname\tmentions zztermzz\n")
         refused = task("load", bad + "x", ok=False)
         check("a missing file is refused", refused.returncode == 2)
-        for name, rows in (
-            ("a blocker loop", "Q1\t-\tQ2\tone\tx\nQ2\t-\tQ1\ttwo\tx\n"),
-            ("a row its own parent", "Q1\tQ1\t\tone\tx\n"),
-            ("a parent loop", "Q1\tQ2\t\tone\tx\nQ2\tQ1\t\ttwo\tx\n"),
+        for name, rows, says in (
+            ("a title over the reducer's limit", f"Q1\t-\t\t{'n' * 200}\tx\n", "Q1: the reducer"),
+            ("a brief over the reducer's limit", f"Q1\t-\t\tone\t{'b' * 10_001}\n", "Q1: the reducer"),
+            ("a blocker loop", "Q1\t-\tQ2\tone\tx\nQ2\t-\tQ1\ttwo\tx\n", "Q1 -> Q2 -> Q1"),
+            ("a row its own parent", "Q1\tQ1\t\tone\tx\n", "Q1 -> Q1"),
+            ("a parent loop", "Q1\tQ2\t\tone\tx\nQ2\tQ1\t\ttwo\tx\n", "Q1 -> Q2 -> Q1"),
         ):
             with open(bad, "w") as handle:
                 handle.write(rows)
             looped = task("load", bad, ok=False)
             check(f"{name} in a file is refused before a write",
-                  looped.returncode == 2 and "Q1 ->" in looped.stderr and "Q1" not in task("list").stdout)
+                  looped.returncode == 2 and says in looped.stderr and "Q1" not in task("list").stdout)
         with open(bad, "w") as handle:
             handle.write("Q1\t-\t\tname\tmentions zztermzz\n")
         with open(f"{repo}/.git/leak-patterns", "w") as handle:
