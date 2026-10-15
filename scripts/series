@@ -82,6 +82,14 @@ revs() {
 	printf '%s\n' "$out"
 }
 
+# require_clean: the index and the working tree both equal HEAD. `git diff HEAD` alone compares the
+# working tree with HEAD and misses a change staged and then undone in the file; the stamp's rebase
+# and the revert's switch would carry or lose that staged change.
+require_clean() {
+	{ git diff --quiet HEAD -- && git diff --cached --quiet -- && git diff --quiet --; } \
+		|| die dirty "the index or the tree has uncommitted changes" "commit or stash them"
+}
+
 # ids_of <sha>: the Series-Id values the commit's trailer block holds, one a line.
 ids_of() {
 	git log -1 --format=%B "$1" | commit_trailers | sed -n 's/^[Ss][Ee][Rr][Ii][Ee][Ss]-[Ii][Dd]:[[:space:]]*//p'
@@ -177,7 +185,7 @@ cmd_stamp() { # stamp <base>..HEAD [id]
 	[ "$(git rev-parse "${range#*..}")" = "$(git rev-parse HEAD)" ] || die range "the range must end at HEAD" "series stamp <base>..HEAD"
 	git merge-base --is-ancestor "$base" HEAD \
 		|| die base "'$base' is not an ancestor of HEAD, so the rebase would move the series onto other history, not only add the id" "name a base on this branch: series stamp <base>..HEAD"
-	git diff --quiet HEAD -- || die dirty "the tree has uncommitted changes" "commit or stash them"
+	require_clean
 	forge_silent "$branch"
 	list="$(revs "$range")"
 	# The rebase below runs with --update-refs: every other local branch pointing into the range
@@ -268,7 +276,7 @@ cmd_revert() { # revert <id> [branch]
 	local id="${1:-}" range main branch body new from marks="" m err
 	range="$(cmd_range "$id")"
 	main="$(main_ref)"
-	git diff --quiet HEAD -- || die dirty "the tree has uncommitted changes" "commit or stash them"
+	require_clean
 	branch="${2:-agent/${FPL_AGENT_ID:-claude}/stack/revert-$id}"
 	from="$(git branch --show-current)"; [ -n "$from" ] || from="$(git rev-parse HEAD)"
 	git switch -q --no-track -c "$branch" "$main"

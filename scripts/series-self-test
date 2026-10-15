@@ -124,6 +124,10 @@ same "the refused stamp left the boundary alone" "$(git rev-parse agent/claude/s
 git switch -q main
 sr 1 "stamp refuses main" "branch" stamp "$base0..HEAD"
 git switch -q agent/claude/stack/demo
+# A change staged and then undone in the file: the tree equals HEAD, the index does not.
+echo staged >>f1; git add f1; git show HEAD:f1 >f1
+sr 1 "stamp refuses a staged change the tree no longer shows" "dirty" stamp "$base0..HEAD"
+git reset -q
 # A base off this branch: a rebase onto it would move the series onto other history.
 side="$(git commit-tree -p "$base0" -m side "$(git rev-parse "$base0^{tree}")")"
 sr 1 "stamp refuses a base that is not an ancestor of HEAD" "not an ancestor" stamp "$side..HEAD"
@@ -251,6 +255,10 @@ ser() {
 	printf 'chore(demo): add %s\n\nBody.\n%s\nStack: demo\nSeries-Id: %s\nHuman-Only: true\n' "$2" "$3" "$1" >"$tmp/m"
 	git -c core.hooksPath=/dev/null commit -q -F "$tmp/m"
 }
+echo staged >>later; git add later; git show HEAD:later >later
+sr 1 "revert refuses a staged change the tree no longer shows" "dirty" revert "$id"
+git reset -q
+same "the refused revert left main checked out (staged)" "$(git branch --show-current)" main
 ser mixed-abcdef0 docs/mixh ""; ser mixed-abcdef0 bootstrap/mixi ""
 head0="$(git rev-parse HEAD)"
 sr 1 "revert refuses a series on both sides" "revert-mixed" revert mixed-abcdef0
