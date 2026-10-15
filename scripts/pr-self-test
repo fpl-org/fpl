@@ -1,0 +1,603 @@
+#!/usr/bin/env bash
+#
+# scripts/pr-self-test — proof that scripts/pr bases a pull request on main, stacks only on
+# the branch of an open pull request, opens a draft when asked, and does what --update-body,
+# --ready and --reviewer promise, and nothing else (no label, no queue). Run by `make gates`.
+#
+# The forge is a small HTTP server of the test's own on 127.0.0.1 (FPL_API_URL, the one
+# address scripts/pr accepts besides GitHub's): it serves fixtures out of a directory and logs
+# every write, one line each, to a file the checks read. Git talks to a bare repository on
+# disk: the remote is named https://github.com/pr-test/fpl.git, as the slug is read from it,
+# and an insteadOf in the test's own git config sends the transfer to the disk, while
+# GIT_ALLOW_PROTOCOL=file refuses every other transport. The machine account's token is a
+# made-up line in .git/agent-credentials, and a gh that has none comes first on PATH. Git's
+# global and system config, HOME, XDG_CONFIG_HOME and gh's config point away from the
+# maintainer's, and git config of command scope a runner hands down is dropped. The leak gate
+# is on, with a made-up private term: gitleaks must be on PATH (nix develop).
+#
+# Where there is a /bin/bash other than the bash running this, the whole run is made a second
+# time with it first on PATH: on a Mac that is bash 3.2.
+
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+command -v gitleaks >/dev/null || {
+	echo "pr-self-test: needs gitleaks; enter the dev shell (nix develop)" >&2
+	exit 1
+}
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/pr-self-test.XXXXXX")"
+server=""
+# The forge is reaped as well as killed: bash 3.2 reports a killed job it never waited for.
+trap '[ -z "$server" ] || { kill "$server"; wait "$server"; } 2>/dev/null || true; rm -rf "$tmp"' EXIT
+: >"$tmp/gitconfig"
+# isolate: the environment every check runs in. Config of command scope, GIT_CONFIG_COUNT with
+# the GIT_CONFIG_KEY_<n> it counts or git -c's GIT_CONFIG_PARAMETERS, outranks the global file
+# and could rewrite the remote under the fixture, so it goes with the rest. So does every
+# variable that tells git where a repository is: the names git rev-parse --local-env-vars gives
+# (GIT_DIR, GIT_COMMON_DIR, GIT_OBJECT_DIRECTORY, GIT_INDEX_FILE, the config ones above and
+# more), and GIT_NAMESPACE and GIT_CEILING_DIRECTORIES, which that list leaves out. A git that
+# runs this test (a hook, git rebase -x) can leave them set, and the fixture would then write
+# into its repository.
+isolate() {
+	local repo_env
+	repo_env="$(git rev-parse --local-env-vars)"
+	export GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home" \
+		XDG_CONFIG_HOME="$tmp/xdg" GH_CONFIG_DIR="$tmp/gh" GIT_AUTHOR_NAME=t \
+		GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t \
+		GIT_COMMITTER_EMAIL=t@example.invalid GIT_ALLOW_PROTOCOL=file GIT_TERMINAL_PROMPT=0 \
+		FPL_PR_WAIT=0 FPL_PR_POLL=0
+	# shellcheck disable=SC2086 # one name a line, split on purpose
+	unset GH_TOKEN GITHUB_TOKEN GH_HOST FPL_LEAK_GATE FPL_API_URL FPL_PR_TIMEOUT GIT_NAMESPACE \
+		GIT_CEILING_DIRECTORIES $repo_env
+	mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$GH_CONFIG_DIR"
+}
+isolate
+
+# The forge: a directory of fixtures (login, pulls.json, pull-<n>.json, checks.json,
+# status.json) read afresh on every request, and the log of its writes.
+forge="$tmp/forge"
+mkdir -p "$forge"
+: >"$forge/log"
+echo psjg-claude >"$forge/login"
+echo '[]' >"$forge/pulls.json"
+echo '{"check_runs": []}' >"$forge/checks.json"
+echo '{"statuses": []}' >"$forge/status.json"
+cat >"$tmp/forge.py" <<'PY'
+import json, os, re, sys, time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
+
+forge = sys.argv[1]
+
+
+def fixture(name):
+    with open(f"{forge}/{name}") as f:
+        return f.read()
+
+
+class Handler(BaseHTTPRequestHandler):
+    def reply(self, code, text):
+        data = text.encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):  # a client that gave up on a stall
+            pass
+
+    def page(self, key, text, query):
+        """One page of the list in a fixture, as GitHub serves it: per_page at most 100, the
+        page asked for, and total_count for the whole list."""
+        items = json.loads(text)[key]
+        size = min(int(query.get("per_page", ["30"])[0]), 100)
+        start = (int(query.get("page", ["1"])[0]) - 1) * size
+        return json.dumps({"total_count": len(items), key: items[start : start + size]})
+
+    def graphql(self, body):
+        """The answer to a query: the fixture for the one mutation scripts/pr sends, on the
+        node of a pull request in the fixtures; for anything else the errors GitHub answers
+        with, so that a changed or misspelt mutation leaves the draft a draft."""
+        request = json.loads(body or "{}")
+        query, node = request.get("query", ""), request.get("variables", {}).get("id")
+        mark = r"mutation\s*\(\s*\$id\s*:\s*ID!\s*\)\s*\{\s*markPullRequestReadyForReview\s*"
+        mark += r"\(\s*input\s*:\s*\{\s*pullRequestId\s*:\s*\$id\s*\}\s*\)"
+        nodes = [
+            json.loads(fixture(name)).get("node_id")
+            for name in os.listdir(forge)
+            if re.fullmatch(r"pull-\d+\.json", name)
+        ]
+        if not re.match(mark, query):
+            message = "no mutation markPullRequestReadyForReview(input: {pullRequestId: $id})"
+        elif node not in nodes:
+            message = f"Could not resolve to a node with the global id of '{node}'"
+        else:
+            return fixture("graphql.json")
+        return json.dumps({"errors": [{"message": message}]})
+
+    def serve(self, method):
+        url = urlparse(self.path)
+        size = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(size).decode() if size else ""
+        if method != "GET" or "label" in url.path:
+            with open(f"{forge}/log", "a") as log:
+                log.write(f"{method} {url.path} {body}\n")
+        parts = url.path.strip("/").split("/")
+        base = "/repos/pr-test/fpl"
+        if self.headers.get("Authorization") != "Bearer made-up-token":
+            return self.reply(401, '{"message": "Bad credentials"}')
+        stall = f"{forge}/stall-{parts[-1]}"  # a file named for the last path part: sleep that long
+        if os.path.exists(stall):
+            time.sleep(float(fixture(f"stall-{parts[-1]}")))
+        if url.path == "/user":
+            return self.reply(200, json.dumps({"login": fixture("login").strip()}))
+        if url.path == "/graphql" and method == "POST":
+            return self.reply(200, self.graphql(body))
+        if not url.path.startswith(base + "/") or "label" in url.path:
+            return self.reply(404, '{"message": "not served"}')
+        rest = url.path[len(base):]
+        if rest == "/pulls" and method == "GET":
+            pulls = json.loads(fixture("pulls.json"))
+            if "head" in parse_qs(url.query):  # without head, GitHub lists every open one
+                head = parse_qs(url.query)["head"][0].split(":", 1)[-1]
+                pulls = [p for p in pulls if p["head"]["ref"] == head]
+            return self.reply(200, json.dumps(pulls))
+        if rest == "/pulls" and method == "POST":
+            fields = json.loads(body or "{}")  # GitHub's 422 for what it would not file
+            named = all(isinstance(fields.get(k), str) and fields[k] for k in ("title", "head", "base"))
+            typed = isinstance(fields.get("body", ""), str) and isinstance(fields.get("draft", False), bool)
+            if not (named and typed):
+                return self.reply(422, '{"message": "Validation Failed"}')
+            return self.reply(201, '{"html_url": "https://github.com/pr-test/fpl/pull/9"}')
+        if len(parts) == 5 and parts[3] == "pulls" and method == "GET":
+            text = fixture(f"pull-{parts[4]}.json")
+            if os.path.exists(f"{forge}/pull-{parts[4]}.next.json"):  # this read, then the next
+                os.replace(f"{forge}/pull-{parts[4]}.next.json", f"{forge}/pull-{parts[4]}.json")
+            return self.reply(200, text)
+        if len(parts) == 5 and parts[3] == "pulls" and method == "PATCH":
+            if not isinstance(json.loads(body or "{}").get("body"), str):  # the one edit sent
+                return self.reply(422, '{"message": "Validation Failed"}')
+            return self.reply(200, "{}")
+        if len(parts) == 6 and parts[5] == "requested_reviewers" and method == "POST":
+            return self.reply(201, "{}")
+        if len(parts) == 6 and parts[3] == "commits" and os.path.exists(f"{forge}/deny-checks"):
+            return self.reply(403, '{"message": "Resource not accessible by personal access token"}')
+        if len(parts) == 6 and parts[3] == "commits" and parts[5] in ("check-runs", "status"):
+            key, name = ("check_runs", "checks") if parts[5] == "check-runs" else ("statuses", "status")
+            if os.path.exists(f"{forge}/{name}-{parts[4]}.json"):  # a head of its own
+                name = f"{name}-{parts[4]}"
+            return self.reply(200, self.page(key, fixture(f"{name}.json"), parse_qs(url.query)))
+        return self.reply(404, '{"message": "not served"}')
+
+    def do_GET(self):
+        self.serve("GET")
+
+    def do_POST(self):
+        self.serve("POST")
+
+    def do_PATCH(self):
+        self.serve("PATCH")
+
+    def log_message(self, *args):
+        pass
+
+
+ThreadingHTTPServer.daemon_threads = True  # a handler that sleeps must not outlive the test
+httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+with open(f"{forge}/port", "w") as f:
+    f.write(str(httpd.server_port))
+httpd.serve_forever()
+PY
+echo '{"data": {"markPullRequestReadyForReview": {"pullRequest": {"isDraft": false}}}}' \
+	>"$forge/graphql.json"
+python3 "$tmp/forge.py" "$forge" &
+server=$!
+for _ in $(seq 100); do [ -s "$forge/port" ] && break || sleep 0.1; done
+[ -s "$forge/port" ] || { echo "pr-self-test: the forge did not start" >&2; exit 1; }
+export FPL_API_URL="http://127.0.0.1:$(cat "$forge/port")"
+
+# The repository: main at M0; feat two commits above it; solo one above it; parent one above
+# it and child one above parent.
+remote="$tmp/remote.git"
+git init -q --bare -b main "$remote"
+git config --global url."$remote".insteadOf https://github.com/pr-test/fpl.git
+repo="$tmp/repo"
+git init -q -b main "$repo"
+cd "$repo"
+cp -R "$root/scripts" .
+git config user.name t
+git config user.email t@example.invalid
+git remote add github https://github.com/pr-test/fpl.git
+git config branch.main.remote github
+commit() { git -c core.hooksPath=/dev/null commit -q --allow-empty "$@"; }
+commit -m base
+branch() { git switch -q -c "agent/claude/stack/$1" "${2:-main}"; }
+branch feat
+commit -m "feat(x): first" -m "The first change, in a paragraph."
+commit -m "feat(x): second"
+branch solo main
+commit -m "feat(x): alone"
+branch parent main
+commit -m "feat(x): the parent"
+branch child agent/claude/stack/parent
+commit -m "feat(x): the child"
+git push -q github --all
+git fetch -q github
+git switch -q agent/claude/stack/feat
+echo 1+psjg-claude@users.noreply.github.com >"$(git rev-parse --git-dir)/agent-identity"
+echo 'https://psjg-claude:made-up-token@github.com' >"$(git rev-parse --git-dir)/agent-credentials"
+echo quuxfrobnitz >"$(git rev-parse --git-dir)/leak-patterns"
+bin="$tmp/bin"
+mkdir -p "$bin"
+printf '#!/bin/sh\nexit 1\n' >"$bin/gh"
+chmod +x "$bin/gh"
+export PATH="$bin:$PATH"
+
+pr=scripts/pr
+fails=0 total=0
+# run <exit code> <description> <scripts/pr arguments...>: stdout in $tmp/out, stderr in $tmp/err.
+run() {
+	local want="$1" what="$2" rc=0
+	shift 2
+	total=$((total + 1))
+	"$pr" "$@" >"$tmp/out" 2>"$tmp/err" || rc=$?
+	if [ "$rc" -ne "$want" ]; then
+		fails=$((fails + 1))
+		echo "self-test: $what: exit $rc, want $want" >&2
+		sed 's/^/    /' "$tmp/err" >&2
+	fi
+}
+# says <file> <text> <description>: the file holds text. lacks: it does not.
+says() {
+	total=$((total + 1))
+	grep -Fq -- "$2" "$tmp/$1" || {
+		fails=$((fails + 1))
+		echo "self-test: $3: $1 lacks '$2'" >&2
+	}
+}
+lacks() {
+	total=$((total + 1))
+	! grep -Fq -- "$2" "$tmp/$1" || {
+		fails=$((fails + 1))
+		echo "self-test: $3: $1 has '$2'" >&2
+	}
+}
+# within <began> <seconds> <description>: the run since <began> (a value of $SECONDS) took
+# fewer seconds than that.
+within() {
+	total=$((total + 1))
+	[ $((SECONDS - $1)) -lt "$2" ] || {
+		fails=$((fails + 1))
+		echo "self-test: $3: took $((SECONDS - $1))s, want under $2" >&2
+	}
+}
+# logged <count> <text> <description>: the forge logged text on that many lines.
+logged() {
+	local n
+	total=$((total + 1))
+	n="$(grep -Fc -- "$2" "$forge/log" || true)"
+	[ "$n" = "$1" ] || {
+		fails=$((fails + 1))
+		echo "self-test: $3: the forge logged '$2' $n times, want $1" >&2
+	}
+}
+# pull <n> <draft> <reviewers json> [sha]: the fixture of pull request n. With PULL_STATE=.next
+# it is the state the forge serves from the second read on, after the first has been answered.
+pull() {
+	cat >"$forge/pull-$1${PULL_STATE:-}.json" <<EOF
+{"number": $1, "state": "open", "draft": $2, "node_id": "PR_node_$1",
+ "head": {"sha": "${4:-0123456789abcdef}"}, "requested_reviewers": $3, "requested_teams": []}
+EOF
+}
+FEAT=agent/claude/stack/feat PARENT=agent/claude/stack/parent
+
+# --- the base: main unless the branch of an open pull request is named ---------------------
+run 0 "dry run of the current branch" -n
+says err "base:  main" "default base"
+says err "draft: no" "default is not a draft"
+says err "head:  $FEAT" "head"
+says err "landing: fast-forward by the lander after review" "landing line"
+says err "- feat(x): first" "every subject is listed"
+lacks err "rebase-merge" "no rebase-merge claim"
+lacks err "commits, " "no commit count"
+run 0 "dry run, draft" -n --draft
+says err "draft: yes" "draft flag"
+run 0 "-B main is the default" -n -B main
+says err "base:  main" "-B main"
+run 1 "-B a branch the head is not built on" -n -B agent/claude/stack/solo
+says err "git rebase --onto github/agent/claude/stack/solo github/main $FEAT" "rebase remedy"
+run 1 "-B a branch that does not exist" -n -B agent/claude/stack/nowhere
+says err "cannot fetch" "unfetchable parent"
+echo '[{"number": 1, "html_url": "https://github.com/pr-test/fpl/pull/1", "head": {"ref": "'"$PARENT"'"}}]' \
+	>"$forge/pulls.json"
+run 0 "-B the branch of an open pull request" -n -B "$PARENT" agent/claude/stack/child
+says err "base:  $PARENT" "stacked base"
+run 0 "a stacked branch without -B goes on main" -n agent/claude/stack/child
+says err "base:  main" "main by default, queue gone"
+# Two remotes and main tracking neither: the parent -B names tells which is the forge.
+git remote add elsewhere "$tmp/elsewhere.git"
+git config --unset branch.main.remote
+git config "branch.$PARENT.remote" github
+run 0 "-B a parent that tracks the forge, main tracking nothing" -n -B "$PARENT" agent/claude/stack/child
+says err "base:  $PARENT" "the parent's remote is the forge"
+run 1 "no -B, main tracking nothing, two remotes" -n agent/claude/stack/child
+says err "no remote is tracked by 'agent/claude/stack/child', 'main'" "no remote to mean, and what was asked"
+git config --unset "branch.$PARENT.remote"
+git config branch.main.remote github
+git remote remove elsewhere
+echo '[]' >"$forge/pulls.json"
+run 1 "-B a parent with no open pull request" -n -B "$PARENT" agent/claude/stack/child
+says err "not the branch of an open pull request" "parent not open"
+says err "git rebase --onto github/main github/$PARENT agent/claude/stack/child" "main remedy"
+run 1 "an unknown flag after the branch" -n agent/claude/stack/feat --nonsense
+says err "usage:" "unknown flag"
+
+# --- the body -------------------------------------------------------------------------------
+printf 'A body from a file.\n\nWith two paragraphs.\n' >"$tmp/body.md"
+run 0 "a body file" -n --body-file "$tmp/body.md"
+says err "With two paragraphs." "the file is the body"
+lacks err "landing: fast-forward" "no generated line over a file"
+run 1 "-b and --body-file" -n -b x --body-file "$tmp/body.md"
+printf 'the quuxfrobnitz is private\n' >"$tmp/leaky.md"
+run 1 "a body file with a private term" -n --body-file "$tmp/leaky.md"
+says err "nothing was sent" "leak gate on a body file"
+
+# --- filing ---------------------------------------------------------------------------------
+run 0 "filing a draft" --draft
+says out "https://github.com/pr-test/fpl/pull/9" "the url is printed"
+logged 1 "POST /repos/pr-test/fpl/pulls" "one pull request created"
+logged 1 '"draft": true' "created as a draft"
+logged 1 '"base": "main"' "on main"
+run 0 "filing, not a draft" -t "feat(x): alone" -b "A body." agent/claude/stack/solo
+logged 1 '"draft": false' "ready by default"
+logged 1 '"title": "feat(x): alone"' "with the title asked for"
+logged 1 '"head": "agent/claude/stack/solo"' "from the branch named"
+logged 2 "POST /repos/pr-test/fpl/pulls" "two created"
+echo '[{"number": 5, "html_url": "https://github.com/pr-test/fpl/pull/5", "head": {"ref": "'"$FEAT"'"}}]' \
+	>"$forge/pulls.json"
+run 0 "a branch that is already open"
+says out "https://github.com/pr-test/fpl/pull/5" "the open one is printed"
+logged 2 "POST /repos/pr-test/fpl/pulls" "nothing created twice"
+echo someone-else >"$forge/login"
+run 1 "a token of another account" -n
+says err "belongs to 'someone-else'" "wrong account"
+echo psjg-claude >"$forge/login"
+FPL_API_URL=https://evil.example run 1 "an API that is not GitHub or this machine" -n
+says err "the token stays home" "foreign API"
+
+# --- --update-body --------------------------------------------------------------------------
+run 0 "replacing a body" --update-body 5 "$tmp/body.md"
+logged 1 "PATCH /repos/pr-test/fpl/pulls/5" "the body is patched"
+logged 1 "A body from a file." "with the file's text"
+run 1 "replacing a body with a private term" --update-body 5 "$tmp/leaky.md"
+says err "nothing was sent" "leak gate on --update-body"
+logged 1 "PATCH /repos/pr-test/fpl/pulls/5" "no second patch"
+# A file that changes after the gate passed it: a leak-check that appends to the file once it
+# has judged it stands in for a writer racing the request. The text sent is the text judged.
+mv scripts/leak-check scripts/leak-check.real
+printf '#!/bin/sh\nrc=0\n"$0.real" "$@" || rc=$?\necho CHANGED-AFTER-CHECK >>"%s"\nexit $rc\n' \
+	"$tmp/body.md" >scripts/leak-check
+chmod +x scripts/leak-check
+run 0 "replacing a body that changes after the gate" --update-body 5 "$tmp/body.md"
+logged 2 "PATCH /repos/pr-test/fpl/pulls/5" "the body is patched again"
+logged 0 "CHANGED-AFTER-CHECK" "with the text the gate judged, not the file's later text"
+mv scripts/leak-check.real scripts/leak-check
+printf 'A body from a file.\n\nWith two paragraphs.\n' >"$tmp/body.md"
+run 1 "a pull request number that is not one" --update-body five "$tmp/body.md"
+run 1 "a missing file" --update-body 5 "$tmp/nowhere.md"
+run 1 "--update-body with a branch beside it" --update-body 5 "$tmp/body.md" "$FEAT"
+
+# --- --ready --------------------------------------------------------------------------------
+pull 5 true '[]'
+echo '{"check_runs": [{"name": "lint", "status": "in_progress"}, {"name": "unit", "status": "completed"}]}' \
+	>"$forge/checks.json"
+run 1 "ready with a check running" --ready 5
+says err "check lint is in_progress" "names the running check"
+logged 0 "/graphql" "still a draft"
+echo '{"check_runs": [{"name": "lint", "status": "completed"}]}' >"$forge/checks.json"
+echo '{"statuses": [{"context": "bot", "state": "pending"}]}' >"$forge/status.json"
+run 1 "ready with a status pending" --ready 5
+says err "status bot is pending" "names the pending status"
+echo '{"statuses": []}' >"$forge/status.json"
+pull 5 true '[{"login": "coderabbitai"}]'
+run 1 "ready with a review requested" --ready 5
+says err "review requested from coderabbitai" "names the unanswered review"
+pull 5 true '[]'
+run 0 "ready once the bots are quiet" --ready 5
+logged 1 "POST /graphql" "marked ready"
+logged 1 "PR_node_5" "by the node of the pull request"
+# A token without Checks and Commit statuses read: a private repository answers 403, and the
+# refusal says which permissions the credential lacks; .agents/WORKFLOW.md lists them.
+: >"$forge/deny-checks"
+run 1 "ready with a token that may not read checks" --ready 5
+says err "the token needs Checks read and Commit statuses read" "names the missing permissions"
+logged 1 "POST /graphql" "still not marked twice"
+rm "$forge/deny-checks"
+# A head with more than a page of check runs, or of statuses: the one still pending is past
+# the first page of 100, where a single read would not see it and the draft would be marked.
+many() { # many <key> <field> <done> <not-done>: 150 done entries, then one that is not
+	python3 - "$@" <<'PY'
+import json, sys
+
+key, field, done, undone = sys.argv[1:]
+name = "name" if key == "check_runs" else "context"
+items = [{name: f"n{i}", field: done} for i in range(150)] + [{name: "late", field: undone}]
+print(json.dumps({key: items}))
+PY
+}
+many check_runs status completed in_progress >"$forge/checks.json"
+run 1 "ready with a check pending on the second page" --ready 5
+says err "check late is in_progress" "names the check past the first page"
+logged 1 "POST /graphql" "not marked on a page it did not read"
+echo '{"check_runs": []}' >"$forge/checks.json"
+many statuses state success pending >"$forge/status.json"
+run 1 "ready with a status pending on the second page" --ready 5
+says err "status late is pending" "names the status past the first page"
+logged 1 "POST /graphql" "not marked on a status it did not read"
+echo '{"statuses": []}' >"$forge/status.json"
+total=$((total + 1))
+grep -Fq "Metadata, Checks and Commit statuses read" "$root/.agents/WORKFLOW.md" || {
+	fails=$((fails + 1))
+	echo "self-test: .agents/WORKFLOW.md does not grant the token what --ready reads" >&2
+}
+# A pull request that moves while --ready reads it: the head is pushed, or a review is
+# requested, between the read the checks are judged by and the one before the mutation.
+OLD=0123456 NEW=fedcba9876543210
+moved="the head or the review requests changed while it was read"
+pull 5 true '[]'
+PULL_STATE=.next pull 5 true '[]' $NEW
+echo '{"check_runs": [{"name": "lint", "status": "in_progress"}]}' >"$forge/checks-$NEW.json"
+run 1 "ready with the head pushed while the checks were read" --ready 5
+says err "$moved ($OLD to fedcba9)" "names both heads"
+logged 1 "POST /graphql" "not marked on a head nobody checked"
+pull 5 true '[]'
+PULL_STATE=.next pull 5 true '[]' $NEW
+FPL_PR_WAIT=1 FPL_PR_POLL=0.2 run 1 "ready with a pushed head whose check is running" --ready 5
+says err "at fedcba9 is not quiet" "the new head is the one judged"
+says err "check lint is in_progress" "and its check is named"
+logged 1 "POST /graphql" "still not marked"
+rm "$forge/checks-$NEW.json"
+pull 5 true '[]'
+PULL_STATE=.next pull 5 true '[]' $NEW
+FPL_PR_WAIT=5 FPL_PR_POLL=0.2 run 0 "ready with a pushed head that is quiet" --ready 5
+says err "quiet at fedcba9" "marked on the head that was checked"
+logged 2 "POST /graphql" "marked once more"
+pull 5 true '[]'
+PULL_STATE=.next pull 5 true '[{"login": "coderabbitai"}]'
+run 1 "ready with a review requested while the checks were read" --ready 5
+says err "$moved" "a review request is a change"
+logged 2 "POST /graphql" "not marked over a review nobody answered"
+pull 5 true '[]'
+PULL_STATE=.next pull 5 true '[{"login": "coderabbitai"}]'
+FPL_PR_WAIT=1 FPL_PR_POLL=0.2 run 1 "ready, the review request standing" --ready 5
+says err "review requested from coderabbitai" "the request is named once it is read"
+pull 5 true '[]'
+PULL_STATE=.next pull 5 false '[]'
+run 0 "ready with the pull request marked ready meanwhile" --ready 5
+says err "ready already" "someone else did it; nothing to mark"
+logged 2 "POST /graphql" "no second mutation"
+pull 5 true '[]'
+
+# A forge that takes the connection and says nothing: the wait ends in an error of its own, not
+# in a hang, whichever bound is the tighter, the cap on a call or what is left of FPL_PR_WAIT.
+pull 5 true '[]'
+echo 20 >"$forge/stall-check-runs"
+began=$SECONDS
+FPL_PR_TIMEOUT=1 FPL_PR_WAIT=100 run 1 "ready with a forge that stalls, a cap of 1s" --ready 5
+says err "no answer in 1.0s" "the cap ends the call"
+within $began 15 "the cap bounds the wait"
+began=$SECONDS
+FPL_PR_TIMEOUT=100 FPL_PR_WAIT=1 run 1 "ready with a forge that stalls, 1s of wait" --ready 5
+says err "no answer in 1.0s" "what is left of FPL_PR_WAIT ends the call"
+within $began 15 "FPL_PR_WAIT bounds the wait"
+rm "$forge/stall-check-runs"
+echo 20 >"$forge/stall-user"
+began=$SECONDS
+FPL_PR_TIMEOUT=1 run 1 "asking for a review of a forge that stalls" --reviewer 5 psjg
+says err "/user: no answer in 1.0s" "the first call has a cap too"
+within $began 15 "the cap bounds a mode without a wait"
+rm "$forge/stall-user"
+logged 2 "POST /graphql" "nothing marked on a forge that did not answer"
+pull 5 false '[]'
+run 0 "ready twice" --ready 5
+says err "ready already" "nothing to do"
+logged 2 "POST /graphql" "no second mutation"
+
+# --- --reviewer, and no label ever ----------------------------------------------------------
+run 0 "asking for a review" --reviewer 5 psjg
+logged 1 "POST /repos/pr-test/fpl/pulls/5/requested_reviewers" "the request is posted"
+logged 1 '"reviewers": ["psjg"]' "naming the login"
+logged 0 label "no label, anywhere"
+
+# --- the fixtures answer as GitHub does -----------------------------------------------------
+# A forge kinder than GitHub lets a regression through: a list read without head that came
+# back empty would pass for no open pull request, any query would pass for the mutation, and
+# an edit with its text under the wrong key would pass for a body replaced.
+# ask <method> <path> [body]: the forge's status and answer, in $tmp/out, sent with the
+# made-up token unless ASK_TOKEN says otherwise. These are the last writes the forge logs.
+ask() {
+	python3 - "$FPL_API_URL" "${ASK_TOKEN-made-up-token}" "$@" >"$tmp/out" <<'PY'
+import sys, urllib.error, urllib.request
+
+root, token, method, path = sys.argv[1:5]
+data = sys.argv[5].encode() if len(sys.argv) > 5 else None
+request = urllib.request.Request(root + path, data, {"Authorization": f"Bearer {token}"}, method=method)
+try:
+    with urllib.request.urlopen(request) as answer:
+        print(answer.status, answer.read().decode())
+except urllib.error.HTTPError as error:
+    print(error.code, error.read().decode())
+PY
+}
+echo '[{"number": 1, "html_url": "https://github.com/pr-test/fpl/pull/1", "head": {"ref": "'"$PARENT"'"}}]' \
+	>"$forge/pulls.json"
+ask GET "/repos/pr-test/fpl/pulls?state=open&per_page=100"
+says out "$PARENT" "the open list without head holds every open pull request"
+ask GET "/repos/pr-test/fpl/pulls?state=open&head=pr-test:$FEAT"
+lacks out "$PARENT" "head narrows the list to its branch"
+mark='mutation($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id}) { pullRequest { isDraft } } }'
+ask POST /graphql '{"query": "'"$mark"'", "variables": {"id": "PR_node_5"}}'
+says out '"isDraft": false' "the mutation scripts/pr sends marks the draft"
+ask POST /graphql '{"query": "'"${mark/markPullRequestReadyForReview/markPullRequestReady}"'", "variables": {"id": "PR_node_5"}}'
+says out '"errors"' "a misspelt mutation is refused"
+lacks out isDraft "and marks nothing"
+ask POST /graphql '{"query": "'"$mark"'", "variables": {"id": "PR_node_77"}}'
+says out "Could not resolve to a node" "a node no pull request has is refused"
+ASK_TOKEN=someone-elses ask GET /user
+says out "401 " "a request without the made-up token is refused"
+ask POST /repos/pr-test/fpl/pulls '{"head": "'"$FEAT"'", "base": "main", "body": "b", "draft": false}'
+says out "422 " "a pull request without a title is refused"
+ask POST /repos/pr-test/fpl/pulls '{"title": "t", "head": "'"$FEAT"'", "base": "main", "body": "b", "draft": "no"}'
+says out "422 " "a draft that is no boolean is refused"
+ask PATCH /repos/pr-test/fpl/pulls/5 '{}'
+says out "422 " "an edit of a pull request without a body is refused"
+ask PATCH /repos/pr-test/fpl/pulls/5 '{"text": "b"}'
+says out "422 " "a body under another key is refused"
+# A runner may hand git config of command scope down; it outranks the test's global file, and
+# an insteadOf there would send the fixture's pushes elsewhere. A runner's FPL_PR_TIMEOUT would
+# replace the default every check but the stall checks assumes. isolate drops both.
+(
+	export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="url.$tmp/elsewhere.git.insteadOf" \
+		GIT_CONFIG_VALUE_0=https://github.com/pr-test/fpl.git \
+		GIT_CONFIG_PARAMETERS="'pr-self-test.inherited'='yes'" FPL_PR_TIMEOUT=0.001
+	isolate
+	git config --list --show-scope
+	echo "timeout ${FPL_PR_TIMEOUT-default}"
+) >"$tmp/out"
+lacks out "$(printf 'command\t')" "no git config of command scope reaches the checks"
+says out "timeout default" "nor a runner's FPL_PR_TIMEOUT"
+
+# A git that runs this test (a hook, git rebase -x) can leave set where its own repository
+# lives. Inherited, GIT_COMMON_DIR and GIT_OBJECT_DIRECTORY would put the fixture's objects in
+# that repository, and GIT_NAMESPACE would file a push under refs/namespaces/. isolate drops
+# them.
+git init -q -b main "$tmp/decoy"
+git -C "$tmp/decoy" commit -q --allow-empty -m decoy
+git init -q --bare -b main "$tmp/spaced.git"
+(
+	export GIT_COMMON_DIR="$tmp/decoy/.git" GIT_OBJECT_DIRECTORY="$tmp/decoy/.git/objects" \
+		GIT_NAMESPACE=inherited
+	isolate
+	git init -q -b main "$tmp/inner"
+	git -C "$tmp/inner" commit -q --allow-empty -m inner
+	git -C "$tmp/inner" push -q "$tmp/spaced.git" main
+	git -C "$tmp/inner" rev-parse HEAD
+) >"$tmp/head"
+head="$(cat "$tmp/head")"
+git -C "$tmp/inner" cat-file --batch-all-objects --batch-check >"$tmp/out" 2>&1 || true
+says out "$head commit" "the fixture's commit is in the fixture's object store"
+git -C "$tmp/decoy" cat-file --batch-all-objects --batch-check >"$tmp/out"
+lacks out "$head" "no inherited GIT_OBJECT_DIRECTORY puts it in another"
+git -C "$tmp/spaced.git" for-each-ref --format='ref %(refname)' >"$tmp/out"
+says out "ref refs/heads/main" "the push lands on main"
+lacks out refs/namespaces/ "no inherited GIT_NAMESPACE files it under a namespace"
+
+echo "pr self-test: $fails of $total checks failed (bash $BASH_VERSION)"
+if [ -z "${PR_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ] && ! [ /bin/bash -ef "$BASH" ]; then
+	mkdir -p "$tmp/shim"
+	ln -s /bin/bash "$tmp/shim/bash"
+	PATH="$tmp/shim:$PATH" PR_SELF_TEST_SHIM=1 /bin/bash "$root/scripts/pr-self-test" ||
+		fails=$((fails + 1))
+fi
+[ "$fails" -eq 0 ]
