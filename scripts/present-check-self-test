@@ -171,6 +171,19 @@ run "two Series-Ids" 1 "more than one Series-Id" -- sid2
 run "a lemma without Series-Id" 1 "has no Series-Id" -- sid3
 run "no scripts/series: not judged" 0 "skip  Series-Id" -- sid4
 
+# A finished series: no fix of the series' own files.
+git checkout -q -b fixself main
+add h1 && commit "feat(w): add h1"
+echo more >>h1 && git add h1 && commit "fix(w): mend h1"
+run "a fix of the series itself" 1 "fix-on-series" "mend h1" "fold it into" -- fixself
+check "a fix of the series itself: nothing was built" lines "$LOG" 0
+run "rules alone" 1 "fix-on-series" -- rules fixself
+git checkout -q -b fixmain main
+echo mended >>base && add h2 && git add base && commit "fix(w): mend base, add h2"
+add h3 && commit "feat(w): add h3"
+run "a fix of main" 0 "ok    rules" "green, 2 commits" -- fixmain
+run "rules, green" 0 "ok    rules" -- rules fixmain
+
 # Self-tests of touched paths run; those of untouched paths do not.
 git checkout -q -b touched main
 add scripts/foo 755 && add scripts/foo-self-test 755

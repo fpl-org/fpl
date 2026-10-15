@@ -3,6 +3,7 @@
 # scripts/present-check — prove that a presented series is the series that was worked.
 #
 #   scripts/present-check [-B base] [-b branch] [--skip-quick] [W] P
+#   scripts/present-check rules [-B base] P
 #
 # The work tip W is what the agents built and checked; the presented tip P is the same change
 # told as a short series a person reads (.agents/WORKFLOW.md). Telling it again may reword,
@@ -16,12 +17,22 @@
 #               branch or -b names one (else its Stack: and agent-branch gates are left out)
 #   Series-Id   when scripts/series exists in P's tree, every commit of base..P carries a
 #               Series-Id trailer and the range holds exactly one distinct value
+#   rules       every commit of base..P reads as finished work (below)
 #   each lemma  `make quick` in a detached worktree of the commit and, when it touches
 #               scripts/ or .githooks/, the self-tests that cover the touched path
 #
 # With one ref there is no W, so the tree, merge-base and range-diff steps are left out; that
 # is what a pull request's CI has. At the end it prints the lemma list (hash, subject, seconds
 # per step) and, with W, `git range-diff W...P`. Seconds come from $SECONDS, which bash 3.2 has.
+#
+#   rules P            the rules step alone, which builds nothing
+#
+# A presented series reads as work done, not as the history of how it was reviewed. A rule
+# says so, and a refusal names the commit, the rule and the remedy:
+#
+#   fix-on-series  a commit typed fix that changes only files the merge-base does not hold
+#                  repairs the series itself: it is folded into the lemma it corrects, or told
+#                  as a lemma of its own. A fix is a fix of something main holds.
 #
 #   -B base       what the series is on top of (default main; CI passes origin/main)
 #   -b branch     judge the commits for this branch (default: P's name when it is one)
@@ -39,7 +50,7 @@ export GIT_NO_REPLACE_OBJECTS=1
 unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE
 
 here="$(cd "$(dirname "$0")" && pwd)"
-usage="usage: scripts/present-check [-B base] [-b branch] [--skip-quick] [W] P"
+usage="usage: scripts/present-check [-B base] [-b branch] [--skip-quick] [W] P | rules [-B base] P"
 
 die() {
 	printf 'present-check: %s\n' "$*" >&2
@@ -52,7 +63,12 @@ red() {
 sha() { git rev-parse --verify -q "$1^{commit}" || die "not a commit: $1"; }
 short() { git rev-parse --short "$1"; }
 
-base=main branch="" skip_quick=0
+base=main branch="" skip_quick=0 mode=check
+case "${1-}" in rules)
+	mode="$1"
+	shift
+	;;
+esac
 while [ $# -gt 0 ]; do
 	case "$1" in
 	-B | -b)
@@ -67,6 +83,49 @@ while [ $# -gt 0 ]; do
 done
 git rev-parse --git-dir >/dev/null 2>&1 || die "not inside a git repository"
 git rev-parse -q --verify "$base^{commit}" >/dev/null || die "no such base: $base"
+
+# rules <merge-base> <commit>...: print each commit that breaks a rule of a finished series,
+# with its remedy; the exit status is whether there is none.
+rules() {
+	local mb="$1" c f subject own bad=0 fix='^fix[(!:]'
+	shift
+	for c in "$@"; do
+		subject="$(git log -1 --format=%s "$c")"
+		if [[ $subject =~ $fix ]]; then
+			own=1
+			while IFS= read -r f; do
+				if git cat-file -e "$mb:$f" 2>/dev/null; then own=0 && break; fi
+			done <<EOF
+$(git diff-tree --root --no-commit-id --name-only -r "$c")
+EOF
+			if [ "$own" -eq 1 ]; then
+				printf 'fix-on-series: %s %s\n' "$(short "$c")" "$subject"
+				printf '    it changes only files this series adds: fold it into the lemma it corrects, or type it as the lemma it is\n'
+				bad=1
+			fi
+		fi
+	done
+	return "$bad"
+}
+
+# check_rules <tip>: the rules step over base..tip.
+check_rules() {
+	local mb out
+	mb="$(git merge-base "$base" "$1")" ||
+		die "$(short "$1") shares no history with $base; pass -B the base it forked from"
+	# shellcheck disable=SC2046 # one word per commit
+	out="$(rules "$mb" $(git rev-list --reverse --no-merges "$base..$1"))" || {
+		printf '%s\n' "$out" >&2
+		red "a commit of $base..$(short "$1") does not read as finished work (above)"
+	}
+	echo "ok    rules (fix-on-series)"
+}
+
+if [ "$mode" = rules ]; then
+	[ $# -eq 1 ] || die "$usage"
+	check_rules "$(sha "$1")"
+	exit 0
+fi
 
 case $# in
 1) w="" p="$(sha "$1")" ;;
@@ -140,6 +199,7 @@ if git cat-file -e "$p:scripts/series" 2>/dev/null; then
 else
 	echo "skip  Series-Id (no scripts/series in $(short "$p"))"
 fi
+check_rules "$p"
 
 # handles_flag <script>: whether the script handles --self-test in code: a Python argv list, a
 # case arm or a test of the argument. Comment lines and echo or printf lines, where the flag is
