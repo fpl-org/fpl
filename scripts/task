@@ -12,11 +12,12 @@
 
 Exit: 0 the answer, 1 an answer with a loop in it, 2 the command was refused.
 
-An <id> may be any unambiguous prefix. Tasks live under refs/cobs/<TYPE>/ of the Radicle
-repository, as signed operations: who opened, moved or blocked what is part of the record,
-and it travels with the repository, not with a forge. scripts/rad-cob-dagtaak gives the
-operations their meaning and says who may do what; this file only reads state and writes
-actions through `rad cob`. Needs rad (`scripts/layer on radicle`) and a repository that
+An <id> is the first word of a title ("A6a lander-core" is A6a), or any unambiguous prefix of
+the object id; the first word wins when both would match. Tasks live under refs/cobs/<TYPE>/
+of the Radicle repository, as signed operations: who opened, moved or blocked what is part
+of the record, and it travels with the repository, not with a forge. scripts/rad-cob-dagtaak
+gives the operations their meaning and says who may do what; this file only reads state and
+writes actions through `rad cob`. Needs rad (`scripts/layer on radicle`) and a repository that
 went through `rad init`. `--self-test` runs the whole thing in a throwaway Radicle home.
 """
 
@@ -70,6 +71,9 @@ class Graph:
                 self.tasks[oid] = state
 
     def resolve(self, prefix):
+        named = [oid for oid, t in self.tasks.items() if label(t).lower() == prefix.lower()]
+        if len(named) == 1:
+            return named[0]
         hits = [oid for oid in self.tasks if oid.startswith(prefix.lower())]
         if len(hits) != 1:
             die(f"'{prefix}' matches {len(hits)} tasks")
@@ -176,6 +180,12 @@ class Graph:
                 f"{oid[:7]}: not applied. Only the author, or the assignee for state and "
                 f"blockers, may do that (scripts/rad-cob-dagtaak)"
             )
+
+
+def label(task):
+    """The first word of the title, without a trailing colon: how a task is named in prose."""
+    words = task.get("title", "").split()
+    return words[0].rstrip(":") if words else ""
 
 
 def line(graph, oid):
@@ -444,6 +454,12 @@ def basics(f):
     return lexer, parser
 
 
+def lanes(f):
+    """Labels: a task is named by the first word of its title."""
+    f.out("new", "lane-X the lane")
+    f.check("a label names a task", f.task("show", "lane-X").returncode == 0)
+
+
 def loops(f):
     """A loop may be recorded; what it may not do is make `ready` go quiet."""
     left = f.out("new", "span: pick the representation").strip()
@@ -495,6 +511,7 @@ def self_test():
         f = Fixture(tmp)
         f.init(lambda: tree_bytes(f"{tmp}/decoy/.git") == before)
         lexer, _ = basics(f)
+        lanes(f)
         loops(f)
         oid = json.loads(f.out("show", lexer))["id"]
         rid = f.sh("rad", ".").stdout.strip()
