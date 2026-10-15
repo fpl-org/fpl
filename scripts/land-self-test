@@ -1323,7 +1323,20 @@ echo x >a && git add a && git commit -q -m "add a, otherwise"
 SX="$(git rev-parse HEAD)"
 git switch -q main
 git branch -q -D sibs
-git push -q "$REMOTE" "$SA:refs/heads/sa" "$SB:refs/heads/sb"
+# DM adds f, seven lines; DA changes its first line, DB its fourth: they merge cleanly, but
+# DB's diff has DA's line as context, so its relocation has another patch id.
+git switch -q -c sibs "$M0"
+seq 7 >f && git add f && git commit -q -m "add f"
+DM="$(git rev-parse HEAD)"
+sed 's/^1$/one/' f >f.new && mv f.new f && git commit -q -am "f: one"
+DA="$(git rev-parse HEAD)"
+git reset -q --hard "$DM"
+sed 's/^4$/four/' f >f.new && mv f.new f && git commit -q -am "f: four"
+DB="$(git rev-parse HEAD)"
+git switch -q main
+git branch -q -D sibs
+git push -q "$REMOTE" "$SA:refs/heads/sa" "$SB:refs/heads/sb" "$SX:refs/heads/sx" \
+	"$DA:refs/heads/da" "$DB:refs/heads/db"
 line() { # line <text> <description>: a line of the last output is exactly the text
 	total=$((total + 1))
 	grep -qxF -- "$1" "$tmp/out" && return
@@ -1407,6 +1420,47 @@ says "LOUD: main is $SY, but what it was landed on changed; $BR stays $SB" "it l
 total=$((total + 1))
 [ "$(git --git-dir="$REMOTE" rev-parse "refs/heads/$BR")" = "$SB" ] ||
 	{ fails=$((fails + 1)); echo "self-test: the head moved without a standing approval" >&2; }
+# A relocation the owner has not read goes to him, never over the reviewed head.
+FPL_LAND_QUICK=true "$land" --verify "$DA" "$DB" >"$tmp/out" 2>&1
+DY="$(sed -n 's/^y=//p' "$tmp/out")"
+at="$DB" HEAD_SHA="$DB"
+forge
+git --git-dir="$REMOTE" update-ref refs/heads/main "$DA"
+git --git-dir="$REMOTE" update-ref "refs/heads/$BR" "$DB"
+GH_TOKEN=t expect 1 "--ci, DB's relocation changes its patch id" --ci --relocate "$DY" 7
+says "NO  relocate/ids" "it names the rule"
+says "is $BR-relocated ($DY)" "it names the candidate"
+says "f: four" "the range-diff of the changed commit is in the comment"
+main_is "$DA" "main stays"
+total=$((total + 1))
+[ "$(git --git-dir="$REMOTE" rev-parse "refs/heads/$BR")" = "$DB" ] &&
+	[ "$(git --git-dir="$REMOTE" rev-parse "refs/heads/$BR-relocated")" = "$DY" ] ||
+	{ fails=$((fails + 1)); echo "self-test: the head moved, or the candidate is not $DY" >&2; }
+called
+first "-X POST repos/land-test/fpl/issues/7/comments" "-X POST repos/land-test/fpl/pulls/7/requested_reviewers" \
+	"the owner is asked once the comment is up"
+BR=agent/x/stack/twin/tip
+forge
+git --git-dir="$REMOTE" update-ref refs/heads/main "$DA"
+git --git-dir="$REMOTE" update-ref "refs/heads/$BR" "$DB"
+GH_TOKEN=t expect 1 "--ci, the same from a stack's tip" --ci --relocate "$DY" 7
+says "is agent/x/stack/twin-relocated/tip ($DY)" "the candidate's name keeps the part last, as branch-lint wants"
+BR=agent/x/stack/feat
+at="$SX" HEAD_SHA="$SX"
+forge
+git --git-dir="$REMOTE" update-ref refs/heads/main "$SA"
+GH_TOKEN=t expect 1 "--ci, a relocation that conflicts" --ci --relocate "" 7
+says "NO  relocate/clean" "it names the rule"
+says "conflicts: $SX a." "it names the commit and the file"
+called
+says "pulls/7/requested_reviewers" "the owner is asked to review again"
+lacks "-relocated" "a conflict publishes no candidate"
+forge
+git --git-dir="$REMOTE" update-ref refs/heads/main "$SA"
+reviews "$(review 1 psjg COMMENTED "$SX")"
+GH_TOKEN=t expect 1 "--ci, a conflict and no approval" --ci --relocate "" 7
+called
+lacks "issues/7/comments" "with another refusal, nothing is put to the owner"
 at="$H" HEAD_SHA="$H"
 
 # The install line in harness/workflows/README.md makes a commit the owner's hooks accept: its

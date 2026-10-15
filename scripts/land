@@ -110,6 +110,9 @@
 # holds: main becomes Y, what it was landed on is read again, the head becomes Y under a
 # lease on the reviewed head, and the old-to-new map is posted on the pull request. The
 # approval of the reviewed head carries to Y: each commit's patch and message are the same.
+# When those are all that refuse, a conflict or a changed pair never moves the reviewed head:
+# a changed pair publishes Y as <head>-relocated with the range-diff of what changed, a
+# conflict is named, and the code owners are asked to review again.
 #
 # Then it prints the conversation, opens the diff in the browser and stops for a keypress.
 # After Enter it approves the head when it said it would, checks everything again, and pushes:
@@ -925,9 +928,11 @@ def judge_relocation(v, d, claimed):
     else:
         v.no("relocate/trees", f"--verify derived {claimed[:12] or 'nothing'}, this {y[:12]}",
              "dispatch the run again: main or the head moved between its two jobs")
-    odd = [o[:12] for o, n in picks if pair(o) != pair(n)]
+    odd = [o for o, n in picks if pair(o) != pair(n)]
+    with open(f"{d}/odd", "w") as f:
+        f.write("".join(f"{o}\n" for o in odd))
     if odd:
-        v.no("relocate/ids", "the relocation changes the pair of " + " ".join(odd),
+        v.no("relocate/ids", "the relocation changes the pair of " + " ".join(o[:12] for o in odd),
              "the code owner reviews the relocation, published as a candidate")
     else:
         v.ok("relocate/ids", "each pick keeps its commit's patch id and message")
@@ -972,6 +977,8 @@ def judge(d, repo, fetched, main, ancestor, merges, ci, relocate="0", claimed=""
     if not fault:
         judge_attributed(v, pr, rules)
         judge_rules(v, d, rules, me, ci)
+    with open(f"{d}/refused", "w") as f:
+        f.write("".join(f"{r}\n" for r in sorted(v.refused)))
     if v.refused:
         print(f"land: #{pr['number']} refused by {', '.join(sorted(v.refused))}")
         return 1
@@ -1087,6 +1094,9 @@ def main(cmd, *args):
             print(rid)
     elif cmd == "push-remedy":
         print(push_remedy(load(args[0])["login"]))
+    elif cmd == "owners":
+        with open(args[0]) as f:
+            print("\n".join(sorted(codeowners(f.read())[0] or ())))
     elif cmd == "derive":
         derive(*args)
     elif cmd == "judge":
@@ -1345,6 +1355,44 @@ if [ "$dry" -eq 1 ]; then
 	[ "$ci" -eq 0 ] || [ "$headrepo" != "$slug" ] || echo "land: and then delete $headref"
 	exit "$refused"
 fi
+if [ "$ci" -eq 1 ]; then # git pushes as the token's App; the checkout persists no other
+	GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+	export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader GIT_CONFIG_VALUE_0
+fi
+# offer: a relocation the owner has not read, when nothing else refused. The reviewed head
+# is never touched: a changed pair publishes the relocation as <head>-relocated with the
+# range-diff of the commits it changed, a conflict is named; the code owners are asked to
+# review again. Returns 1, offering nothing, when another rule refused.
+offer() {
+	! grep -qvxE 'relocate/(clean|ids)|land/ancestor' "$tmp/refused" || return 1
+	local old new cand="$headref-relocated"
+	case "$headref" in *stack/*/*) cand="${headref%/*}-relocated/${headref##*/}" ;; esac # a part stays last
+	if [ -n "$y" ]; then
+		git push "$dest" "+$y:refs/heads/$cand" >/dev/null 2>&1 || die "cannot publish the relocation as $cand"
+		printf 'The relocation of %s onto main changes a commit that was reviewed. It is %s (%s);\n' \
+			"$head" "$cand" "$y"
+		printf 'the range-diff of each changed commit:\n\n```\n'
+		while read -r old; do
+			new="$(sed -n "s/^pick $old //p" "$tmp/map")"
+			git range-diff --no-color "$old^!" "$new^!"
+		done <"$tmp/odd"
+		printf '```\n'
+	else
+		printf 'The relocation of %s onto main conflicts: %s.\n' "$head" "$(sed -n 's/^conflict //p' "$tmp/map")"
+	fi >"$tmp/body"
+	echo "Nothing landed. To land it, the author makes the relocation the head (a push under" \
+		"FPL_FORWARD_ONLY_OVERRIDE=\"conflict: ...\") and a code owner approves that head." >>"$tmp/body"
+	api -X POST "repos/$slug/issues/$n/comments" -F "body=@$tmp/body" >/dev/null ||
+		die "cannot post the relocation of #$n"
+	for old in $(py owners "$tmp/codeowners"); do
+		api -X POST "repos/$slug/pulls/$n/requested_reviewers" -f "reviewers[]=$old" >/dev/null ||
+			die "cannot ask @$old to review #$n again"
+	done
+	cat "$tmp/body"
+}
+if [ "$refused" -eq 1 ] && [ -s "$tmp/map" ] && offer; then
+	die "relocate: #$n did not land; its relocation is put to the code owners"
+fi
 [ "$refused" -eq 0 ] || exit 1
 
 if [ "$ci" -eq 0 ]; then
@@ -1394,10 +1442,6 @@ fi
 
 destination
 echo "land: $push"
-if [ "$ci" -eq 1 ]; then # git pushes as the token's App; the checkout persists no other
-	GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
-	export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader GIT_CONFIG_VALUE_0
-fi
 # relocate/lease: the head is still the one reviewed, and a branch of this repository.
 if [ -n "$y" ]; then
 	[ "$headrepo" = "$slug" ] && [ "$(git ls-remote "$dest" "refs/heads/$headref" | cut -f1)" = "$head" ] ||
