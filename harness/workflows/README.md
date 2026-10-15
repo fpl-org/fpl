@@ -18,7 +18,13 @@ cp harness/workflows/brake.yml .github/workflows/brake.yml
 ```
 
 Give the environment `brake` no required reviewers and no wait timer: a protection rule
-holds every run until someone approves it. First run: by hand, with dry run on.
+holds every run until someone approves it.
+
+The push that lands the copy on main is itself a run, and a live one: only a run started
+by hand can be a dry run. If the ruleset differs from what the count asks, that first run
+writes it. To see a dry run first, land the copy with its `on:` cut down to
+`workflow_dispatch`, run it by hand with dry run on, read the summary, then add the other
+triggers back.
 
 - Proven: the App flips `enforcement` with a PUT of that field alone, in 13 s median and
   21 s at most from the event.
