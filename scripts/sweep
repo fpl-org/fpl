@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
-# scripts/sweep — an inventory of the worktrees and local branches, and what it proposes for
-# each: keep, review, or archive what is finished. It reads; it changes nothing.
+# scripts/sweep — an inventory of the worktrees and local branches, and the one clean-up it
+# proposes: remove what is finished, after saving what it held.
 #
-#   scripts/sweep [--dry-run]            the table (the default, and the only mode)
+#   scripts/sweep [--dry-run]            the table, nothing changed (the default)
+#   scripts/sweep --apply [name ...]     remove the rows proposed "archive" (all, or those named)
 #   scripts/sweep --self-test            scripts/sweep-self-test
 #
 # One tab-separated row per linked worktree (the root checkout is where this runs, not a row)
@@ -20,7 +21,7 @@
 #           ones; '-' for a branch row
 #   pr      OPEN, MERGED or CLOSED for the branch (one read-only forge call for all rows, with
 #           the machine account's token; OPEN beats MERGED beats CLOSED), '-' for none, '?'
-#           when the forge was not asked or did not answer
+#           when the forge was not asked or did not answer in full
 #   owner   agent: agent/claude/*, and detached worktrees under worktrees/; Cursor: agent/cursor/*,
 #           or under a .cursor directory; app-session: under .claude/worktrees, or claude/*; PSJ:
 #           the rest, agent/codex/* (he runs it) and a detached worktree elsewhere too
@@ -34,7 +35,26 @@
 #                      the worktree holds an untracked repository (a patch cannot keep one)
 #   note    the reason, in words
 #
-# The checkout sweep runs in is keep, whatever the rules say: it is never a candidate.
+# --apply is the only way anything changes, and only with SWEEP_OWNER_YES=1: the owner's yes.
+# It runs only in the main checkout, whose .gitignore keeps the archive out of a commit.
+# It acts on the archive rows of the table it prints, never on the do-not-touch list (checked
+# again at the moment of removal), and not at all without the forge's full answer (pr is ?),
+# since an open pull request is what keeps a branch. Each row goes in the order that loses
+# nothing:
+#   1. the dirty files, untracked ones too, as harness/sweep-archive/<name>.patch (git-ignored,
+#      private: mode 600; refused when it exists), made in a scratch index so the worktree's own
+#      stays as it was, and with git diff options that no config can turn into something git
+#      apply refuses; `git apply <name>.patch` on the tag gives the files back
+#   2. a tag on the head: archive/<branch>, or archive/worktree/<name> when detached; when that
+#      name is taken by another commit or no valid tag, archive/sha/<sha>
+#   3. git worktree remove (--force only when a patch was made and the files still match it),
+#      then the branch is deleted only if it is still at the head tagged: the tag keeps the
+#      commits reachable
+# A head that moved since the table was made is skipped; what is dirty is read again at the
+# moment of removal, and a worktree that changed after its patch was made is left. A branch
+# that became a symbolic ref by the moment of deletion stays. The one running sweep is never a
+# candidate. Ignored files (.venv) go with the directory. A name picks a row by its name, its
+# branch or its last path component; a name that picks no archive row is said and skipped.
 #
 # The base is the local `main` (SWEEP_BASE): a lagging main only makes rows look less merged,
 # the safe direction. Nothing is fetched or pruned. SWEEP_FORGE=0 skips the forge; SWEEP_REPO
@@ -51,11 +71,27 @@ die() {
 	exit 1
 }
 
+mode=dry names=""
 case "${1:-}" in
-"" | --dry-run) [ $# -le 1 ] || die "usage: scripts/sweep [--dry-run]" ;;
+"" | --dry-run) [ $# -le 1 ] || die "usage: scripts/sweep [--dry-run | --apply [name ...]]" ;;
+--apply)
+	mode=apply
+	shift
+	for n in "$@"; do
+		[ -n "$n" ] || die "an empty name selects nothing: give names, or none for all"
+		names="${names:+$names
+}$n"
+	done
+	;;
 --self-test) exec "$here/sweep-self-test" ;;
-*) die "usage: scripts/sweep [--dry-run]" ;;
+*) die "usage: scripts/sweep [--dry-run | --apply [name ...]]" ;;
 esac
+
+if [ "$mode" = apply ] && [ "${SWEEP_OWNER_YES:-}" != 1 ]; then
+	printf 'sweep: --apply removes worktrees and branches; it runs only when the owner says yes.\n' >&2
+	printf 'sweep: nothing was changed. Look at the table (scripts/sweep), then SWEEP_OWNER_YES=1 scripts/sweep --apply\n' >&2
+	exit 2
+fi
 
 # A read changes nothing: status must not refresh an index.
 export GIT_OPTIONAL_LOCKS=0
@@ -69,6 +105,13 @@ base_ref="$(git rev-parse --symbolic-full-name "$base" 2>/dev/null || true)"
 root="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
 self="$(git rev-parse --show-toplevel)"
 [ -d "$root" ] || die "cannot find the root checkout"
+# [apply/root] --apply writes the archive into the main checkout, whose .gitignore is what keeps
+# it out of a commit; from a linked worktree on newer code that checkout may not name it yet.
+if [ "$mode" = apply ] &&
+	[ "$(git rev-parse --absolute-git-dir)" != "$(git rev-parse --path-format=absolute --git-common-dir)" ]; then
+	die "[apply/root] --apply runs only in the main checkout ($root), not in a linked worktree;" \
+		"nothing was changed. Remedy: run scripts/sweep --apply from the main checkout"
+fi
 tab="$(printf '\t')"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/sweep.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
@@ -112,8 +155,9 @@ if [ "${SWEEP_FORGE:-1}" != 0 ] && command -v gh >/dev/null; then
 	repo="${SWEEP_REPO:-$(git remote get-url github 2>/dev/null | sed 's#.*github\.com[:/]##; s#\.git$##' || true)}"
 	tok="$(gh auth token --hostname github.com --user "${SWEEP_GH_USER:-psjg-claude}" 2>/dev/null || true)"
 	if [ -n "$repo" ] && [ -n "$tok" ] &&
-		GH_TOKEN="$tok" gh pr list -R "github.com/$repo" --state all --limit 1000 \
-			--json headRefName,state --jq '.[] | [.headRefName, .state] | @tsv' >"$tmp/prs.raw" 2>/dev/null; then
+		GH_TOKEN="$tok" gh pr list -R "github.com/$repo" --state all --limit 10000 \
+			--json headRefName,state --jq '.[] | [.headRefName, .state] | @tsv' >"$tmp/prs.raw" 2>/dev/null &&
+		[ "$(wc -l <"$tmp/prs.raw")" -lt 10000 ]; then # a full page may have been cut short
 		# OPEN beats MERGED beats CLOSED when a branch had several.
 		awk -F'\t' 'BEGIN { r["OPEN"] = 3; r["MERGED"] = 2; r["CLOSED"] = 1 }
 			{ if (r[$2] > r[$1 SUBSEP "s"]) { r[$1 SUBSEP "s"] = r[$2]; s[$1] = $2 } }
@@ -289,7 +333,144 @@ fi
 	printf '# scope: %s worktrees (%s under worktrees/, %s under .claude/worktrees/, %s elsewhere), the root checkout not counted; %s of them dirty (untracked files count)\n' \
 		"$nwt" "$nunder" "$nclaude" "$((nwt - nunder - nclaude))" "$ndirty"
 	printf '# scope: %s branches without a worktree; %s stashes (never touched); base %s; forge %s\n' \
-		"$nbr" "$(git stash list | wc -l | tr -d ' ')" "$base" "$([ "$forge" = yes ] && echo asked || echo 'not asked: pr is ?')"
+		"$nbr" "$(git stash list | wc -l | tr -d ' ')" "$base" "$([ "$forge" = yes ] && echo asked || echo 'no full answer: pr is ?')"
 	printf '# actions: keep %s, review %s, archive %s\n' "$(count keep)" "$(count review)" "$(count archive)"
 }
-printf '# dry run: nothing was changed\n'
+[ "$mode" = apply ] || { printf '# dry run: nothing was changed\n'; exit 0; }
+
+# --- apply ---------------------------------------------------------------------------------
+# An open pull request keeps its branch; a table that cannot show one proposes blind.
+[ "$forge" = yes ] || die "--apply needs the forge's full answer (pr is ?); nothing was changed"
+archive_dir="$root/harness/sweep-archive"
+printf '%s\n' "$names" >"$tmp/names"
+applied=0 failed=0 skipped=0
+say() { printf 'apply\t%s\t%s\n' "$1" "$2"; }
+# Each name picks the archive row it is the name or branch of, else the one whose last path
+# component it is; the rows picked go to picked. A name that picks no row is said: a typo must
+# not read as a clean run. A name that picks two is said and picks neither: a short name names
+# one row, and a removal is no place to guess which.
+: >"$tmp/picked"
+nl='
+'
+while IFS= read -r n; do
+	[ -n "$n" ] || continue
+	m="$(awk -F'\t' -v n="$n" '$9 != "archive" { next } $2 == n || $3 == n { print $2; f = 1 }
+		{ k = $2; sub(/.*\//, "", k); if (k == n) s = s $2 "\n" } END { if (!f) printf "%s", s }' "$rows")"
+	case "$m" in
+	"") say "$n" "skipped: no archive row by that name"; skipped=$((skipped + 1)) ;;
+	*"$nl"*)
+		say "$n" "skipped: picks $(printf '%s\n' "$m" | paste -sd ' ' -); give the full name"
+		skipped=$((skipped + 1))
+		;;
+	*) printf '%s\n' "$m" >>"$tmp/picked" ;;
+	esac
+done <"$tmp/names"
+tip() { git rev-parse -q --verify "refs/heads/$1" 2>/dev/null || true; }
+# pdiff <worktree> <args>: git diff as git apply reads it back, whatever the config says: no
+# colour (color.diff=always colours a redirect too), no external diff or textconv, the a/ and b/
+# prefixes (diff.noprefix), the whole tree (diff.relative), a blank context line kept whole.
+pdiff() {
+	git_in "$1" -c diff.suppressBlankEmpty=false diff --no-color --no-ext-diff --no-textconv \
+		--no-relative --src-prefix=a/ --dst-prefix=b/ "${@:2}"
+}
+# mktag <name>: tag the row's head <name>, or find it tagged so already.
+mktag() { git tag -- "$1" "$sha" 2>/dev/null || [ "$(git rev-parse -q --verify "refs/tags/$1^{commit}")" = "$sha" ]; }
+# snap <worktree> <file>: its dirty files, untracked ones too, as a patch over HEAD (empty when
+# clean), made in a scratch index so the worktree's own stays as it was.
+snap() {
+	local idx="$tmp/snap-index"
+	GIT_INDEX_FILE="$idx" git_in "$1" read-tree HEAD &&
+		GIT_INDEX_FILE="$idx" git_in "$1" add -A &&
+		GIT_INDEX_FILE="$idx" pdiff "$1" --cached --binary HEAD >"$2"
+}
+while IFS="$tab" read -r kind name b merged new dirty pr owner action note sha path; do
+	[ "$action" = archive ] || continue
+	if [ -n "$names" ]; then
+		grep -Fxq -- "$name" "$tmp/picked" || continue
+	fi
+	# The rule above is not trusted with the list that matters.
+	if protected "$([ "$kind" = wt ] && echo "$name")" "$([ "$b" = - ] || echo "$b")"; then
+		say "$name" "refused: on the do-not-touch list"
+		skipped=$((skipped + 1))
+		continue
+	fi
+	if [ "$kind" = wt ]; then
+		now="$(git_in "$path" rev-parse HEAD)" || { say "$name" "FAILED: cannot read its head"; failed=$((failed + 1)); continue; }
+	else
+		now="$(tip "$b")"
+	fi
+	if [ "$now" != "$sha" ]; then
+		say "$name" "skipped: its head moved since the table"
+		skipped=$((skipped + 1))
+		continue
+	fi
+	if [ "$b" != - ] && git symbolic-ref -q "refs/heads/$b" >/dev/null; then
+		say "$name" "FAILED: $b is a symbolic ref now; deleting it would delete its target; left as it is"
+		failed=$((failed + 1))
+		continue
+	fi
+	if [ "$b" != - ]; then tag="archive/$b"; else tag="archive/worktree/${name##*/}"; fi
+	# What is dirty is read now, not from the table: another session may have touched the worktree.
+	patch=""
+	if [ "$kind" = wt ]; then
+		if ! snap "$path" "$tmp/snap1"; then
+			say "$name" "FAILED: could not read the dirty files; left as it is"
+			failed=$((failed + 1))
+			continue
+		fi
+		if [ -s "$tmp/snap1" ]; then
+			patch="$archive_dir/${name##*/}.patch"
+			if [ -e "$patch" ]; then
+				say "$name" "FAILED: $patch exists; move it away"
+				failed=$((failed + 1))
+				continue
+			fi
+			# private: a patch holds whatever the worktree did, a credential too. Created, never
+			# overwritten (noclobber opens it O_EXCL): another run may have written it since the test.
+			if ! (umask 077 && mkdir -p "$archive_dir" && set -C && cat "$tmp/snap1" >"$patch") 2>/dev/null; then
+				say "$name" "FAILED: could not create $patch; left as it is"
+				failed=$((failed + 1))
+				continue
+			fi
+		fi
+	fi
+	# The name may be another commit's, no valid ref (a space), or clash with a tag above or below
+	# it (archive/x and archive/x/tip cannot both be): then the commit's own id names the tag.
+	if ! mktag "$tag"; then
+		tag="archive/sha/$sha"
+		mktag "$tag" || { say "$name" "FAILED: could not tag it; left as it is"; failed=$((failed + 1)); continue; }
+	fi
+	# Clean, it goes without --force, which refuses a worktree touched since; dirty, only if the
+	# files are still the ones in the patch.
+	if [ "$kind" = wt ]; then
+		if [ -n "$patch" ] && ! { snap "$path" "$tmp/snap2" && cmp -s "$tmp/snap1" "$tmp/snap2"; }; then
+			say "$name" "FAILED: it changed while being saved; tag $tag and $patch stay"
+			failed=$((failed + 1))
+			continue
+		fi
+		# A detached head that advanced since the table is reachable from nothing once the worktree
+		# goes, and the tag is on the old one; the clean-worktree check of remove does not see it.
+		if [ "$(git_in "$path" rev-parse HEAD 2>/dev/null)" != "$sha" ]; then
+			say "$name" "FAILED: its head moved while being saved; tag $tag stays"
+			failed=$((failed + 1))
+			continue
+		fi
+		if ! git worktree remove ${patch:+--force} -- "$path" 2>/dev/null; then
+			say "$name" "FAILED: worktree remove; tag $tag stays"
+			failed=$((failed + 1))
+			continue
+		fi
+	fi
+	# update-ref -d with the old value is a compare-and-swap: a branch that moved since the tag
+	# was made stays, with its new commits. --no-deref: a branch that became a symbolic ref since
+	# the check above, to a branch at the same commit, passes the swap, and would delete its target.
+	if [ "$b" != - ] && ! git update-ref --no-deref -d "refs/heads/$b" "$sha" 2>/dev/null; then
+		say "$name" "FAILED: branch delete; tag $tag stays"
+		failed=$((failed + 1))
+		continue
+	fi
+	say "$name" "removed; tag $tag${patch:+; dirty files in ${patch#"$root"/}}"
+	applied=$((applied + 1))
+done <"$rows"
+printf '# applied %s, skipped %s, failed %s\n' "$applied" "$skipped" "$failed"
+[ "$failed" -eq 0 ]

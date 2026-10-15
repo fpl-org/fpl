@@ -69,8 +69,9 @@ git worktree prune
 is a thin wrapper over it.
 
 `scripts/sweep` tables every worktree and unattached branch (merged, commits `main` lacks by
-patch, dirty files, pull request, owner) with a proposal: keep, review or archive. It changes
-nothing: a person reads the table and decides.
+patch, dirty files, pull request, owner) with a proposal: keep, review or archive. A dry run is
+the default; `SWEEP_OWNER_YES=1 scripts/sweep --apply`, run from the main checkout, tags what it
+removes and saves dirty files under `harness/sweep-archive/` there.
 
 ## The two sides
 
