@@ -187,7 +187,7 @@ audit() { # audit <file>: print each broken promise; the exit status is whether 
 	grep -vE '^[[:space:]]*#' "$1" >"$body"
 	if grep -E 'uses:' "$body" | grep -vE '@[0-9a-f]{40}([[:space:]]|$)'; then bad=1; fi
 	if grep -E 'secrets[.]' "$body"; then bad=1; fi
-	for needle in 'set -eu' 'actions: write' 'pull_request_review:' 'land.yml' 'synchronize' 'reopened' 'edited' 'persist-credentials: false' 'head.repo.full_name' "needs.check.result != 'cancelled'"; do
+	for needle in 'set -eu' 'actions: write' 'pull_request_review:' 'land.yml' 'synchronize' 'reopened' 'edited' 'persist-credentials: false' 'head.repo.full_name' "needs.lemmas.result != 'cancelled'"; do
 		grep -qF "$needle" "$body" || { echo "lacks: $needle" && bad=1; }
 	done
 	awk '
@@ -197,9 +197,19 @@ audit() { # audit <file>: print each broken promise; the exit status is whether 
 		END { for (j in jobs) if (!timed[j]) print "no timeout-minutes: " j }' "$body" | { ! grep .; } || bad=1
 	# A skipped job reports success: the check job runs on every pull_request event, and only
 	# the comment job tells a base edit from a text edit.
-	if job check <"$body" | cond | grep -E 'action|changes'; then bad=1; fi
+	if job lemmas <"$body" | cond | grep -E 'action|changes'; then bad=1; fi
 	job comment <"$body" | cond | grep -qF 'changes.base != null' || { echo "comment: posts on text edits" && bad=1; }
+	# A required check is named by its job, across workflows: no id here may be another's.
+	local other
+	for other in "$root"/.github/workflows/*.yml; do
+		[ -f "$other" ] && ! [ "$other" -ef "$1" ] || continue
+		ids <"$other"
+	done | sort -u >"$tmp/audit.others"
+	ids <"$body" | sort -u | comm -12 - "$tmp/audit.others" | sed 's/^/shared job id: /' | { ! grep .; } || bad=1
 	return "$bad"
+}
+ids() { # ids: the job ids of the workflow on stdin, one per line
+	awk '/^jobs:/ { injobs = 1; next } injobs && /^  [a-z][a-z0-9_-]*:/ { sub(":.*", "", $1); print $1 }'
 }
 job() { # job <id>: the lines of one job of the workflow on stdin
 	awk -v j="$1:" '/^jobs:/ { injobs = 1; next } injobs && /^  [a-z][a-z0-9_-]*:/ { cur = $1 } injobs && cur == j'
@@ -213,10 +223,13 @@ for broken in 's/timeout-minutes/timeout-hours/' 's/\(uses: [^@]*\)@[0-9a-f]\{40
 	's/github[.]token/secrets.TOKEN/' 's/actions: write/actions: read/' \
 	's/persist-credentials: false/persist-credentials: true/' 's/set -eu$/set -u/' \
 	"s/^    if: github.event_name == 'pull_request'\$/&  \&\& github.event.changes.base != null/" \
-	"/github.event.action != 'edited' || github.event.changes.base != null/d"; do
+	"/github.event.action != 'edited' || github.event.changes.base != null/d" 's/^  lemmas:/  check:/'; do
 	sed -e "$broken" "$yml" >"$tmp/broken.yml"
 	check "the audit refuses: $broken" refuses audit "$tmp/broken.yml" >/dev/null
 done
+sed -e 's/^  lemmas:/  check:/' -e 's/needs[.]lemmas/needs.check/' -e 's/needs: lemmas/needs: check/' "$yml" >"$tmp/broken.yml"
+check "the audit names a job id noslop.yml also has" grep -qx 'shared job id: check' \
+	<(audit "$tmp/broken.yml" || :)
 
 echo "present-check self-test: $fails of $total checks failed (bash $BASH_VERSION)"
 if [ -z "${PRESENT_CHECK_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ] && ! [ /bin/bash -ef "$BASH" ]; then

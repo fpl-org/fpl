@@ -9,7 +9,7 @@
 # a relay dispatches land.yml on main with the pull request number; until that workflow
 # arrives (a later unit) the relay fails loudly and changes nothing.
 #
-# Three jobs, split by what they may do: `check` runs the pull request's code and only reads;
+# Three jobs, split by what they may do: `lemmas` runs the pull request's code and only reads;
 # `comment` holds the one write, to the conversation, and runs none of that code (a fork's
 # token cannot write, so for a fork the text goes to the run's summary page instead); `relay` holds
 # actions: write and nothing else. The judge is main's, as in commit-lint.yml: present-check
@@ -32,7 +32,8 @@ permissions:
   contents: read
 
 jobs:
-  check:
+  # Not `check`: noslop.yml has a job of that name, and a required check is named by its job.
+  lemmas:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -113,10 +114,10 @@ jobs:
   comment:
     # A newer push cancels this run's check (the concurrency group above); the newer run
     # comments, and a cancelled check leaves nothing to post.
-    needs: check
+    needs: lemmas
     if: >-
       always() && github.event_name == 'pull_request'
-      && needs.check.result != 'skipped' && needs.check.result != 'cancelled'
+      && needs.lemmas.result != 'skipped' && needs.lemmas.result != 'cancelled'
       && (github.event.action != 'edited' || github.event.changes.base != null)
       && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
