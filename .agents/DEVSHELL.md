@@ -173,6 +173,33 @@ on every run. Where the checkout has no `.venv`, Docker creates the empty mount 
 on a Mac it is yours; under a rootful Linux daemon it is presumably root's (not measured),
 and `rmdir .venv` clears it before a host-side `make`.
 
+**Measured (2026-10-14 unless dated, `aarch64-linux`).**
+
+- **Where it was built.** In a `nixos/nix` container (Nix 2.35.3, Linux aarch64) under
+  OrbStack on the maintainer's Mac, with `--option sandbox false` and the flake copied in as
+  a plain directory. `nix build .#packages.aarch64-linux.oci` succeeded there. The Gentoo
+  box was tried first as a remote builder and did not answer: SSH to it timed out on its LAN
+  and Tailscale addresses. `x86_64-linux` evaluates (`scripts/image-self-test`) and has not
+  been built: nothing here builds for it.
+- **Build time.** 1 min 18 s for the first image, with the `nixpkgs` substitutes fetched and
+  no compiler in it; 6 min 37 s once the compiler was added; 5 min 15 s and 3 min 38 s for
+  the two rebuilds after a change to the loader links and to `HOME`. Most of that is
+  `buildLayeredImage` writing the compressed tarball (100 layers), not compiling anything.
+- **Size.** The tarball is 502 MiB (526,569,252 bytes); the root filesystem is 1.6 GB by
+  `du`; `docker images` reports 3.3 GB. Largest paths: `pyright` 262 MB, `gcc` 250 MB,
+  `python` 137 MB, `nodejs-slim` 85 MB, `uv` 62 MB, `perl` 61 MB. `docker load` took 1 min
+  9 s (2 min 46 s on the first load).
+- **`make quick` inside it.** `docker load`, then `make quick` in the container as the
+  caller on a clean copy of the tree (no `.venv`; that run had no tmpfs, which on such a
+  tree changes only where the venv lands): `uv sync` fetched and built the pinned tools,
+  `ruff check` and `ruff format --check` passed, `pytest` passed 856 tests in 2 min 32 s,
+  2 min 47 s for the whole run. An earlier run of the same took 5 min 34 s. As root the
+  same run stopped on the one test named above, after 784 passed.
+- **With the host's `.venv` in the checkout** (2026-10-15). `make image-quick` on a copy of
+  the tree holding a `.venv` synced on the Mac: `pytest` passed 856 tests in 52 s, 1 min 19 s
+  for the whole run, and the host's `.venv` was left as it was (its `ruff` still a Mach-O
+  binary). The same run without the tmpfs stops at once, at `/work/.venv/bin/python`.
+
 ## Known trap: interactive `nix develop` on a Mac
 
 direnv (above) is the recommended route into the shell — the trap below is what happens
