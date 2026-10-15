@@ -62,7 +62,8 @@ mkdir -p "$HOME" "$GH_CONFIG_DIR"
 check="$root/scripts/ruleset-check" files="$root/harness/rulesets" work="$tmp/files" state="$tmp/state.json"
 
 # The forge: the list and each ruleset by id from state.json (name -> ruleset), the file `fail`
-# beside it makes every answer a 500, every request goes to the log.
+# beside it makes every answer a 500, the file `short` every body shorter than its declared
+# Content-Length, every request goes to the log.
 cat >"$tmp/forge.py" <<'PY'
 import http.server, json, os, sys
 state, log = sys.argv[1:]
@@ -80,7 +81,8 @@ class H(http.server.BaseHTTPRequestHandler):
             return self.send_error(404)
         data = json.dumps(body).encode()
         self.send_response(200)
-        self.send_header("Content-Length", str(len(data)))
+        short = 100 if os.path.exists(state + ".short") else 0
+        self.send_header("Content-Length", str(len(data) + short))
         self.end_headers()
         self.wfile.write(data)
 
@@ -143,7 +145,7 @@ fail() { fails=$((fails + 1)); echo "self-test: $*" >&2; }
 fx() { python3 -I "$tmp/fx.py" "$state" "$1"; }
 # build [visible]: the files copied to $work, and a forge that matches them
 build() {
-	rm -rf "$work" "$state.fail"
+	rm -rf "$work" "$state.fail" "$state.short"
 	mkdir -p "$work"
 	cp "$files"/*.json "$work/"
 	WORK="$work" fx "build(os.environ['WORK'], ${1:+True})"
@@ -214,6 +216,9 @@ build
 touch "$state.fail"
 run 2 "a forge that answers 500" ""
 rm -f "$state.fail"
+touch "$state.short"
+run 2 "a forge that cuts a body short" ""
+rm -f "$state.short"
 echo '{not json' >"$work/broken.json"
 run 2 "a file that is not JSON" ""
 echo '[1]' >"$work/broken.json"
