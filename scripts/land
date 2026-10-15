@@ -87,8 +87,14 @@
 # There land/approved wants a code owner's approval of the head standing, land/author that
 # it is not the author's, and land/bypass that each ruleset on main lists the App
 # (FPL_LAND_APP_ID, default 5318175, fpl-lander) with bypass mode always, or, where the token
-# cannot see that list, that the ruleset lets the token past always. So far --ci only
-# judges: it wants --dry-run, and lands nothing.
+# cannot see that list, that the ruleset lets the token past always, and land/autodelete that
+# the repository does not delete a branch when its pull request merges: that would close the
+# pull requests stacked on it before they are retargeted. Before the push it
+# writes the fpl/series check run on the head, when main holds scripts/series, with the
+# digest `scripts/series digest <main>..<head>` prints; the push carries the token. Once
+# GitHub shows the merge it retargets to main each pull request based on the landed branch,
+# and only then deletes the branch, if it still is at the head that landed: deleting it
+# first closes them.
 #
 # Then it prints the conversation, opens the diff in the browser and stops for a keypress.
 # After Enter it approves the head when it said it would, checks everything again, and pushes:
@@ -118,7 +124,8 @@
 # approvals and the rules last keeps their window to the time it takes to judge. After the
 # push it reads main (LOUD unless it is the head), the pull request (LOUD unless GitHub shows
 # it merged), the approvals, the rules and the checks on the head again: LOUD when no code
-# owner's approval of the head stands, changes are requested, the rules differ in any way
+# owner's approval of the head stands (with --ci, none but the author's, which land/author
+# did not count before the push either), changes are requested, the rules differ in any way
 # from the ones judged, or a check they require did not succeed on the head. The checks are
 # judged on the check runs and commit statuses there were when they were judged before the
 # push, those the forge numbered at most the highest it had then: the push to main starts
@@ -337,6 +344,16 @@ def standing(d):
     return last
 
 
+def counted(last, owners, head, author, ci):
+    """The code owners whose standing approval of the head counts, and those left out:
+    with --ci the author's is left out (land/author), before the push and after it alike,
+    so the approval the push relied on is the one held against the forge after it."""
+    at_head = [w for w, r in last.items() if w.lower() in owners
+               and r["state"] == "APPROVED" and r.get("commit_id") == head]
+    mine = [w for w in at_head if ci and w.lower() == author.lower()]
+    return [w for w in at_head if w not in mine], mine
+
+
 def judge_reviews(v, d, pr, me, repo, ci):
     """land/codeowners, land/approved and land/changes-requested, and with --ci land/author:
     the approval that counts is not the author's. Returns whether the approval is yours to
@@ -364,12 +381,10 @@ def judge_reviews(v, d, pr, me, repo, ci):
     v.ok("land/codeowners", "code owners: " + ", ".join(f"@{o}" for o in sorted(owners)))
     approved = [(w, r) for w, r in last.items()
                 if w.lower() in owners and r["state"] == "APPROVED"]
-    at_head = [w for w, r in approved if r.get("commit_id") == head]
     older = ", ".join(f"@{w} on {str(r.get('commit_id'))[:12]}" for w, r in approved)
     author = pr["user"]["login"]
+    at_head, mine = counted(last, owners, head, author, ci)
     if ci:
-        mine = [w for w in at_head if w.lower() == author.lower()]
-        at_head = [w for w in at_head if w not in mine]
         if mine and not at_head:
             v.no("land/author", f"the only approval of {h} is by @{author}, its author",
                  f"a code owner other than the author approves {h} on the forge")
@@ -814,6 +829,19 @@ def judge_range(v, pr, main, head, bodies):
         v.ok("land/card", "the body holds the card")
 
 
+def judge_autodelete(v, d):
+    """land/autodelete: the repository setting "Automatically delete head branches" is off;
+    anything but a plain false (unset, unreadable) refuses."""
+    on = load(f"{d}/repo.json").get("delete_branch_on_merge")
+    if on is False:
+        v.ok("land/autodelete", "GitHub deletes no branch when its pull request merges")
+    else:
+        v.no("land/autodelete", f"the repository's delete_branch_on_merge is {on}: GitHub"
+             " would delete the landed branch before its children are retargeted",
+             "the owner turns off Settings > General > Pull Requests > Automatically delete"
+             " head branches")
+
+
 def judge(d, repo, fetched, main, ancestor, merges, ci):  # noqa: PLR0913, PLR0917
     """Print one line per check and return 1 when any refuses, 3 when none does but the
     approval is yours to give in this run, else 0."""
@@ -823,6 +851,8 @@ def judge(d, repo, fetched, main, ancestor, merges, ci):  # noqa: PLR0913, PLR09
     v = Verdict()
     ci = ci == "1"
     judge_pull(v, pr, me, fetched, repo, ci)
+    if ci:
+        judge_autodelete(v, d)
     approve, bodies = judge_reviews(v, d, pr, me, repo, ci)
     judge_threads(v, d)
     fault = rules_fault(rules)
@@ -881,9 +911,10 @@ def changed_rules(judged, now):
     return lines or ["a rule is listed a different number of times"]
 
 
-def still(d, repo, head, n):
+def still(d, repo, head, n, ci):
     """After the push, on what the forge says then: a code owner's approval of the head
-    still stands, nobody's standing verdict requests changes, the rules on main are the
+    still stands, with --ci one not the author's (counted as land/author counts it before
+    the push), nobody's standing verdict requests changes, the rules on main are the
     ones judged before the push, every one of them is one judged here, and every check
     they require succeeded on the head, judged as land/checks judges it on the runs and
     statuses that were there when the checks were judged (ceiling): the push to main
@@ -894,9 +925,11 @@ def still(d, repo, head, n):
     last = standing(d)
     with open(f"{d}/codeowners") as f:
         owners = codeowners(f.read())[0] or set()
-    if not any(w.lower() in owners and r["state"] == "APPROVED" and r.get("commit_id") == head
-               for w, r in last.items()):
-        loud.append((f"no code owner's approval of {head[:12]} stands any more",
+    author = load(f"{d}/pr.json")["user"]["login"]
+    at_head, mine = counted(last, owners, head, author, ci == "1")
+    if not at_head:
+        but = f" (the author @{mine[0]}'s does not count)" if mine else ""
+        loud.append((f"no code owner's approval of {head[:12]} stands any more{but}",
                      f"ask the code owner why; if #{n} should not have landed, revert it"
                      " in a pull request"))
     asking = sorted(w for w, r in last.items() if r["state"] == "CHANGES_REQUESTED")
@@ -986,8 +1019,6 @@ done
 if [ "$ci" -eq 1 ]; then
 	[ -n "${GH_TOKEN:-}" ] || die "land/ci: --ci acts as the token in GH_TOKEN, and none is set;" \
 		"remedy: mint the fpl-lander App's token into GH_TOKEN"
-	[ "$dry" -eq 1 ] || die "land/ci: --ci only judges so far, and lands nothing;" \
-		"remedy: run it with --dry-run"
 else
 	[ "$dry" -eq 1 ] || { [ -t 0 ] && [ -t 1 ]; } ||
 		die "needs a terminal: landing is a person's decision (--dry-run and --ci need none)"
@@ -1075,6 +1106,7 @@ gather() {
 			die "land/ci: GH_TOKEN is a person's, the forge shows a user for it;" \
 				"remedy: --ci acts as the fpl-lander App's installation token"
 		fi
+		api "repos/$slug" >"$tmp/repo.json" || die "cannot read the repository $slug"
 		printf '{"login": "%s"}\n' "${FPL_LAND_APP:-fpl-lander[bot]}" >"$tmp/me.json"
 	else
 		api user >"$tmp/me.json" || die "cannot read who you are"
@@ -1162,10 +1194,12 @@ if [ "$dry" -eq 1 ]; then
 	echo "land: would run: $push"
 	kids="$(children)"
 	[ -z "$kids" ] || printf 'land: then retarget what is stacked on %s:\n%s\n' "$headref" "$kids"
+	[ "$ci" -eq 0 ] || [ "$headrepo" != "$slug" ] || echo "land: and then delete $headref"
 	exit "$refused"
 fi
 [ "$refused" -eq 0 ] || exit 1
 
+if [ "$ci" -eq 0 ]; then
 GH_PAGER="cat" gh pr view "$n" --repo "github.com/$slug" --comments
 if command -v open >/dev/null; then
 	open "$html/files"
@@ -1191,14 +1225,31 @@ judge
 [ "$refused" -eq 0 ] || die "refused on the second look; nothing landed"
 [ "$approve" -eq 0 ] || die "the forge does not show the approval of $head; nothing landed"
 [ "$head" = "$seen" ] || die "#$n moved to $head since you looked at $seen; nothing landed"
+fi
 # The rules the push relies on, to hold the rules on main against after it, and the checks
 # on the head as judged, whose runs and statuses alone are judged again after it.
 cp "$tmp/rules.json" "$tmp/rules.judged.json"
 cp "$tmp/checks.json" "$tmp/checks.judged.json"
 cp "$tmp/statuses.json" "$tmp/statuses.judged.json"
 
+# fpl/series, with --ci: the receipt, written before the push so nothing lands without one.
+# Its digest is what main's scripts/series prints for `digest <main>..<head>`, one line:
+# the contract between the two scripts. Without scripts/series on main there is none.
+if [ "$ci" -eq 1 ] && git cat-file -e "$main:scripts/series" 2>/dev/null; then
+	git show "$main:scripts/series" >"$tmp/series" && chmod +x "$tmp/series"
+	digest="$("$tmp/series" digest "$main..$head")" || die "scripts/series digest failed; nothing landed"
+	api -X POST "repos/$slug/check-runs" -f name=fpl/series -f head_sha="$head" \
+		-f status=completed -f conclusion=success -f "output[title]=series $digest" \
+		-f "output[summary]=manifest digest $digest of $main..$head, approved on $head" \
+		>/dev/null || die "cannot write the fpl/series check run; nothing landed"
+fi
+
 destination
 echo "land: $push"
+if [ "$ci" -eq 1 ]; then # git pushes as the token's App; the checkout persists no other
+	GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+	export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader GIT_CONFIG_VALUE_0
+fi
 if ! out="$(git push "$dest" "$head:refs/heads/main" 2>&1)"; then
 	printf '%s\n' "$out" >&2
 	case "$out" in
@@ -1210,10 +1261,10 @@ if ! out="$(git push "$dest" "$head:refs/heads/main" 2>&1)"; then
 fi
 printf '%s\n' "$out"
 # The head is on main: what is stacked on it wants main as its base, whatever comes out
-# LOUD below, so the list comes first.
-kids="$(children)" ||
+# LOUD below, so the list comes first. --ci retargets them itself, below.
+[ "$ci" -eq 1 ] || kids="$(children)" ||
 	kids="  (list them yourself: gh pr list --repo github.com/$slug --base $headref)"
-[ -z "$kids" ] || printf 'land: retarget what is stacked on %s to main:\n%s\n' "$headref" "$kids"
+[ -z "${kids:-}" ] || printf 'land: retarget what is stacked on %s to main:\n%s\n' "$headref" "$kids"
 
 now="$(git ls-remote "$dest" refs/heads/main | cut -f1)"
 [ "$now" = "$head" ] || die "LOUD: main on the forge is ${now:-unreadable}, not $head; look before anything else lands"
@@ -1227,9 +1278,34 @@ while :; do
 	waited=$((waited + 3))
 done
 echo "land: #$n is merged; main is $head"
+# retarget, with --ci: each pull request stacked on the landed branch goes to main, and only
+# then is the branch deleted, once GitHub shows the merge: a branch deleted first closes the
+# pull requests based on it (measured 2026-10-14).
+retarget() {
+	[ "$headrepo" = "$slug" ] || return 0
+	api --paginate --slurp "repos/$slug/pulls?state=open&base=$headref&per_page=100" \
+		>"$tmp/children.json" || return 1
+	local m
+	for m in $(py numbers "$tmp/children.json"); do
+		api -X PATCH "repos/$slug/pulls/$m" -f base=main >/dev/null || return 1
+		echo "land: retargeted #$m to main"
+	done
+	# Deleted only where it still is the head that landed: a push to it since is no one's
+	# review, and the lease refuses to take it down.
+	if git push "$dest" "--force-with-lease=refs/heads/$headref:$head" ":refs/heads/$headref" \
+		>/dev/null 2>&1; then
+		echo "land: deleted $headref"
+	else
+		echo "land: kept $headref: it is no longer at $head, or could not be deleted" >&2
+	fi
+}
+[ "$ci" -eq 0 ] || retarget ||
+	die "LOUD: #$n landed, but its children could not all be retargeted, so $headref stays;" \
+		"retarget each (gh api --hostname github.com -X PATCH repos/$slug/pulls/<n> -f base=main)," \
+		"then delete it"
 # The window, seen from the other side: what the push relied on, read again.
 read_reviews
 read_rules
 read_checks
-py still "$tmp" "$slug" "$head" "$n" ||
+py still "$tmp" "$slug" "$head" "$n" "$ci" ||
 	die "LOUD: main is $head, but what it was landed on changed during the push; look at #$n before anything else lands"
