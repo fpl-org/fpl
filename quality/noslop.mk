@@ -159,7 +159,7 @@ ready: harden gates
 
 # The harness's own Python, judged by the same ruff it judges others with.
 HARNESS := $(addprefix $(S)/,crap props escapes mutants gates forward-only diagrams ruff-limits) \
-           $(Q)/noslop_pytest.py
+           $(addprefix $(S)/,task rad-cob-dagtaak) $(Q)/noslop_pytest.py
 
 # config-fresh is a prerequisite, as it is of check; scripts/gen-config-self-test is the proof
 # that it still bites, and scripts/ruff-limits --self-test that the width check does.
