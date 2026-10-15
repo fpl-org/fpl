@@ -161,6 +161,12 @@ other one. Run the container as yourself, as above: as root `make quick` has one
 `test_a_path_refused` on an unwritable path, since root can write there. `HOME` is `/tmp` so
 that any uid has a home for the `uv` and `git` caches.
 
+**Limit: the image runs `make quick`, not `make check` or `make gates`.** It carries no Nix,
+and both of those lanes begin with `config-fresh`, which stops loudly when `nix` is not on
+`PATH` (the generated config files cannot be compared with `lib.limits` without it). That is
+the lane's own rule, not an image fault; a runner that needs the full gates takes the dev
+shell.
+
 **Measured (2026-10-14, `aarch64-linux`).**
 
 - **Where it was built.** In a `nixos/nix` container (Nix 2.35.3, Linux aarch64) under
