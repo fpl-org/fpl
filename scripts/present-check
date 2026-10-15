@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+#
+# scripts/present-check — prove that a presented series is the series that was worked.
+#
+#   scripts/present-check [-B base] W P
+#
+# The work tip W is what the agents built and checked; the presented tip P is the same change
+# told as a short series a person reads (.agents/WORKFLOW.md). Telling it again may reword,
+# split, reorder and rebase, but not change what the series adds up to. This proves that,
+# cheapest check first, stopping at the first red:
+#
+#   trees       W and P hold the same tree (git rev-parse <ref>^{tree})
+#   merge-base  both fork from `base` at the same commit
+#
+# At the end it prints `git range-diff W...P`, the story told against the work.
+#
+#   -B base       what the series is on top of (default main; CI passes origin/main)
+#
+# Exit 0: green. 1: a check is red. 2: usage or tooling.
+set -euo pipefail
+export GIT_NO_REPLACE_OBJECTS=1
+unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE
+
+usage="usage: scripts/present-check [-B base] W P"
+
+die() {
+	printf 'present-check: %s\n' "$*" >&2
+	exit 2
+}
+red() {
+	printf 'present-check: RED: %s\n' "$*" >&2
+	exit 1
+}
+sha() { git rev-parse --verify -q "$1^{commit}" || die "not a commit: $1"; }
+short() { git rev-parse --short "$1"; }
+
+base=main
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-B)
+		[ -n "${2-}" ] || die "$usage"
+		base="$2"
+		shift 2
+		;;
+	-*) die "$usage" ;;
+	*) break ;;
+	esac
+done
+git rev-parse --git-dir >/dev/null 2>&1 || die "not inside a git repository"
+git rev-parse -q --verify "$base^{commit}" >/dev/null || die "no such base: $base"
+
+[ $# -eq 2 ] || die "$usage"
+w="$(sha "$1")"
+p="$(sha "$2")"
+
+printf 'present-check: base %s (%s), presented %s\n' "$(short "$base")" "$base" "$(short "$p")"
+
+[ "$(git rev-parse "$w^{tree}")" = "$(git rev-parse "$p^{tree}")" ] ||
+	red "trees differ: work $(short "$w") and presented $(short "$p") do not hold the same code; a presentation may only change the story"
+echo "ok    trees equal ($(git rev-parse --short "$p^{tree}"))"
+# One assignment each, as for the refs: a failed merge-base would be lost behind the second.
+mw="$(git merge-base "$base" "$w")" ||
+	die "work $(short "$w") shares no history with $base; pass -B the base the work forked from"
+mp="$(git merge-base "$base" "$p")" ||
+	die "presented $(short "$p") shares no history with $base; present on the base the work was made on"
+[ "$mw" = "$mp" ] ||
+	red "merge-base differs: work forks from $(short "$mw"), presented from $(short "$mp"); present on the base the work was made on, then rebase both"
+echo "ok    merge-base equal ($(short "$mp"))"
+
+echo
+echo "range-diff $(short "$w")...$(short "$p"):"
+git range-diff "$w...$p"
+echo "present-check: green"
