@@ -231,7 +231,41 @@ def read_units(path):
         for ref in ([part] if part else []) + blockers:
             if ref not in names:
                 die(f"{path}: {label_} names {ref}, which is not a row")
+    for kind, edges in (
+        ("waits on", {u[0]: u[2] for u in units}),
+        ("is part of", {u[0]: [u[1]] if u[1] else [] for u in units}),
+    ):
+        loop = loop_in(edges)
+        if loop:
+            die(f"{path}: {' -> '.join(loop)}: each {kind} the next, and a unit file holds no loop")
     return units
+
+
+def loop_in(edges):
+    """A cycle of `edges` (node -> the nodes it points at) as a path that ends where it
+    began, `[a, b, a]`, or None. A node that points at itself is the path `[a, a]`.
+
+    `block` stops before it closes a loop and `part` refuses to; a unit file is checked as
+    a whole before anything is written, so `load` cannot record what those would not.
+    """
+    colour = {}  # 1 on the current path, 2 finished
+
+    def visit(path):
+        colour[path[-1]] = 1
+        for nxt in edges.get(path[-1], ()):
+            if colour.get(nxt) == 1:
+                return path[path.index(nxt) :] + [nxt]
+            found = None if colour.get(nxt) else visit(path + [nxt])
+            if found:
+                return found
+        colour[path[-1]] = 2
+        return None
+
+    for node in edges:
+        found = None if colour.get(node) else visit([node])
+        if found:
+            return found
+    return None
 
 
 def leak_gate(units):
@@ -603,6 +637,18 @@ def self_test():
             handle.write("Q1\t-\t\tname\tmentions zztermzz\n")
         refused = task("load", bad + "x", ok=False)
         check("a missing file is refused", refused.returncode == 2)
+        for name, rows in (
+            ("a blocker loop", "Q1\t-\tQ2\tone\tx\nQ2\t-\tQ1\ttwo\tx\n"),
+            ("a row its own parent", "Q1\tQ1\t\tone\tx\n"),
+            ("a parent loop", "Q1\tQ2\t\tone\tx\nQ2\tQ1\t\ttwo\tx\n"),
+        ):
+            with open(bad, "w") as handle:
+                handle.write(rows)
+            looped = task("load", bad, ok=False)
+            check(f"{name} in a file is refused before a write",
+                  looped.returncode == 2 and "Q1 ->" in looped.stderr and "Q1" not in task("list").stdout)
+        with open(bad, "w") as handle:
+            handle.write("Q1\t-\t\tname\tmentions zztermzz\n")
         with open(f"{repo}/.git/leak-patterns", "w") as handle:
             handle.write("zztermzz\n")
         if shutil.which("gitleaks"):
