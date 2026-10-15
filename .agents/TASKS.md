@@ -37,7 +37,8 @@ clone does not know counts as open.
 A task may be *part of* one other task: a lane or a group. It is a place in a tree and holds
 nothing up, unlike `blockedBy`. `task tree` prints every task under its parent; an open leaf
 says `ready` or `<-` the labels of what it waits on, so one command shows both shapes. A lane
-is never listed by `ready`, since its parts are what is picked up. A `part` that would close a
+is left out of `ready` while it has an open part, since its parts are what is picked up; once
+every part is done or dropped, closing it is the work left, and it is listed. A `part` that would close a
 loop is refused; one that arrives anyway is listed after the tree, with exit 1, as `ready`
 does for blockers. `partOf` was added to the reducer when the store was still empty: operations
 written before it replay unchanged.

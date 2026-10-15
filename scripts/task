@@ -556,12 +556,16 @@ def opening(graph, args):
 
 
 def listing(graph, args):
-    """`list` and `ready`: one line per task, oldest first."""
-    parents = {t.get("partOf") for t in graph.tasks.values()}
+    """`list` and `ready`: one line per task, oldest first.
+
+    `ready` leaves out a task that has an open part: a lane or group is never what is
+    picked up while its parts are. Once every part is done or dropped, closing it is the
+    work left, and it shows. A closed part, of whatever author, hides nothing.
+    """
+    parents = {t.get("partOf") for t in graph.tasks.values() if t["state"] in OPEN_STATES}
     for oid in sorted(graph.tasks, key=lambda o: (graph.tasks[o].get("opened", 0), o)):
         state = graph.tasks[oid]["state"]
         if args.cmd == "ready":
-            # A lane or group is never what is picked up; its parts are.
             keep = state in OPEN_STATES and not graph.waiting_on(oid) and oid not in parents
         else:
             keep = args.all or state in OPEN_STATES
@@ -859,6 +863,8 @@ def lanes(f, lexer, parser):
     )
     f.task("part", lane, "none")
     f.check("a lane is not ready", lane not in f.out("ready"))
+    f.task("drop", unit)
+    f.check("a lane whose parts are all closed is ready", lane in f.out("ready"))
 
 
 def loading_units(f):
