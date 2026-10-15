@@ -317,8 +317,13 @@ common="$(git rev-parse --path-format=absolute --git-common-dir)"
 # occupied <branch>: checked out, rebased or bisected in some worktree, read now: what git
 # branch -d refuses to delete, and update-ref -d does not check.
 occupied() {
-	git worktree list --porcelain | grep -Fxq "branch refs/heads/$1" && return 0
-	local d
+	# The listing is read whole before it is searched: grep -q quits at the first match, and a
+	# git still writing then dies of SIGPIPE, which pipefail turns into "not found" and a delete.
+	# A listing that cannot be read counts as occupied.
+	local d list nl='
+'
+	list="$(git worktree list --porcelain)" || return 0
+	case "$nl$list$nl" in *"${nl}branch refs/heads/$1$nl"*) return 0 ;; esac
 	for d in "$common" "$common"/worktrees/*; do
 		grep -Fxqs -e "refs/heads/$1" -e "$1" "$d/rebase-merge/head-name" "$d/rebase-apply/head-name" "$d/BISECT_START" && return 0
 	done
