@@ -21,6 +21,10 @@ branches but `main`, the rules "Restrict creations" and "Restrict updates", and 
 actors (both "Always allow"). Create it: nothing is enforced yet. To switch the brake on, set
 Enforcement status to Active.
 
+Above the cap the flipper that switches it on will have to exclude the heads of open pull
+requests, so that fixes on a pull request he asked changes for stay pushable: with the brake
+as it is here every branch but `main` is locked. A later unit measures and builds that.
+
 ## Checking
 
     scripts/ruleset-check          # exit 0 in sync, 1 drift, 2 cannot read; --json for machines
