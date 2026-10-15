@@ -304,6 +304,17 @@ SWEEP_RACE="mkdir '$gd/rebase-merge' && echo refs/heads/agent/claude/stack/rebas
 	PATH="$tmp/race:$PATH" SWEEP_FRESH_MIN=0 SWEEP_OWNER_YES=1 sw --apply rebasing
 check "a branch a worktree rebases is not deleted" '[ "$rc" -eq 1 ] && grep -q "checked out meanwhile" "$tmp/out" && g rev-parse -q --verify refs/heads/agent/claude/stack/rebasing >/dev/null'
 rm -rf "$gd/rebase-merge"
+for n in embedded embedlate; do
+	g worktree add -q "$repo/worktrees/$n" -b "agent/claude/stack/$n" main
+	printf 'x\n' >"$repo/worktrees/$n/loose.txt"
+done
+git init -q "$repo/worktrees/embedded/inner"
+SWEEP_FRESH_MIN=0 sw
+check "a worktree holding an untracked repository is review" '[ "$(action worktrees/embedded)" = review ] && col worktrees/embedded 10 | grep -q "holds a repository at inner"'
+rm -f "$tmp/raced"
+SWEEP_RACE_AT=stash SWEEP_RACE="$ng init -q '$repo/worktrees/embedlate/inner' && $ng -C '$repo/worktrees/embedlate/inner' commit -q --allow-empty -m inner" \
+	PATH="$tmp/race:$PATH" SWEEP_FRESH_MIN=0 SWEEP_OWNER_YES=1 sw --apply embedlate
+check "a repository made after the table is not flattened into a patch and removed" '[ "$rc" -eq 1 ] && grep -q "holds a repository" "$tmp/out" && git -C "$repo/worktrees/embedlate/inner" rev-parse -q --verify HEAD >/dev/null && [ ! -e "$repo/harness/sweep-archive/embedlate.patch" ] && g rev-parse -q --verify refs/heads/agent/claude/stack/embedlate >/dev/null'
 unset SWEEP_RACE
 
 if [ "$fails" -eq 0 ]; then
