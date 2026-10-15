@@ -301,12 +301,15 @@ def transport_failures() -> list[str]:
 
 
 def self_test() -> int:
-    """Each case: the line it must print (when given) and the pull requests it must drain."""
+    """Each case: the line it must print (when given), the pull requests it must drain, and,
+    unless the line says `?`, that the forge was read: a case that expects nothing drained
+    would otherwise pass on a forge that was never read."""
     failed = 0
     for name, get, want, drain in CASES:
         result = measure(get, R, 50, "psjg")
         got_drain = [h.rsplit("p", 1)[1] for h in result.get("drain", [])]
-        if (want and line(result) != want) or got_drain != drain:
+        unread = want.startswith("?")  # only the cases that say so expect an unreadable forge
+        if (want and line(result) != want) or got_drain != drain or result["ok"] == unread:
             failed += 1
             print(f"wip-count self-test: FAIL {name}: {line(result)!r} drain {got_drain}")
     with tempfile.TemporaryDirectory() as d:  # the file --json writes, read back by --from
