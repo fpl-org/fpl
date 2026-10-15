@@ -22,7 +22,7 @@ export GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home"
 unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_CONFIG_COUNT
 mkdir -p "$HOME"
 
-export LOG="$tmp/quick.log" LINTLOG="$tmp/lint.log" FLAG="$tmp/flag"
+export LOG="$tmp/quick.log" LINTLOG="$tmp/lint.log" TESTLOG="$tmp/test.log" FLAG="$tmp/flag"
 export LEFT="$tmp/left.log"
 export FPL_PRESENT_QUICK='git rev-parse --short HEAD >>"$LOG"; test ! -e leftover || echo x >>"$LEFT"; touch leftover; test ! -e red'
 printf '%s\n' '#!/bin/sh' 'echo "$*" >>"$LINTLOG"' '[ ! -e "$FLAG/lint-fail" ] || exit 1' \
@@ -140,11 +140,33 @@ add red && commit "feat(y): breaks"
 add g3 && commit "feat(y): after"
 run "red middle" 1 "quick is red" "breaks" -- redmid
 check "red middle: first two built, third never" lines "$LOG" 2
+run "skip-quick" 0 "green, 3 commits" -- --skip-quick redmid
+check "skip-quick: nothing built" lines "$LOG" 0
 
 touch "$FLAG/lint-fail"
 run "lint red" 1 "commit-lint refuses" -- pres
 check "lint red: nothing built" lines "$LOG" 0
 rm "$FLAG/lint-fail"
+
+# Self-tests of touched paths run; those of untouched paths do not.
+git checkout -q -b touched main
+add scripts/foo 755 && add scripts/foo-self-test 755
+printf '#!/bin/sh\necho foo >>"$TESTLOG"\n' >scripts/foo-self-test
+printf '#!/bin/sh\ncase "$1" in\n--self-test) echo bar >>"$TESTLOG" ;;\nesac\n' >scripts/bar
+printf '#!/bin/sh\n# baz --self-test is only named here\nexit 1\n' >scripts/baz
+# The flag in the shapes that handle it, and in the shapes that only quote it: a comment that
+# would match the pattern, and an echo of it.
+printf '#!/bin/sh\ncase "$1" in\n\t--self-test) echo qux >>"$TESTLOG" ;;\nesac\n' >scripts/qux
+printf '#!/bin/sh\n# ["--self-test"] is a comment\necho %s\nexit 1\n' "'[\"--self-test\"]'" >scripts/quux
+chmod +x scripts/bar scripts/baz scripts/qux scripts/quux
+git add scripts && commit "feat(scripts): foo, bar, baz, qux and quux"
+add docs/readme && commit "docs(x): words"
+: >"$TESTLOG"
+run "self-tests" 0 "selftest ok" "scripts/foo-self-test" -- --skip-quick touched
+check "self-tests: foo, bar and qux ran once each; baz, quux and the docs commit none" lines "$TESTLOG" 3
+printf '#!/bin/sh\nexit 1\n' >scripts/foo-self-test
+git add scripts && commit "test(scripts): break foo"
+run "self-test red" 1 "selftest is red" -- --skip-quick touched
 
 echo "present-check self-test: $fails of $total checks failed (bash $BASH_VERSION)"
 if [ -z "${PRESENT_CHECK_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ] && ! [ /bin/bash -ef "$BASH" ]; then

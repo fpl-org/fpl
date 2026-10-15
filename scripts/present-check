@@ -2,7 +2,7 @@
 #
 # scripts/present-check — prove that a presented series is the series that was worked.
 #
-#   scripts/present-check [-B base] [-b branch] [W] P
+#   scripts/present-check [-B base] [-b branch] [--skip-quick] [W] P
 #
 # The work tip W is what the agents built and checked; the presented tip P is the same change
 # told as a short series a person reads (.agents/WORKFLOW.md). Telling it again may reword,
@@ -14,7 +14,8 @@
 #   merge-base  both fork from `base` at the same commit
 #   commit-lint scripts/commit-lint over base..P, judged for the branch when P is a local
 #               branch or -b names one (else its Stack: and agent-branch gates are left out)
-#   each lemma  `make quick` in a detached worktree of the commit
+#   each lemma  `make quick` in a detached worktree of the commit and, when it touches
+#               scripts/ or .githooks/, the self-tests that cover the touched path
 #
 # With one ref there is no W, so the tree, merge-base and range-diff steps are left out; that
 # is what a pull request's CI has. At the end it prints the lemma list (hash, subject, seconds
@@ -22,6 +23,7 @@
 #
 #   -B base       what the series is on top of (default main; CI passes origin/main)
 #   -b branch     judge the commits for this branch (default: P's name when it is one)
+#   --skip-quick  leave `make quick` out, for a docs-only series; touched paths' self-tests run
 #
 # One temporary worktree serves all lemmas, moved with a forced checkout and `git clean -fdx`
 # that spares only .venv, so nothing a lemma left behind can make the next one pass. The .venv
@@ -35,7 +37,7 @@ export GIT_NO_REPLACE_OBJECTS=1
 unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE
 
 here="$(cd "$(dirname "$0")" && pwd)"
-usage="usage: scripts/present-check [-B base] [-b branch] [W] P"
+usage="usage: scripts/present-check [-B base] [-b branch] [--skip-quick] [W] P"
 
 die() {
 	printf 'present-check: %s\n' "$*" >&2
@@ -48,7 +50,7 @@ red() {
 sha() { git rev-parse --verify -q "$1^{commit}" || die "not a commit: $1"; }
 short() { git rev-parse --short "$1"; }
 
-base=main branch=""
+base=main branch="" skip_quick=0
 while [ $# -gt 0 ]; do
 	case "$1" in
 	-B | -b)
@@ -56,6 +58,7 @@ while [ $# -gt 0 ]; do
 		if [ "$1" = -B ]; then base="$2"; else branch="$2"; fi
 		shift 2
 		;;
+	--skip-quick) skip_quick=1 && shift ;;
 	-*) die "$usage" ;;
 	*) break ;;
 	esac
@@ -120,6 +123,47 @@ echo "ok    commit-lint ($(tail -n 1 "$lint_out"))"
 commits="$(git rev-list --reverse --no-merges "$base..$p")"
 [ -n "$commits" ] || die "no commits in $base..$p"
 
+# handles_flag <script>: whether the script handles --self-test in code: a Python argv list, a
+# case arm or a test of the argument. Comment lines and echo or printf lines, where the flag is
+# only named, do not count; a trailing comment after code is not told apart. One awk, not
+# grep -v piped into grep -q, so that pipefail cannot read grep's early exit as a no.
+handles_flag() {
+	awk '
+		/^[[:space:]]*(#|echo|printf)/ { next }
+		/\["--self-test"\]|^[[:space:]]*--self-test\)|[=] --self-test/ { found = 1 }
+		END { exit !found }' "$1"
+}
+
+# selftests <worktree>: the self-tests that cover what the commit at <worktree> touched, one
+# command per line, relative to the worktree, from the mapping the gates lane implies.
+selftests() {
+	local f x
+	for f in $(git -C "$1" diff-tree --root --no-commit-id --name-only -r HEAD); do
+		x="${f#scripts/}"
+		case "$f" in
+		scripts/*/*) ;;
+		scripts/*-self-test) [ -x "$1/$f" ] && echo "$f" ;;
+		scripts/commit-lint | scripts/acommit | scripts/agent-identity) echo scripts/pre-push-self-test ;;
+		scripts/restack) echo scripts/land-self-test ;;
+		scripts/import-pr) echo scripts/mirror-self-test ;;
+		scripts/*)
+			if [ -x "$1/$f-self-test" ]; then
+				echo "$f-self-test"
+			elif [ -x "$1/$f" ] && handles_flag "$1/$f"; then
+				case "$(head -n 1 "$1/$f")" in
+				*python*) echo ".venv/bin/python $f --self-test" ;;
+				*) echo "$f --self-test" ;;
+				esac
+			fi
+			;;
+		.githooks/*) printf '%s\n' scripts/pre-push-self-test scripts/spec-guard-self-test ;;
+		esac
+		: # a failed test above is no failure of the loop (pipefail)
+	done | sort -u | while read -r x; do
+		if [ -x "$1/${x%% *}" ] || [ "${x%% *}" = .venv/bin/python ]; then echo "$x"; fi
+	done
+}
+
 # step <label> <command>: run in the lemma's worktree, print one line, stop on red.
 lemma_wt="$tmp/wt"
 step() {
@@ -145,7 +189,22 @@ for c in $commits; do
 		git -C "$lemma_wt" checkout -q --detach -f "$c"
 		git -C "$lemma_wt" clean -fdxq -e .venv
 	fi
-	step quick "${FPL_PRESENT_QUICK:-make quick}"
+	if [ "$skip_quick" -eq 0 ]; then
+		step quick "${FPL_PRESENT_QUICK:-make quick}"
+	fi
+	tests="$(selftests "$lemma_wt")"
+	venv=0
+	while IFS= read -r t; do
+		[ -n "$t" ] || continue
+		case "$t" in .venv/bin/python*)
+			[ "$venv" -eq 1 ] || step venv "make venv"
+			venv=1
+			;;
+		esac
+		step selftest "$t"
+	done <<EOF
+$tests
+EOF
 	list="$list$n. $cur [${times# }]
 "
 done
