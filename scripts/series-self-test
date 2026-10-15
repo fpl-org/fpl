@@ -266,6 +266,11 @@ same "the refused revert left main checked out" "$(git branch --show-current)" m
 same "the refused revert left no branch" "$(git branch --list '*revert-mixed*' | wc -l | tr -d ' ')" 0
 same "the refused revert left the tree clean" "$(git status --porcelain | wc -l | tr -d ' ')" 0
 same "the refused revert left main alone" "$(git rev-parse HEAD)" "$head0"
+# A trailer the reader takes (any case, any space after the colon) is found by range as well.
+echo odd >odd; git add odd
+printf 'chore(demo): odd\n\nBody.\n\nStack: demo\nseries-id:    odd-abcdef0\nHuman-Only: true\n' >"$tmp/m"
+git -c core.hooksPath=/dev/null commit -q -F "$tmp/m"
+sr 0 "range finds a trailer in another case and spacing" "..$(git rev-parse HEAD)" range odd-abcdef0
 # A policy marker in a commit body is carried into the undo.
 ser pol-abcdef0 quality/pol $'\n[policy] a body marker, not in the subject.\n'
 sr 0 "revert of a policy series" "revert-" revert pol-abcdef0

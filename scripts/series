@@ -252,7 +252,9 @@ cmd_range() { # range <id>
 	local id="${1:-}" main c n=0 newest="" oldest=""
 	[ -n "$id" ] || die usage "an id is needed" "series range <id>"
 	main="$(main_ref)"
-	for c in $(git log --first-parent --format=%H --fixed-strings --grep="Series-Id: $id" "$main"); do
+	# The grep only narrows the walk, and as wide as the trailer reader (ids_of) is: any case, any
+	# space after the colon. ids_of then keeps the commits that carry exactly this id.
+	for c in $(git log --first-parent --format=%H -i --grep="^series-id:[[:space:]]*$id" "$main"); do
 		ids_of "$c" | grep -qx -- "$id" || continue
 		n=$((n + 1)); oldest="$c"; [ -n "$newest" ] || newest="$c"
 	done
