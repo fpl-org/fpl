@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # scripts/present-check-self-test — proof that scripts/present-check refuses each thing it is
-# there to refuse and passes what it should.
+# there to refuse and passes what it should. Run by `make gates`.
 #
 # The fixture is a small repository in a temp directory, git's global and system config pointed
 # away from the maintainer's. FPL_PRESENT_QUICK and FPL_PRESENT_LINT stand in for make quick

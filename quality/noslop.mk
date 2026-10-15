@@ -182,6 +182,7 @@ gates: venv config-fresh
 	$(S)/gen-config-self-test
 	$(S)/land-self-test
 	$(S)/series-self-test
+	$(S)/present-check-self-test
 	$(BIN)/python $(S)/gates
 
 # Each tool syncs its own locked environment into <tool>/.venv, so its dependencies never
