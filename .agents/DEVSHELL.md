@@ -173,6 +173,12 @@ on every run. Where the checkout has no `.venv`, Docker creates the empty mount 
 on a Mac it is yours; under a rootful Linux daemon it is presumably root's (not measured),
 and `rmdir .venv` clears it before a host-side `make`.
 
+**Limit: the image runs `make quick`, not `make check` or `make gates`.** It carries no Nix,
+and both of those lanes begin with `config-fresh`, which stops loudly when `nix` is not on
+`PATH` (the generated config files cannot be compared with `lib.limits` without it). That is
+the lane's own rule, not an image fault; a runner that needs the full gates takes the dev
+shell.
+
 **Measured (2026-10-14 unless dated, `aarch64-linux`).**
 
 - **Where it was built.** In a `nixos/nix` container (Nix 2.35.3, Linux aarch64) under
