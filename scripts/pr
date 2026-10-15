@@ -121,14 +121,18 @@ login="${login%@*}"
 [ -n "$login" ] && [ "$login" != "$identity" ] ||
 	die "cannot read a login from '$identity'"
 
-# The forge is the remote the branch tracks, else the one main tracks: a branch stacked on
-# another agent branch usually tracks nothing. Failing both, a clone with a single remote
-# has only one forge to mean.
+# The forge is the remote the branch tracks, else the one the parent -B names tracks, else
+# the one main tracks: a branch stacked on another agent branch usually tracks nothing, and
+# a parent that has an open pull request was pushed to the forge it is on. Failing all
+# three, a clone with a single remote has only one forge to mean.
 remote=""
 [ -z "$branch" ] || remote="$(git config "branch.$branch.remote" || true)"
+[ -n "$remote" ] || [ -z "$base" ] || remote="$(git config "branch.$base.remote" || true)"
 [ -n "$remote" ] || remote="$(git config branch.main.remote || true)"
+asked=""
+for b in "$branch" "$base" main; do [ -z "$b" ] || asked="$asked${asked:+, }'$b'"; done
 [ -n "$remote" ] || { [ "$(git remote | wc -l)" -eq 1 ] && remote="$(git remote)"; } ||
-	die "cannot tell the forge: ${branch:+'$branch' and }main track no remote, and there is more than one"
+	die "cannot tell the forge: no remote is tracked by $asked, and there is more than one"
 
 # .git/agent-credentials, if it is there: a git credential-store file holding one
 # https://<login>:<token>@github.com line for the machine account (.agents/WORKFLOW.md).

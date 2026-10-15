@@ -235,6 +235,17 @@ run 0 "-B the branch of an open pull request" -n -B "$PARENT" agent/claude/stack
 says err "base:  $PARENT" "stacked base"
 run 0 "a stacked branch without -B goes on main" -n agent/claude/stack/child
 says err "base:  main" "main by default, queue gone"
+# Two remotes and main tracking neither: the parent -B names tells which is the forge.
+git remote add elsewhere "$tmp/elsewhere.git"
+git config --unset branch.main.remote
+git config "branch.$PARENT.remote" github
+run 0 "-B a parent that tracks the forge, main tracking nothing" -n -B "$PARENT" agent/claude/stack/child
+says err "base:  $PARENT" "the parent's remote is the forge"
+run 1 "no -B, main tracking nothing, two remotes" -n agent/claude/stack/child
+says err "no remote is tracked by 'agent/claude/stack/child', 'main'" "no remote to mean, and what was asked"
+git config --unset "branch.$PARENT.remote"
+git config branch.main.remote github
+git remote remove elsewhere
 echo '[]' >"$forge/pulls.json"
 run 1 "-B a parent with no open pull request" -n -B "$PARENT" agent/claude/stack/child
 says err "not the branch of an open pull request" "parent not open"
