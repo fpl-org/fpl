@@ -149,6 +149,30 @@ is missing: `crosshair-tool` on `aarch64-linux`), and the loader that PyPI wheel
 `/lib` and `/lib64`, which a Nix-only root lacks (`ruff` from `uv sync` fails with "No such
 file or directory" without it). It carries no credentials: pass them as the run's environment.
 
+```
+make image                       # nix build .#packages.<linux system>.oci -> ./result-oci
+docker load < result-oci
+make image-quick                 # make quick in the image, on this checkout
+```
+
+On Linux `make image` is `nix build .#oci`. On a Mac it builds the Linux system of the same
+architecture, which needs a Linux builder; `make image HOST_SYSTEM=x86_64-linux` picks the
+other one.
+
+`make image-quick` mounts the checkout at `/work` and runs `make quick` in the image; the
+Makefile holds its `docker run` line, and two of its flags matter. It runs the container as
+yourself: as root `make quick` has one test fail, `test_a_path_refused` on an unwritable path,
+since root can write there. `HOME` is `/tmp` so that any uid has a home for the `uv` and `git`
+caches. And it lays a tmpfs over `/work/.venv`, so the container syncs a venv of its own and
+never sees the host's. The lanes take `.venv/bin/.synced` as proof that the venv is current,
+and a venv synced on a Mac holds the Mac's Python and binaries: with the bare mount, `make
+quick` stops at its first step (`/work/.venv/bin/python: No such file or directory`). The
+same mask keeps the container's Linux venv out of the host's checkout. Docker mounts a tmpfs
+root-owned and noexec, hence `exec,mode=1777`; the venv lives in memory and is synced anew
+on every run. Where the checkout has no `.venv`, Docker creates the empty mount point there:
+on a Mac it is yours; under a rootful Linux daemon it is presumably root's (not measured),
+and `rmdir .venv` clears it before a host-side `make`.
+
 ## Known trap: interactive `nix develop` on a Mac
 
 direnv (above) is the recommended route into the shell — the trap below is what happens
