@@ -202,7 +202,8 @@ holds the tooling: `mint` the id, `stamp` it onto a range (refused once the main
 reviewed or commented on the pull request of the branch, or of any branch the rebase moves with
 it), `check` that a range carries exactly one,
 `manifest` a range as JSON, `digest` to print the manifest's digest alone (the receipt
-the lander writes as the `fpl/series` check run).
+the lander writes as the `fpl/series` check run), `range` to find a series on main, `revert` a
+whole series at once.
 
 There is no `Patch-Id:` trailer, on purpose: a patch id stored in a message goes stale as soon
 as a move shifts the context lines, and a stale identity is a false one. The manifest computes
