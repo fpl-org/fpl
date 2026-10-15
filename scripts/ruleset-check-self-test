@@ -62,8 +62,8 @@ mkdir -p "$HOME" "$GH_CONFIG_DIR"
 check="$root/scripts/ruleset-check" files="$root/harness/rulesets" work="$tmp/files" state="$tmp/state.json"
 
 # The forge: the list and each ruleset by id from state.json (name -> ruleset), the file `fail`
-# beside it makes every answer a 500, the file `short` every body shorter than its declared
-# Content-Length, every request goes to the log.
+# beside it makes every answer a 500, the file `redirect` every answer a 302 to /moved/..., the
+# file `short` every body shorter than its declared Content-Length, every request goes to the log.
 cat >"$tmp/forge.py" <<'PY'
 import http.server, json, os, sys
 state, log = sys.argv[1:]
@@ -74,6 +74,10 @@ class H(http.server.BaseHTTPRequestHandler):
         open(log, "a").write(f"GET {self.path}\n")
         if os.path.exists(state + ".fail"):
             return self.send_error(500)
+        if os.path.exists(state + ".redirect") and not self.path.startswith("/moved/"):
+            self.send_response(302)
+            self.send_header("Location", "/moved" + self.path)
+            return self.end_headers()
         rss = list(json.load(open(state)).values())
         tail = self.path.split("?")[0].rsplit("/", 1)[1]
         body = rss if tail == "rulesets" else next((r for r in rss if str(r["id"]) == tail), None)
@@ -145,7 +149,7 @@ fail() { fails=$((fails + 1)); echo "self-test: $*" >&2; }
 fx() { python3 -I "$tmp/fx.py" "$state" "$1"; }
 # build [visible]: the files copied to $work, and a forge that matches them
 build() {
-	rm -rf "$work" "$state.fail" "$state.short"
+	rm -rf "$work" "$state.fail" "$state.short" "$state.redirect"
 	mkdir -p "$work"
 	cp "$files"/*.json "$work/"
 	WORK="$work" fx "build(os.environ['WORK'], ${1:+True})"
@@ -251,6 +255,13 @@ rm -f "$state.fail"
 touch "$state.short"
 run 2 "a forge that cuts a body short" ""
 rm -f "$state.short"
+# a redirect is not followed: urllib would take the bearer token to wherever it points
+touch "$state.redirect"
+run 2 "a forge that redirects" ""
+expect_err "302"
+total=$((total + 1))
+! grep -q '^GET /moved/' "$tmp/log" || fail "the redirect was followed: $(grep '^GET /moved/' "$tmp/log" | head -1)"
+rm -f "$state.redirect"
 echo '{not json' >"$work/broken.json"
 run 2 "a file that is not JSON" ""
 echo '[1]' >"$work/broken.json"

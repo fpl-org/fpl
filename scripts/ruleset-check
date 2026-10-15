@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 DROPPED = {"id", "node_id", "created_at", "updated_at", "_links", "source", "source_type"}
 DROPPED |= {"current_user_can_bypass"}
@@ -88,13 +88,21 @@ def token(api: str) -> str:
     return done.stdout.strip() if done.returncode == 0 else ""
 
 
+class NoRedirect(HTTPRedirectHandler):
+    """Follows no redirect: urllib would send the Authorization header on to wherever it points."""
+
+    def redirect_request(self, *_: Any, **__: Any) -> None:
+        return None  # the 3xx then surfaces as an HTTPError, which get() reports
+
+
 def get(api: str, path: str, secret: str) -> Any:
-    """The JSON the forge answers to a GET of `path`."""
+    """The JSON the forge answers to a GET of `path`; a redirect is an answer that is not one."""
     headers = {"Accept": "application/vnd.github+json", "User-Agent": "fpl-ruleset-check"}
     if secret:
         headers["Authorization"] = f"Bearer {secret}"
     try:
-        with urlopen(Request(f"{api}/{path}", headers=headers, method="GET"), timeout=20) as r:
+        request = Request(f"{api}/{path}", headers=headers, method="GET")
+        with build_opener(NoRedirect).open(request, timeout=20) as r:
             return json.load(r)
     except HTTPError as e:
         raise UnreadableError(f"GitHub answered {e.code} {e.reason} for {path}") from e
