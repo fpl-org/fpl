@@ -3,8 +3,8 @@
 # scripts/series-self-test — proof that the identity of a series still holds: the Series-Id
 # trailer is accepted once and in its place by .githooks/commit-msg, and scripts/series mints it
 # deterministically, stamps it onto a range without changing a patch, refuses to stamp once the
-# maintainer has spoken, checks it, writes a byte-stable manifest and prints its digest alone.
-# Run by `make gates`.
+# maintainer has spoken, checks it, writes a byte-stable manifest and prints its digest alone,
+# finds a series on main and undoes it in one commit. Run by `make gates`.
 #
 # Everything happens in a throwaway repository, with Git's global and system config, HOME and
 # XDG_CONFIG_HOME pointed away from the maintainer's, and a stub gh in place of the forge. The
@@ -21,7 +21,7 @@ trap 'rm -rf "$tmp"' EXIT
 export GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home" \
 	XDG_CONFIG_HOME="$tmp/xdg" GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid \
 	GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid FPL_LEAK_GATE=off \
-	FPL_ATOMIC_GATE=off FPL_MAIN_GATE=off SERIES_GH="$tmp/gh" \
+	FPL_ATOMIC_GATE=off FPL_MAIN_GATE=off SERIES_MAIN=main SERIES_GH="$tmp/gh" \
 	FPL_MODEL="Claude Test 1" FPL_SESSION_ID=series-self-test
 unset FPL_BRANCH_GATE FPL_AGENT_EMAILS FPL_LINT_BRANCH FPL_LINT_COMMIT GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE
 mkdir -p "$HOME" "$XDG_CONFIG_HOME"
@@ -243,6 +243,124 @@ digest_moved="$(cat "$tmp/out")"
 sr 0 "digest of the original series" "" digest "$base0..agent/claude/stack/demo"
 same "a move keeps the digest" "$digest_moved" "$(cat "$tmp/out")"
 git switch -q agent/claude/stack/demo
+
+# --- range, revert -----------------------------------------------------------------------------
+git switch -q main
+git -c core.hooksPath=/dev/null merge -q --ff-only agent/claude/stack/demo
+echo later >later; git add later; git -c core.hooksPath=/dev/null commit -q -m "chore(demo): later" -m "Human-Only: true"
+sr 0 "range" "$base0..$(git rev-parse agent/claude/stack/demo)" range "$id"
+sr 1 "range of an unknown id" "range-none" range nothing-abcdef0
+sr 1 "range refuses a malformed id" "series-value" range Nope
+# The id is compared as a string: a dot in it does not take the dash of another series' id.
+echo dot >dot; git add dot
+printf 'chore(demo): dot\n\nBody.\n\nStack: demo\nSeries-Id: rel-1-abcdef0\nHuman-Only: true\n' >"$tmp/m"
+git -c core.hooksPath=/dev/null commit -q -F "$tmp/m"
+sr 1 "range takes a dot in the id as a dot" "range-none" range rel.1-abcdef0
+git reset -q --hard HEAD~1
+for m in gap-1234567 - gap-1234567; do
+	echo "$m$RANDOM" >g; git add g
+	printf 'chore(demo): g\n\nBody.\n\n%s\nHuman-Only: true\n' "$([ "$m" = - ] || echo "Series-Id: $m")" >"$tmp/m"
+	git -c core.hooksPath=/dev/null commit -q -F "$tmp/m"
+done
+sr 1 "range refuses a series with a gap" "range-gap" range gap-1234567
+git reset -q --hard HEAD~3
+# The undo's branch takes its lead from the branch the caller works on.
+git switch -q -c agent/jules/stack/caller main
+sr 0 "revert" "agent/jules/stack/revert-$id " revert "$id"
+read -r rbranch rid <"$tmp/out"
+git switch -q main
+git branch -q -D agent/jules/stack/caller
+git switch -q "$rbranch"
+same "revert is one commit" "$(git rev-list --count main.."$rbranch")" 1
+same "revert undoes the series" "$(git ls-tree --name-only HEAD | grep -cx 'f[123]' || true)" 0
+same "revert keeps what came later" "$(git ls-tree --name-only HEAD | grep -cx later || true)" 1
+differ "revert has an id of its own" "$rid" "$id"
+same "revert says what it undoes" "$(git log -1 --format=%B | grep -c "^Refs: series $id\$" || true)" 1
+sr 0 "revert's commit carries its id" "$rid" check "main..HEAD"
+
+# --- revert: what it must refuse, and leave no trace of ----------------------------------------
+# A bad SERIES_MAIN is an error, not a quiet other history.
+SERIES_MAIN=nowhere "$BASH" scripts/series range "$id" >"$tmp/out" 2>&1 && rc=0 || rc=$?
+verdict "range refuses an explicit main that is not there" "$rc" 1 "main-ref"
+# A series that spans harness and implementation cannot be undone as one commit.
+git switch -q main
+# ser <id> <file> <extra message line>: a human commit on main adding <file> with the Series-Id.
+ser() {
+	mkdir -p "$(dirname "$2")"; echo "$2" >"$2"; git add "$2"
+	printf 'chore(demo): add %s\n\nBody.\n%s\nStack: demo\nSeries-Id: %s\nHuman-Only: true\n' "$2" "$3" "$1" >"$tmp/m"
+	git -c core.hooksPath=/dev/null commit -q -F "$tmp/m"
+}
+echo staged >>later; git add later; git show HEAD:later >later
+sr 1 "revert refuses a staged change the tree no longer shows" "dirty" revert "$id"
+git reset -q
+same "the refused revert left main checked out (staged)" "$(git branch --show-current)" main
+ser mixed-abcdef0 docs/mixh ""; ser mixed-abcdef0 bootstrap/mixi ""
+head0="$(git rev-parse HEAD)"
+sr 1 "revert refuses a series on both sides" "revert-mixed" revert mixed-abcdef0 agent/claude/stack/revert-mixed
+same "the refused revert left main checked out" "$(git branch --show-current)" main
+same "the refused revert left no branch" "$(git branch --list '*revert-mixed*' | wc -l | tr -d ' ')" 0
+same "the refused revert left the tree clean" "$(git status --porcelain | wc -l | tr -d ' ')" 0
+same "the refused revert left main alone" "$(git rev-parse HEAD)" "$head0"
+# A trailer the reader takes (any case, any space after the colon) is found by range as well.
+echo odd >odd; git add odd
+printf 'chore(demo): odd\n\nBody.\n\nStack: demo\nseries-id:    odd-abcdef0\nHuman-Only: true\n' >"$tmp/m"
+git -c core.hooksPath=/dev/null commit -q -F "$tmp/m"
+sr 0 "range finds a trailer in another case and spacing" "..$(git rev-parse HEAD)" range odd-abcdef0
+# A policy marker in a commit body is carried into the undo.
+ser pol-abcdef0 quality/pol $'\n[policy] a body marker, not in the subject.\n'
+sr 0 "revert of a policy series" "revert-" revert pol-abcdef0 agent/claude/stack/revert-pol
+read -r pbranch _ <"$tmp/out"
+same "the undo carries the policy marker" "$(git log -1 --format=%B "$pbranch" | grep -c '^Carries the \[policy\]')" 1
+git switch -q main
+# Whatever fails after the new branch exists leaves no trace either. A branch name that cannot make
+# an id is refused before the checkout moves; a stamping amend that fails takes the undo with it.
+ser amend-abcdef0 quality/am $'\n[policy] a body marker, not in the subject.\n'
+head1="$(git rev-parse HEAD)"
+refused_clean() { # <what> <branch-pattern>
+	same "$1 left main checked out" "$(git branch --show-current)" main
+	same "$1 left no branch" "$(git branch --list "$2" | wc -l | tr -d ' ')" 0
+	same "$1 left the tree clean" "$(git status --porcelain | wc -l | tr -d ' ')" 0
+	same "$1 left main alone" "$(git rev-parse HEAD)" "$head1"
+}
+sr 1 "revert refuses a branch name that makes no id" "mint" revert "$id" 'agent/claude/stack/we+ird'
+refused_clean "the revert with a bad branch name" '*we+ird*'
+mkdir "$tmp/fakebin"
+printf '#!/bin/sh\ncase "$*" in *commit*--amend*) echo "fake git: amend refused" >&2; exit 1 ;; esac\nexec "%s" "$@"\n' "$(command -v git)" >"$tmp/fakebin/git"
+chmod +x "$tmp/fakebin/git"
+PATH="$tmp/fakebin:$PATH" sr 1 "revert whose stamping amend fails" "revert-id" revert amend-abcdef0 agent/claude/stack/revert-amend
+refused_clean "the revert whose amend failed" '*revert-amend*'
+# Off an agent branch nothing tells the lead of the undo: the branch must be named.
+sr 1 "revert off an agent branch without a branch" "branch" revert amend-abcdef0
+refused_clean "the revert without a lead" '*revert-amend*'
+# A TERM while the hooks run (here: the commit of the undo) leaves no trace either.
+printf '#!/bin/sh\nif [ "$1" = commit ]; then kill -TERM "$(cat "%s")"; echo "fake git: TERM sent" >&2; exit 1; fi\nexec "%s" "$@"\n' "$tmp/pid" "$(command -v git)" >"$tmp/fakebin/git"
+rc=0
+PATH="$tmp/fakebin:$PATH" "$BASH" -c 'echo $$ >"$1"; shift; exec "$BASH" scripts/series "$@"' _ "$tmp/pid" revert amend-abcdef0 agent/claude/stack/revert-amend >"$tmp/out" 2>&1 || rc=$?
+verdict "revert stopped by TERM" "$rc" 143 ""
+refused_clean "the revert stopped by TERM" '*revert-amend*'
+# A series that nets to nothing on main has nothing to undo.
+ser empty-abcdef0 docs/gone ""
+git rm -q docs/gone
+printf 'chore(demo): drop docs/gone\n\nBody.\n\nStack: demo\nSeries-Id: empty-abcdef0\nHuman-Only: true\n' >"$tmp/m"
+git -c core.hooksPath=/dev/null commit -q -F "$tmp/m"
+head1="$(git rev-parse HEAD)"
+sr 1 "revert of a series that changes nothing" "[revert-empty]" revert empty-abcdef0 agent/claude/stack/revert-empty
+refused_clean "the revert of an empty series" '*revert-empty*'
+# A long id: the header keeps to its limit, the id goes in the Refs: trailer.
+long=a-topic-name-long-enough-to-push-the-header-past-its-limit-abcdef0
+ser "$long" docs/long ""
+sr 0 "revert of a series with a long id" "revert-" revert "$long" agent/claude/stack/revert-long
+same "a long id keeps the undo's header short" "$(git log -1 --format=%s agent/claude/stack/revert-long)" "revert(series): undo a landed series"
+same "a long id is in the undo's Refs:" "$(git log -1 --format=%B agent/claude/stack/revert-long | grep -c "^Refs: series $long\$" || true)" 1
+git switch -q main
+# A [spec] or [policy] marker in the newest commit, with older bodies far past a pipe's buffer
+# after it in the log: the marker still reaches the undo.
+awk 'BEGIN { for (i = 0; i < 6000; i++) print "filler line " i " of a long body" }' >"$tmp/fill"
+ser big-abcdef0 quality/big $'\n'"$(cat "$tmp/fill")"$'\n'
+ser big-abcdef0 quality/big2 $'\n[policy] a body marker in the newest commit.\n'
+sr 0 "revert of a policy series with a long log" "revert-" revert big-abcdef0 agent/claude/stack/revert-big
+same "the undo of a long log carries the policy marker" "$(git log -1 --format=%B agent/claude/stack/revert-big | grep -c '^Carries the \[policy\]')" 1
+git switch -q main
 
 if [ "$fails" -ne 0 ]; then
 	echo "series self-test: $fails of $total checks failed" >&2
