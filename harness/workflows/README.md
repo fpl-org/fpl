@@ -37,3 +37,31 @@ Then run it once by hand: Actions > land > Run workflow, `pr` = an approved pull
 run lands at most one pull request and starts no other run. The relay job of `series.yml`
 (drafted in #168, not installed) dispatches a run on each approval by the owner; until it is
 installed, each landing is a dispatch by hand.
+
+## brake.yml
+
+The lock of the cap (`.agents/WORKFLOW.md`, "The cap"). On each pull request event, every
+15 minutes and on each push to main, `scripts/wip-count` counts the open work and
+`scripts/brake-flip` sets the ruleset `brake: all branches except main` to match. The job
+summary gives the count, the decision and the lag from the event. Install (owner), once that
+ruleset exists and the environment `brake` holds the secrets `BRAKE_APP_ID` and
+`BRAKE_APP_KEY` (the fpl-brake App's id and private key):
+
+```
+cp harness/workflows/brake.yml .github/workflows/brake.yml
+```
+
+Give the environment `brake` no required reviewers and no wait timer: a protection rule
+holds every run until someone approves it.
+
+The push that lands the copy on main is itself a run, and a live one: only a run started
+by hand can be a dry run. If the ruleset differs from what the count asks, that first run
+writes it. To see a dry run first, land the copy with its `on:` cut down to
+`workflow_dispatch`, run it by hand with dry run on, read the summary, then add the other
+triggers back.
+
+- Proven: the App flips `enforcement` with a PUT of that field alone, in 13 s median and
+  21 s at most from the event.
+- Not yet proven: a PUT that also carries `conditions` keeps `rules` and `bypass_actors`.
+  The summary prints both before and after each write; read it on the first live flip.
+- `app-id` is deprecated for `client-id` in the pinned token action; it still works.
