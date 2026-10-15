@@ -1,0 +1,51 @@
+# DRAFT of the approval relay, kept here because an agent's token cannot push under
+# .github/workflows (.agents/WORKFLOW.md, rule 8): the owner installs it (README.md).
+#
+# When the owner approves a pull request, it dispatches land.yml on main with the pull request
+# number; until that workflow arrives (a later unit) it fails loudly and changes nothing. It is
+# a workflow of its own, apart from series.yml: GitHub starts every workflow that listens to
+# `pull_request_review` on each review, and a job skipped by its `if` reports success, so
+# in series.yml the check `lemmas` would be reported green by every review of a head it had
+# judged red. Here only this job is skipped, and nothing requires it.
+#
+# The job holds actions: write and nothing else, which GitHub withholds from a fork's run, so
+# for a fork it refuses and names the dispatch the owner makes by hand. Ids and numbers reach
+# the shell through env. There is no secret here; the job uses the token GitHub gives the run.
+name: series-relay
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: read
+
+jobs:
+  relay:
+    if: >-
+      github.event_name == 'pull_request_review'
+      && github.event.review.state == 'approved'
+      && github.event.review.user.login == 'psjg'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch land.yml on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          # A fork's run gets a read-only token whatever this job asks for: say so, not a 403.
+          [ "$HEAD_REPO" = "$REPO" ] || {
+            echo "::error::pull request $PR comes from the fork $HEAD_REPO, whose run cannot hold actions: write; nothing was dispatched: run land.yml on main by hand with pr=$PR"
+            exit 1
+          }
+          # Fails loudly while land.yml is not on main, and has changed nothing by then.
+          gh workflow view land.yml --repo "$REPO" --ref main >/dev/null 2>&1 || {
+            echo "::error::land.yml is not on main yet; nothing was dispatched for pull request $PR"
+            exit 1
+          }
+          gh workflow run land.yml --repo "$REPO" --ref main -f pr="$PR"

@@ -5,7 +5,10 @@
 # worktree of its own (scripts/present-check), so a series is judged lemma by lemma. It posts
 # one comment: whether the push changed the presentation (the same tree, another story),
 # relocated the series (the same patches, a moved base) or changed its content, the lemma list
-# with seconds, and the range-diff against the head the push replaced.
+# with seconds, and the range-diff against the head the push replaced. The owner's approval is
+# relayed by series-relay.yml, a workflow of its own: a review event would otherwise start this
+# workflow too, and the jobs it skipped would report success under the names of the checks a
+# push just judged.
 #
 # Two jobs, split by what they may do: `lemmas` runs the pull request's code and only reads;
 # `comment` holds the one write, to the conversation, and runs none of that code (a fork's

@@ -238,10 +238,13 @@ check "classify content" test "$("$pc" classify work extra)" = content
 run "classify, no such OLD" 2 "not a commit: nosuch" -- classify nosuch work
 run "classify, no such NEW" 2 "not a commit: nosuch" -- classify work nosuch
 
-# The draft Action: the properties its header promises, read from the file itself. The draft
-# sits under harness/workflows; once the owner has installed it, under .github/workflows.
+# The draft Actions: the properties their headers promise, read from the files themselves.
+# The drafts sit under harness/workflows; once the owner has installed them, under
+# .github/workflows.
 yml="$root/harness/workflows/series.yml"
 [ -f "$yml" ] || yml="$root/.github/workflows/series.yml"
+relay="$root/harness/workflows/series-relay.yml"
+[ -f "$relay" ] || relay="$root/.github/workflows/series-relay.yml"
 wfdir="$root/.github/workflows"
 # lacks <body> <needle>...: say each needle the workflow text does not hold; fail if any.
 lacks() {
@@ -288,6 +291,15 @@ audit() { # audit <file>: print each broken promise of series.yml; the exit stat
 	job comment <"$body" | cond | grep -qF 'head.repo.full_name == github.repository' || { echo "comment: posts for a fork" && bad=1; }
 	return "$bad"
 }
+audit_relay() { # audit_relay <file>: print each broken promise of series-relay.yml
+	local body="$tmp/audit.body" bad=0
+	grep -vE '^[[:space:]]*#' "$1" >"$body"
+	audit_common "$1" "$body" || bad=1
+	lacks "$body" 'pull_request_review:' 'actions: write' 'land.yml' 'head.repo.full_name' \
+		"github.event.review.state == 'approved'" "github.event.review.user.login == 'psjg'" || bad=1
+	job relay <"$body" | grep -qF '[ "$HEAD_REPO" = "$REPO" ] ||' || { echo "relay: no fork refusal" && bad=1; }
+	return "$bad"
+}
 ids() { # ids: the job ids of the workflow on stdin, one per line
 	awk '/^jobs:/ { injobs = 1; next } injobs && /^  [a-z][a-z0-9_-]*:/ { sub(":.*", "", $1); print $1 }'
 }
@@ -298,16 +310,21 @@ cond() { # cond: the `if:` of the job on stdin, with its continuation lines
 	awk '/^    if:/ { on = 1; print; next } on && /^    [a-z-]+:/ { on = 0 } on'
 }
 check "series.yml keeps its promises" audit "$yml"
+check "series-relay.yml keeps its promises" audit_relay "$relay"
 refuses() { ! "$@"; }
-# The state after the owner installs the draft: .github/workflows holds series.yml and
-# noslop.yml, with its job `check`. A mutated copy then has every id of the installed file, so
-# a refusal proves nothing unless the unmodified copy is accepted beside it first.
+# The state after the owner installs the drafts: .github/workflows holds series.yml,
+# series-relay.yml and noslop.yml, with its job `check`. A mutated copy then has every id of
+# the installed file, so a refusal proves nothing unless the unmodified copy is accepted beside
+# it first.
 mkdir -p "$tmp/inst" "$tmp/mut"
 cp "$yml" "$tmp/inst/series.yml"
+cp "$relay" "$tmp/inst/series-relay.yml"
 printf 'jobs:\n  check:\n    runs-on: ubuntu-latest\n' >"$tmp/inst/noslop.yml"
 wfdir="$tmp/inst"
 cp "$yml" "$tmp/mut/series.yml"
 check "an unmodified series.yml is accepted beside the installed workflows" audit "$tmp/mut/series.yml"
+cp "$relay" "$tmp/mut/series-relay.yml"
+check "an unmodified series-relay.yml is accepted beside the installed workflows" audit_relay "$tmp/mut/series-relay.yml"
 # mutate <audit> <file> <sed script>...: each script applied to the draft must be refused.
 mutate() {
 	local fn="$1" src="$2" broken
@@ -330,6 +347,10 @@ mutate audit "$yml" 's/timeout-minutes/timeout-hours/' 's/\(uses: [^@]*\)@[0-9a-
 	's/head.repo.full_name == github.repository/head.repo.full_name != github.repository/' \
 	's/^permissions:$/&\
   actions: write/'
+mutate audit_relay "$relay" 's/timeout-minutes/timeout-hours/' 's/github[.]token/secrets.TOKEN/' \
+	's/actions: write/actions: read/' 's/pull_request_review:/pull_request:/' \
+	"s/ && github.event.review.state == 'approved'//" "s/ && github.event.review.user.login == 'psjg'//" \
+	'/\[ "$HEAD_REPO" = "$REPO" \] ||/d' 's/^  relay:/  check:/'
 sed -e 's/^  lemmas:/  check:/' -e 's/needs[.]lemmas/needs.check/' -e 's/needs: lemmas/needs: check/' "$yml" >"$tmp/mut/series.yml"
 out="$(audit "$tmp/mut/series.yml" || :)" # not a process substitution: it could outlive $tmp
 check "the audit names a job id noslop.yml also has" grep -qx 'shared job id: check' <<<"$out"
