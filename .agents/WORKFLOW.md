@@ -183,15 +183,18 @@ For agent work there are two scripts, one for each side of the review:
 
 ```
 scripts/pr [<branch>]          # the agent's side: file the branch as the machine account,
-                               # on the tail of the queue
+                               # on main (-B <parent> stacks, --draft opens a draft)
 scripts/land [<number>]        # the maintainer's side: check, look, decide, fast-forward main
 scripts/land --dry-run <number>  # every check and the push it would make; changes nothing
 ```
 
 `scripts/pr` refuses unless the token it uses belongs to the machine account of
 `.git/agent-identity` and the branch on the forge is the commit you have; it does not push.
-It files the pull request on the tail of the queue, and refuses a branch that is not built
-on that tail, with the rebase that puts it there; `-B <base>` overrides the choice.
+It files the pull request on `main`. `-B <parent>` stacks it on the branch of an open pull
+request instead, and refuses, with the rebase that fixes it, a branch that is not built on
+that parent or a parent that has no open pull request. It opens a ready pull request unless
+`--draft` says otherwise, so every bot starts at once. The generated body ends with the line
+`landing: fast-forward by the lander after review.`
 
 `scripts/land` lands by **fast-forward**: it pushes the pull request's head to `main`
 without force, `git push <url> <head>:refs/heads/main`, to the URL `land/remote` checked.
@@ -352,8 +355,8 @@ request (`scripts/import-review --open`), and serves the patches on 127.0.0.1. T
 reads the patches and nothing else. Its address, token included, is also written to
 `.git/review-serve.pid`, so it can be opened in another browser than the default.
 
-Open pull requests form one queue, first in, first out: each is based on the one filed
-before it, and only the head is based on main. The page is that queue as one surface, head
+Open pull requests are based on main, or on the branch of the one they are stacked on.
+The page orders them as one queue and shows it as one surface, a stack under its parent, head
 first, with the last few merged pull requests above it in grey. On the left is the queue as
 a tree, main at the top, each pull request with its commits under it; a click on a pull
 request scrolls there, a click on a commit shows that commit alone. On the right are the
