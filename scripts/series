@@ -5,7 +5,8 @@
 # A branch name and a SHA both change when a series is rebased, reordered or moved; the
 # Series-Id: trailer (.agents/COMMITS.md) does not. It is minted once and carried by every
 # commit of the series. There is no Patch-Id: trailer: a patch id stored in a message goes
-# stale when a move shifts context lines, and a stale identity is a false one.
+# stale when a move shifts context lines, and a stale identity is a false one. `manifest`
+# computes the patch ids on demand instead.
 #
 #   series mint <branch>            print <topic>-<7 hex of the branch tip>: the topic is the
 #                                   branch without agent/<id>/, a leading stack/ and a trailing
@@ -21,6 +22,10 @@
 #                                   branch or of any branch that would move (a rewrite after that
 #                                   is a question to him, not a tool's call).
 #   series check <range>            exactly one Series-Id over the range, on every commit; prints it.
+#   series manifest <range>         JSON: per commit the sha, the patch id (git patch-id
+#                                   --verbatim of its diff) and the SHA-256 of author and raw
+#                                   message, plus a digest over all (patch id, message) pairs.
+#                                   Byte-stable: no clock, no config of the caller's in the diff.
 #
 # Environment: SERIES_GH (the gh to ask the forge; default gh), SERIES_REPO (fpl-org/fpl),
 # SERIES_OWNER (the login whose word freezes a branch; psjg). The forge is only read, with the
@@ -42,6 +47,8 @@ die() {
 	printf 'series [%s]: %s\n    remedy: %s\n' "$1" "$2" "$3" >&2
 	exit 1
 }
+
+sha256() { if command -v sha256sum >/dev/null; then sha256sum; else shasum -a 256; fi | cut -d' ' -f1; }
 
 # revs <range>: the commits of a linear range, oldest first; refuses an empty one or a merge.
 revs() {
@@ -196,7 +203,30 @@ cmd_check() { # check <range>
 	printf '%s' "$ids" | sort -u
 }
 
+cmd_manifest() { # manifest <range>
+	local c pid pj msg list pairs="" sep="" digest
+	# The list first: a command substitution in the for line would swallow revs's refusal and
+	# leave a well-formed manifest of nothing behind, with exit 0.
+	list="$(revs "${1:-}")"
+	printf '{\n  "commits": [\n'
+	for c in $list; do
+		# Pinned so the caller's diff config cannot change the id: prefixes, renames, context,
+		# algorithm, hunk boundaries, and diff.suppressBlankEmpty (the one config key the plumbing
+		# reads: on, a blank context line loses its leading space and the patch id changes, measured).
+		pid="$(git -c core.quotePath=true -c diff.suppressBlankEmpty=false diff-tree -p --root --no-ext-diff --no-textconv --no-color --no-renames \
+			-U3 --src-prefix=a/ --dst-prefix=b/ --diff-algorithm=myers --indent-heuristic "$c" | git patch-id --verbatim | cut -d' ' -f1)"
+		msg="$({ git cat-file commit "$c" | awk '/^$/ { exit } /^author / { sub(/^author /, ""); sub(/ [0-9]+ [-+][0-9]+$/, ""); print }'
+			git cat-file commit "$c" | sed '1,/^$/d'; } | sha256)"
+		pj=null; [ -z "$pid" ] || pj="\"$pid\""
+		printf '%s    {"sha": "%s", "patch_id": %s, "msg_sha256": "%s"}' "$sep" "$c" "$pj" "$msg"
+		sep=$',\n'
+		pairs="$pairs${pid:--} $msg"$'\n'
+	done
+	digest="$(printf '%s' "$pairs" | sha256)"
+	printf '\n  ],\n  "digest": "%s"\n}\n' "$digest"
+}
+
 case "${1:-}" in
-mint | stamp | check | _amend) c="cmd_${1}"; shift; "$c" "$@" ;;
-*) die usage "series {mint|stamp|check} ..." "see the header of scripts/series" ;;
+mint | stamp | check | manifest | _amend) c="cmd_${1}"; shift; "$c" "$@" ;;
+*) die usage "series {mint|stamp|check|manifest} ..." "see the header of scripts/series" ;;
 esac
