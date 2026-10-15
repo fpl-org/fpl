@@ -195,13 +195,25 @@ audit() { # audit <file>: print each broken promise; the exit status is whether 
 		injobs && /^  [a-z][a-z0-9_-]*:/ { job = $1; jobs[job] = 1 }
 		/timeout-minutes:/ { timed[job] = 1 }
 		END { for (j in jobs) if (!timed[j]) print "no timeout-minutes: " j }' "$body" | { ! grep .; } || bad=1
+	# A skipped job reports success: the check job runs on every pull_request event, and only
+	# the comment job tells a base edit from a text edit.
+	if job check <"$body" | cond | grep -E 'action|changes'; then bad=1; fi
+	job comment <"$body" | cond | grep -qF 'changes.base != null' || { echo "comment: posts on text edits" && bad=1; }
 	return "$bad"
+}
+job() { # job <id>: the lines of one job of the workflow on stdin
+	awk -v j="$1:" '/^jobs:/ { injobs = 1; next } injobs && /^  [a-z][a-z0-9_-]*:/ { cur = $1 } injobs && cur == j'
+}
+cond() { # cond: the `if:` of the job on stdin, with its continuation lines
+	awk '/^    if:/ { on = 1; print; next } on && /^    [a-z-]+:/ { on = 0 } on'
 }
 check "series.yml keeps its promises" audit "$yml"
 refuses() { ! "$@"; }
 for broken in 's/timeout-minutes/timeout-hours/' 's/\(uses: [^@]*\)@[0-9a-f]\{40\}/\1@v4/' \
 	's/github[.]token/secrets.TOKEN/' 's/actions: write/actions: read/' \
-	's/persist-credentials: false/persist-credentials: true/' 's/set -eu$/set -u/'; do
+	's/persist-credentials: false/persist-credentials: true/' 's/set -eu$/set -u/' \
+	"s/^    if: github.event_name == 'pull_request'\$/&  \&\& github.event.changes.base != null/" \
+	"/github.event.action != 'edited' || github.event.changes.base != null/d"; do
 	sed -e "$broken" "$yml" >"$tmp/broken.yml"
 	check "the audit refuses: $broken" refuses audit "$tmp/broken.yml" >/dev/null
 done

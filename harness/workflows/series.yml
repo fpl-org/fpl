@@ -21,7 +21,9 @@ name: series
 on:
   pull_request:
     # "edited" is how GitHub reports a retargeted base: a stacked PR retargeted to main gets a
-    # longer range without a new head. The job below skips edits that did not move the base.
+    # longer range without a new head. Every edit runs the check again, a title or body edit too:
+    # a job skipped by its `if` reports success, so a skipped edit run would stand in for a red
+    # one on the same head. Only the comment skips edits that did not move the base.
     types: [opened, synchronize, reopened, edited]
   pull_request_review:
     types: [submitted]
@@ -31,13 +33,12 @@ permissions:
 
 jobs:
   check:
-    if: >-
-      github.event_name == 'pull_request'
-      && (github.event.action != 'edited' || github.event.changes.base != null)
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # A text edit has a group of its own, so it never cancels a push's run and its comment.
     concurrency:
-      group: series-check-${{ github.event.pull_request.number }}
+      group: series-check-${{ github.event.pull_request.number }}-${{ github.event.action == 'edited' && github.event.changes.base == null && 'text' || 'push' }}
       cancel-in-progress: true
     permissions:
       contents: read
@@ -68,6 +69,7 @@ jobs:
           cd "$RUNNER_TEMP/trusted"
           # The previous head by SHA; a force push can age it out of reach, and the comment says so.
           label="new" diff=""
+          [ "$ACTION" != edited ] || label="edited, no new head"
           if [ "$ACTION" = synchronize ]; then
             if git fetch --no-tags origin "$BEFORE_SHA" 2>/dev/null; then
               label="$(scripts/present-check classify -B "$BASE_SHA" "$BEFORE_SHA" "$HEAD_SHA")"
@@ -115,6 +117,7 @@ jobs:
     if: >-
       always() && github.event_name == 'pull_request'
       && needs.check.result != 'skipped' && needs.check.result != 'cancelled'
+      && (github.event.action != 'edited' || github.event.changes.base != null)
       && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 5
