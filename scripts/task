@@ -345,9 +345,9 @@ def load(graph, path, dry):
     be made before a write is made before the first one.
     """
     units = read_units(path)
-    leak_gate(units)
     ids = store_ids(graph, units)
     plan = links(graph, units, ids)
+    leak_gate(units)  # the slow check last: one leak-check per unit
     created = create(graph, units, ids, dry)
     linked = sum(link(graph, ids, step, dry) for step in plan)
     print(f"task: {created} created, {linked} links{' (dry run, nothing written)' if dry else ''}")
@@ -416,9 +416,10 @@ def link(graph, ids, step, dry):
 
 def links(graph, units, ids):
     """(label, part, blockers, reparent) for every unit: the links `load` has to add, as
-    labels, and whether its parent changes. Before any write, it refuses a link to a task
-    this identity may not link: the reducer would skip it without a word (only the author
-    sets a parent; the author or the assignee a blocker), while `rad cob update` succeeds.
+    labels, and whether its parent changes. Before any write, it refuses what the reducer
+    would skip without a word while `rad cob update` succeeds: a link to a task this
+    identity may not link (only the author sets a parent; the author or the assignee a
+    blocker), and more blockers on one task than the reducer keeps.
     """
     names = {oid: label(t).lower() for oid, t in graph.tasks.items()}
     me, plan = None, []
@@ -427,6 +428,9 @@ def links(graph, units, ids):
         held = {names.get(b) for b in old.get("blockedBy", [])}
         todo = [b for b in blockers if b.lower() not in held]
         reparent = part is not None and names.get(old.get("partOf")) != part.lower()
+        count = len(old.get("blockedBy", [])) + len(todo)
+        if count > reducer()["MAX_BLOCKERS"]:
+            die(f"{label_}: {count} blockers; the reducer keeps {reducer()['MAX_BLOCKERS']}")
         if old and (todo or reparent):
             me = me or rad("self", "--did").strip()
             if me != old.get("author") and (reparent or me != old.get("assignee")):
@@ -868,6 +872,12 @@ def refusals(f):
     )
     for name, rows, says in (
         ("two labels that differ in case only", "Q3\t-\t\tone\tx\nq3\t-\t\ttwo\tx\n", "twice"),
+        (
+            "more blockers than the reducer keeps",
+            "".join(f"Z{n}\t-\t\tz\tx\n" for n in range(65))
+            + f"Q1\t-\t{','.join(f'Z{n}' for n in range(65))}\tone\tx\n",
+            "Q1: 65 blockers",
+        ),
         ("a label of two words", "Q 1\t-\t\tone\tx\n", "'Q 1': a label is one word"),
         ("a label ending in a colon", "Q1:\t-\t\tone\tx\n", "'Q1:': a label is one word"),
         ("a title over the reducer's limit", f"Q1\t-\t\t{'n' * 200}\tx\n", "Q1: the reducer"),
