@@ -389,11 +389,49 @@ SWEEP_RACE="mkdir '$gd/rebase-merge' && echo refs/heads/agent/claude/stack/rebas
 	PATH="$tmp/race:$PATH" SWEEP_FRESH_MIN=0 SWEEP_OWNER_YES=1 sw --apply rebasing
 check "a branch a worktree rebases is not deleted" '[ "$rc" -eq 1 ] && grep -q "checked out meanwhile" "$tmp/out" && g rev-parse -q --verify refs/heads/agent/claude/stack/rebasing >/dev/null'
 rm -rf "$gd/rebase-merge"
-g worktree add -q "$repo/worktrees/embedded" -b agent/claude/stack/embedded main
-printf 'x\n' >"$repo/worktrees/embedded/loose.txt"
+for n in embedded embedlate; do
+	g worktree add -q "$repo/worktrees/$n" -b "agent/claude/stack/$n" main
+	printf 'x\n' >"$repo/worktrees/$n/loose.txt"
+done
 git init -q "$repo/worktrees/embedded/inner"
 SWEEP_FRESH_MIN=0 sw
 check "a worktree holding an untracked repository is review" '[ "$(action worktrees/embedded)" = review ] && col worktrees/embedded 10 | grep -q "holds a repository at inner"'
+rm -f "$tmp/raced"
+SWEEP_RACE_AT=stash SWEEP_RACE="$ng init -q '$repo/worktrees/embedlate/inner' && $ng -C '$repo/worktrees/embedlate/inner' commit -q --allow-empty -m inner" \
+	PATH="$tmp/race:$PATH" SWEEP_FRESH_MIN=0 SWEEP_OWNER_YES=1 sw --apply embedlate
+check "a repository made after the table is not flattened into a patch and removed" '[ "$rc" -eq 1 ] && grep -q "holds a repository" "$tmp/out" && git -C "$repo/worktrees/embedlate/inner" rev-parse -q --verify HEAD >/dev/null && [ ! -e "$repo/harness/sweep-archive/embedlate.patch" ] && g rev-parse -q --verify refs/heads/agent/claude/stack/embedlate >/dev/null'
+# a merge in progress, an unmerged path, a submodule: none of them is in a patch
+g worktree add -q --detach "$tmp/ow" main
+commit_in "$tmp/ow" o.txt o "other work"
+g branch other "$(git -C "$tmp/ow" rev-parse HEAD)"
+for n in merging conflicted latemerge latebisect; do g worktree add -q "$repo/worktrees/$n" -b "agent/claude/stack/$n" main; done
+$ng -C "$repo/worktrees/merging" merge -q --no-commit --no-ff other >/dev/null 2>&1
+blob="$(g rev-parse main:f.txt)"
+git -C "$repo/worktrees/conflicted" update-index --force-remove f.txt
+printf '100644 %s 2\tf.txt\n100644 %s 3\tf.txt\n' "$blob" "$blob" | git -C "$repo/worktrees/conflicted" update-index --index-info
+idx="$tmp/sm-index"
+GIT_INDEX_FILE="$idx" g read-tree main
+GIT_INDEX_FILE="$idx" g update-index --add --cacheinfo "160000,$(g rev-parse main),sm"
+g branch smbase "$(g commit-tree -p main -m submodule "$(GIT_INDEX_FILE="$idx" g write-tree)")"
+g worktree add -q "$repo/worktrees/subm" -b agent/claude/stack/subm smbase
+SWEEP_FRESH_MIN=0 sw
+check "a merge in progress and an unmerged path are review" '[ "$(action worktrees/merging)/$(col worktrees/merging 10)" = "review/holds a merge in progress; 1 dirty" ] && [ "$(action worktrees/conflicted)" = review ] && col worktrees/conflicted 10 | grep -q "holds an unmerged path"'
+SWEEP_BASE=smbase SWEEP_FRESH_MIN=0 sw
+check "a worktree with a submodule is review" '[ "$(action worktrees/subm)/$(col worktrees/subm 10)" = "review/holds a submodule" ]'
+g worktree add -q "$repo/worktrees/intended" -b agent/claude/stack/intended main
+printf 'n\n' >"$repo/worktrees/intended/n.txt"
+git -C "$repo/worktrees/intended" add -N n.txt
+SWEEP_FRESH_MIN=0 sw
+check "a worktree with an intent-to-add entry is review" '[ "$(action worktrees/intended)" = review ] && col worktrees/intended 10 | grep -q "holds an intent-to-add entry"'
+rm -f "$tmp/raced"
+SWEEP_RACE_AT=stash SWEEP_RACE="$ng -C '$repo/worktrees/latemerge' merge -q --no-commit --no-ff other >/dev/null 2>&1" \
+	PATH="$tmp/race:$PATH" SWEEP_FRESH_MIN=0 SWEEP_OWNER_YES=1 sw --apply latemerge
+check "a merge begun after the table fails the row before anything is made" '[ "$rc" -eq 1 ] && grep -q "holds a merge in progress, which" "$tmp/out" && git -C "$repo/worktrees/latemerge" rev-parse -q --verify MERGE_HEAD >/dev/null && ! g rev-parse -q --verify refs/tags/archive/agent/claude/stack/latemerge >/dev/null'
+rm -f "$tmp/raced"
+SWEEP_RACE="$ng -C '$repo/worktrees/latebisect' bisect start" \
+	PATH="$tmp/race:$PATH" SWEEP_FRESH_MIN=0 SWEEP_OWNER_YES=1 sw --apply latebisect
+check "a bisect begun while being saved keeps the worktree" '[ "$rc" -eq 1 ] && grep -q "holds a bisect in progress now" "$tmp/out" && [ -d "$repo/worktrees/latebisect" ]'
+unset SWEEP_RACE
 
 # --- a merge commit is not a patch ---------------------------------------------------------------
 # A branch whose only commit by patch is in the base, plus a merge with a change of its own, is

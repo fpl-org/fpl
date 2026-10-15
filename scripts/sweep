@@ -31,8 +31,10 @@
 #             review   locked, its directory gone, PSJ's, touched in the last SWEEP_FRESH_MIN
 #                      minutes (default 60: a run may use it), or new > 0: a person decides
 #             archive  merged, or new = 0: everything it committed is in the base; but review
-#                      when the branch is a symbolic ref (deleting it deletes its target) or
-#                      the worktree holds an untracked repository (a patch cannot keep one)
+#                      when the branch is a symbolic ref (deleting it deletes its target), or
+#                      the worktree holds what a patch cannot keep (unkept(), below): an
+#                      untracked repository, a submodule, an unmerged path, an intent-to-add
+#                      entry, or a merge, rebase, cherry-pick, revert or bisect in progress
 #   note    the reason, in words
 #
 # --apply is the only way anything changes, and only with SWEEP_OWNER_YES=1: the owner's yes.
@@ -53,11 +55,12 @@
 #      then the branch is deleted only if it is still at the head tagged: the tag keeps the
 #      commits reachable
 # A head that moved since the table was made is skipped; what is dirty is read again at the
-# moment of removal, and a worktree that changed after its patch was made is left. A branch
-# that became a symbolic ref, or that a worktree checks out, rebases or bisects at the moment
-# of deletion, stays. The one running sweep is never a candidate. Ignored files (.venv) go
-# with the directory. A name picks a row by its name, its branch or its last path component;
-# a name that picks no archive row is said and skipped.
+# moment of removal, and a worktree that changed after its patch was made is left, as is one
+# that holds what a patch cannot keep by then. A branch that became a symbolic ref, or that a
+# worktree checks out, rebases or bisects at the moment of deletion, stays. The one running
+# sweep is never a candidate. Ignored files (.venv) go with the directory. A name picks a row
+# by its name, its branch or its last path component; a name that picks no archive row is
+# said and skipped.
 #
 # The base is the local `main` (SWEEP_BASE): a lagging main only makes rows look less merged,
 # the safe direction. Nothing is fetched or pruned. SWEEP_FORGE=0 skips the forge; SWEEP_REPO
@@ -119,6 +122,30 @@ tab="$(printf '\t')"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/sweep.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 git_in() { git -C "$1" "${@:2}"; }
+# unkept <worktree>: what of it a patch over HEAD cannot keep, in words, or nothing. A submodule's
+# own changes are in its repository, not in the diff; an unmerged path has no one staged text, and
+# git diff prints "* Unmerged path" for it; the state of a merge, rebase, cherry-pick, revert or
+# bisect lives in the worktree's git directory, which the removal deletes. An intent-to-add entry
+# (git add -N) is in no cached diff, and the patch of the files gives it back as untracked.
+unkept() {
+	local gd s st nl='
+'
+	gd="$(git_in "$1" rev-parse --absolute-git-dir)" || { echo "a git directory it cannot read"; return; }
+	for s in MERGE_HEAD rebase-merge rebase-apply CHERRY_PICK_HEAD REVERT_HEAD sequencer BISECT_START; do
+		[ -e "$gd/$s" ] || continue
+		case "$s" in
+		MERGE_HEAD) s=merge ;; rebase-*) s=rebase ;; CHERRY_PICK_HEAD) s=cherry-pick ;;
+		REVERT_HEAD) s=revert ;; sequencer) s="cherry-pick or revert" ;; *) s=bisect ;;
+		esac
+		echo "a $s in progress"
+		return
+	done
+	# read whole before it is searched: a grep -q that quits early would kill the git still writing
+	st="$(git_in "$1" status --porcelain -uno)" || { echo "a status it cannot read"; return; }
+	case "$nl$st" in *"$nl A "*) echo "an intent-to-add entry"; return ;; esac
+	git_in "$1" ls-files -s | awk '$1 == "160000" { m = "a submodule" } $3 != 0 && !m { m = "an unmerged path" }
+		END { if (m) print m }' || echo "an index it cannot read"
+}
 
 # protected <path-from-root or ""> <branch or ""> — the do-not-touch list.
 protected() {
@@ -302,6 +329,10 @@ while IFS="$tab" read -r path sha br locked gone; do
 $(decide "$rel" "$b" "$merged" "$new" "$pr" "$owner" "$([ "$locked" = 1 ] && echo 1 || echo 0)" "$active" "$([ "$gone" = 1 ] && echo 1 || echo 0)")
 EOF
 	[ -z "$nested" ] || [ "$action" != archive ] || { action=review note="holds a repository at $nested"; }
+	if [ "$action" = archive ]; then
+		why="$(unkept "$path")"
+		[ -z "$why" ] || { action=review note="holds $why"; }
+	fi
 	[ "$path" != "$self" ] || { action=keep note="sweep runs here"; }
 	[ "$dirty" = 0 ] || [ "$dirty" = '-' ] || note="$note; $dirty dirty"
 	emit wt "$rel" "${b:--}" "$merged" "$new" "$dirty" "$pr" "$owner" "$action" "$note" "$sha" "$path"
@@ -397,12 +428,16 @@ occupied() {
 # snap <worktree> <file>: its dirty files, untracked ones too, as a patch over HEAD (empty when
 # clean), made in a scratch index so the worktree's own stays as it was; and in <file>.index what
 # is staged in the real index, as a patch over HEAD, for staged content the files no longer hold
-# (a staged file deleted since): the patch of the files alone cannot show it.
+# (a staged file deleted since): the patch of the files alone cannot show it. Status 3: it holds
+# a repository (a gitlink), which a patch records as one commit id and cannot keep.
 snap() {
 	local idx="$tmp/snap-index"
 	GIT_INDEX_FILE="$idx" git_in "$1" read-tree HEAD &&
-		GIT_INDEX_FILE="$idx" git_in "$1" add -A &&
-		GIT_INDEX_FILE="$idx" pdiff "$1" --cached --binary HEAD >"$2" &&
+		GIT_INDEX_FILE="$idx" git_in "$1" -c advice.addEmbeddedRepo=false add -A &&
+		GIT_INDEX_FILE="$idx" pdiff "$1" --cached --raw HEAD >"$2.raw" &&
+		pdiff "$1" --cached --raw HEAD >>"$2.raw" || return 1
+	! awk '$1 == ":160000" || $2 == "160000" { f = 1 } END { exit !f }' "$2.raw" || return 3
+	GIT_INDEX_FILE="$idx" pdiff "$1" --cached --binary HEAD >"$2" &&
 		pdiff "$1" --cached --binary HEAD >"$2.index"
 }
 while IFS="$tab" read -r kind name b merged new dirty pr owner action note sha path; do
@@ -435,8 +470,12 @@ while IFS="$tab" read -r kind name b merged new dirty pr owner action note sha p
 	# What is dirty is read now, not from the table: another session may have touched the worktree.
 	patch="" ipatch="" saved="" # each set once its file is written; saved: either
 	if [ "$kind" = wt ]; then
-		if ! snap "$path" "$tmp/snap1"; then
-			say "$name" "FAILED: could not read the dirty files; left as it is"
+		why="$(unkept "$path")"
+		[ -z "$why" ] || { say "$name" "FAILED: it holds $why, which a patch cannot keep; left as it is"; failed=$((failed + 1)); continue; }
+		rc=0
+		snap "$path" "$tmp/snap1" || rc=$?
+		if [ "$rc" -ne 0 ]; then
+			say "$name" "FAILED: $([ "$rc" = 3 ] && echo "it holds a repository a patch cannot keep" || echo "could not read the dirty files"); left as it is"
 			failed=$((failed + 1))
 			continue
 		fi
@@ -481,6 +520,9 @@ while IFS="$tab" read -r kind name b merged new dirty pr owner action note sha p
 			failed=$((failed + 1))
 			continue
 		fi
+		# A bisect started meanwhile changes no file the snapshots compare.
+		why="$(unkept "$path")"
+		[ -z "$why" ] || { say "$name" "FAILED: it holds $why now; tag $tag stays"; failed=$((failed + 1)); continue; }
 		if ! git worktree remove ${saved:+--force} -- "$path" 2>/dev/null; then
 			say "$name" "FAILED: worktree remove; tag $tag stays"
 			failed=$((failed + 1))
