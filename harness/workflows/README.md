@@ -23,8 +23,10 @@ token. It needs:
 
 Install, from a checkout with `github/main` fetched. The commit goes on a detached HEAD,
 since the hooks keep `main` itself where `github/main` is, and the push is the owner's direct
-push to main:
+push to main. The commit is the owner's own, so its message carries `Human-Only: true`: without
+it, or an agent's `Assisted-By` and `Session-Id`, `.githooks/commit-msg` refuses it
+(`scripts/land-self-test` runs the hook on this line's message):
 
-    git checkout --detach github/main && cp harness/workflows/land.yml .github/workflows/land.yml && git add .github/workflows/land.yml && git commit -m "ci(land): install the lander" && git push github HEAD:refs/heads/main && git checkout main
+    git checkout --detach github/main && cp harness/workflows/land.yml .github/workflows/land.yml && git add .github/workflows/land.yml && git commit -m "ci(land): install the lander" -m "Human-Only: true" && git push github HEAD:refs/heads/main && git checkout main
 
 Then run it once by hand: Actions > land > Run workflow, `pr` = an approved pull request.
