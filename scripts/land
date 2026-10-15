@@ -65,6 +65,9 @@
 #                           or user is refused
 #   land/size               at most 10 commits and 600 lines added plus removed
 #   land/workflows          no commit touches .github/workflows: those land by the owner path
+#   land/series             once main holds scripts/series: one Series-Id on every commit
+#   land/series-fresh       and no commit on main carries it yet
+#   land/patch-fresh        no commit's `git patch-id --verbatim` is one on main already
 #
 # Then it prints the conversation, opens the diff in the browser and stops for a keypress.
 # After Enter it approves the head when it said it would, checks everything again, and pushes:
@@ -631,11 +634,53 @@ def git(*args, stdin=None):
     return subprocess.run(("git", *args), input=stdin, capture_output=True, check=True).stdout
 
 
+def patch_ids(*revs):
+    """{commit: its `git patch-id --verbatim`} of the commits revs name; a merge, or a
+    commit whose diff is empty, has none."""
+    log = git("log", "-p", "--no-merges", "--format=commit %H", *revs)
+    lines = git("patch-id", "--verbatim", stdin=log).decode().splitlines()
+    return {c: p for p, c in (line.split() for line in lines)}
+
+
+def trailers(revs, key):
+    """[(commit, [its values of the trailer key])] for each commit revs name."""
+    out = git("log", f"--format=%H%x1f%(trailers:key={key},valueonly,separator=%x1f)%x1e",
+              revs).decode()
+    rows = [r.strip("\n").split("\x1f") for r in out.split("\x1e") if r.strip()]
+    return [(r[0], [x.strip() for x in r[1:] if x.strip()]) for r in rows]
+
+
+def judge_series(v, main, span):
+    """land/series and land/series-fresh, judged once main holds scripts/series: one
+    Series-Id on every commit, and no commit on main carries it yet."""
+    has = subprocess.run(("git", "cat-file", "-e", f"{main}:scripts/series"),
+                         capture_output=True).returncode == 0
+    if not has:
+        for rule in ("land/series", "land/series-fresh"):
+            v.ok(rule, "skipped: main has no scripts/series")
+        return
+    rows = trailers(span, "Series-Id")
+    ids = sorted({x for _, vals in rows for x in vals})
+    odd = [c[:12] for c, vals in rows if len(vals) != 1]
+    if odd or len(ids) != 1:
+        v.no("land/series", f"Series-Id {' '.join(ids) or 'none'}; not exactly one on"
+             f" {' '.join(odd) or 'every commit'}",
+             "scripts/series names the one series on every commit of the range")
+        return
+    v.ok("land/series", f"every commit carries Series-Id {ids[0]}")
+    if any(ids[0] in vals for _, vals in trailers(main, "Series-Id")):
+        v.no("land/series-fresh", f"Series-Id {ids[0]} is on main already",
+             "mint a new Series-Id: this one has landed")
+    else:
+        v.ok("land/series-fresh", f"Series-Id {ids[0]} is not on main yet")
+
+
 MOST = (10, 600)  # land/size: commits, and lines added plus removed
 
 
 def judge_range(v, main, head):
-    """land/size and land/workflows: the commits main..head."""
+    """land/size, land/workflows, land/series, land/series-fresh and land/patch-fresh: the
+    commits main..head."""
     span = f"{main}..{head}"
     commits = git("rev-list", span).decode().split()
     rows = [r.split("\t") for r in git("diff", "--numstat", main, head).decode().splitlines()]
@@ -653,6 +698,14 @@ def judge_range(v, main, head):
              " owner pushes the head to main with his deploy key")
     else:
         v.ok("land/workflows", "it touches no file in .github/workflows")
+    judge_series(v, main, span)
+    known = set(patch_ids(main).values())
+    dup = [c[:12] for c, p in patch_ids(span).items() if p in known]
+    if dup:
+        v.no("land/patch-fresh", f"main holds the patch of {' '.join(dup)} already",
+             "drop those commits (git rebase main drops them) and push again")
+    else:
+        v.ok("land/patch-fresh", "no patch of the range is on main yet")
 
 
 def judge(d, repo, fetched, main, ancestor, merges):  # noqa: PLR0913, PLR0917

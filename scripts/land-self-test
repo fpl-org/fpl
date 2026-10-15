@@ -77,8 +77,36 @@ printf '* @psjg\ndocs/ @someone\n' >.github/CODEOWNERS
 git commit -q -am "owners by path"
 MC="$(git rev-parse HEAD)"
 git reset -q --hard "$M0"
-# For the rules on the range: HW a head that touches a workflow, HB eleven commits, HL 601
-# lines.
+# For the rules on the range: MS, a main that holds scripts/series, HS above it with one
+# Series-Id, HN with none, MF a main past MS that carries HS's id; MP a main that adds p,
+# HP above it that removes p and adds it again, the patch of MP; HW a head that touches a
+# workflow, HB eleven commits, HL 601 lines.
+mkdir scripts
+printf '#!/bin/sh\necho d1g3st\n' >scripts/series
+chmod +x scripts/series
+git add -A
+git commit -q -m "series"
+MS="$(git rev-parse HEAD)"
+git commit -q --allow-empty -m "a series" -m "Series-Id: s-1"
+HS="$(git rev-parse HEAD)"
+git reset -q --hard "$MS"
+git commit -q --allow-empty -m "the same series, landed" -m "Series-Id: s-1"
+MF="$(git rev-parse HEAD)"
+git reset -q --hard "$MS"
+git commit -q --allow-empty -m "no series"
+HN="$(git rev-parse HEAD)"
+git reset -q --hard "$M0"
+echo p >p
+git add p
+git commit -q -m "add p"
+MP="$(git rev-parse HEAD)"
+git rm -q p
+git commit -q -m "remove p"
+echo p >p
+git add p
+git commit -q -m "add p again"
+HP="$(git rev-parse HEAD)"
+git reset -q --hard "$M0"
 mkdir -p .github/workflows
 echo 'on: push' >.github/workflows/x.yml
 git add -A
@@ -94,8 +122,9 @@ git commit -q -m "long"
 HL="$(git rev-parse HEAD)"
 git reset -q --hard "$M0"
 git push -q "$REMOTE" "$M0:refs/heads/main" "$H:refs/heads/$BR" "$M1:refs/heads/m1" \
-	"$MC:refs/heads/mc" "$H2:refs/heads/h2" "$HM:refs/heads/hm" "$HW:refs/heads/hw" \
-	"$HB:refs/heads/hb" "$HL:refs/heads/hl"
+	"$MC:refs/heads/mc" "$H2:refs/heads/h2" "$HM:refs/heads/hm" "$HS:refs/heads/hs" \
+	"$HN:refs/heads/hn" "$HP:refs/heads/hp" "$HW:refs/heads/hw" \
+	"$HB:refs/heads/hb" "$HL:refs/heads/hl" "$MF:refs/heads/mf"
 
 # The stand-ins: gh serves the forge, git sends the test's GitHub to the disk, open and
 # xdg-open only log.
@@ -1088,6 +1117,11 @@ range_case() {
 }
 forge
 expect 0 "the range rules on an ordinary head" --dry-run 7
+says "ok  land/series             skipped: main has no scripts/series" "no series yet: a notice"
+range_case "$HS" "$MS" 0 "every commit carries Series-Id s-1" "one Series-Id on a main with scripts/series"
+range_case "$HN" "$MS" 1 "NO  land/series" "a commit without a Series-Id"
+range_case "$HS" "$MF" 1 "NO  land/series-fresh" "a Series-Id that is on main already"
+range_case "$HP" "$MP" 1 "NO  land/patch-fresh" "a patch that is on main already"
 range_case "$HW" "$M0" 1 "NO  land/workflows" "a commit that touches .github/workflows"
 range_case "$HB" "$M0" 1 "11 commits, 0 lines: over 10" "eleven commits"
 range_case "$HL" "$M0" 1 "1 commits, 601 lines: over" "601 lines"
