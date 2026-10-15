@@ -74,6 +74,15 @@
 #   land/card               the body has the card's headings: What, What changes, How
 #                           checked, Limits, Verdict
 #
+# --ci is the lander App's mode: no terminal, no browser, no keypress, and no approval
+# given; it acts as the token in GH_TOKEN and refuses without one,
+# and a token the forge shows a user for (land/ci: an App's installation token has none).
+# There land/approved wants a code owner's approval of the head standing, land/author that
+# it is not the author's, and land/bypass that each ruleset on main lists the App
+# (FPL_LAND_APP_ID, default 5318175, fpl-lander) with bypass mode always, or, where the token
+# cannot see that list, that the ruleset lets the token past always. So far --ci only
+# judges: it wants --dry-run, and lands nothing.
+#
 # Then it prints the conversation, opens the diff in the browser and stops for a keypress.
 # After Enter it approves the head when it said it would, checks everything again, and pushes:
 # `git push <url> <head>:refs/heads/main`, to the URL land/remote checked, checked once more
@@ -132,7 +141,7 @@ die() {
 	exit 1
 }
 usage() {
-	echo "usage: scripts/land [--dry-run] [--remote <name>] [<number | url>]" >&2
+	echo "usage: scripts/land [--ci] [--dry-run] [--remote <name>] [<number | url>]" >&2
 	exit 2
 }
 
@@ -140,6 +149,7 @@ usage() {
 # python3 because the default dev shell has it and no jq; bash 3.2 cannot hold JSON.
 read -r -d '' PY <<'PY' || :
 import json
+import os
 import re
 import subprocess
 import sys
@@ -276,8 +286,8 @@ class Verdict:
         print(f"{PAD}remedy: {remedy}")
 
 
-def judge_pull(v, pr, me, fetched, repo):
-    """land/open, land/base, land/head and land/author."""
+def judge_pull(v, pr, me, fetched, repo, ci):
+    """land/open, land/base, land/head and, by hand, land/author (--ci: judge_reviews)."""
     n, head = pr["number"], pr["head"]["sha"]
     if pr.get("merged") or pr["state"] != "open":
         state = "merged" if pr.get("merged") else pr["state"]
@@ -301,7 +311,9 @@ def judge_pull(v, pr, me, fetched, repo):
              f"the forge reports head {head[:12]}, refs/pull/{n}/head holds {fetched[:12]}",
              "the branch moved while this ran; run it again")
     author = pr["user"]["login"]
-    if me.lower() == author.lower():
+    if ci:
+        pass
+    elif me.lower() == author.lower():
         v.no("land/author", f"you are {me}, the author of #{n}",
              "land as the maintainer: gh auth switch --hostname github.com --user <maintainer>")
     else:
@@ -318,10 +330,11 @@ def standing(d):
     return last
 
 
-def judge_reviews(v, d, pr, me, repo):
-    """land/codeowners, land/approved and land/changes-requested. Returns whether the
-    approval is yours to give in this run, and the texts of the code owners' approvals of
-    the head, where land/gpt reads its gpt-ok lines."""
+def judge_reviews(v, d, pr, me, repo, ci):
+    """land/codeowners, land/approved and land/changes-requested, and with --ci land/author:
+    the approval that counts is not the author's. Returns whether the approval is yours to
+    give in this run (never with --ci, which gives none), and the texts of the code owners'
+    approvals of the head, where land/gpt reads its gpt-ok lines."""
     n, head = pr["number"], pr["head"]["sha"]
     h = head[:12]
     last = standing(d)
@@ -346,18 +359,28 @@ def judge_reviews(v, d, pr, me, repo):
                 if w.lower() in owners and r["state"] == "APPROVED"]
     at_head = [w for w, r in approved if r.get("commit_id") == head]
     older = ", ".join(f"@{w} on {str(r.get('commit_id'))[:12]}" for w, r in approved)
-    # land/gpt reads the texts of the approvals counted.
+    author = pr["user"]["login"]
+    if ci:
+        mine = [w for w in at_head if w.lower() == author.lower()]
+        at_head = [w for w in at_head if w not in mine]
+        if mine and not at_head:
+            v.no("land/author", f"the only approval of {h} is by @{author}, its author",
+                 f"a code owner other than the author approves {h} on the forge")
+        else:
+            v.ok("land/author", f"{author} wrote it; the approval counted is another's")
+    # After the author's approval is out: land/gpt reads the texts of the approvals counted.
     bodies = [r.get("body") or "" for w, r in approved if w in at_head]
     if at_head:
         v.ok("land/approved", f"code owner {', '.join('@' + w for w in at_head)} approved {h}")
         return False, bodies
-    if me.lower() in owners and me.lower() != pr["user"]["login"].lower():
+    if not ci and me.lower() in owners and me.lower() != author.lower():
         v.ok("land/approved", f"you, a code owner, approve {h} after the keypress"
              + (f" ({older} is not this head)" if older else ""))
         return True, bodies
     v.no("land/approved",
          f"no code owner approved {h}" + (f"; {older} is not this head" if older else ""),
-         f"a code owner approves {h}: one of them runs scripts/land {n}")
+         f"a code owner approves {h} on the forge (Files changed > Review > Approve)"
+         if ci else f"a code owner approves {h}: one of them runs scripts/land {n}")
     return False, bodies
 
 
@@ -616,7 +639,7 @@ def unenforced(rule):
             if (not known[name](value) if name in known else value is not False)]
 
 
-def judge_rules(v, d, rules, me):
+def judge_rules(v, d, rules, me, ci):
     """land/rules and land/bypass: every rule is one judged here, and you, the account `me`
     that `gh api user` reports, may skip them."""
     unjudged = set()
@@ -628,10 +651,23 @@ def judge_rules(v, d, rules, me):
              "teach scripts/land those rules before it pushes past them")
     else:
         v.ok("land/rules", "scripts/land judges every rule on main")
+    app = int(os.environ.get("FPL_LAND_APP_ID", "5318175"))  # the fpl-lander App
     for rid in sorted({r["ruleset_id"] for r in rules if "ruleset_id" in r}):
         rs = load(f"{d}/ruleset-{rid}.json")
         can = rs.get("current_user_can_bypass") or "unknown"
-        if can in BYPASS:
+        actors = rs.get("bypass_actors")
+        if ci and isinstance(actors, list):
+            if any(a.get("actor_type") == "Integration" and a.get("actor_id") == app
+                   and a.get("bypass_mode") == "always" for a in actors):
+                v.ok("land/bypass", f"ruleset '{rs.get('name')}' lets App {app} past it: always")
+            else:
+                v.no("land/bypass", f"ruleset '{rs.get('name')}' does not let App {app} past"
+                     " it always", f"the owner's one-time step: in each ruleset on main,"
+                     f" Bypass list > the App {app} (fpl-lander) > Always")
+        elif ci and can != "always":  # the token cannot see the list: judge its own say
+            v.no("land/bypass", f"ruleset '{rs.get('name')}' lets this token past it {can}",
+                 f"run with the fpl-lander App's token, in Bypass list > Always")
+        elif can in BYPASS:
             v.ok("land/bypass", f"you may push past ruleset '{rs.get('name')}' as @{me}: {can}")
         else:
             v.no("land/bypass", f"ruleset '{rs.get('name')}' lets you (@{me}) past it {can}",
@@ -741,15 +777,16 @@ def judge_range(v, pr, main, head, bodies):
         v.ok("land/card", "the body holds the card")
 
 
-def judge(d, repo, fetched, main, ancestor, merges):  # noqa: PLR0913, PLR0917
+def judge(d, repo, fetched, main, ancestor, merges, ci):  # noqa: PLR0913, PLR0917
     """Print one line per check and return 1 when any refuses, 3 when none does but the
     approval is yours to give in this run, else 0."""
     pr = load(f"{d}/pr.json")
     me = load(f"{d}/me.json")["login"]
     rules = pages(f"{d}/rules.json")
     v = Verdict()
-    judge_pull(v, pr, me, fetched, repo)
-    approve, bodies = judge_reviews(v, d, pr, me, repo)
+    ci = ci == "1"
+    judge_pull(v, pr, me, fetched, repo, ci)
+    approve, bodies = judge_reviews(v, d, pr, me, repo, ci)
     judge_threads(v, d)
     fault = rules_fault(rules)
     if fault:  # nothing below can be judged against rules that are not there
@@ -760,7 +797,7 @@ def judge(d, repo, fetched, main, ancestor, merges):  # noqa: PLR0913, PLR0917
     judge_history(v, main, pr["head"]["sha"], ancestor, merges)
     judge_range(v, pr, main, fetched, bodies)
     if not fault:
-        judge_rules(v, d, rules, me)
+        judge_rules(v, d, rules, me, ci)
     if v.refused:
         print(f"land: #{pr['number']} refused by {', '.join(sorted(v.refused))}")
         return 1
@@ -897,9 +934,10 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
 }
 GQL
 
-dry=0 remote=github target=""
+ci=0 dry=0 remote=github target=""
 while [ $# -gt 0 ]; do
 	case "$1" in
+	--ci) ci=1 ;;
 	--dry-run) dry=1 ;;
 	--remote) [ $# -ge 2 ] || usage; remote="$2"; shift ;;
 	-*) usage ;;
@@ -907,8 +945,15 @@ while [ $# -gt 0 ]; do
 	esac
 	shift
 done
-[ "$dry" -eq 1 ] || { [ -t 0 ] && [ -t 1 ]; } ||
-	die "needs a terminal: landing is a person's decision (--dry-run needs none)"
+if [ "$ci" -eq 1 ]; then
+	[ -n "${GH_TOKEN:-}" ] || die "land/ci: --ci acts as the token in GH_TOKEN, and none is set;" \
+		"remedy: mint the fpl-lander App's token into GH_TOKEN"
+	[ "$dry" -eq 1 ] || die "land/ci: --ci only judges so far, and lands nothing;" \
+		"remedy: run it with --dry-run"
+else
+	[ "$dry" -eq 1 ] || { [ -t 0 ] && [ -t 1 ]; } ||
+		die "needs a terminal: landing is a person's decision (--dry-run and --ci need none)"
+fi
 command -v gh >/dev/null || die "gh not found; scripts/layer on github"
 command -v python3 >/dev/null || die "python3 not found"
 # api: gh api on github.com, where destination() says git pushes. A call that names no host
@@ -987,7 +1032,15 @@ esac
 # ancestor and merges. Run twice: before the question and after it, on the forge as it is then.
 gather() {
 	api "repos/$slug/pulls/$n" >"$tmp/pr.json" || die "cannot read #$n"
-	api user >"$tmp/me.json" || die "cannot read who you are"
+	if [ "$ci" -eq 1 ]; then # an App's token has no user: it is the App
+		if api user >/dev/null 2>&1; then
+			die "land/ci: GH_TOKEN is a person's, the forge shows a user for it;" \
+				"remedy: --ci acts as the fpl-lander App's installation token"
+		fi
+		printf '{"login": "%s"}\n' "${FPL_LAND_APP:-fpl-lander[bot]}" >"$tmp/me.json"
+	else
+		api user >"$tmp/me.json" || die "cannot read who you are"
+	fi
 	api graphql --paginate --slurp -F owner="${slug%%/*}" -F name="${slug#*/}" \
 		-F number="$n" -f query="$THREADS" >"$tmp/threads.json" ||
 		die "cannot read the review threads of #$n"
@@ -1039,7 +1092,7 @@ read_rules() {
 # and the approval is yours to give in this run.
 judge() {
 	local rc=0
-	py judge "$tmp" "$slug" "$fetched" "$main" "$ancestor" "$merges" || rc=$?
+	py judge "$tmp" "$slug" "$fetched" "$main" "$ancestor" "$merges" "$ci" || rc=$?
 	refused=0 approve=0
 	case "$rc" in
 	0) ;;
