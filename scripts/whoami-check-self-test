@@ -19,9 +19,9 @@ mkdir "$tmp/bin"
 # The stand-ins expand $PUSH, $GH and $SSH when they run, not when they are written.
 # shellcheck disable=SC2016
 {
-	printf '#!/bin/sh\n[ -n "$PUSH" ] || exit 1\ncat >\"$0.in\"\nprintf "protocol=https\\nhost=github.com\\nusername=%%s\\npassword=SECRET-PW\\n" "$PUSH"\n' >"$tmp/bin/git"
+	printf '#!/bin/sh\n[ -n "$PUSH" ] || exit 1\ncat >\"$0.in\"\n[ \"$HANG\" != git ] || exec sleep 30\nprintf "protocol=https\\nhost=github.com\\nusername=%%s\\npassword=SECRET-PW\\n" "$PUSH"\n' >"$tmp/bin/git"
 	printf '#!/bin/sh\necho "$*" >>"$0.log"\n[ -n "$GH" ] || exit 1\nprintf "github.com\\n  \\342\\234\\223 Logged in to github.com account other (keyring)\\n  - Active account: false\\n\\n  \\342\\234\\223 Logged in to github.com account %%s (keyring)\\n  - Active account: true\\n" "$GH"\n' >"$tmp/bin/gh"
-	printf '#!/bin/sh\necho "$*" >>"$0.log"\n[ -n "$SSH" ] || exit 255\nprintf "Hi %%s! You have successfully authenticated, but GitHub does not provide shell access.\\n" "$SSH"\nexit 1\n' >"$tmp/bin/ssh"
+	printf '#!/bin/sh\necho "$*" >>"$0.log"\n[ "$HANG" != ssh ] || exec sleep 30\n[ -n "$SSH" ] || exit 255\nprintf "Hi %%s! You have successfully authenticated, but GitHub does not provide shell access.\\n" "$SSH"\nexit 1\n' >"$tmp/bin/ssh"
 	# timeout is not on a stock Mac; the script must work with or without it.
 	printf '#!/bin/sh\nshift\nexec "$@"\n' >"$tmp/bin/timeout"
 }
@@ -115,11 +115,31 @@ run() {
 	out="$(cd "$tmp/glob" && PATH="$tmp/bin:$PATH" PUSH=bob GH=bob SSH=bob FPL_ADMIN_ACCOUNTS="*" "$sh" "$root/scripts/whoami-check" 2>&1)"
 	case "$out" in *NAG*) echo "FAIL admins-glob ($sh): '*' expanded against the working directory"; fails=$((fails + 1)) ;; esac
 	rm -rf "$tmp/glob"
-	# Without timeout on PATH it still works (a stock Mac).
-	rm -f "$tmp/bin/timeout"
-	expect "$sh" no-timeout psjg psjg psjg yes "ssh:      psjg"
-	printf '#!/bin/sh\nshift\nexec "$@"\n' >"$tmp/bin/timeout"
-	chmod +x "$tmp/bin/timeout"
+	# A stock Mac has no timeout. Every probe still has a deadline there (perl's alarm), and
+	# where there is neither the probes run without one. The PATH holds only the commands the
+	# script and the stand-ins need, so an installed timeout cannot answer for the absent one.
+	local iso="$tmp/iso" c t0
+	for variant in perl bare; do
+		rm -rf "$iso" && mkdir "$iso"
+		cp "$tmp/bin/git" "$tmp/bin/gh" "$tmp/bin/ssh" "$iso/"
+		for c in sh sed awk head cat sleep env; do ln -s "$(command -v "$c")" "$iso/$c"; done
+		[ "$variant" = bare ] || ln -s "$(command -v perl)" "$iso/perl"
+		if PATH="$iso" command -v timeout >/dev/null 2>&1; then echo "FAIL no-timeout-$variant ($sh): the isolated PATH has timeout"; fails=$((fails + 1)); fi
+		out="$(PATH="$iso" PUSH=psjg GH=psjg SSH=psjg "$sh" "$root/scripts/whoami-check" 2>&1)"
+		printf '%s\n' "$out" | grep -qxF "whoami-check: ssh:      psjg" || { echo "FAIL no-timeout-$variant ($sh): no ssh line"; fails=$((fails + 1)); }
+		# A probe that hangs is cut off at the deadline (with perl), and never costs more than that.
+		if [ "$variant" = perl ]; then
+			t0=$SECONDS
+			out="$(PATH="$iso" HANG=ssh FPL_WHOAMI_DEADLINE=1 PUSH=psjg GH=psjg SSH=psjg "$sh" "$root/scripts/whoami-check" 2>&1)"
+			if [ $((SECONDS - t0)) -gt 6 ]; then echo "FAIL hang-perl ($sh): took $((SECONDS - t0))s with a 1s deadline"; fails=$((fails + 1)); fi
+			printf '%s\n' "$out" | grep -qxF "whoami-check: ssh:      unknown" || { echo "FAIL hang-perl ($sh): a hung ssh was not 'unknown'"; fails=$((fails + 1)); }
+			t0=$SECONDS
+			out="$(PATH="$iso" HANG=git FPL_WHOAMI_DEADLINE=1 PUSH=psjg GH=psjg SSH=psjg "$sh" "$root/scripts/whoami-check" https://github.com/o/r.git 2>&1)"
+			if [ $((SECONDS - t0)) -gt 6 ]; then echo "FAIL hang-helper ($sh): took $((SECONDS - t0))s with a 1s deadline"; fails=$((fails + 1)); fi
+			printf '%s\n' "$out" | grep -qxF "whoami-check: username=unknown" || { echo "FAIL hang-helper ($sh): a hung helper was not 'unknown'"; fails=$((fails + 1)); }
+		fi
+	done
+	rm -rf "$iso"
 }
 
 # The hook runs it as a message: before the gates, and its failure cannot refuse a push.
