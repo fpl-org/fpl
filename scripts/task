@@ -3,7 +3,7 @@
 
     scripts/task new "<title>" [-d <description>] [-b <id>]... [-p <id>]   open a task
     scripts/task list [--all]        open tasks; --all includes done and dropped
-    scripts/task ready               tasks nothing is waiting on; exit 1 if a loop is left
+    scripts/task ready               tasks nothing waits on (not lanes); exit 1 if a loop is left
     scripts/task show <id>
     scripts/task start|done|drop|reopen <id>
     scripts/task block [-f] <id> <by>  <id> must wait for <by>;  unblock removes it
@@ -248,11 +248,17 @@ def opening(graph, args):
 
 
 def listing(graph, args):
-    """`list` and `ready`: one line per task, oldest first."""
+    """`list` and `ready`: one line per task, oldest first.
+
+    `ready` leaves out a task that has an open part: a lane or group is never what is
+    picked up while its parts are. Once every part is done or dropped, closing it is the
+    work left, and it shows. A closed part, of whatever author, hides nothing.
+    """
+    parents = {t.get("partOf") for t in graph.tasks.values() if t["state"] in OPEN_STATES}
     for oid in sorted(graph.tasks, key=lambda o: (graph.tasks[o].get("opened", 0), o)):
         state = graph.tasks[oid]["state"]
         if args.cmd == "ready":
-            keep = state in OPEN_STATES and not graph.waiting_on(oid)
+            keep = state in OPEN_STATES and not graph.waiting_on(oid) and oid not in parents
         else:
             keep = args.all or state in OPEN_STATES
         if keep:
@@ -480,15 +486,18 @@ def basics(f):
 
 
 def lanes(f, lexer):
-    """part, -p and labels."""
+    """part, -p and labels, and a lane in ready."""
     lane = f.out("new", "lane-X the lane").strip()
-    f.out("new", "X1 a unit", "-p", lane)
+    unit = f.out("new", "X1 a unit", "-p", lane).strip()
     f.task("part", lexer, lane)
     lane_id = json.loads(f.out("show", lane))["id"]
     f.check("part and -p are stored", json.loads(f.out("show", "X1"))["partOf"] == lane_id)
     f.check("a label names a task", f.task("show", "lane-X").returncode == 0)
     f.check("part loop refused", f.task("part", lane, "X1", ok=False).returncode == 2)
     f.task("part", lexer, "none")
+    f.check("a lane is not ready", lane not in f.out("ready"))
+    f.task("drop", unit)
+    f.check("a lane whose parts are all closed is ready", lane in f.out("ready"))
 
 
 def loops(f):
