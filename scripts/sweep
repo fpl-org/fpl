@@ -15,7 +15,8 @@
 #   branch  the branch checked out there, or '-' (detached)
 #   merged  yes when the head is an ancestor of the base (git merge-base --is-ancestor)
 #   new     commits of the head the base lacks by patch (git cherry, the '+' lines): a
-#           rebase-merged pull request is not an ancestor of main but has new = 0
+#           rebase-merged pull request is not an ancestor of main but has new = 0; plus its
+#           merge commits the base lacks, which cherry skips and a patch cannot show to be in it
 #   dirty   files `git status --porcelain -uall` lists: modified, staged, untracked; not ignored
 #           ones; '-' for a branch row
 #   pr      OPEN, MERGED or CLOSED for the branch (one read-only forge call for all rows, with
@@ -166,11 +167,15 @@ merged_of() {
 	git merge-base --is-ancestor "$1" "$base" || rc=$?
 	case "$rc" in 0) echo yes ;; 1) echo no ;; *) die "merge-base failed for $1" ;; esac
 }
-# new_of <sha>: how many of its commits the base lacks by patch.
+# new_of <sha>: how many of its commits the base lacks by patch, and its merge commits the base
+# lacks at all: git cherry skips a merge, whose own changes (a conflict resolution) a patch
+# comparison would not find in the base, so a merge is counted as new until it is an ancestor.
 new_of() {
-	local out
+	local out plus merges
 	out="$(git cherry "$base" "$1")" || die "cherry failed for $1"
-	printf '%s\n' "$out" | grep -c '^+' || true
+	plus="$(printf '%s\n' "$out" | grep -c '^+' || true)"
+	merges="$(git rev-list --merges --count "$base..$1")" || die "rev-list failed for $1"
+	echo $((plus + merges))
 }
 
 rows="$tmp/rows"

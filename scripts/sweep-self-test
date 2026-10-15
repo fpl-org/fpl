@@ -351,6 +351,22 @@ SWEEP_RACE_AT=stash SWEEP_RACE="$ng init -q '$repo/worktrees/embedlate/inner' &&
 check "a repository made after the table is not flattened into a patch and removed" '[ "$rc" -eq 1 ] && grep -q "holds a repository" "$tmp/out" && git -C "$repo/worktrees/embedlate/inner" rev-parse -q --verify HEAD >/dev/null && [ ! -e "$repo/harness/sweep-archive/embedlate.patch" ] && g rev-parse -q --verify refs/heads/agent/claude/stack/embedlate >/dev/null'
 unset SWEEP_RACE
 
+# --- a merge commit is not a patch ---------------------------------------------------------------
+# A branch whose only commit by patch is in the base, plus a merge with a change of its own, is
+# not "all in the base": git cherry skips the merge. SWEEP_BASE keeps main where the checks above
+# left it.
+g branch basebr main
+g worktree add -q --detach "$tmp/mw1" main
+commit_in "$tmp/mw1" side.txt side "side work"
+g worktree add -q "$tmp/mw2" basebr
+commit_in "$tmp/mw2" side.txt side "side work" # the same patch, in the base
+printf 'resolution\n' >"$tmp/mw1/merge-only.txt"
+git -C "$tmp/mw1" add merge-only.txt
+g branch agent/claude/stack/mergey "$(git -C "$tmp/mw1" commit-tree -p HEAD -p main -m merge "$(git -C "$tmp/mw1" write-tree)")"
+g branch agent/claude/stack/plainside "$(git -C "$tmp/mw1" rev-parse HEAD)"
+SWEEP_BASE=basebr SWEEP_FRESH_MIN=0 sw
+check "a branch whose merge commit is not in the base is review, its patch-equal twin without the merge is archive" '[ "$(col agent/claude/stack/mergey 5)/$(action agent/claude/stack/mergey)/$(col agent/claude/stack/plainside 5)/$(action agent/claude/stack/plainside)" = 1/review/0/archive ]'
+
 if [ "$fails" -eq 0 ]; then
 	echo "sweep self-test: $total checks passed (bash ${BASH_VERSION%%(*})"
 else
