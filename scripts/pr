@@ -2,19 +2,22 @@
 #
 # scripts/pr — open the pull request for an agent branch, as the machine account.
 #
-#   scripts/pr                     the current branch; title and body from its first
-#                                  commit, and with more than one commit the body also
-#                                  lists every subject
+#   scripts/pr                     the current branch, on main; title and body from its
+#                                  first commit, and with more than one commit the body
+#                                  also lists every subject
 #   scripts/pr <branch>            that branch, without checking it out
 #   scripts/pr -t <title> -b <text>
-#   scripts/pr -B <base>           target that branch instead of the tail of the queue
+#   scripts/pr -B <parent>         stack on the branch of an open pull request (below)
+#   scripts/pr --draft             open it as a draft
 #   scripts/pr -n                  dry run: print what would be sent
 #
-# Open pull requests form one queue, first in, first out: each is based on the one filed
-# before it, and only the head is based on main, so they merge one after another without
-# conflicts between them (.agents/WORKFLOW.md). A new pull request goes on the tail: its base
-# is the branch of the last open pull request, and the branch must already contain it.
-# If it does not, this stops and says how to rebase onto it.
+# A pull request is based on main. It is based on another branch only when that is a stack
+# the author chose: -B <parent> names the head branch of a pull request that is open, and
+# the branch must already be built on it. If it is not, this stops and says how to rebase
+# onto it. -B main is the default spelled out.
+#
+# A pull request opens ready, not as a draft, unless --draft says otherwise: every bot
+# reviewer and check starts at once, so they are done before a human reads.
 #
 # Naming the branch matters when the checkout is someone's working copy: switching it to
 # the branch rewrites their files, and a session that may not delete files can leave it
@@ -33,7 +36,8 @@
 #
 # It talks to the forge over its API, with python3 from the default dev shell, so the
 # github layer is not needed. The token is gh's if gh has one for the machine account,
-# else the one in .git/agent-credentials (.agents/WORKFLOW.md).
+# else the one in .git/agent-credentials (.agents/WORKFLOW.md). FPL_API_URL names another
+# API for scripts/pr-self-test; only this machine's loopback is accepted.
 set -euo pipefail
 
 die() {
@@ -41,18 +45,22 @@ die() {
 	exit 1
 }
 
-base="" title="" body="" dry=0
-while getopts "t:b:B:n" opt; do
-	case "$opt" in
-	t) title="$OPTARG" ;;
-	b) body="$OPTARG" ;;
-	B) base="$OPTARG" ;;
-	n) dry=1 ;;
-	*) die "usage: scripts/pr [-n] [-t <title>] [-b <body>] [-B <base>] [<branch>]" ;;
+usage="usage: scripts/pr [-n] [--draft] [-t <title>] [-b <text>] [-B <parent>] [<branch>]"
+base="" title="" body="" dry=0 draft=0
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-t | -b | -B)
+		[ $# -ge 2 ] || die "$1 needs a value; $usage"
+		case "$1" in -t) title="$2" ;; -b) body="$2" ;; *) base="$2" ;; esac
+		shift 2
+		;;
+	-n) dry=1 && shift ;;
+	--draft) draft=1 && shift ;;
+	-*) die "$usage" ;;
+	*) break ;;
 	esac
 done
-shift $((OPTIND - 1))
-[ $# -le 1 ] || die "usage: scripts/pr [-n] [-t <title>] [-b <body>] [-B <base>] [<branch>]"
+[ $# -le 1 ] || die "$usage"
 
 top="$(git rev-parse --show-toplevel)"
 branch="${1:-$(git branch --show-current)}"
@@ -76,15 +84,17 @@ login="${login%@*}"
 [ -n "$login" ] && [ "$login" != "$identity" ] ||
 	die "cannot read a login from '$identity'"
 
-# The forge is the remote the branch tracks, else the one the base tracks, else the one
-# main tracks: a branch stacked on another agent branch usually tracks nothing, and its
-# base, created here, often does not either. Failing all three, a clone with a single
-# remote has only one forge to mean.
-remote="$(git config "branch.$branch.remote" ||
-	git config "branch.$base.remote" ||
-	git config branch.main.remote ||
-	{ [ "$(git remote | wc -l)" -eq 1 ] && git remote; })" ||
-	die "cannot tell the forge: '$branch', '$base' and main track no remote, and there is more than one"
+# The forge is the remote the branch tracks, else the one the parent -B names tracks, else
+# the one main tracks: a branch stacked on another agent branch usually tracks nothing, and
+# a parent that has an open pull request was pushed to the forge it is on. Failing all
+# three, a clone with a single remote has only one forge to mean.
+remote="$(git config "branch.$branch.remote" || true)"
+[ -n "$remote" ] || [ -z "$base" ] || remote="$(git config "branch.$base.remote" || true)"
+[ -n "$remote" ] || remote="$(git config branch.main.remote || true)"
+asked=""
+for b in "$branch" "$base" main; do [ -z "$b" ] || asked="$asked${asked:+, }'$b'"; done
+[ -n "$remote" ] || { [ "$(git remote | wc -l)" -eq 1 ] && remote="$(git remote)"; } ||
+	die "cannot tell the forge: no remote is tracked by $asked, and there is more than one"
 
 # .git/agent-credentials, if it is there: a git credential-store file holding one
 # https://<login>:<token>@github.com line for the machine account (.agents/WORKFLOW.md).
@@ -118,8 +128,8 @@ if [ -z "$token" ] && [ -n "$cred" ]; then
 fi
 [ -n "$token" ] || die "no token for '$login': gh has none, and neither has ${cred:-.git/agent-credentials}"
 
-# owner/repo from the remote, so the API knows where to file.
-slug="$(git remote get-url "$remote")"
+# owner/repo from the remote's configured address, not the one an insteadOf rewrites it to.
+slug="$(git config --get "remote.$remote.url" || git remote get-url "$remote")"
 slug="${slug%.git}"
 slug="${slug#*github.com}"
 slug="${slug#[:/]}"
@@ -128,45 +138,101 @@ case "$slug" in
 *) die "cannot read owner/repo from the url of '$remote'" ;;
 esac
 
+# The forge side, one python program for every call: pyapi <command> <argument>...
+# It first checks that the token is the machine account's, whichever command follows.
+read -r -d '' pysrc <<'PY' || true
+import json, os, sys, urllib.error, urllib.request
+
+slug, login, token = os.environ["FPL_SLUG"], os.environ["FPL_LOGIN"], os.environ["FPL_TOKEN"]
+root = os.environ.get("FPL_API_URL", "https://api.github.com")
+
+
+def die(message):
+    print(f"pr: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+if root != "https://api.github.com" and not root.startswith("http://127.0.0.1:"):
+    die(f"FPL_API_URL '{root}' is neither GitHub nor this machine; the token stays home")
+
+
+def api(path, payload=None, method=None):
+    request = urllib.request.Request(
+        root + path,
+        data=None if payload is None else json.dumps(payload).encode(),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Content-Type": "application/json",
+        },
+        method=method or ("GET" if payload is None else "POST"),
+    )
+    try:
+        with urllib.request.urlopen(request) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        detail = json.loads(error.read() or b"{}")
+        die(f"{path}: {error.code} {detail.get('message', error.reason)}")
+
+
+def open_pull(branch):
+    owner = slug.split("/")[0]
+    found = api(f"/repos/{slug}/pulls?state=open&head={owner}:{branch}")
+    return found[0] if found else None
+
+
+whoami = api("/user").get("login")
+if whoami != login:
+    die(f"the token belongs to '{whoami}', not '{login}'")
+
+command, args = sys.argv[1], sys.argv[2:]
+if command == "open-url":  # the url of the open pull request of a branch, or nothing
+    found = open_pull(args[0])
+    if found:
+        print(found["html_url"])
+elif command == "create":
+    branch, base, title, body, draft = args
+    created = api(
+        f"/repos/{slug}/pulls",
+        {"title": title, "body": body, "head": branch, "base": base, "draft": draft == "1"},
+    )
+    print(created["html_url"])
+else:
+    die(f"no command '{command}'")
+PY
+pyapi() {
+	FPL_SLUG="$slug" FPL_LOGIN="$login" FPL_TOKEN="$token" python3 -c "$pysrc" "$@"
+}
+
 here="$(git rev-parse "refs/heads/$branch")"
 there="$(git_forge ls-remote "$remote" "refs/heads/$branch" | cut -f1)"
 [ -n "$there" ] || die "'$branch' is not on $remote yet; push it first"
 [ "$there" = "$here" ] || die "$remote has ${there:0:7}, you have ${here:0:7}; push first"
 
-# The tail of the queue: the open pull request no other one is based on. None means the
-# queue is empty and this one is its head, on main.
-if [ -z "$base" ]; then
-	base="$(FPL_TOKEN="$token" python3 - "$slug" "$branch" <<'PY'
-import json, os, sys, urllib.request
-
-slug, branch = sys.argv[1:3]
-request = urllib.request.Request(
-    f"https://api.github.com/repos/{slug}/pulls?state=open&per_page=100",
-    headers={"Authorization": f"Bearer {os.environ['FPL_TOKEN']}", "Accept": "application/vnd.github+json"},
-)
-with urllib.request.urlopen(request) as response:
-    open_prs = json.load(response)
-filed = [p for p in open_prs if p["head"]["ref"] == branch]
-if filed:
-    print(filed[0]["base"]["ref"])  # already in the queue; the forge knows its place
-    raise SystemExit(0)
-under = {p["base"]["ref"] for p in open_prs}
-tails = [p for p in open_prs if p["head"]["ref"] not in under]
-if len(tails) > 1:
-    names = ", ".join(f"#{p['number']} {p['head']['ref']}" for p in tails)
-    sys.exit(f"pr: the queue has more than one end ({names}); give the base with -B")
-print(tails[0]["head"]["ref"] if tails else "main")
-PY
-)" || exit 1
+# A branch that already has an open pull request is not filed twice.
+filed="$(pyapi open-url "$branch")"
+if [ -n "$filed" ]; then
+	printf 'pr: already open\n' >&2
+	printf '%s\n' "$filed"
+	exit 0
 fi
+
+# The base: main, unless -B names the branch of an open pull request this one is built on.
+# Ancestry is judged first, from refs, so a branch that is not on top of its parent is told
+# how to get there whether or not the parent has a pull request.
+[ -n "$base" ] || base=main
 if [ "$base" != main ]; then
 	git_forge fetch -q "$remote" "+refs/heads/$base:refs/remotes/$remote/$base" ||
 		die "cannot fetch '$base' from $remote"
 fi
 git merge-base --is-ancestor "$remote/$base" "$here" ||
-	die "'$branch' is not on top of $base, the tail of the queue; git rebase --onto $remote/$base $remote/main $branch, push, and run this again"
+	die "'$branch' is not on top of $base; git rebase --onto $remote/$base $remote/main $branch, push, and run this again"
+if [ "$base" != main ] && [ -z "$(pyapi open-url "$base")" ]; then
+	die "'$base' is not the branch of an open pull request; a pull request is based on main: git rebase --onto $remote/main $remote/$base $branch, push, and run this again without -B"
+fi
 
-first="$(git rev-list --reverse "$remote/$base..$here" | head -n1)"
+first="$(git rev-list --reverse "$remote/$base..$here" | sed -n 1p)"
 [ -n "$first" ] || die "no commits between $remote/$base and $branch"
 count="$(git rev-list --count "$remote/$base..$here")"
 [ -n "$title" ] || title="$(git log -1 --format=%s "$first")"
@@ -177,8 +243,8 @@ count="$(git rev-list --count "$remote/$base..$here")"
 # the first change, so list them all.
 subjects=""
 [ "$count" = 1 ] || subjects="$(git log --reverse --format='- %s' "$remote/$base..$here")"$'\n\n'
-text="$(printf '%s%s\n\n%s%s commit%s, landed by fast-forward.' \
-	"${stack:+Stack: $stack$'\n\n'}" "$body" "$subjects" "$count" "$([ "$count" = 1 ] || echo s)")"
+text="$(printf '%s%s\n\n%slanding: fast-forward by the lander after review.' \
+	"${stack:+Stack: $stack$'\n\n'}" "$body" "$subjects")"
 
 # The forge is public: the title, the text and the branch name go through the leak gate
 # first (scripts/leak-check; FPL_LEAK_GATE=warn overrides), dry run or not.
@@ -188,58 +254,9 @@ printf '%s\n%s\n\n%s\n' "$branch" "$title" "$text" >"$said/pull-request"
 "$top/scripts/leak-check" --text "$said/pull-request" || die "nothing was sent"
 
 if [ "$dry" -eq 1 ]; then
-	printf 'as:    %s\nbase:  %s\nhead:  %s\ntitle: %s\n\n%s\n' \
-		"$login" "$base" "$branch" "$title" "$text" >&2
+	printf 'as:    %s\nbase:  %s\nhead:  %s\ndraft: %s\ntitle: %s\n\n%s\n' \
+		"$login" "$base" "$branch" "$([ "$draft" -eq 1 ] && echo yes || echo no)" "$title" "$text" >&2
 	exit 0
 fi
 
-# One round trip per step: who the token is, whether the branch is already filed, and
-# then the pull request. Anything but 'the token is the machine account' stops here.
-FPL_TOKEN="$token" python3 - "$slug" "$login" "$branch" "$base" "$title" "$text" <<'PY'
-import json, os, sys, urllib.error, urllib.request
-
-slug, login, branch, base, title, body = sys.argv[1:7]
-
-
-def die(message):
-    print(f"pr: {message}", file=sys.stderr)
-    raise SystemExit(1)
-
-
-def api(path, payload=None):
-    request = urllib.request.Request(
-        f"https://api.github.com{path}",
-        data=None if payload is None else json.dumps(payload).encode(),
-        headers={
-            "Authorization": f"Bearer {os.environ['FPL_TOKEN']}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "Content-Type": "application/json",
-        },
-        method="GET" if payload is None else "POST",
-    )
-    try:
-        with urllib.request.urlopen(request) as response:
-            return json.load(response)
-    except urllib.error.HTTPError as error:
-        detail = json.loads(error.read() or b"{}")
-        die(f"{path}: {error.code} {detail.get('message', error.reason)}")
-
-
-whoami = api("/user").get("login")
-if whoami != login:
-    die(f"the token belongs to '{whoami}', not '{login}'")
-
-owner = slug.split("/")[0]
-open_prs = api(f"/repos/{slug}/pulls?state=open&head={owner}:{branch}")
-if open_prs:
-    print("pr: already open", file=sys.stderr)
-    print(open_prs[0]["html_url"])
-    raise SystemExit(0)
-
-created = api(
-    f"/repos/{slug}/pulls",
-    {"title": title, "body": body, "head": branch, "base": base},
-)
-print(created["html_url"])
-PY
+pyapi create "$branch" "$base" "$title" "$text" "$draft"
