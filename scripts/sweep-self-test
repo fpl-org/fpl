@@ -131,6 +131,7 @@ wt worktrees/openpr agent/claude/stack/openpr
 for b in agent/claude/stack/gone agent/cursor/stack/cursor-harness agent/claude/stack/wip; do g branch "$b" main; done
 g branch agent/codex/stack/codex main
 g branch agent/claude/stack/onforge main
+g symbolic-ref refs/heads/agent/claude/stack/alias refs/heads/main # deleting it would delete main
 # a branch without a worktree that holds a commit the base lacks
 g worktree add -q --detach "$tmp/tmpwt" main
 commit_in "$tmp/tmpwt" w.txt w "work"
@@ -148,7 +149,7 @@ fingerprint() {
 # sw <args>: scripts/sweep from the repository, output in $tmp/out, exit code in $rc.
 sw() {
 	rc=0
-	(cd "$repo" && "$sweep" "$@") >"$tmp/out" 2>"$tmp/err" || rc=$?
+	(cd "${at:-$repo}" && "$sweep" "$@") >"$tmp/out" 2>"$tmp/err" || rc=$?
 }
 # col <name> <n>: the n-th field of the row called name in the last output.
 col() { awk -F'\t' -v n="$1" -v c="$2" '$2 == n { print $c }' "$tmp/out"; }
@@ -171,6 +172,7 @@ check "keep: readme, a, fon-bounds, an app session, an open pull request" '[ "$(
 check "the owner of each class" '[ "$(col worktrees/readme 8)/$(col .claude/worktrees/app1 8)/$(col agent/cursor/stack/cursor-harness 8)/$(col agent/codex/stack/codex 8)/$(col worktrees/merged 8)" = PSJ/app-session/Cursor/PSJ/agent ]'
 check "a Cursor branch is keep, a Codex branch review" '[ "$(action agent/cursor/stack/cursor-harness)/$(action agent/codex/stack/codex)" = keep/review ]'
 check "a branch without a worktree: archive when merged, review when not" '[ "$(action agent/claude/stack/gone)/$(action agent/claude/stack/wip)" = archive/review ]'
+check "a symbolic branch ref is review, named for its target" '[ "$(action agent/claude/stack/alias)/$(col agent/claude/stack/alias 10)" = "review/a symbolic ref to main" ]'
 check "the root checkout and its branch are not rows" '[ -z "$(col main 1)" ] && ! grep -q "$repo" "$tmp/out"'
 check "the footer counts the scope and the stash" 'grep -q "^# scope: 10 worktrees (9 under worktrees/, 1 under .claude/worktrees/, 0 elsewhere), the root checkout not counted; 1 of them dirty" "$tmp/out" && grep -q " 1 stashes (never touched)" "$tmp/out"'
 check "the forge is asked once: auth token, then pr list, nothing else" '[ "$(wc -l <"$tmp/gh.log" | tr -d " ")" = 2 ] && grep -q "^auth token --hostname github.com --user psjg-claude" "$tmp/gh.log" && grep -q "^pr list -R github.com/fpl-org/fpl .*--state all" "$tmp/gh.log"'
@@ -178,6 +180,12 @@ check "the token is never printed" '! grep -q stub-token "$tmp/out" "$tmp/err"'
 : >"$tmp/gh.log"
 SWEEP_FORGE=0 sw
 check "SWEEP_FORGE=0 asks nothing and leaves pr as ?" '[ ! -s "$tmp/gh.log" ] && [ "$(col worktrees/merged 7)" = "?" ]'
+
+# --- the checkout that runs sweep ------------------------------------------------------------
+at="$repo/worktrees/rebased"
+sw
+check "run from a linked worktree, that worktree is keep, the others as before" '[ "$(action worktrees/rebased)/$(action worktrees/merged)" = keep/archive ] && grep -q "sweep runs here" "$tmp/out"'
+unset at
 
 # --- fresh ------------------------------------------------------------------------------------
 g worktree add -q "$repo/worktrees/young" -b agent/claude/stack/young main
@@ -203,6 +211,13 @@ touch -t 202001010000 "$repo/worktrees/staged/f.txt"
 git -C "$repo/worktrees/staged" update-index --chmod=+x f.txt
 sw
 check "a deleted file and a staged change count as recent work" '[ "$(action worktrees/deleted)/$(action worktrees/staged)" = review/review ]'
+# --- a repository inside a worktree -----------------------------------------------------------
+g worktree add -q "$repo/worktrees/embedded" -b agent/claude/stack/embedded main
+printf 'x\n' >"$repo/worktrees/embedded/loose.txt"
+git init -q "$repo/worktrees/embedded/inner"
+SWEEP_FRESH_MIN=0 sw
+check "a worktree holding an untracked repository is review" '[ "$(action worktrees/embedded)" = review ] && col worktrees/embedded 10 | grep -q "holds a repository at inner"'
+
 # --- a merge commit is not a patch ---------------------------------------------------------------
 # A branch whose only commit by patch is in the base, plus a merge with a change of its own, is
 # not "all in the base": git cherry skips the merge. SWEEP_BASE keeps main where the checks above
