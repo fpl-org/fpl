@@ -54,6 +54,16 @@ class UnreadableError(Exception):
     """The forge did not answer, or a file is not a ruleset: there is nothing to judge by."""
 
 
+def host(api: str) -> str:
+    """The host gh keeps the token for the API root `api` under.
+
+    Only the public API has a host of its own, api.github.com for github.com; an Enterprise
+    Server answers on its own host (https://HOSTNAME/api/v3), whatever that host starts with.
+    """
+    name = urlparse(api).hostname or ""
+    return "github.com" if name == "api.github.com" else name
+
+
 def token(api: str) -> str:
     """A token to read the forge at `api` with, or "" to read it anonymously."""
     for name in ("GH_TOKEN", "GITHUB_TOKEN"):
@@ -62,10 +72,9 @@ def token(api: str) -> str:
     if not shutil.which("gh"):
         return ""
     # gh's own default host is not necessarily the one `api` is: ask for the token of its host.
-    host = (urlparse(api).hostname or "").removeprefix("api.")
     try:
         done = subprocess.run(
-            ["gh", "auth", "token", "--hostname", host],
+            ["gh", "auth", "token", "--hostname", host(api)],
             capture_output=True,
             text=True,
             check=False,

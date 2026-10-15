@@ -245,6 +245,18 @@ chmod +x "$tmp/fakegh/gh"
 GH_TOKEN="" PATH="$tmp/fakegh:$PATH" run 0 "a token from gh" ""
 total=$((total + 1))
 [ "$(cat "$tmp/gh-args" 2>/dev/null)" = "auth token --hostname 127.0.0.1" ] || fail "gh was asked: $(cat "$tmp/gh-args" 2>/dev/null)"
+# the host gh keeps a token under: github.com for the public API, an Enterprise Server's own
+# host as it is, even when it starts with api.
+total=$((total + 1))
+python3 -I - "$check" <<'PY' || fail "the host gh is asked for is not the API root's own"
+import runpy, sys
+
+host = runpy.run_path(sys.argv[1])["host"]
+for api, want in [("https://api.github.com", "github.com"),
+                  ("https://api.git.corp/api/v3", "api.git.corp"),
+                  ("https://git.corp/api/v3", "git.corp")]:
+    assert host(api) == want, (api, host(api), want)
+PY
 
 # read-only: every request the check made was a GET
 total=$((total + 1))
