@@ -144,16 +144,18 @@ cmd__amend() {
 
 # forge_silent <branch>: refuses when the owner has a review, comment or approval on the pull
 # requests of <branch>. Read-only GETs with the machine account's token; a forge that cannot be
-# asked is a refusal too (failing open would let the guard pass when it is blind).
+# asked is a refusal too (failing open would let the guard pass when it is blind). Every call names
+# github.com (GH_HOST must not send the question to another forge, whose silence would pass the
+# guard) and reads every page (a branch name reused by many pull requests, a long thread).
 forge_silent() {
 	local gh="${SERIES_GH:-gh}" repo="${SERIES_REPO:-fpl-org/fpl}" owner="${SERIES_OWNER:-psjg}" tok prs pr kind who
-	tok="$("$gh" auth token --user psjg-claude 2>/dev/null)" && [ -n "$tok" ] \
+	tok="$("$gh" auth token --hostname github.com --user psjg-claude 2>/dev/null)" && [ -n "$tok" ] \
 		|| die forge-token "no token for the machine account to ask the forge with" "log gh in as psjg-claude"
-	prs="$(GH_TOKEN="$tok" "$gh" api "repos/$repo/pulls?state=all&head=${repo%%/*}:$1" --jq '.[].number' 2>/dev/null)" \
+	prs="$(GH_TOKEN="$tok" "$gh" api --hostname github.com --paginate "repos/$repo/pulls?state=all&head=${repo%%/*}:$1" --jq '.[].number' 2>/dev/null)" \
 		|| die forge-query "the forge did not answer for branch $1" "retry when it is reachable"
 	for pr in $prs; do
 		for kind in "pulls/$pr/reviews" "issues/$pr/comments" "pulls/$pr/comments"; do
-			who="$(GH_TOKEN="$tok" "$gh" api --paginate "repos/$repo/$kind" --jq '.[].user.login' 2>/dev/null)" \
+			who="$(GH_TOKEN="$tok" "$gh" api --hostname github.com --paginate "repos/$repo/$kind" --jq '.[].user.login' 2>/dev/null)" \
 				|| die forge-query "the forge did not answer for $kind" "retry when it is reachable"
 			printf '%s\n' "$who" | grep -qix "$owner" \
 				&& die owner-spoke "$owner has spoken on pull request #$pr ($kind)" "ask him: a rewrite now is a question to the reviewer"

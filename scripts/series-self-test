@@ -29,6 +29,7 @@ mkdir -p "$HOME" "$XDG_CONFIG_HOME"
 # The forge: a stub gh that answers the GETs scripts/series makes from STUB_* variables.
 cat >"$tmp/gh" <<'EOF'
 #!/usr/bin/env bash
+echo "$*" >>"${STUB_LOG:-/dev/null}"
 case "$*" in
 "auth token"*) [ -z "${STUB_NOTOKEN:-}" ] || exit 1; echo token ;;
 *"pulls?state=all"*"stack/demo-1"*) echo "${STUB_PR_B:-}" ;;
@@ -98,13 +99,16 @@ sr 0 "manifest, again" "" manifest "$base0..HEAD"
 verdict "manifest is byte-stable" "$(cmp -s "$tmp/out" "$tmp/man0" && echo 0 || echo 1)" 0 ""
 
 # --- stamp: the forge's say first -----------------------------------------------------------------
-export STUB_PR=7
+export STUB_PR=7 STUB_LOG="$tmp/gh.log"
 for kind in STUB_REVIEWS STUB_COMMENTS; do
 	env "$kind=psjg" "$BASH" scripts/series stamp "$base0..HEAD" >"$tmp/out" 2>&1 && rc=0 || rc=$?
 	verdict "stamp refuses when the owner is in $kind" "$rc" 1 "owner-spoke"
 done
 STUB_NOTOKEN=1 "$BASH" scripts/series stamp "$base0..HEAD" >"$tmp/out" 2>&1 && rc=0 || rc=$?
 verdict "stamp refuses blind (no token)" "$rc" 1 "forge-token"
+same "every forge call names github.com" "$(grep -vc -e '--hostname github.com' "$tmp/gh.log" || true)" 0
+same "every pull request discovery reads all pages" "$(grep -e 'pulls?state=all' "$tmp/gh.log" | grep -vc -e '--paginate' || true)" 0
+differ "the forge was asked" "$(wc -l <"$tmp/gh.log" | tr -d ' ')" 0
 same "the refused stamps left the branch alone" "$(git rev-parse HEAD)" "$tip0"
 # A boundary branch inside the range moves with the rebase (--update-refs): its pull request is
 # asked too, and the owner's word on it refuses the stamp although the tip's is silent.
