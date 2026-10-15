@@ -49,7 +49,7 @@ COMMIT_SKELETON='<type>(<scope>): <summary>'
 # from the order. The spelling here is the canonical one: git reads a trailer key without
 # regard to case, this repository writes it one way.
 COMMIT_STACK_RE='[a-z0-9][a-z0-9._-]*'
-COMMIT_TRAILER_ORDER="Refs Stack BREAKING-CHANGE Advisor Assisted-By Reasoning-Effort Session-Id Co-Authored-By"
+COMMIT_TRAILER_ORDER="Refs Stack BREAKING-CHANGE Advisor Assisted-By Reasoning-Effort Session-Id Co-Authored-By Presented-By"
 COMMIT_TRAILER_KEYS="$COMMIT_TRAILER_ORDER Human-Only"
 
 # commit_types_re: the types as an extended-regex alternation, feat|fix|...

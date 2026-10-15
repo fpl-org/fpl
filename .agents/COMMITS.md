@@ -189,6 +189,7 @@ key, so landed history is not refused for case alone; a type or scope in the wro
   | `Reasoning-Effort` | that model's reasoning-effort setting | `Reasoning-Effort: low` |
   | `Session-Id` | the agent session id, for forensics | `Session-Id: d94ffb13-…` |
   | `Co-Authored-By` | co-author, GitHub-parseable form (repeatable) | `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>` |
+  | `Presented-By` | the model and session that presented the commit: rewrote it into the series a reviewer reads | `Presented-By: claude-opus-5-5 d94ffb13-…` |
 
 ## Atomicity
 
