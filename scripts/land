@@ -63,6 +63,8 @@
 #                           may be github.com-<alias>, a Host of the ssh config with no dot
 #                           in it, where ssh decides where it leads. Any other scheme, host
 #                           or user is refused
+#   land/size               at most 10 commits and 600 lines added plus removed
+#   land/workflows          no commit touches .github/workflows: those land by the owner path
 #
 # Then it prints the conversation, opens the diff in the browser and stops for a keypress.
 # After Enter it approves the head when it said it would, checks everything again, and pushes:
@@ -131,6 +133,7 @@ usage() {
 read -r -d '' PY <<'PY' || :
 import json
 import re
+import subprocess
 import sys
 
 VERDICTS = ("APPROVED", "CHANGES_REQUESTED", "DISMISSED")
@@ -624,6 +627,34 @@ def judge_rules(v, d, rules, me):
                  BYPASS_REMEDY)
 
 
+def git(*args, stdin=None):
+    return subprocess.run(("git", *args), input=stdin, capture_output=True, check=True).stdout
+
+
+MOST = (10, 600)  # land/size: commits, and lines added plus removed
+
+
+def judge_range(v, main, head):
+    """land/size and land/workflows: the commits main..head."""
+    span = f"{main}..{head}"
+    commits = git("rev-list", span).decode().split()
+    rows = [r.split("\t") for r in git("diff", "--numstat", main, head).decode().splitlines()]
+    lines = sum(int(r[0]) + int(r[1]) for r in rows if r[0] != "-")
+    if len(commits) <= MOST[0] and lines <= MOST[1]:
+        v.ok("land/size", f"{len(commits)} commits, {lines} lines")
+    else:
+        v.no("land/size", f"{len(commits)} commits, {lines} lines: over {MOST[0]} and"
+             f" {MOST[1]}", "split it into pull requests within both limits")
+    paths = git("log", "--format=", "--name-only", span).decode().split("\n")
+    flows = sorted({p for p in paths if p.startswith(".github/workflows/")})
+    if flows:
+        v.no("land/workflows", f"it touches {' '.join(flows)}",
+             "a workflow lands by the owner path: after a clean scripts/land --dry-run, the"
+             " owner pushes the head to main with his deploy key")
+    else:
+        v.ok("land/workflows", "it touches no file in .github/workflows")
+
+
 def judge(d, repo, fetched, main, ancestor, merges):  # noqa: PLR0913, PLR0917
     """Print one line per check and return 1 when any refuses, 3 when none does but the
     approval is yours to give in this run, else 0."""
@@ -641,6 +672,7 @@ def judge(d, repo, fetched, main, ancestor, merges):  # noqa: PLR0913, PLR0917
     else:
         judge_checks(v, d, rules, repo, pr["number"], pr["head"]["sha"])
     judge_history(v, main, pr["head"]["sha"], ancestor, merges)
+    judge_range(v, main, fetched)
     if not fault:
         judge_rules(v, d, rules, me)
     if v.refused:

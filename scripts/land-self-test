@@ -77,8 +77,25 @@ printf '* @psjg\ndocs/ @someone\n' >.github/CODEOWNERS
 git commit -q -am "owners by path"
 MC="$(git rev-parse HEAD)"
 git reset -q --hard "$M0"
+# For the rules on the range: HW a head that touches a workflow, HB eleven commits, HL 601
+# lines.
+mkdir -p .github/workflows
+echo 'on: push' >.github/workflows/x.yml
+git add -A
+git commit -q -m "a workflow"
+HW="$(git rev-parse HEAD)"
+git reset -q --hard "$M0"
+for i in 1 2 3 4 5 6 7 8 9 10 11; do git commit -q --allow-empty -m "c$i"; done
+HB="$(git rev-parse HEAD)"
+git reset -q --hard "$M0"
+seq 601 >l
+git add l
+git commit -q -m "long"
+HL="$(git rev-parse HEAD)"
+git reset -q --hard "$M0"
 git push -q "$REMOTE" "$M0:refs/heads/main" "$H:refs/heads/$BR" "$M1:refs/heads/m1" \
-	"$MC:refs/heads/mc" "$H2:refs/heads/h2" "$HM:refs/heads/hm"
+	"$MC:refs/heads/mc" "$H2:refs/heads/h2" "$HM:refs/heads/hm" "$HW:refs/heads/hw" \
+	"$HB:refs/heads/hb" "$HL:refs/heads/hl"
 
 # The stand-ins: gh serves the forge, git sends the test's GitHub to the disk, open and
 # xdg-open only log.
@@ -1058,6 +1075,22 @@ pull open false main false
 landing 1 "GitHub does not show the pull request as merged" 7
 says "does not show #7 as merged" "it says so loudly"
 main_is "$H" "main moved all the same"
+
+# The rules on the range. --------------------------------------------------------------
+# range_case <head> <main> <exit> <text> <description>: a dry run of that head on that main.
+range_case() {
+	at="$1" HEAD_SHA="$1"
+	forge
+	git --git-dir="$REMOTE" update-ref refs/heads/main "$2"
+	expect "$3" "$5" --dry-run 7
+	says "$4" "$5: it says so"
+	at="$H" HEAD_SHA="$H"
+}
+forge
+expect 0 "the range rules on an ordinary head" --dry-run 7
+range_case "$HW" "$M0" 1 "NO  land/workflows" "a commit that touches .github/workflows"
+range_case "$HB" "$M0" 1 "11 commits, 0 lines: over 10" "eleven commits"
+range_case "$HL" "$M0" 1 "1 commits, 601 lines: over" "601 lines"
 
 # The header's land/rules entry says two things, which it keeps in sentences of their own: the
 # requirements scripts/land does not make (which the bypass would leave unenforced), and the
