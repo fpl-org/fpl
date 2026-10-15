@@ -264,8 +264,8 @@ pushes, and it never forces. Pushing `main` by hand stays what rule 6 forbids.
 
 `scripts/land` needs `gh`, which is not in the default dev shell: `scripts/layer on github`
 (`.agents/DEVSHELL.md`, "Forge tools are opt-in"). `scripts/pr` needs neither: it calls the API
-with python3 from the default shell. `scripts/land-self-test` (`make gates`) runs it against
-a forge in fixtures and a bare repository on disk.
+with python3 from the default shell. `scripts/land-self-test` and `scripts/pr-self-test`
+(`make gates`) run them against a forge in fixtures and a bare repository on disk.
 
 - **A stack lands bottom first, one pull request at a time.** Land the bottom one, run the
   printed retarget for the one above it, land that, and so on. Nothing above a landed pull
