@@ -395,6 +395,13 @@ while IFS="$tab" read -r kind name b merged new dirty pr owner action note sha p
 			failed=$((failed + 1))
 			continue
 		fi
+		# A detached head that advanced since the table is reachable from nothing once the worktree
+		# goes, and the tag is on the old one; the clean-worktree check of remove does not see it.
+		if [ "$(git_in "$path" rev-parse HEAD 2>/dev/null)" != "$sha" ]; then
+			say "$name" "FAILED: its head moved while being saved; tag $tag stays"
+			failed=$((failed + 1))
+			continue
+		fi
 		if ! git worktree remove ${patch:+--force} -- "$path" 2>/dev/null; then
 			say "$name" "FAILED: worktree remove; tag $tag stays"
 			failed=$((failed + 1))
