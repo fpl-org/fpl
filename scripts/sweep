@@ -37,7 +37,9 @@
 # It acts on archive rows, never on the do-not-touch list (checked again at the moment of
 # removal), in the order that loses nothing:
 #   1. the dirty files, untracked ones too, as harness/sweep-archive/<name>.patch (git-ignored;
-#      refused when it exists), made in a scratch index so the worktree's own stays as it was
+#      refused when it exists), made in a scratch index so the worktree's own stays as it was;
+#      and what is staged, as <name>.index.patch (git apply --index), because the files may no
+#      longer hold it: a staged file deleted since is in the index only
 #   2. a tag on the head: archive/<branch>, or archive/worktree/<name> when detached
 #   3. git worktree remove (--force only when a patch was made and the files still match it),
 #      then the branch is deleted only if it is still at the head tagged: the tag keeps the
@@ -323,15 +325,19 @@ occupied() {
 	return 1
 }
 # snap <worktree> <file>: its dirty files, untracked ones too, as a patch over HEAD (empty when
-# clean), made in a scratch index so the worktree's own stays as it was. Status 3: it holds a
-# repository (a gitlink), which a patch records as one commit id and cannot keep.
+# clean), made in a scratch index so the worktree's own stays as it was; and in <file>.index what
+# is staged in the real index, as a patch over HEAD, for staged content the files no longer hold
+# (a staged file deleted since): the patch of the files alone cannot show it. Status 3: it holds
+# a repository (a gitlink), which a patch records as one commit id and cannot keep.
 snap() {
 	local idx="$tmp/snap-index"
 	GIT_INDEX_FILE="$idx" git_in "$1" read-tree HEAD &&
 		GIT_INDEX_FILE="$idx" git_in "$1" -c advice.addEmbeddedRepo=false add -A &&
-		GIT_INDEX_FILE="$idx" git_in "$1" diff --cached --raw HEAD >"$2.raw" || return 1
+		GIT_INDEX_FILE="$idx" git_in "$1" diff --cached --raw HEAD >"$2.raw" &&
+		git_in "$1" diff --cached --raw HEAD >>"$2.raw" || return 1
 	! awk '$1 == ":160000" || $2 == "160000" { f = 1 } END { exit !f }' "$2.raw" || return 3
-	GIT_INDEX_FILE="$idx" git_in "$1" diff --cached --binary HEAD >"$2"
+	GIT_INDEX_FILE="$idx" git_in "$1" diff --cached --binary HEAD >"$2" &&
+		git_in "$1" diff --cached --binary HEAD >"$2.index"
 }
 while IFS="$tab" read -r kind name b merged new dirty pr owner action note sha path; do
 	[ "$action" = archive ] || continue
@@ -362,7 +368,7 @@ while IFS="$tab" read -r kind name b merged new dirty pr owner action note sha p
 	if [ "$b" != - ]; then tag="archive/$b"; else tag="archive/worktree/${name##*/}"; fi
 	if old="$(git rev-parse -q --verify "refs/tags/$tag")" && [ "$old" != "$sha" ]; then tag="$tag-$(printf '%.7s' "$sha")"; fi
 	# What is dirty is read now, not from the table: another session may have touched the worktree.
-	patch=""
+	patch="" ipatch=""
 	if [ "$kind" = wt ]; then
 		rc=0
 		snap "$path" "$tmp/snap1" || rc=$?
@@ -371,15 +377,17 @@ while IFS="$tab" read -r kind name b merged new dirty pr owner action note sha p
 			failed=$((failed + 1))
 			continue
 		fi
-		if [ -s "$tmp/snap1" ]; then
+		if [ -s "$tmp/snap1" ] || [ -s "$tmp/snap1.index" ]; then
 			patch="$archive_dir/${name##*/}.patch"
-			if [ -e "$patch" ]; then
-				say "$name" "FAILED: $patch exists; move it away"
+			ipatch="$archive_dir/${name##*/}.index.patch"
+			if [ -e "$patch" ] || [ -e "$ipatch" ]; then
+				say "$name" "FAILED: $patch or $ipatch exists; move it away"
 				failed=$((failed + 1))
 				continue
 			fi
 			mkdir -p "$archive_dir"
-			cp "$tmp/snap1" "$patch"
+			[ ! -s "$tmp/snap1" ] || cp "$tmp/snap1" "$patch"
+			[ ! -s "$tmp/snap1.index" ] || cp "$tmp/snap1.index" "$ipatch"
 		fi
 	fi
 	if ! git tag -- "$tag" "$sha" 2>/dev/null && [ "$(git rev-parse -q --verify "refs/tags/$tag^{commit}")" != "$sha" ]; then
@@ -390,7 +398,7 @@ while IFS="$tab" read -r kind name b merged new dirty pr owner action note sha p
 	# Clean, it goes without --force, which refuses a worktree touched since; dirty, only if the
 	# files are still the ones in the patch.
 	if [ "$kind" = wt ]; then
-		if [ -n "$patch" ] && ! { snap "$path" "$tmp/snap2" && cmp -s "$tmp/snap1" "$tmp/snap2"; }; then
+		if [ -n "$patch" ] && ! { snap "$path" "$tmp/snap2" && cmp -s "$tmp/snap1" "$tmp/snap2" && cmp -s "$tmp/snap1.index" "$tmp/snap2.index"; }; then
 			say "$name" "FAILED: it changed while being saved; tag $tag and $patch stay"
 			failed=$((failed + 1))
 			continue
@@ -421,7 +429,7 @@ while IFS="$tab" read -r kind name b merged new dirty pr owner action note sha p
 		failed=$((failed + 1))
 		continue
 	fi
-	say "$name" "removed; tag $tag${patch:+; dirty files in ${patch#"$root"/}}"
+	say "$name" "removed; tag $tag${patch:+; dirty files in ${patch#"$root"/}${ipatch:+, staged in ${ipatch#"$root"/}}}"
 	applied=$((applied + 1))
 done <"$rows"
 printf '# applied %s, skipped %s, failed %s\n' "$applied" "$skipped" "$failed"
