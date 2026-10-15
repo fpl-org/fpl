@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+#
+# scripts/sweep-self-test — proof that scripts/sweep reads a repository without touching it
+# (every file checksums the same after a dry run) and proposes only what is finished. The
+# fixture has merged, rebase-merged, unmerged, dirty and detached worktrees, branches without
+# one, an open pull request, the do-not-touch names and a stash.
+#
+# It runs in a throwaway repository, with Git's config and HOME pointed away from the
+# maintainer's, and a stub gh that logs its calls: nothing reaches the network. The suite runs
+# once per bash: a bash >= 5 first on PATH, and on a Mac also /bin/bash 3.2. Either missing
+# fails the test; on Linux, 3.2 is not covered, and the run says so.
+
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+
+# --- the driver -----------------------------------------------------------------------------
+if [ -z "${SWEEP_SELF_TEST_RUN:-}" ]; then
+	tmp="$(mktemp -d "${TMPDIR:-/tmp}/sweep-self-test.XXXXXX")"
+	trap 'rm -rf "$tmp"' EXIT
+	# shellcheck disable=SC2016 # expanded by the bash asked, not by this one
+	major() { "$1" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null || echo 0; }
+	bashes="" missing=0
+	b5="$(command -v bash || :)"
+	if [ -n "$b5" ] && [ "$(major "$b5")" -ge 5 ]; then
+		bashes="$b5"
+	else
+		echo "sweep self-test: needs a bash >= 5 first on PATH (nix develop); found ${b5:-none}" >&2
+		missing=1
+	fi
+	case "$(uname -s)" in
+	Darwin)
+		[ -x /bin/bash ] && [ "$(major /bin/bash)" -eq 3 ] && bashes="$bashes /bin/bash" ||
+			{ echo "sweep self-test: needs /bin/bash 3.2 on a Mac" >&2; missing=1; }
+		;;
+	*) echo "sweep self-test: bash 3.2 is not covered on $(uname -s); a run on a Mac covers it" ;;
+	esac
+	[ "$missing" -eq 0 ] || exit 1
+	runs=0 failed=0
+	for b in $bashes; do
+		runs=$((runs + 1))
+		# scripts/sweep starts with `#!/usr/bin/env bash`: this bash goes first on PATH.
+		mkdir -p "$tmp/bin-$runs"
+		ln -s "$b" "$tmp/bin-$runs/bash"
+		PATH="$tmp/bin-$runs:$PATH" SWEEP_SELF_TEST_RUN=1 "$b" "$0" || failed=$((failed + 1))
+	done
+	echo "sweep self-test: $failed of $runs runs failed"
+	[ "$failed" -eq 0 ]
+	exit
+fi
+
+# --- the suite ------------------------------------------------------------------------------
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/sweep-self-test.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+: >"$tmp/gitconfig"
+export GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home" \
+	XDG_CONFIG_HOME="$tmp/xdg" GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid \
+	GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid TMPDIR="$tmp/scratch"
+unset SWEEP_FORGE SWEEP_BASE SWEEP_REPO SWEEP_GH_USER
+# shellcheck disable=SC2046 # one variable name per line, no spaces
+unset $(git rev-parse --local-env-vars)
+mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$TMPDIR" "$tmp/stub"
+sweep="$root/scripts/sweep"
+tab="$(printf '\t')"
+
+# A gh that answers the two calls scripts/sweep may make, and logs every call.
+cat >"$tmp/stub/gh" <<EOF
+#!/bin/sh
+echo "\$*" >>"$tmp/gh.log"
+case "\$1 \$2" in
+"auth token") echo stub-token-1234 ;;
+"pr list") [ "\${GH_TOKEN:-}" = stub-token-1234 ] || exit 3; cat "$tmp/prs.tsv" ;;
+*) exit 9 ;;
+esac
+EOF
+chmod +x "$tmp/stub/gh"
+export PATH="$tmp/stub:$PATH"
+
+fails=0 total=0
+fail() {
+	fails=$((fails + 1))
+	echo "self-test: $*" >&2
+	[ ! -s "$tmp/err" ] || sed 's/^/    err: /' "$tmp/err" >&2
+	[ -z "${SWEEP_SELF_TEST_VERBOSE:-}" ] || sed 's/^/    out: /' "$tmp/out" >&2
+}
+check() { # check <description> <command>
+	total=$((total + 1))
+	eval "$2" || fail "$1"
+}
+
+# --- the fixture ----------------------------------------------------------------------------
+repo="$tmp/repo"
+g() { git -C "$repo" "$@"; }
+mkdir "$repo"
+g init -q -b main
+printf 'base\n' >"$repo/f.txt"
+g add f.txt
+g commit -q -m base
+# commit_in <dir> <file> <text> <message>
+commit_in() {
+	printf '%s\n' "$3" >"$1/$2"
+	git -C "$1" add "$2"
+	git -C "$1" commit -q -m "$4"
+}
+# wt <path from the repo> <branch>: a worktree on a new branch at main.
+wt() {
+	mkdir -p "$(dirname "$repo/$1")"
+	g worktree add -q "$repo/$1" -b "$2" main
+}
+
+wt worktrees/merged agent/claude/stack/merged
+commit_in "$repo/worktrees/merged" m.txt m "merged work"
+g merge -q --ff-only agent/claude/stack/merged # now an ancestor of main
+wt worktrees/rebased agent/claude/stack/rebased
+commit_in "$repo/worktrees/rebased" r.txt r "rebased work"
+commit_in "$repo" other.txt other "main moves on"
+g cherry-pick agent/claude/stack/rebased >/dev/null # the same patch on main: not an ancestor, new = 0
+wt worktrees/unmerged agent/claude/stack/unmerged
+commit_in "$repo/worktrees/unmerged" u.txt u "unmerged work"
+wt worktrees/dirty agent/claude/stack/dirty
+printf 'base\nedited\n' >"$repo/worktrees/dirty/f.txt"
+printf 'untracked\n' >"$repo/worktrees/dirty/new-untracked.txt"
+printf 'staged\n' >"$repo/worktrees/dirty/new-staged.txt"
+git -C "$repo/worktrees/dirty" add new-staged.txt
+g worktree add -q --detach "$repo/worktrees/detached" main
+g worktree add -q "$repo/worktrees/readme" -b stack/readme main
+g worktree add -q "$repo/worktrees/a" -b fpl_a main
+wt worktrees/fon-bounds agent/claude/stack/fon-bounds
+wt .claude/worktrees/app1 claude/app1
+wt worktrees/openpr agent/claude/stack/openpr
+for b in agent/claude/stack/gone agent/cursor/stack/cursor-harness agent/claude/stack/wip; do g branch "$b" main; done
+g branch agent/codex/stack/codex main
+g branch agent/claude/stack/onforge main
+# a branch without a worktree that holds a commit the base lacks
+g worktree add -q --detach "$tmp/tmpwt" main
+commit_in "$tmp/tmpwt" w.txt w "work"
+g branch -f agent/claude/stack/wip "$(git -C "$tmp/tmpwt" rev-parse HEAD)"
+g worktree remove --force "$tmp/tmpwt"
+printf 'stashed\n' >>"$repo/f.txt"
+g stash -q
+printf 'agent/claude/stack/openpr\tOPEN\nagent/claude/stack/onforge\tCLOSED\nagent/claude/stack/onforge\tMERGED\nagent/claude/stack/merged\tMERGED\n' >"$tmp/prs.tsv"
+: >"$tmp/gh.log"
+
+# fingerprint: every file of the repository (objects, refs, index, worktrees), one number.
+fingerprint() {
+	find "$repo" -type f -exec cksum {} + | sort | cksum
+}
+# sw <args>: scripts/sweep from the repository, output in $tmp/out, exit code in $rc.
+sw() {
+	rc=0
+	(cd "$repo" && "$sweep" "$@") >"$tmp/out" 2>"$tmp/err" || rc=$?
+}
+# col <name> <n>: the n-th field of the row called name in the last output.
+col() { awk -F'\t' -v n="$1" -v c="$2" '$2 == n { print $c }' "$tmp/out"; }
+action() { col "$1" 9; }
+
+# --- the table ------------------------------------------------------------------------------
+export SWEEP_REPO=fpl-org/fpl
+before="$(fingerprint)"
+sw
+check "a dry run exits 0" '[ "$rc" -eq 0 ]'
+check "a dry run changes nothing" '[ "$(fingerprint)" = "$before" ]'
+check "the header names the columns" '[ "$(head -n1 "$tmp/out")" = "kind${tab}name${tab}branch${tab}merged${tab}new${tab}dirty${tab}pr${tab}owner${tab}action${tab}note" ]'
+check "merged: an ancestor of main, archive" '[ "$(col worktrees/merged 4)/$(col worktrees/merged 5)/$(action worktrees/merged)" = yes/0/archive ]'
+check "rebased: not an ancestor, nothing new by patch, archive" '[ "$(col worktrees/rebased 4)/$(col worktrees/rebased 5)/$(action worktrees/rebased)" = no/0/archive ]'
+check "unmerged: one new commit, review" '[ "$(col worktrees/unmerged 5)/$(action worktrees/unmerged)" = 1/review ]'
+check "dirty counts tracked, staged and untracked files" '[ "$(col worktrees/dirty 6)/$(action worktrees/dirty)" = 3/archive ]'
+check "a detached worktree has no branch and is archive" '[ "$(col worktrees/detached 3)/$(col worktrees/detached 8)/$(action worktrees/detached)" = -/agent/archive ]'
+check "the pull request of a branch is its open one, then its merged one" '[ "$(col worktrees/openpr 7)/$(col agent/claude/stack/onforge 7)/$(col worktrees/merged 7)/$(col worktrees/unmerged 7)" = OPEN/MERGED/MERGED/- ]'
+check "keep: readme, a, fon-bounds, an app session, an open pull request" '[ "$(action worktrees/readme)/$(action worktrees/a)/$(action worktrees/fon-bounds)/$(action .claude/worktrees/app1)/$(action worktrees/openpr)" = keep/keep/keep/keep/keep ]'
+check "the owner of each class" '[ "$(col worktrees/readme 8)/$(col .claude/worktrees/app1 8)/$(col agent/cursor/stack/cursor-harness 8)/$(col agent/codex/stack/codex 8)/$(col worktrees/merged 8)" = PSJ/app-session/Cursor/PSJ/agent ]'
+check "a Cursor branch is keep, a Codex branch review" '[ "$(action agent/cursor/stack/cursor-harness)/$(action agent/codex/stack/codex)" = keep/review ]'
+check "a branch without a worktree: archive when merged, review when not" '[ "$(action agent/claude/stack/gone)/$(action agent/claude/stack/wip)" = archive/review ]'
+check "the root checkout and its branch are not rows" '[ -z "$(col main 1)" ] && ! grep -q "$repo" "$tmp/out"'
+check "the footer counts the scope and the stash" 'grep -q "^# scope: 10 worktrees (9 under worktrees/, 1 under .claude/worktrees/, 0 elsewhere), the root checkout not counted; 1 of them dirty" "$tmp/out" && grep -q " 1 stashes (never touched)" "$tmp/out"'
+check "the forge is asked once: auth token, then pr list, nothing else" '[ "$(wc -l <"$tmp/gh.log" | tr -d " ")" = 2 ] && grep -q "^auth token --hostname github.com --user psjg-claude" "$tmp/gh.log" && grep -q "^pr list -R github.com/fpl-org/fpl .*--state all" "$tmp/gh.log"'
+check "the token is never printed" '! grep -q stub-token "$tmp/out" "$tmp/err"'
+: >"$tmp/gh.log"
+SWEEP_FORGE=0 sw
+check "SWEEP_FORGE=0 asks nothing and leaves pr as ?" '[ ! -s "$tmp/gh.log" ] && [ "$(col worktrees/merged 7)" = "?" ]'
+
+# --- a merge commit is not a patch ---------------------------------------------------------------
+# A branch whose only commit by patch is in the base, plus a merge with a change of its own, is
+# not "all in the base": git cherry skips the merge. SWEEP_BASE keeps main where the checks above
+# left it.
+g branch basebr main
+g worktree add -q --detach "$tmp/mw1" main
+commit_in "$tmp/mw1" side.txt side "side work"
+g worktree add -q "$tmp/mw2" basebr
+commit_in "$tmp/mw2" side.txt side "side work" # the same patch, in the base
+printf 'resolution\n' >"$tmp/mw1/merge-only.txt"
+git -C "$tmp/mw1" add merge-only.txt
+g branch agent/claude/stack/mergey "$(git -C "$tmp/mw1" commit-tree -p HEAD -p main -m merge "$(git -C "$tmp/mw1" write-tree)")"
+g branch agent/claude/stack/plainside "$(git -C "$tmp/mw1" rev-parse HEAD)"
+SWEEP_BASE=basebr sw
+check "a branch whose merge commit is not in the base is review, its patch-equal twin without the merge is archive" '[ "$(col agent/claude/stack/mergey 5)/$(action agent/claude/stack/mergey)/$(col agent/claude/stack/plainside 5)/$(action agent/claude/stack/plainside)" = 1/review/0/archive ]'
+
+if [ "$fails" -eq 0 ]; then
+	echo "sweep self-test: $total checks passed (bash ${BASH_VERSION%%(*})"
+else
+	echo "sweep self-test: $fails of $total checks failed (bash ${BASH_VERSION%%(*})" >&2
+	exit 1
+fi

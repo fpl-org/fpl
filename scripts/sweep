@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+#
+# scripts/sweep — an inventory of the worktrees and local branches, and what it proposes for
+# each: keep, review, or archive what is finished. It reads; it changes nothing.
+#
+#   scripts/sweep [--dry-run]            the table (the default, and the only mode)
+#   scripts/sweep --self-test            scripts/sweep-self-test
+#
+# One tab-separated row per linked worktree (the root checkout is where this runs, not a row)
+# and per local branch no worktree holds, aligned on a terminal. '#' lines are the footer.
+#
+#   kind    wt (a worktree) or br (a branch without one)
+#   name    the worktree's path from the root checkout, or the branch
+#   branch  the branch checked out there, or '-' (detached)
+#   merged  yes when the head is an ancestor of the base (git merge-base --is-ancestor)
+#   new     commits of the head the base lacks by patch (git cherry, the '+' lines): a
+#           rebase-merged pull request is not an ancestor of main but has new = 0; plus its
+#           merge commits the base lacks, which cherry skips and a patch cannot show to be in it
+#   dirty   files `git status --porcelain -uall` lists: modified, staged, untracked; not ignored
+#           ones; '-' for a branch row
+#   pr      OPEN, MERGED or CLOSED for the branch (one read-only forge call for all rows, with
+#           the machine account's token; OPEN beats MERGED beats CLOSED), '-' for none, '?'
+#           when the forge was not asked or did not answer
+#   owner   agent: agent/claude/* and detached worktrees; Cursor: agent/cursor/*; app-session:
+#           under .claude/worktrees, or claude/*; PSJ: the rest, agent/codex/* too (he runs it)
+#   action  by the first rule that fits:
+#             keep     on the do-not-touch list (below), Cursor's or an app session's, or its
+#                      pull request is open
+#             review   locked, its directory gone, PSJ's, or new > 0: a person decides
+#             archive  merged, or new = 0: everything it committed is in the base
+#   note    the reason, in words
+#
+# The base is the local `main` (SWEEP_BASE): a lagging main only makes rows look less merged,
+# the safe direction. Nothing is fetched or pruned. SWEEP_FORGE=0 skips the forge; SWEEP_REPO
+# and SWEEP_GH_USER name the repository (default: the `github` remote) and the account
+# (psjg-claude). A tab or newline in a path or branch name is not supported. Runs under bash 3.2.
+#
+# The do-not-touch list is hard-coded in protected(), on purpose: it is the owner's. Stashes
+# are never touched; the footer counts them.
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+die() {
+	printf 'sweep: %s\n' "$*" >&2
+	exit 1
+}
+
+case "${1:-}" in
+"" | --dry-run) [ $# -le 1 ] || die "usage: scripts/sweep [--dry-run]" ;;
+--self-test) exec "$here/sweep-self-test" ;;
+*) die "usage: scripts/sweep [--dry-run]" ;;
+esac
+
+# A read changes nothing: status must not refresh an index.
+export GIT_OPTIONAL_LOCKS=0
+base="${SWEEP_BASE:-main}"
+git rev-parse --verify -q "$base^{commit}" >/dev/null || die "no base '$base'"
+root="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+[ -d "$root" ] || die "cannot find the root checkout"
+tab="$(printf '\t')"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/sweep.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+git_in() { git -C "$1" "${@:2}"; }
+
+# protected <path-from-root or ""> <branch or ""> — the do-not-touch list.
+protected() {
+	case "$1" in .claude/worktrees/*) return 0 ;; esac
+	if [ -n "$1" ]; then
+		case "${1##*/}" in readme | a | fon-bounds | ready-timeout | land-head-sha | fork-branch-delete) return 0 ;; esac
+	fi
+	case "$2" in
+	main | fpl_a | stack/readme | agent/cursor/* | claude/*) return 0 ;;
+	fon-bounds | */fon-bounds | ready-timeout | */ready-timeout) return 0 ;;
+	land-head-sha | */land-head-sha | fork-branch-delete | */fork-branch-delete) return 0 ;;
+	esac
+	return 1
+}
+
+# owner_of <path-from-root or ""> <branch or "">
+owner_of() {
+	case "$1" in .claude/worktrees/*) echo app-session; return ;; esac
+	case "$2" in
+	agent/cursor/*) echo Cursor ;;
+	claude/*) echo app-session ;;
+	agent/claude/*) echo agent ;;
+	"") if [ -n "$1" ]; then echo agent; else echo PSJ; fi ;;
+	*) echo PSJ ;;
+	esac
+}
+
+# --- the forge: branch -> state, one call --------------------------------------------------
+prs="$tmp/prs"
+: >"$prs"
+forge=no
+if [ "${SWEEP_FORGE:-1}" != 0 ] && command -v gh >/dev/null; then
+	repo="${SWEEP_REPO:-$(git remote get-url github 2>/dev/null | sed 's#.*github\.com[:/]##; s#\.git$##' || true)}"
+	tok="$(gh auth token --hostname github.com --user "${SWEEP_GH_USER:-psjg-claude}" 2>/dev/null || true)"
+	if [ -n "$repo" ] && [ -n "$tok" ] &&
+		GH_TOKEN="$tok" gh pr list -R "github.com/$repo" --state all --limit 1000 \
+			--json headRefName,state --jq '.[] | [.headRefName, .state] | @tsv' >"$tmp/prs.raw" 2>/dev/null; then
+		# OPEN beats MERGED beats CLOSED when a branch had several.
+		awk -F'\t' 'BEGIN { r["OPEN"] = 3; r["MERGED"] = 2; r["CLOSED"] = 1 }
+			{ if (r[$2] > r[$1 SUBSEP "s"]) { r[$1 SUBSEP "s"] = r[$2]; s[$1] = $2 } }
+			END { for (b in s) print b "\t" s[b] }' "$tmp/prs.raw" >"$prs"
+		forge=yes
+	fi
+fi
+pr_of() {
+	[ "$forge" = yes ] || { echo '?'; return; }
+	awk -F'\t' -v b="$1" '$1 == b { print $2; found = 1 } END { if (!found) print "-" }' "$prs"
+}
+
+# --- the rows ------------------------------------------------------------------------------
+# merged_of <sha>: yes or no; any other answer of git stops the run.
+merged_of() {
+	local rc=0
+	git merge-base --is-ancestor "$1" "$base" || rc=$?
+	case "$rc" in 0) echo yes ;; 1) echo no ;; *) die "merge-base failed for $1" ;; esac
+}
+# new_of <sha>: how many of its commits the base lacks by patch, and its merge commits the base
+# lacks at all: git cherry skips a merge, whose own changes (a conflict resolution) a patch
+# comparison would not find in the base, so a merge is counted as new until it is an ancestor.
+new_of() {
+	local out plus merges
+	out="$(git cherry "$base" "$1")" || die "cherry failed for $1"
+	plus="$(printf '%s\n' "$out" | grep -c '^+' || true)"
+	merges="$(git rev-list --merges --count "$base..$1")" || die "rev-list failed for $1"
+	echo $((plus + merges))
+}
+
+rows="$tmp/rows"
+: >"$rows"
+# emit kind name branch merged new dirty pr owner action note sha path
+emit() {
+	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@" >>"$rows"
+}
+# decide <path-or-""> <branch-or-""> <merged> <new> <pr> <owner> <locked 0|1> <gone 0|1>
+# prints "action<TAB>note"
+decide() {
+	if protected "$1" "$2"; then
+		printf 'keep\ton the do-not-touch list\n'
+	elif [ "$6" = Cursor ] || [ "$6" = app-session ]; then
+		printf 'keep\t%s work\n' "$6"
+	elif [ "$5" = OPEN ]; then
+		printf 'keep\tpull request open\n'
+	elif [ "$8" = 1 ]; then
+		printf 'review\tdirectory is gone (prunable)\n'
+	elif [ "$7" = 1 ]; then
+		printf 'review\tlocked\n'
+	elif [ "$6" = PSJ ]; then
+		printf 'review\tnot an agent'"'"'s\n'
+	elif [ "$3" = yes ] || [ "$4" -eq 0 ]; then
+		printf 'archive\tall of it is in %s\n' "$base"
+	else
+		printf 'review\t%s commit(s) %s lacks by patch\n' "$4" "$base"
+	fi
+}
+
+# The root checkout's branch is not a row: it is where this runs.
+seen="$tmp/seen"
+git worktree list --porcelain | awk -v RS= -F'\n' 'NR == 1 { for (i = 1; i <= NF; i++) if ($i ~ /^branch refs\/heads\//) print substr($i, 19) }' >"$seen"
+git worktree list --porcelain | awk -v RS= -F'\n' '
+	NR > 1 {
+		p = ""; h = ""; b = "-"; l = 0; g = 0
+		for (i = 1; i <= NF; i++) {
+			if ($i ~ /^worktree /) p = substr($i, 10)
+			else if ($i ~ /^HEAD /) h = substr($i, 6)
+			else if ($i ~ /^branch refs\/heads\//) b = substr($i, 19)
+			else if ($i ~ /^locked/) l = 1
+			else if ($i ~ /^prunable/) g = 1
+		}
+		print p "\t" h "\t" b "\t" l "\t" g
+	}' >"$tmp/wt"
+
+nwt=0 ndirty=0 nunder=0 nclaude=0
+while IFS="$tab" read -r path sha br locked gone; do
+	nwt=$((nwt + 1))
+	rel="${path#"$root"/}"
+	case "$rel" in
+	worktrees/*) nunder=$((nunder + 1)) ;;
+	.claude/worktrees/*) nclaude=$((nclaude + 1)) ;;
+	esac
+	b=""
+	if [ "$br" != "-" ]; then
+		b="$br"
+		printf '%s\n' "$br" >>"$seen"
+	fi
+	owner="$(owner_of "$rel" "$b")"
+	merged="$(merged_of "$sha")"
+	new="$(new_of "$sha")"
+	pr="$(pr_of "$b")"
+	[ -n "$b" ] || pr='-'
+	dirty=0
+	if [ "$gone" = 1 ] || [ ! -d "$path" ]; then
+		gone=1 dirty='-'
+	else
+		: >"$tmp/dirty"
+		git_in "$path" status --porcelain -z -uall >"$tmp/status"
+		skip=0
+		while IFS= read -r -d '' ent; do
+			if [ "$skip" = 1 ]; then skip=0; continue; fi
+			case "$ent" in [RC]?* | ?[RC]*) skip=1 ;; esac
+			dirty=$((dirty + 1))
+		done <"$tmp/status"
+		[ "$dirty" -eq 0 ] || ndirty=$((ndirty + 1))
+	fi
+	IFS="$tab" read -r action note <<EOF
+$(decide "$rel" "$b" "$merged" "$new" "$pr" "$owner" "$([ "$locked" = 1 ] && echo 1 || echo 0)" "$([ "$gone" = 1 ] && echo 1 || echo 0)")
+EOF
+	[ "$dirty" = 0 ] || [ "$dirty" = '-' ] || note="$note; $dirty dirty"
+	emit wt "$rel" "${b:--}" "$merged" "$new" "$dirty" "$pr" "$owner" "$action" "$note" "$sha" "$path"
+done <"$tmp/wt"
+
+nbr=0
+git for-each-ref --format='%(refname)%09%(objectname)' refs/heads |
+	sed -n 's#^refs/heads/##p' | sort >"$tmp/branches"
+while IFS="$tab" read -r b sha; do
+	grep -Fxq -- "$b" "$seen" && continue
+	nbr=$((nbr + 1))
+	owner="$(owner_of "" "$b")"
+	merged="$(merged_of "$sha")"
+	new="$(new_of "$sha")"
+	IFS="$tab" read -r action note <<EOF
+$(decide "" "$b" "$merged" "$new" "$(pr_of "$b")" "$owner" 0 0)
+EOF
+	emit br "$b" "$b" "$merged" "$new" '-' "$(pr_of "$b")" "$owner" "$action" "$note" "$sha" ""
+done <"$tmp/branches"
+
+# --- the table -----------------------------------------------------------------------------
+count() { awk -F'\t' -v a="$1" '$9 == a' "$rows" | wc -l | tr -d ' '; }
+table() { printf 'kind\tname\tbranch\tmerged\tnew\tdirty\tpr\towner\taction\tnote\n'; cut -f1-10 "$rows"; }
+if [ -t 1 ] && command -v column >/dev/null; then
+	table | column -t -s "$tab"
+else
+	table
+fi
+{
+	printf '# scope: %s worktrees (%s under worktrees/, %s under .claude/worktrees/, %s elsewhere), the root checkout not counted; %s of them dirty (untracked files count)\n' \
+		"$nwt" "$nunder" "$nclaude" "$((nwt - nunder - nclaude))" "$ndirty"
+	printf '# scope: %s branches without a worktree; %s stashes (never touched); base %s; forge %s\n' \
+		"$nbr" "$(git stash list | wc -l | tr -d ' ')" "$base" "$([ "$forge" = yes ] && echo asked || echo 'not asked: pr is ?')"
+	printf '# actions: keep %s, review %s, archive %s\n' "$(count keep)" "$(count review)" "$(count archive)"
+}
+printf '# dry run: nothing was changed\n'
