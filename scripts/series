@@ -279,6 +279,8 @@ cmd_revert() { # revert <id> [branch]
 	require_clean
 	branch="${2:-agent/${FPL_AGENT_ID:-claude}/stack/revert-$id}"
 	from="$(git branch --show-current)"; [ -n "$from" ] || from="$(git rev-parse HEAD)"
+	# The id first: a branch name that cannot make one is refused before anything is touched.
+	new="$(mint_of "$branch" "$main")"
 	git switch -q --no-track -c "$branch" "$main"
 	if ! git revert -n --no-edit "$range" >/dev/null 2>&1; then
 		revert_undo "$from" "$branch"
@@ -291,7 +293,6 @@ cmd_revert() { # revert <id> [branch]
 		printf '%s\n' "$err" >&2
 		die revert-mixed "the series spans harness and implementation paths, so its undo cannot be one commit" "undo the harness commits and the implementation commits apart, by hand"
 	fi
-	new="$(mint_of "$branch")"
 	body="$(git log --reverse --format='- %h %s' "$range" | cut -c1-70)"
 	# The undo touches what the series touched, so it carries the markers the hooks ask for.
 	for m in '[spec]' '[policy]'; do
@@ -304,7 +305,11 @@ cmd_revert() { # revert <id> [branch]
 		printf '%s\n' "$err" >&2
 		die revert-refused "the hooks refused the undo of $range as one commit (above); the checkout is as it was" "undo the sides apart (harness commits, implementation commits, policy apart from code) by hand"
 	fi
-	cmd__amend "$new"
+	if ! err="$(cmd__amend "$new" 2>&1)"; then
+		revert_undo "$from" "$branch"
+		printf '%s\n' "$err" >&2
+		die revert-id "the undo could not be given its Series-Id; the checkout is as it was" "see the message above, then revert again"
+	fi
 	printf '%s %s\n' "$branch" "$new"
 }
 

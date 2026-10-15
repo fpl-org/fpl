@@ -272,6 +272,23 @@ sr 0 "revert of a policy series" "revert-" revert pol-abcdef0
 read -r pbranch _ <"$tmp/out"
 same "the undo carries the policy marker" "$(git log -1 --format=%B "$pbranch" | grep -c '^Carries the \[policy\]')" 1
 git switch -q main
+# Whatever fails after the new branch exists leaves no trace either. A branch name that cannot make
+# an id is refused before the checkout moves; a stamping amend that fails takes the undo with it.
+ser amend-abcdef0 quality/am $'\n[policy] a body marker, not in the subject.\n'
+head1="$(git rev-parse HEAD)"
+refused_clean() { # <what> <branch-pattern>
+	same "$1 left main checked out" "$(git branch --show-current)" main
+	same "$1 left no branch" "$(git branch --list "$2" | wc -l | tr -d ' ')" 0
+	same "$1 left the tree clean" "$(git status --porcelain | wc -l | tr -d ' ')" 0
+	same "$1 left main alone" "$(git rev-parse HEAD)" "$head1"
+}
+sr 1 "revert refuses a branch name that makes no id" "mint" revert "$id" 'agent/claude/stack/we+ird'
+refused_clean "the revert with a bad branch name" '*we+ird*'
+mkdir "$tmp/fakebin"
+printf '#!/bin/sh\ncase "$*" in *commit*--amend*) echo "fake git: amend refused" >&2; exit 1 ;; esac\nexec "%s" "$@"\n' "$(command -v git)" >"$tmp/fakebin/git"
+chmod +x "$tmp/fakebin/git"
+PATH="$tmp/fakebin:$PATH" sr 1 "revert whose stamping amend fails" "revert-id" revert amend-abcdef0
+refused_clean "the revert whose amend failed" '*revert-amend*'
 
 if [ "$fails" -ne 0 ]; then
 	echo "series self-test: $fails of $total checks failed" >&2
