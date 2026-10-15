@@ -210,6 +210,7 @@ audit() { # audit <file>: print each broken promise; the exit status is whether 
 	# the comment job tells a base edit from a text edit.
 	if job lemmas <"$body" | cond | grep -E 'action|changes'; then bad=1; fi
 	job comment <"$body" | cond | grep -qF 'changes.base != null' || { echo "comment: posts on text edits" && bad=1; }
+	job relay <"$body" | grep -qF '[ "$HEAD_REPO" = "$REPO" ] ||' || { echo "relay: no fork refusal" && bad=1; }
 	# A required check is named by its job, across workflows: no id here may be another's.
 	local other
 	for other in "$root"/.github/workflows/*.yml; do
@@ -234,7 +235,8 @@ for broken in 's/timeout-minutes/timeout-hours/' 's/\(uses: [^@]*\)@[0-9a-f]\{40
 	's/github[.]token/secrets.TOKEN/' 's/actions: write/actions: read/' \
 	's/persist-credentials: false/persist-credentials: true/' 's/set -eu$/set -u/' \
 	"s/^    if: github.event_name == 'pull_request'\$/&  \&\& github.event.changes.base != null/" \
-	"/github.event.action != 'edited' || github.event.changes.base != null/d" 's/^  lemmas:/  check:/'; do
+	"/github.event.action != 'edited' || github.event.changes.base != null/d" 's/^  lemmas:/  check:/' \
+	'/\[ "$HEAD_REPO" = "$REPO" \] ||/d'; do
 	sed -e "$broken" "$yml" >"$tmp/broken.yml"
 	check "the audit refuses: $broken" refuses audit "$tmp/broken.yml" >/dev/null
 done
