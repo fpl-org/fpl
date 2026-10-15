@@ -22,7 +22,8 @@
 # transport uses, so a push that already follows the remedy is not nagged: https without
 # credentials uses the git credential helper; ssh uses the ssh key; an https URL that carries
 # its own credentials (user:password@) uses neither (it is not judged: the credentials are not
-# read); a bare user@ still goes through the helper. The URL is only classified, never printed.
+# read); a bare user@ names the account itself. The probes ask about the URL's own host, user and
+# port, so an ssh_config alias picks the key that is judged. The URL is only classified, never printed.
 # A URL of any other shape is judged as if none were given. A probe whose identity the URL does
 # not use is not run, so an https push never wakes the ssh key.
 #
@@ -36,39 +37,86 @@ set -f
 admins="${FPL_ADMIN_ACCOUNTS:-psjg}"
 machine="${FPL_MACHINE_ACCOUNT:-psjg-claude}"
 
-# push: git's answer for https://github.com, the username line and nothing else.
-push="$(printf 'protocol=https\nhost=github.com\n\n' |
-	GIT_TERMINAL_PROMPT=0 git credential fill 2>/dev/null |
-	sed -n 's/^username=//p' | head -n 1)" || push=""
-
-# gh: the account whose block says "Active account: true"; the block opens with the login.
-gh_acct="$(gh auth status 2>&1 | awk '
-	/Logged in to .* account / { for (i = 1; i < NF; i++) if ($i == "account") acct = $(i + 1) }
-	/Active account: true/ { print acct; exit }')" || gh_acct=""
-
-# via: which transport the destination uses, hence which identities decide the push.
+# via: which transport the destination uses, hence which identities decide the push, and the
+# host, user and port the probes must ask about. A URL of any other shape, or none, keeps the
+# defaults: all three probes, about github.com.
 url="${1:-}"
 c_push=1 c_gh=1 c_ssh=1 via=""
+proto="https" host="github.com" named="" ssh_user="git" ssh_host="github.com" ssh_port=""
 case "$url" in
 https://* | http://*)
+	proto="${url%%://*}"
 	auth="${url#*://}"
 	auth="${auth%%/*}"
+	host="${auth##*@}"
 	c_gh=0 c_ssh=0 via="https"
 	# A password after a colon in the userinfo is what makes the URL carry its own credentials;
-	# a bare user@ still asks the helper for the password.
-	case "$auth" in *@*) case "${auth%@*}" in *:*) c_push=0 via="https with credentials in the URL" ;; esac ;; esac
+	# a bare user@ names the account itself, and the helper is not asked.
+	case "$auth" in *@*) case "${auth%@*}" in
+	*:*) c_push=0 via="https with credentials in the URL" ;;
+	*) named="${auth%@*}" ;;
+	esac ;; esac
 	;;
-ssh://* | git@*:* | *@*:*) c_push=0 c_gh=0 via="ssh" ;;
+ssh://*)
+	auth="${url#ssh://}"
+	auth="${auth%%/*}"
+	c_push=0 c_gh=0 via="ssh" ssh_user=""
+	case "$auth" in *@*) ssh_user="${auth%%@*}" ;; esac
+	ssh_host="${auth##*@}"
+	case "$ssh_host" in *:*) ssh_port="${ssh_host#*:}" ssh_host="${ssh_host%%:*}" ;; esac
+	;;
+*://* | /* | ./* | ../*) : ;; # another scheme, or a path on this machine: not judged by shape
+*:*)                         # scp-like: [user@]host:path, as git reads it when no "/" comes first
+	left="${url%%:*}"
+	case "$left" in
+	*/*) : ;;
+	*)
+		c_push=0 c_gh=0 via="ssh" ssh_user=""
+		case "$left" in *@*) ssh_user="${left%%@*}" ;; esac
+		ssh_host="${left##*@}"
+		;;
+	esac
+	;;
 esac
+# What reaches a probe's command line is plain: a name or number, never an option or a control
+# character; anything else goes back to the default.
+case "$host" in '' | -* | *[[:cntrl:]]*) host="github.com" ;; esac
+case "$ssh_host" in '' | -* | *[[:cntrl:]]*) ssh_host="github.com" ssh_user="git" ;; esac
+case "$ssh_user" in -* | *[[:cntrl:]]*) ssh_user="git" ;; esac
+case "$ssh_port" in *[!0-9]*) ssh_port="" ;; esac
 [ -z "$via" ] || printf 'whoami-check: this push goes by %s\n' "$via"
 
-# ssh: "Hi <login>! You've successfully authenticated ...". ssh exits 1 on success here.
-# Never interactive: BatchMode=yes forbids every prompt, ConnectTimeout=5 bounds the connect,
-# and timeout bounds the whole probe, so a key that waits on a Touch ID tap is cut off at 10 s,
-# not waited for. Not run at all when the destination does not use ssh.
+# push: git's answer for the destination's host, the username line and nothing else. When the
+# URL names the account (user@), that is the account and nobody is asked.
+push=""
+if [ "$c_push" -eq 1 ]; then
+	if [ -n "$named" ]; then
+		push="$named"
+	else
+		push="$(printf 'protocol=%s\nhost=%s\n\n' "$proto" "$host" |
+			GIT_TERMINAL_PROMPT=0 git credential fill 2>/dev/null |
+			sed -n 's/^username=//p' | head -n 1)" || push=""
+	fi
+fi
+
+# gh: the account whose block says "Active account: true"; the block opens with the login.
+gh_acct=""
+if [ "$c_gh" -eq 1 ]; then
+	gh_acct="$(gh auth status 2>&1 | awk '
+		/Logged in to .* account / { for (i = 1; i < NF; i++) if ($i == "account") acct = $(i + 1) }
+		/Active account: true/ { print acct; exit }')" || gh_acct=""
+fi
+
+# ssh: "Hi <login>! You've successfully authenticated ...". ssh exits 1 on success here. Never
+# interactive: BatchMode=yes forbids every prompt, ConnectTimeout=5 bounds the connect, and
+# timeout (where there is one) bounds the whole probe. It dials the destination's own host (user, port and ssh_config
+# alias included), so the key ssh_config picks for that name is the key judged. Not run at all
+# when the destination does not use ssh.
 ssh_acct=""
 if [ "$c_ssh" -eq 1 ]; then
-	ssh_cmd=(ssh -o BatchMode=yes -o ConnectTimeout=5 -T git@github.com)
+	ssh_cmd=(ssh -o BatchMode=yes -o ConnectTimeout=5)
+	[ -z "$ssh_port" ] || ssh_cmd=("${ssh_cmd[@]}" -p "$ssh_port")
+	ssh_cmd=("${ssh_cmd[@]}" -T -- "${ssh_user:+$ssh_user@}$ssh_host")
 	if command -v timeout >/dev/null 2>&1; then ssh_cmd=(timeout 10 "${ssh_cmd[@]}"); fi
 	ssh_acct="$("${ssh_cmd[@]}" 2>&1 </dev/null | sed -n 's/^Hi \([^!]*\)!.*/\1/p' | head -n 1)" ||
 		ssh_acct=""
