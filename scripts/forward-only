@@ -34,6 +34,14 @@ the push is refused: an approved pull request may be among those it could not se
 lets a refused push go and prints the reason; the pull request repeats it. It is for the
 one exception the rule makes, a rebase that a real conflict with the base or main forces.
 
+    FPL_FORWARD_ONLY_OVERRIDE="relocate: <Series-Id>"
+
+lets an approved branch go to its relocation onto main, checked by derivation, not taken on
+trust: the commits of the old head that the new one lacks are, in order, pair for pair
+(patch id, and author with raw message: scripts/land's pair), the newest of the new head;
+the old head carries the Series-Id; the rest of the new head is on <remote>/main. What the
+owner approved is then what he gets, on a newer main.
+
     FPL_FORWARD_ONLY_OVERRIDE="unchecked: <reason>"
 
 lets a push go that was refused only because GitHub could not be read, for a branch the
@@ -47,6 +55,7 @@ Exit 0: the push may go; 1: refused; 2: usage.
 from __future__ import annotations
 
 import functools
+import hashlib
 import http.server
 import json
 import os
@@ -214,6 +223,61 @@ def frozen(updates: list[str], url: str, read: Read) -> tuple[list[str], list[st
     return approved, unread
 
 
+def git(*args: str, stdin: bytes | None = None, env: dict[str, str] | None = None) -> bytes:
+    done = subprocess.run(["git", *args], input=stdin, env=env, capture_output=True, check=True)
+    return done.stdout
+
+
+def pair(c: str) -> tuple[str, str]:
+    """(patch id, SHA-256 of author and raw message) of commit c, as scripts/land defines it."""
+    # Both sides are hashed here, under one configuration: only an external diff or a textconv
+    # could make two changes look alike.
+    diff = git("diff-tree", "-p", "--root", "--no-ext-diff", "--no-textconv", c)
+    pid = git("patch-id", "--verbatim", stdin=diff).split()[:1]
+    head, _, msg = git("cat-file", "commit", c).partition(b"\n\n")
+    who = next(x for x in head.split(b"\n") if x.startswith(b"author "))
+    who = re.sub(rb" \d+ [-+]\d{4}$", b"", who[7:])
+    return (pid[0].decode() if pid else "-", hashlib.sha256(who + b"\n" + msg).hexdigest())
+
+
+def relocation(updates: list[str], remote: str, sid: str) -> list[str]:
+    """Why each overwrite in `updates` is not a relocation of series `sid` onto
+    <remote>/main (FPL_FORWARD_ONLY_OVERRIDE="relocate: <Series-Id>"); empty when all are."""
+    wrong = []
+    for line in updates:
+        _, new, ref, old = line.split()
+        if not ref.startswith("refs/heads/") or set(old) == {"0"} or new == old:
+            continue
+        try:
+            olds = git("rev-list", "--reverse", f"{new}..{old}").decode().split()
+            news = git("rev-list", "--reverse", f"--max-count={len(olds)}", new).decode().split()
+            ids = git("log", "-1", "--format=%(trailers:key=Series-Id,valueonly)", old).decode()
+            if not olds or [pair(c) for c in olds] != [pair(c) for c in news]:
+                wrong.append(f"{ref}: {new[:12]} changes the pair of a commit of {old[:12]}")
+            elif sid not in ids.split():
+                wrong.append(f"{ref}: {old[:12]} carries no Series-Id {sid}")
+            else:
+                below = f"{new}~{len(olds)}"
+                git("merge-base", "--is-ancestor", below, f"refs/remotes/{remote}/main")
+        except (subprocess.CalledProcessError, StopIteration, ValueError):
+            wrong.append(f"{ref}: {new[:12]} is not {old[:12]} on {remote}/main; git fetch?")
+    return wrong
+
+
+def relocated(updates: list[str], remote: str) -> bool:
+    """Whether FPL_FORWARD_ONLY_OVERRIDE="relocate: <Series-Id>" lets the push go: every
+    overwrite in it is a relocation of that series. Says why not."""
+    kind, _, sid = (part.strip() for part in os.environ.get(OVERRIDE, "").partition(":"))
+    if kind != "relocate" or not sid:
+        return False
+    wrong = relocation(updates, remote, sid)
+    for line in wrong:
+        say(f"no relocation: {line}")
+    if not wrong:
+        say(f"pushing anyway, {OVERRIDE}: relocate: {sid}: each head is its relocation")
+    return not wrong
+
+
 def say(line: str) -> None:
     print(f"forward-only: {line}", file=sys.stderr)
 
@@ -270,6 +334,8 @@ def main(argv: list[str]) -> int:
     except ValueError as e:
         approved, unread = [], [f"a line pre-push does not know ({e})"]
     if not approved and not unread:
+        return 0
+    if not unread and relocated(updates, argv[0]):
         return 0
     return decide(approved, unread, os.environ.get(OVERRIDE, ""))
 
@@ -548,6 +614,7 @@ def cases(t: Path, state: dict[str, Any]) -> list[tuple[str, bool, str]]:
 
     checks = hook(t, run)
     script = str(Path(__file__).resolve())
+    checks += relocations(t, run, script)
     for c in CASES:
         done = run([sys.executable, script, "github", c.url], c)
         out = done.stderr
@@ -690,6 +757,42 @@ def hook(t: Path, run: Callable[[list[str], Case], Any]) -> list[tuple[str, bool
                 passed.stderr,
             ),
         ]
+    return checks
+
+
+def relocations(t: Path, run: Callable[[list[str], Case], Any], script: str) -> list[Any]:
+    """`relocate: s-b` over an approved SB, on the repository hook() made: its relocation SY
+    onto SA, the new <remote>/main, goes; SZ, SY reworded, and another Series-Id do not.
+    Git runs with no GIT_ variable of the caller's: a GIT_DIR (git rebase -x sets one) would
+    send these writes to the caller's repository."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env |= {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
+
+    def g(*args: str, stdin: str = "") -> str:
+        return git("-C", str(t / "repo"), *args, stdin=stdin.encode(), env=env).decode().strip()
+
+    def commit(parent: str, names: str, msg: str) -> str:
+        blobs = "".join(
+            f"100644 blob {g('hash-object', '-w', '--stdin', stdin=f)}\t{f}\n" for f in names
+        )
+        tree = g("mktree", stdin=blobs)
+        ident = ["-c", "user.name=t", "-c", "user.email=t@t"]
+        return g(*ident, "commit-tree", "--no-gpg-sign", tree, "-p", parent, "-m", msg)
+
+    base = g("rev-parse", "HEAD")
+    sa, sb = commit(base, "a", "add a"), commit(base, "b", "add b\n\nSeries-Id: s-b")
+    sy, sz = commit(sa, "ab", "add b\n\nSeries-Id: s-b"), commit(sa, "ab", "add b, too")
+    g("update-ref", "refs/remotes/github/main", sa)
+    checks = []
+    for name, new, sid, code, text in (
+        ("the relocation of an approved head goes", sy, "s-b", 0, "each head is its relocation"),
+        ("a relocation that rewords a commit does not", sz, "s-b", 1, "changes the pair"),
+        ("nor one of another series", sy, "s-x", 1, "carries no Series-Id s-x"),
+    ):
+        line = f"refs/heads/{B} {new} refs/heads/{B} {sb}"
+        c = Case(name, code, text, line=line, env={OVERRIDE: f"relocate: {sid}"})
+        done = run([sys.executable, script, "github", URL], c)
+        checks.append((name, done.returncode == code and text in done.stderr, done.stderr))
     return checks
 
 
