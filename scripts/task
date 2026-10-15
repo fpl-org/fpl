@@ -286,19 +286,27 @@ def leak_gate(units):
     """Every title and brief through scripts/leak-check --text, before anything is written.
 
     A task is signed and replicated, and a COB cannot be taken back out of a peer's store,
-    so a refusal here names the unit and nothing has been written yet.
+    so a refusal here names the unit and nothing has been written yet. For the same reason
+    the check always blocks: FPL_LEAK_GATE=warn or off, meant for text that can still be
+    amended, does not reach it. What leak-check says while passing -- that it could not
+    scan, say -- is passed on to stderr, once per distinct message.
     """
+    said = []
     for label_, _, _, title, brief in units:
         with tempfile.NamedTemporaryFile("w", suffix=".txt") as handle:
             handle.write(f"{title}\n\n{brief}\n")
             handle.flush()
             done = subprocess.run(
                 [os.path.join(HERE, "leak-check"), "--text", handle.name],
+                env=dict(os.environ, FPL_LEAK_GATE="block"),
                 capture_output=True,
                 text=True,
             )
         if done.returncode != 0:
             die(f"{label_}: leak-check refused its title or brief; nothing written\n{done.stderr.strip()}")
+        if done.stderr.strip() and done.stderr.strip() not in said:
+            said.append(done.stderr.strip())
+            print(done.stderr.strip(), file=sys.stderr)
 
 
 def load(graph, path, dry):
@@ -600,8 +608,8 @@ def self_test():
         )
         checks = []
 
-        def task(*a, ok=True):
-            return sh(sys.executable, me, *a, ok=ok)
+        def task(*a, ok=True, extra=None):
+            return sh(sys.executable, me, *a, ok=ok, extra=extra)
 
         def check(name, ok):
             checks.append((name, bool(ok)))
@@ -715,6 +723,9 @@ def self_test():
             leaked = task("load", bad, ok=False)
             check("a private term stops the load before a write",
                   leaked.returncode == 2 and "Q1" in leaked.stderr and "Q1" not in task("list").stdout)
+            warned = task("load", bad, ok=False, extra={"FPL_LEAK_GATE": "warn"})
+            check("and FPL_LEAK_GATE=warn does not let it through",
+                  warned.returncode == 2 and "Q1" not in task("list").stdout)
         else:
             print("task: self-test: no gitleaks on PATH, leak refusal not exercised", file=sys.stderr)
 
