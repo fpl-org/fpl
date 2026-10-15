@@ -65,6 +65,9 @@
 #                           or user is refused
 #   land/size               at most 10 commits and 600 lines added plus removed
 #   land/workflows          no commit touches .github/workflows: those land by the owner path
+#   land/gpt                a commit whose Assisted-By names a GPT model is named by a line
+#                           gpt-ok: <sha> in a code owner's approval of the head, a prefix of
+#                           at least 7 hex digits that no other commit of the range shares
 #   land/series             once main holds scripts/series: one Series-Id on every commit
 #   land/series-fresh       and no commit on main carries it yet
 #   land/patch-fresh        no commit's `git patch-id --verbatim` is one on main already
@@ -316,8 +319,9 @@ def standing(d):
 
 
 def judge_reviews(v, d, pr, me, repo):
-    """land/codeowners, land/approved and land/changes-requested. True when the approval
-    is yours to give in this run."""
+    """land/codeowners, land/approved and land/changes-requested. Returns whether the
+    approval is yours to give in this run, and the texts of the code owners' approvals of
+    the head, where land/gpt reads its gpt-ok lines."""
     n, head = pr["number"], pr["head"]["sha"]
     h = head[:12]
     last = standing(d)
@@ -336,23 +340,25 @@ def judge_reviews(v, d, pr, me, repo):
     if owners is None:
         v.no("land/codeowners", why,
              "teach scripts/land that CODEOWNERS before it lands anything under it")
-        return False
+        return False, []
     v.ok("land/codeowners", "code owners: " + ", ".join(f"@{o}" for o in sorted(owners)))
     approved = [(w, r) for w, r in last.items()
                 if w.lower() in owners and r["state"] == "APPROVED"]
     at_head = [w for w, r in approved if r.get("commit_id") == head]
     older = ", ".join(f"@{w} on {str(r.get('commit_id'))[:12]}" for w, r in approved)
+    # land/gpt reads the texts of the approvals counted.
+    bodies = [r.get("body") or "" for w, r in approved if w in at_head]
     if at_head:
         v.ok("land/approved", f"code owner {', '.join('@' + w for w in at_head)} approved {h}")
-        return False
+        return False, bodies
     if me.lower() in owners and me.lower() != pr["user"]["login"].lower():
         v.ok("land/approved", f"you, a code owner, approve {h} after the keypress"
              + (f" ({older} is not this head)" if older else ""))
-        return True
+        return True, bodies
     v.no("land/approved",
          f"no code owner approved {h}" + (f"; {older} is not this head" if older else ""),
          f"a code owner approves {h}: one of them runs scripts/land {n}")
-    return False
+    return False, bodies
 
 
 def judge_threads(v, d):
@@ -681,10 +687,10 @@ CARD = ("What", "What changes", "How checked", "Limits", "Verdict")
 MOST = (10, 600)  # land/size: commits, and lines added plus removed
 
 
-def judge_range(v, pr, main, head):
-    """land/size, land/workflows, land/series, land/series-fresh, land/patch-fresh and
-    land/card: the commits main..head, and the pull request's body."""
-    span = f"{main}..{head}"
+def judge_range(v, pr, main, head, bodies):
+    """land/size, land/workflows, land/gpt, land/series, land/series-fresh, land/patch-fresh
+    and land/card: the commits main..head, and the pull request's body."""
+    span, h = f"{main}..{head}", head[:12]
     commits = git("rev-list", span).decode().split()
     rows = [r.split("\t") for r in git("diff", "--numstat", main, head).decode().splitlines()]
     lines = sum(int(r[0]) + int(r[1]) for r in rows if r[0] != "-")
@@ -701,6 +707,21 @@ def judge_range(v, pr, main, head):
              " owner pushes the head to main with his deploy key")
     else:
         v.ok("land/workflows", "it touches no file in .github/workflows")
+    # A gpt-ok names the one commit of the range its abbreviation matches; one that matches
+    # two names neither, or a single line could attest a commit ground to share its prefix.
+    oks = set(re.findall(r"gpt-ok:\s*([0-9a-f]{7,40})", "\n".join(bodies)))
+    match = {o: [c for c in commits if c.startswith(o)] for o in oks}
+    named = {m[0] for m in match.values() if len(m) == 1}
+    vague = sorted(o for o, m in match.items() if len(m) > 1)
+    gpt = [c for c, vals in trailers(span, "Assisted-By")
+           if any("gpt" in x.lower() for x in vals) and c not in named]
+    if gpt:
+        v.no("land/gpt", "a GPT model assisted " + " ".join(c[:12] for c in gpt)
+             + (f"; gpt-ok {', '.join(vague)} matches more than one commit" if vague else ""),
+             f"the code owner reads each and approves {h} with a line gpt-ok: <sha> for it,"
+             " a prefix no other commit of the range shares")
+    else:
+        v.ok("land/gpt", "no commit a GPT model assisted lacks the owner's gpt-ok")
     judge_series(v, main, span)
     known = set(patch_ids(main).values())
     dup = [c[:12] for c, p in patch_ids(span).items() if p in known]
@@ -728,7 +749,7 @@ def judge(d, repo, fetched, main, ancestor, merges):  # noqa: PLR0913, PLR0917
     rules = pages(f"{d}/rules.json")
     v = Verdict()
     judge_pull(v, pr, me, fetched, repo)
-    approve = judge_reviews(v, d, pr, me, repo)
+    approve, bodies = judge_reviews(v, d, pr, me, repo)
     judge_threads(v, d)
     fault = rules_fault(rules)
     if fault:  # nothing below can be judged against rules that are not there
@@ -737,7 +758,7 @@ def judge(d, repo, fetched, main, ancestor, merges):  # noqa: PLR0913, PLR0917
     else:
         judge_checks(v, d, rules, repo, pr["number"], pr["head"]["sha"])
     judge_history(v, main, pr["head"]["sha"], ancestor, merges)
-    judge_range(v, pr, main, fetched)
+    judge_range(v, pr, main, fetched, bodies)
     if not fault:
         judge_rules(v, d, rules, me)
     if v.refused:

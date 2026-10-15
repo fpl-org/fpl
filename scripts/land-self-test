@@ -80,7 +80,7 @@ git reset -q --hard "$M0"
 # For the rules on the range: MS, a main that holds scripts/series, HS above it with one
 # Series-Id, HN with none, MF a main past MS that carries HS's id; MP a main that adds p,
 # HP above it that removes p and adds it again, the patch of MP; HW a head that touches a
-# workflow, HB eleven commits, HL 601 lines.
+# workflow, HG one a GPT model assisted, HB eleven commits, HL 601 lines.
 mkdir scripts
 printf '#!/bin/sh\necho d1g3st\n' >scripts/series
 chmod +x scripts/series
@@ -113,6 +113,9 @@ git add -A
 git commit -q -m "a workflow"
 HW="$(git rev-parse HEAD)"
 git reset -q --hard "$M0"
+git commit -q --allow-empty -m "assisted" -m "Assisted-By: gpt-6.1-sol"
+HG="$(git rev-parse HEAD)"
+git reset -q --hard "$M0"
 for i in 1 2 3 4 5 6 7 8 9 10 11; do git commit -q --allow-empty -m "c$i"; done
 HB="$(git rev-parse HEAD)"
 git reset -q --hard "$M0"
@@ -123,7 +126,7 @@ HL="$(git rev-parse HEAD)"
 git reset -q --hard "$M0"
 git push -q "$REMOTE" "$M0:refs/heads/main" "$H:refs/heads/$BR" "$M1:refs/heads/m1" \
 	"$MC:refs/heads/mc" "$H2:refs/heads/h2" "$HM:refs/heads/hm" "$HS:refs/heads/hs" \
-	"$HN:refs/heads/hn" "$HP:refs/heads/hp" "$HW:refs/heads/hw" \
+	"$HN:refs/heads/hn" "$HP:refs/heads/hp" "$HW:refs/heads/hw" "$HG:refs/heads/hg" \
 	"$HB:refs/heads/hb" "$HL:refs/heads/hl" "$MF:refs/heads/mf"
 
 # The stand-ins: gh serves the forge, git sends the test's GitHub to the disk, open and
@@ -237,8 +240,9 @@ pull() { # pull <state> <draft> <base> <merged> [body]
 }
 me() { echo "{\"login\": \"$1\"}" | fixture user; }
 reviews() { echo "[[$1]]" | fixture "repos/land-test/fpl/pulls/7/reviews?per_page=100" ${2:+"$2"}; }
-review() { # review <id> <login> <state> <commit>
-	echo "{\"id\": $1, \"user\": {\"login\": \"$2\"}, \"state\": \"$3\", \"commit_id\": \"$4\"}"
+review() { # review <id> <login> <state> <commit> [body]
+	echo "{\"id\": $1, \"user\": {\"login\": \"$2\"}, \"state\": \"$3\", \"commit_id\": \"$4\",
+	  \"body\": \"${5:-}\"}"
 }
 threads() {
 	echo "[{\"data\": {\"repository\": {\"pullRequest\": {\"reviewThreads\": {\"nodes\": [$1],
@@ -1127,6 +1131,53 @@ range_case "$HP" "$MP" 1 "NO  land/patch-fresh" "a patch that is on main already
 range_case "$HW" "$M0" 1 "NO  land/workflows" "a commit that touches .github/workflows"
 range_case "$HB" "$M0" 1 "11 commits, 0 lines: over 10" "eleven commits"
 range_case "$HL" "$M0" 1 "1 commits, 601 lines: over" "601 lines"
+range_case "$HG" "$M0" 1 "NO  land/gpt" "a commit a GPT model assisted, no gpt-ok"
+at="$HG" HEAD_SHA="$HG"
+forge
+reviews "$(review 1 psjg APPROVED "$HG" "read it. gpt-ok: ${HG:0:7}")"
+expect 0 "a commit a GPT model assisted, with the owner's gpt-ok" --dry-run 7
+# Two commits a GPT model assisted whose SHAs share their first 7 digits, siblings on M0, and
+# HV, a merge of both. Python hashes commit objects of fixed text, a counter in the message,
+# until two prefixes meet (about 20 000 tries by the birthday bound, well under a second);
+# git then writes those two texts, so the SHAs are the ones hashed.
+python3 - "$(git -C "$repo" rev-parse "$M0^{tree}")" "$M0" "$tmp/v" <<'PY'
+import hashlib
+import sys
+
+tree, parent, out = sys.argv[1:]
+seen, i = {}, 0
+while True:
+    text = (f"tree {tree}\nparent {parent}\nauthor t <t@example.invalid> 0 +0000\n"
+            f"committer t <t@example.invalid> 0 +0000\n\nassisted {i}\n\n"
+            "Assisted-By: gpt-6.1-sol\n").encode()
+    sha = hashlib.sha1(b"commit %d\0" % len(text) + text).hexdigest()
+    if sha[:7] in seen:
+        break
+    seen[sha[:7]] = text
+    i += 1
+open(out + "1", "wb").write(seen[sha[:7]])
+open(out + "2", "wb").write(text)
+PY
+V1="$(git -C "$repo" hash-object -t commit -w "$tmp/v1")"
+V2="$(git -C "$repo" hash-object -t commit -w "$tmp/v2")"
+HV="$(git -C "$repo" commit-tree "$M0^{tree}" -p "$V1" -p "$V2" -m "both")"
+git -C "$repo" push -q "$REMOTE" "$HV:refs/heads/hv"
+total=$((total + 1))
+if [ "${V1:0:7}" != "${V2:0:7}" ] || [ "$V1" = "$V2" ]; then
+	fails=$((fails + 1))
+	echo "self-test: the two commits do not share a prefix: $V1 $V2" >&2
+fi
+at="$HV" HEAD_SHA="$HV"
+forge
+reviews "$(review 1 psjg APPROVED "$HV" "gpt-ok: ${V1:0:7}")"
+expect 1 "one gpt-ok whose prefix two assisted commits share" --dry-run 7
+says "NO  land/gpt" "it attests neither"
+says "gpt-ok ${V1:0:7} matches more than one commit" "it names the prefix"
+forge
+reviews "$(review 1 psjg APPROVED "$HV" "gpt-ok: $V1 gpt-ok: $V2")"
+expect 1 "a gpt-ok for each, in full (the merge between them is refused)" --dry-run 7
+says "ok  land/gpt" "each names one commit"
+at="$H" HEAD_SHA="$H"
 at="$H" HEAD_SHA="$H"
 forge
 pull open false main @MERGED@ '## What\n## What changes\n## How checked\n## Limits'
