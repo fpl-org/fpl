@@ -175,12 +175,16 @@ add scripts/foo 755 && add scripts/foo-self-test 755
 printf '#!/bin/sh\necho foo >>"$TESTLOG"\n' >scripts/foo-self-test
 printf '#!/bin/sh\ncase "$1" in\n--self-test) echo bar >>"$TESTLOG" ;;\nesac\n' >scripts/bar
 printf '#!/bin/sh\n# baz --self-test is only named here\nexit 1\n' >scripts/baz
-chmod +x scripts/bar scripts/baz
-git add scripts && commit "feat(scripts): foo, bar and baz"
+# The flag in the shapes that handle it, and in the shapes that only quote it: a comment that
+# would match the pattern, and an echo of it.
+printf '#!/bin/sh\ncase "$1" in\n\t--self-test) echo qux >>"$TESTLOG" ;;\nesac\n' >scripts/qux
+printf '#!/bin/sh\n# ["--self-test"] is a comment\necho %s\nexit 1\n' "'[\"--self-test\"]'" >scripts/quux
+chmod +x scripts/bar scripts/baz scripts/qux scripts/quux
+git add scripts && commit "feat(scripts): foo, bar, baz, qux and quux"
 add docs/readme && commit "docs(x): words"
 : >"$TESTLOG"
 run "self-tests" 0 "selftest ok" "scripts/foo-self-test" -- --skip-quick touched
-check "self-tests: foo and bar ran once each; the docs commit ran none" lines "$TESTLOG" 2
+check "self-tests: foo, bar and qux ran once each; baz, quux and the docs commit none" lines "$TESTLOG" 3
 printf '#!/bin/sh\nexit 1\n' >scripts/foo-self-test
 git add scripts && commit "fix(scripts): break foo"
 run "self-test red" 1 "selftest is red" -- --skip-quick touched

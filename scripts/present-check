@@ -172,6 +172,17 @@ else
 	echo "skip  Series-Id (no scripts/series in $(short "$p"))"
 fi
 
+# handles_flag <script>: whether the script handles --self-test in code: a Python argv list, a
+# case arm or a test of the argument. Comment lines and echo or printf lines, where the flag is
+# only named, do not count; a trailing comment after code is not told apart. One awk, not
+# grep -v piped into grep -q, so that pipefail cannot read grep's early exit as a no.
+handles_flag() {
+	awk '
+		/^[[:space:]]*(#|echo|printf)/ { next }
+		/\["--self-test"\]|^[[:space:]]*--self-test\)|[=] --self-test/ { found = 1 }
+		END { exit !found }' "$1"
+}
+
 # selftests <worktree>: the self-tests that cover what the commit at <worktree> touched, one
 # command per line, relative to the worktree, from the mapping the gates lane implies.
 selftests() {
@@ -187,7 +198,7 @@ selftests() {
 		scripts/*)
 			if [ -x "$1/$f-self-test" ]; then
 				echo "$f-self-test"
-			elif [ -x "$1/$f" ] && grep -qE -- '(\["--self-test"\]|^--self-test\)|[=] --self-test)' "$1/$f"; then
+			elif [ -x "$1/$f" ] && handles_flag "$1/$f"; then
 				case "$(head -n 1 "$1/$f")" in
 				*python*) echo ".venv/bin/python $f --self-test" ;;
 				*) echo "$f --self-test" ;;
