@@ -35,7 +35,7 @@ case "$*" in
 *"pulls?state=all"*"stack/demo-1"*) echo "${STUB_PR_B:-}" ;;
 *"pulls?state=all"*) echo "${STUB_PR:-}" ;;
 *"pulls/9/reviews"*) echo "${STUB_REVIEWS_9:-}" ;;
-*reviews*) echo "${STUB_REVIEWS:-}" ;;
+*reviews*) if [ -n "${STUB_REVIEWS_FILE:-}" ]; then cat "$STUB_REVIEWS_FILE"; else echo "${STUB_REVIEWS:-}"; fi ;;
 *) echo "${STUB_COMMENTS:-}" ;;
 esac
 EOF
@@ -104,6 +104,10 @@ for kind in STUB_REVIEWS STUB_COMMENTS; do
 	env "$kind=psjg" "$BASH" scripts/series stamp "$base0..HEAD" >"$tmp/out" 2>&1 && rc=0 || rc=$?
 	verdict "stamp refuses when the owner is in $kind" "$rc" 1 "owner-spoke"
 done
+# The owner is the first of a long answer (well over a pipe's buffer): the match must not leave early.
+awk 'BEGIN { print "psjg"; for (i = 0; i < 40000; i++) print "someone" }' >"$tmp/long"
+STUB_REVIEWS_FILE="$tmp/long" "$BASH" scripts/series stamp "$base0..HEAD" >"$tmp/out" 2>&1 && rc=0 || rc=$?
+verdict "stamp refuses when the owner heads a long answer" "$rc" 1 "owner-spoke"
 STUB_NOTOKEN=1 "$BASH" scripts/series stamp "$base0..HEAD" >"$tmp/out" 2>&1 && rc=0 || rc=$?
 verdict "stamp refuses blind (no token)" "$rc" 1 "forge-token"
 same "every forge call names github.com" "$(grep -vc -e '--hostname github.com' "$tmp/gh.log" || true)" 0

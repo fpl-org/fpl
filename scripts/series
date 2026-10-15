@@ -146,7 +146,9 @@ cmd__amend() {
 # requests of <branch>. Read-only GETs with the machine account's token; a forge that cannot be
 # asked is a refusal too (failing open would let the guard pass when it is blind). Every call names
 # github.com (GH_HOST must not send the question to another forge, whose silence would pass the
-# guard) and reads every page (a branch name reused by many pull requests, a long thread).
+# guard) and reads every page (a branch name reused by many pull requests, a long thread). The
+# match reads its whole input: a grep -q that leaves at the first hit can make printf die of
+# SIGPIPE on a long answer, and under pipefail the refusal is then skipped.
 forge_silent() {
 	local gh="${SERIES_GH:-gh}" repo="${SERIES_REPO:-fpl-org/fpl}" owner="${SERIES_OWNER:-psjg}" tok prs pr kind who
 	tok="$("$gh" auth token --hostname github.com --user psjg-claude 2>/dev/null)" && [ -n "$tok" ] \
@@ -157,7 +159,7 @@ forge_silent() {
 		for kind in "pulls/$pr/reviews" "issues/$pr/comments" "pulls/$pr/comments"; do
 			who="$(GH_TOKEN="$tok" "$gh" api --hostname github.com --paginate "repos/$repo/$kind" --jq '.[].user.login' 2>/dev/null)" \
 				|| die forge-query "the forge did not answer for $kind" "retry when it is reachable"
-			printf '%s\n' "$who" | grep -qix "$owner" \
+			printf '%s\n' "$who" | grep -Fix -- "$owner" >/dev/null \
 				&& die owner-spoke "$owner has spoken on pull request #$pr ($kind)" "ask him: a rewrite now is a question to the reviewer"
 		done
 	done
