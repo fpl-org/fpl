@@ -19,9 +19,11 @@ Written by an AI agent (<model>) working for @psjg, as presenter of this pull re
 lines. Otherwise drop this paragraph.>
 
 ## How checked
+<The acknowledgements: who read the series and what each gave, which the commits never say.>
 - Gates: <present-check or make gates, its result, on which head>.
-- Bots: <CodeRabbit, Codex, Claude review: each finding, and applied or rejected with why>.
+- Bots: <CodeRabbit, Codex, Claude review: each finding, and folded, a lemma, or rejected, why>.
 - GPT verification: <findings as a list, each applied or rejected with why; its text never lands>.
+- Owner: <when his comments asked for this rewrite, which; else drop the line>.
 
 ## Limits
 - <what is not done, not checked, or known to be wrong>
@@ -31,7 +33,8 @@ lines. Otherwise drop this paragraph.>
 
 Series-Id: <id, or n/a until scripts/series is on main>
 Digest: <the digest of scripts/series manifest base..head, or n/a>
-
+<Presented again: "Re-presented <date>; superseded head <W sha>; bot threads older than that
+refer to superseded commits." Else drop the line.>
 | # | commit | lemma |
 | --- | --- | --- |
 | 1 | <short sha> | <subject> |
