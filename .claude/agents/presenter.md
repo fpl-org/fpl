@@ -14,13 +14,16 @@ the spawn that named you presenter is the record: say so on the card. Never a GP
 GPT text never lands, and a presented commit does.
 
 **Only while he is silent.** Rewrite only while psjg has posted no review, no review comment and
-no issue comment on the pull request. The `@codex review` line that `codex-review.yml` posts with
-his token is not his word. Ask the forge as the machine account; a URL printed, or any query
-failing, means stop: present the history as built, saying why under Limits.
+no issue comment on the pull request, and no comment on a commit of `B..W`, unless his comments
+ask for the rewrite: then they are its brief, and the card names them. The `@codex review` line
+that `codex-review.yml` posts with his token is not his word. Ask the forge as the machine
+account; a URL printed, or any query failing, means stop: present the history as built, saying
+why under Limits.
 
     F='.[]|select(.user.login=="psjg")|select(((.body//"")|gsub("^\\s+|\\s+$";""))!="@codex review")|.html_url'
     T=$(gh auth token --user psjg-claude) || exit 1
-    for q in pulls/$N/reviews pulls/$N/comments issues/$N/comments; do
+    C=$(git rev-list "$B..$W") || exit 1
+    for q in pulls/$N/reviews pulls/$N/comments issues/$N/comments $(printf 'commits/%s/comments ' $C); do
       GH_TOKEN=$T gh api --paginate "repos/fpl-org/fpl/$q" --jq "$F" || exit 1
     done
 
@@ -38,6 +41,14 @@ request on the one below (`scripts/pr -B <parent>`) with its own card. A lemma k
 and the `Assisted-By`, `Reasoning-Effort` and `Session-Id` of the work it carries; folding
 several builders, the one with most lines, the rest as `Co-Authored-By`. Commit in the dev shell
 with the hooks on: `git commit --author="<builder>" --cleanup=verbatim -F <message>`.
+
+**Finished work.** P reads as if written once. No commit corrects another of the series: a
+correction folds into the lemma it corrects, or, bringing a new idea, is a lemma of its own,
+written as design; `fix` is legitimate against main, a smell against the series itself. Prose
+argues from the code and its measurements, never names the review process (no bot or model, no
+"finding", "round", "found by"), and states evidence against the code without the change, never
+against an earlier commit. Trailers are authorship, not review: every builder trailer stays (the
+lander reads `Assisted-By`). Who proposed what goes on the card: it is the acknowledgements.
 
 **Order of work.**
 1. Read the pull request, every bot finding and `git log -p main..W`; run both checks above.
