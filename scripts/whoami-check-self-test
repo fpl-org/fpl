@@ -106,6 +106,24 @@ run() {
 	expect "$sh" helper-not-asked-for-ssh psjg psjg psjg yes "username=not used by this push" "git@github.com:o/r.git"
 	if [ -e "$tmp/bin/gh.log" ]; then echo "FAIL gh-never-asked-with-url ($sh): gh ran for a destination"; fails=$((fails + 1)); fi
 	if [ -e "$tmp/bin/git.in" ]; then echo "FAIL helper-not-asked-for-ssh ($sh): the helper ran for an ssh destination"; fails=$((fails + 1)); fi
+	# git's own askpass is never asked: GIT_TERMINAL_PROMPT=0 stops the terminal prompt, not a
+	# GIT_ASKPASS, core.askPass or SSH_ASKPASS helper, which git tries first. Real git, with no
+	# config but the test's own, so no helper answers and git would prompt; the askpass stand-in
+	# answers psjg and leaves a mark. The probe must come back unknown and leave no mark.
+	local ask="$tmp/askpass" via set
+	printf '#!/bin/sh\n: >>"$0.asked"\necho psjg\n' >"$ask" && chmod +x "$ask"
+	for via in GIT_ASKPASS SSH_ASKPASS core.askPass; do
+		rm -f "$ask.asked" && : >"$tmp/gitconfig" && set=()
+		case "$via" in
+		core.askPass) printf '[core]\n\taskPass = %s\n' "$ask" >"$tmp/gitconfig" ;;
+		*) set=("$via=$ask") ;;
+		esac
+		out="$(env -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT -u GIT_ASKPASS -u SSH_ASKPASS \
+			HOME="$tmp" XDG_CONFIG_HOME="$tmp" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$tmp/gitconfig" \
+			${set[@]+"${set[@]}"} "$sh" "$root/scripts/whoami-check" https://askpass.invalid/o/r.git 2>&1)"
+		if [ -e "$ask.asked" ]; then echo "FAIL askpass-$via ($sh): git's askpass was asked"; fails=$((fails + 1)); fi
+		printf '%s\n' "$out" | grep -qxF "whoami-check: username=unknown" || { echo "FAIL askpass-$via ($sh): the probe did not come back unknown"; fails=$((fails + 1)); }
+	done
 	# The admin list is configurable.
 	out="$(PATH="$tmp/bin:$PATH" PUSH=bob GH=bob SSH=bob FPL_ADMIN_ACCOUNTS="bob" "$sh" "$root/scripts/whoami-check" 2>&1)"
 	case "$out" in *NAG*) : ;; *) echo "FAIL admins-env ($sh): no NAG"; fails=$((fails + 1)) ;; esac

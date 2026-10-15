@@ -102,14 +102,19 @@ elif command -v perl >/dev/null 2>&1; then
 fi
 
 # push: git's answer for the destination's host, the username line and nothing else. When the
-# URL names the account (user@), that is the account and nobody is asked.
+# URL names the account (user@), that is the account and nobody is asked. Nor does git ask anyone
+# itself: GIT_TERMINAL_PROMPT=0 stops only the terminal prompt, and git tries GIT_ASKPASS,
+# core.askPass and SSH_ASKPASS before it, so all three are set empty. Git takes the first one it
+# finds set, so the empty GIT_ASKPASS alone ends the search; the other two are cleared so the
+# probe does not lean on that order. A credential helper's own dialog is not git's to stop: the
+# deadline cuts it off.
 push=""
 if [ "$c_push" -eq 1 ]; then
 	if [ -n "$named" ]; then
 		push="$named"
 	else
 		push="$(printf 'protocol=%s\nhost=%s\n\n' "$proto" "$host" |
-			GIT_TERMINAL_PROMPT=0 ${bound[@]+"${bound[@]}"} git credential fill 2>/dev/null |
+			GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= SSH_ASKPASS= ${bound[@]+"${bound[@]}"} git -c core.askPass= credential fill 2>/dev/null |
 			sed -n 's/^username=//p' | head -n 1)" || push=""
 	fi
 fi
