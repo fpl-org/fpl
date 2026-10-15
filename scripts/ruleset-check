@@ -12,9 +12,10 @@ settings page, from the file.
 What is compared is what the forge enforces, not how it spells it. Dropped from both sides: id,
 node_id, the timestamps, _links, source, source_type and current_user_can_bypass. Order means
 nothing (rules are keyed by type, bypass actors by actor, status checks by context, lists of
-values are sorted). An `update` rule without parameters is one with
-update_allows_fetch_and_merge=false (measured on fpl-org/harness-proef: the forge answers one
-for the other), and a missing conditions.ref_name.exclude is an empty one.
+values are sorted; two rules of one type are told apart by their parameters). An `update` rule
+without parameters is one with update_allows_fetch_and_merge=false (measured on
+fpl-org/harness-proef: the forge answers one for the other), and a missing
+conditions.ref_name.exclude is an empty one.
 
 `bypass_actors` is not in the forge's answer to a token without admin rights (the machine
 accounts'), and a file made with such a token does not record it: it is compared only when both
@@ -111,13 +112,20 @@ def canon(value: Any) -> Any:
 
 
 def keyed(items: Any, key: str, kind: str, value: Any = lambda i: i) -> dict[str, Any]:
-    """A list of objects as an object by field `key` (the second of a kind is `k#2`)."""
-    out: dict[str, Any] = {}
+    """A list of objects as an object by field `key`.
+
+    Several objects of one key (a ruleset may hold two rules of one type) are told apart by
+    what they say, not by where they stand: sorted by their JSON, they are `k`, `k#2`, `k#3`.
+    """
+    bucket: dict[str, list[Any]] = {}
     for item in items or []:
         if not isinstance(item, dict) or key not in item:
             raise UnreadableError(f"a {kind} without a {key}: {json.dumps(item)[:80]}")
-        name = str(item[key])
-        out[name if name not in out else f"{name}#{len(out)}"] = value(item)
+        bucket.setdefault(str(item[key]), []).append(value(item))
+    out: dict[str, Any] = {}
+    for name, values in bucket.items():
+        values.sort(key=lambda v: json.dumps(v, sort_keys=True))
+        out |= {name if n == 1 else f"{name}#{n}": v for n, v in enumerate(values, 1)}
     return out
 
 

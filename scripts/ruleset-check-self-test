@@ -199,6 +199,24 @@ d "live ruleset without a file" "add('extra')" "" "NO FILE"
 d "bypass actor more, live" "s['$BRAKE']['bypass_actors'].append({'actor_id': 9, 'actor_type': 'Integration', 'bypass_mode': 'always'})" visible "bypass_actors.Integration 9"
 d "bypass mode changed, live" "s['$BRAKE']['bypass_actors'][0]['bypass_mode'] = 'pull_request'" visible "bypass_actors.RepositoryRole 5: file always, live pull_request"
 
+# two rules of one type are told apart by what they say, not by their order (the forge's
+# answer reverses it)
+two() {
+	build
+	python3 -I -c 'import json, sys
+p = sys.argv[1] + "/brake.json"
+d = json.load(open(p))
+cmp = lambda x: {"type": "commit_message_pattern", "parameters": {"operator": "starts_with", "pattern": x, "negate": False, "name": ""}}
+d["rules"] += [cmp("a"), cmp("b")]
+json.dump(d, open(p, "w"))' "$work"
+	WORK="$work" fx "build(os.environ['WORK'])"
+}
+two
+run 0 "two rules of one type, live in the other order" "ruleset-check fpl-org/fpl: in sync"
+two
+fx "[r for r in s['$BRAKE']['rules'] if r['type'] == 'commit_message_pattern'][0]['parameters']['pattern'] = 'c'"
+run 1 "one of two rules of one type changed live" "rules.commit_message_pattern"
+
 # the output for machines
 build
 fx "s['$LINEAR']['enforcement'] = 'disabled'"
