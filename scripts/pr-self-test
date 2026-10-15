@@ -47,8 +47,8 @@ echo '[]' >"$forge/pulls.json"
 echo '{"check_runs": []}' >"$forge/checks.json"
 echo '{"statuses": []}' >"$forge/status.json"
 cat >"$tmp/forge.py" <<'PY'
-import json, os, sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import json, os, sys, time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 forge = sys.argv[1]
@@ -85,6 +85,9 @@ class Handler(BaseHTTPRequestHandler):
                 log.write(f"{method} {url.path} {body}\n")
         parts = url.path.strip("/").split("/")
         base = "/repos/pr-test/fpl"
+        stall = f"{forge}/stall-{parts[-1]}"  # a file named for the last path part: sleep that long
+        if os.path.exists(stall):
+            time.sleep(float(fixture(f"stall-{parts[-1]}")))
         if url.path == "/user":
             return self.reply(200, json.dumps({"login": fixture("login").strip()}))
         if url.path == "/graphql" and method == "POST":
@@ -124,7 +127,8 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-httpd = HTTPServer(("127.0.0.1", 0), Handler)
+ThreadingHTTPServer.daemon_threads = True  # a handler that sleeps must not outlive the test
+httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
 with open(f"{forge}/port", "w") as f:
     f.write(str(httpd.server_port))
 httpd.serve_forever()
@@ -201,6 +205,15 @@ lacks() {
 	! grep -Fq -- "$2" "$tmp/$1" || {
 		fails=$((fails + 1))
 		echo "self-test: $3: $1 has '$2'" >&2
+	}
+}
+# within <began> <seconds> <description>: the run since <began> (a value of $SECONDS) took
+# fewer seconds than that.
+within() {
+	total=$((total + 1))
+	[ $((SECONDS - $1)) -lt "$2" ] || {
+		fails=$((fails + 1))
+		echo "self-test: $3: took $((SECONDS - $1))s, want under $2" >&2
 	}
 }
 # logged <count> <text> <description>: the forge logged text on that many lines.
@@ -368,6 +381,26 @@ grep -Fq "Metadata, Checks and Commit statuses read" "$root/.agents/WORKFLOW.md"
 	fails=$((fails + 1))
 	echo "self-test: .agents/WORKFLOW.md does not grant the token what --ready reads" >&2
 }
+# A forge that takes the connection and says nothing: the wait ends in an error of its own, not
+# in a hang, whichever bound is the tighter, the cap on a call or what is left of FPL_PR_WAIT.
+pull 5 true '[]'
+echo 20 >"$forge/stall-check-runs"
+began=$SECONDS
+FPL_PR_TIMEOUT=1 FPL_PR_WAIT=100 run 1 "ready with a forge that stalls, a cap of 1s" --ready 5
+says err "no answer in 1.0s" "the cap ends the call"
+within $began 8 "the cap bounds the wait"
+began=$SECONDS
+FPL_PR_TIMEOUT=100 FPL_PR_WAIT=1 run 1 "ready with a forge that stalls, 1s of wait" --ready 5
+says err "no answer in 1.0s" "what is left of FPL_PR_WAIT ends the call"
+within $began 8 "FPL_PR_WAIT bounds the wait"
+rm "$forge/stall-check-runs"
+echo 20 >"$forge/stall-user"
+began=$SECONDS
+FPL_PR_TIMEOUT=1 run 1 "asking for a review of a forge that stalls" --reviewer 5 psjg
+says err "/user: no answer in 1.0s" "the first call has a cap too"
+within $began 8 "the cap bounds a mode without a wait"
+rm "$forge/stall-user"
+logged 1 "POST /graphql" "nothing marked on a forge that did not answer"
 pull 5 false '[]'
 run 0 "ready twice" --ready 5
 says err "ready already" "nothing to do"
