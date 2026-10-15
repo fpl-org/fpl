@@ -175,6 +175,8 @@ cmd_stamp() { # stamp <base>..HEAD [id]
 	branch="$(git branch --show-current)"
 	[ -n "$branch" ] && [ "$branch" != main ] || die branch "stamping rewrites the current branch, which must not be main or detached" "switch to the work branch"
 	[ "$(git rev-parse "${range#*..}")" = "$(git rev-parse HEAD)" ] || die range "the range must end at HEAD" "series stamp <base>..HEAD"
+	git merge-base --is-ancestor "$base" HEAD \
+		|| die base "'$base' is not an ancestor of HEAD, so the rebase would move the series onto other history, not only add the id" "name a base on this branch: series stamp <base>..HEAD"
 	git diff --quiet HEAD -- || die dirty "the tree has uncommitted changes" "commit or stash them"
 	forge_silent "$branch"
 	list="$(revs "$range")"

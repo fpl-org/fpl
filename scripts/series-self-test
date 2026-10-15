@@ -124,6 +124,10 @@ same "the refused stamp left the boundary alone" "$(git rev-parse agent/claude/s
 git switch -q main
 sr 1 "stamp refuses main" "branch" stamp "$base0..HEAD"
 git switch -q agent/claude/stack/demo
+# A base off this branch: a rebase onto it would move the series onto other history.
+side="$(git commit-tree -p "$base0" -m side "$(git rev-parse "$base0^{tree}")")"
+sr 1 "stamp refuses a base that is not an ancestor of HEAD" "not an ancestor" stamp "$side..HEAD"
+same "the refused stamp left the tip alone (no ancestor)" "$(git rev-parse HEAD)" "$tip0"
 
 # --- stamp: the identity goes on, the patches do not change ----------------------------------------
 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.cleanup GIT_CONFIG_VALUE_0=strip \
