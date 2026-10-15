@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
-# scripts/sweep — an inventory of the worktrees and local branches, and what it proposes for
-# each: keep, review, or archive what is finished. It reads; it changes nothing.
+# scripts/sweep — an inventory of the worktrees and local branches, and the one clean-up it
+# proposes: remove what is finished, after saving what it held.
 #
-#   scripts/sweep [--dry-run]            the table (the default, and the only mode)
+#   scripts/sweep [--dry-run]            the table, nothing changed (the default)
+#   scripts/sweep --apply [name ...]     remove the rows proposed "archive" (all, or those named)
 #   scripts/sweep --self-test            scripts/sweep-self-test
 #
 # One tab-separated row per linked worktree (the root checkout is where this runs, not a row)
@@ -30,6 +31,16 @@
 #             archive  merged, or new = 0: everything it committed is in the base
 #   note    the reason, in words
 #
+# --apply is the only way anything changes, and only with SWEEP_OWNER_YES=1: the owner's yes.
+# It acts on archive rows, never on the do-not-touch list (checked again at the moment of
+# removal), in the order that loses nothing:
+#   1. the dirty files, untracked ones too, as harness/sweep-archive/<name>.patch (git-ignored;
+#      refused when it exists), made in a scratch index so the worktree's own stays as it was
+#   2. a tag on the head: archive/<branch>, or archive/worktree/<name> when detached
+#   3. git worktree remove --force, then git branch -D: the tag keeps the commits reachable
+# A worktree whose head moved since the table was made is skipped. Ignored files (.venv) go
+# with the directory. A name picks a row by its name, its branch or its last path component.
+#
 # The base is the local `main` (SWEEP_BASE): a lagging main only makes rows look less merged,
 # the safe direction. Nothing is fetched or pruned. SWEEP_FORGE=0 skips the forge; SWEEP_REPO
 # and SWEEP_GH_USER name the repository (default: the `github` remote) and the account
@@ -45,11 +56,24 @@ die() {
 	exit 1
 }
 
+mode=dry names=""
 case "${1:-}" in
-"" | --dry-run) [ $# -le 1 ] || die "usage: scripts/sweep [--dry-run]" ;;
+"" | --dry-run) [ $# -le 1 ] || die "usage: scripts/sweep [--dry-run | --apply [name ...]]" ;;
+--apply)
+	mode=apply
+	shift
+	for n in "$@"; do names="${names:+$names
+}$n"; done
+	;;
 --self-test) exec "$here/sweep-self-test" ;;
-*) die "usage: scripts/sweep [--dry-run]" ;;
+*) die "usage: scripts/sweep [--dry-run | --apply [name ...]]" ;;
 esac
+
+if [ "$mode" = apply ] && [ "${SWEEP_OWNER_YES:-}" != 1 ]; then
+	printf 'sweep: --apply removes worktrees and branches; it runs only when the owner says yes.\n' >&2
+	printf 'sweep: nothing was changed. Look at the table (scripts/sweep), then SWEEP_OWNER_YES=1 scripts/sweep --apply\n' >&2
+	exit 2
+fi
 
 # A read changes nothing: status must not refresh an index.
 export GIT_OPTIONAL_LOCKS=0
@@ -261,4 +285,78 @@ fi
 		"$nbr" "$(git stash list | wc -l | tr -d ' ')" "$base" "$([ "$forge" = yes ] && echo asked || echo 'not asked: pr is ?')"
 	printf '# actions: keep %s, review %s, archive %s\n' "$(count keep)" "$(count review)" "$(count archive)"
 }
-printf '# dry run: nothing was changed\n'
+[ "$mode" = apply ] || { printf '# dry run: nothing was changed\n'; exit 0; }
+
+# --- apply ---------------------------------------------------------------------------------
+archive_dir="$root/harness/sweep-archive"
+printf '%s\n' "$names" >"$tmp/names"
+applied=0 failed=0 skipped=0
+say() { printf 'apply\t%s\t%s\n' "$1" "$2"; }
+# snap <worktree> <file>: its dirty files, untracked ones too, as a patch over HEAD (empty when
+# clean), made in a scratch index so the worktree's own stays as it was.
+snap() {
+	local idx="$tmp/snap-index"
+	GIT_INDEX_FILE="$idx" git_in "$1" read-tree HEAD &&
+		GIT_INDEX_FILE="$idx" git_in "$1" add -A &&
+		GIT_INDEX_FILE="$idx" git_in "$1" diff --cached --binary HEAD >"$2"
+}
+while IFS="$tab" read -r kind name b merged new dirty pr owner action note sha path; do
+	[ "$action" = archive ] || continue
+	if [ -n "$names" ]; then
+		printf '%s\n%s\n%s\n' "$name" "$b" "${name##*/}" | grep -Fxqf "$tmp/names" || continue
+	fi
+	# The rule above is not trusted with the list that matters.
+	if protected "$([ "$kind" = wt ] && echo "$name")" "$([ "$b" = - ] || echo "$b")"; then
+		say "$name" "refused: on the do-not-touch list"
+		skipped=$((skipped + 1))
+		continue
+	fi
+	if [ "$kind" = wt ]; then
+		now="$(git_in "$path" rev-parse HEAD)" || { say "$name" "FAILED: cannot read its head"; failed=$((failed + 1)); continue; }
+		if [ "$now" != "$sha" ]; then
+			say "$name" "skipped: its head moved since the table"
+			skipped=$((skipped + 1))
+			continue
+		fi
+	fi
+	if [ "$b" != - ]; then tag="archive/$b"; else tag="archive/worktree/${name##*/}"; fi
+	if old="$(git rev-parse -q --verify "refs/tags/$tag")" && [ "$old" != "$sha" ]; then tag="$tag-$(printf '%.7s' "$sha")"; fi
+	# What is dirty is read now, not from the table: another session may have touched the worktree.
+	patch=""
+	if [ "$kind" = wt ]; then
+		if ! snap "$path" "$tmp/snap1"; then
+			say "$name" "FAILED: could not read the dirty files; left as it is"
+			failed=$((failed + 1))
+			continue
+		fi
+		if [ -s "$tmp/snap1" ]; then
+			patch="$archive_dir/${name##*/}.patch"
+			if [ -e "$patch" ]; then
+				say "$name" "FAILED: $patch exists; move it away"
+				failed=$((failed + 1))
+				continue
+			fi
+			mkdir -p "$archive_dir"
+			cp "$tmp/snap1" "$patch"
+		fi
+	fi
+	if ! git tag -- "$tag" "$sha" 2>/dev/null && [ "$(git rev-parse -q --verify "refs/tags/$tag^{commit}")" != "$sha" ]; then
+		say "$name" "FAILED: could not tag $tag; left as it is"
+		failed=$((failed + 1))
+		continue
+	fi
+	if [ "$kind" = wt ] && ! git worktree remove --force -- "$path" 2>/dev/null; then
+		say "$name" "FAILED: worktree remove; tag $tag stays"
+		failed=$((failed + 1))
+		continue
+	fi
+	if [ "$b" != - ] && ! git branch -D -- "$b" >/dev/null 2>&1; then
+		say "$name" "FAILED: branch delete; tag $tag stays"
+		failed=$((failed + 1))
+		continue
+	fi
+	say "$name" "removed; tag $tag${patch:+; dirty files in ${patch#"$root"/}}"
+	applied=$((applied + 1))
+done <"$rows"
+printf '# applied %s, skipped %s, failed %s\n' "$applied" "$skipped" "$failed"
+[ "$failed" -eq 0 ]

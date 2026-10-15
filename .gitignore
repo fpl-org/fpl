@@ -3,6 +3,9 @@
 # `git worktree list` still tracks them normally.
 worktrees/
 
+# What scripts/sweep --apply saves of a removed worktree's dirty files: private, never staged.
+harness/sweep-archive/
+
 # Python
 __pycache__/
 *.pyc
