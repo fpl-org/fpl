@@ -261,7 +261,8 @@ def self_test() -> int:
     for name, start, count, dry, want in CASES:
         writes, error = trial(start, count, dry)
         got: Any = error or None
-        if error and writes and "changed" not in error:  # a refusal comes before any write
+        # A refusal comes before any write; the one error that follows a write is the tripwire's.
+        if error and writes and "the write changed" not in error:
             got = f"wrote {writes} before refusing"
         if writes and not error:
             body = writes[0]
