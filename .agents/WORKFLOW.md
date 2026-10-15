@@ -376,9 +376,10 @@ request (`scripts/import-review --open`), and serves the patches on 127.0.0.1. T
 reads the patches and nothing else. Its address, token included, is also written to
 `.git/review-serve.pid`, so it can be opened in another browser than the default.
 
-Open pull requests are based on main, or on the branch of the one they are stacked on.
-The page orders them as one queue and shows it as one surface, a stack under its parent, head
-first, with the last few merged pull requests above it in grey. On the left is the queue as
+Open pull requests form one queue, ordered by what each is stacked on: a pull request reads
+after the open one whose commits hold its base, even when that one has moved on since;
+those based on main come first, and filing time orders pull requests that do not depend on
+each other. The page is that queue as one surface, head first, with the last few merged pull requests above it in grey. On the left is the queue as
 a tree, main at the top, each pull request with its commits under it; a click on a pull
 request scrolls there, a click on a commit shows that commit alone. On the right are the
 timeline, the files and the commits of the pull request in view. `[` and `]` fold the two
@@ -419,17 +420,12 @@ comment. The first line names the writer and the key that signed it; the last is
 comment with the Radicle id, which is how a second run skips it and how scripts/import-review
 leaves it out. So a conversation can run in both places and each comment keeps one home.
 
-The page also lands, one pull request at a time, but not yet as scripts/land does: it still
-rebase-merges, which gives the commits new SHAs (see Land), so land with scripts/land
-instead. A patch from a pull request at the bottom of its stack has an "approve and merge"
-button: your gh account approves and rebase-merges it, but only while the forge still has the commit you reviewed
-and its checks passed. The merge is then recorded in Radicle, the patches stacked on it
-are replayed onto the new main and pushed as the machine account, and the landed branch is
-deleted. An approved pull request among them is frozen (rule 10): pre-push refuses to move
-it, and the page leaves it and those above it as they are, says so, and finishes the
-landing. In a GitHub stack the forge moves them itself. Your checkout's main is left
-alone. The server listens on 127.0.0.1 only and wants the token in the address it prints,
-so no other page in the browser can write to it, or land.
+The page lands nothing and writes nothing to the forge. At the end of a pull request, with
+every hunk approved, its box links to the pull request: approve it in the GitHub UI, and the
+lander lands it, fast-forward only (see Land). Commits keep their SHAs, so a patch stacked on
+it needs no replay and the page has none; it becomes a root of the queue once its parent has
+landed. The server listens on 127.0.0.1 only and wants the token in the address it prints, so
+no other page in the browser can write to it.
 
 ## The agent's credential
 
