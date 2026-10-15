@@ -217,6 +217,20 @@ two
 fx "[r for r in s['$BRAKE']['rules'] if r['type'] == 'commit_message_pattern'][0]['parameters']['pattern'] = 'c'"
 run 1 "one of two rules of one type changed live" "rules.commit_message_pattern"
 
+# a made-up name for the second of two equal keys is also a real key: it would swallow that one,
+# so the check cannot judge (it answered in sync while the two sides differed)
+build
+python3 -I -c 'import json, sys
+p = sys.argv[1] + "/main-pr-only-linear.json"
+d = json.load(open(p))
+rule = [r for r in d["rules"] if r["type"] == "required_status_checks"][0]["parameters"]
+rule["required_status_checks"] = [{"context": c, "integration_id": i} for c, i in [("ci", 1), ("ci", 2), ("ci#2", 3)]]
+json.dump(d, open(p, "w"))' "$work"
+WORK="$work" fx "build(os.environ['WORK'])"
+run 2 "a status check named like the made-up name of another" ""
+expect_err() { total=$((total + 1)); grep -qF -- "$1" "$tmp/err" || fail "stderr lacks '$1': $(cat "$tmp/err")"; }
+expect_err "cannot be told apart"
+
 # the output for machines
 build
 fx "s['$LINEAR']['enforcement'] = 'disabled'"

@@ -115,7 +115,9 @@ def keyed(items: Any, key: str, kind: str, value: Any = lambda i: i) -> dict[str
     """A list of objects as an object by field `key`.
 
     Several objects of one key (a ruleset may hold two rules of one type) are told apart by
-    what they say, not by where they stand: sorted by their JSON, they are `k`, `k#2`, `k#3`.
+    what they say, not by where they stand: sorted by their JSON, they are `k`, `k#2`, `k#3`. A
+    `k#2` that is also the key of a real object would swallow it, so that is exit 2, never a
+    guess.
     """
     bucket: dict[str, list[Any]] = {}
     for item in items or []:
@@ -125,7 +127,11 @@ def keyed(items: Any, key: str, kind: str, value: Any = lambda i: i) -> dict[str
     out: dict[str, Any] = {}
     for name, values in bucket.items():
         values.sort(key=lambda v: json.dumps(v, sort_keys=True))
-        out |= {name if n == 1 else f"{name}#{n}": v for n, v in enumerate(values, 1)}
+        for n, v in enumerate(values, 1):
+            named = name if n == 1 else f"{name}#{n}"
+            if n > 1 and named in bucket:  # a made-up name that is also a real one: ambiguous
+                raise UnreadableError(f"two {kind}s cannot be told apart: {named} is a real {key}")
+            out[named] = v
     return out
 
 
