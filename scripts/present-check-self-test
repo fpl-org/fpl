@@ -213,6 +213,19 @@ printf '#!/bin/sh\nexit 1\n' >scripts/foo-self-test
 git add scripts && commit "test(scripts): break foo"
 run "self-test red" 1 "selftest is red" -- --skip-quick touched
 
+# classify: one word for how a push changed a pull request.
+check "classify unchanged" test "$("$pc" classify work work)" = unchanged
+check "classify presentation" test "$("$pc" classify work pres)" = presentation
+git checkout -q -b main3 main
+add m && commit "chore(x): main grows"
+git checkout -q -b reloc main3
+for f in f1 f2 f3; do git checkout -q work -- "$f"; commit "feat(x): $f"; done
+check "classify relocation" test "$("$pc" classify -B main3 work reloc)" = relocation
+check "classify content" test "$("$pc" classify work extra)" = content
+# A ref that is no commit is no "content": either side stops the run.
+run "classify, no such OLD" 2 "not a commit: nosuch" -- classify nosuch work
+run "classify, no such NEW" 2 "not a commit: nosuch" -- classify work nosuch
+
 echo "present-check self-test: $fails of $total checks failed (bash $BASH_VERSION)"
 if [ -z "${PRESENT_CHECK_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ] && ! [ /bin/bash -ef "$BASH" ]; then
 	mkdir -p "$tmp/shim"

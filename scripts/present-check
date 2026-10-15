@@ -3,6 +3,7 @@
 # scripts/present-check — prove that a presented series is the series that was worked.
 #
 #   scripts/present-check [-B base] [-b branch] [--skip-quick] [W] P
+#   scripts/present-check classify [-B base] OLD NEW
 #   scripts/present-check rules [-B base] P
 #
 # The work tip W is what the agents built and checked; the presented tip P is the same change
@@ -25,6 +26,9 @@
 # is what a pull request's CI has. At the end it prints the lemma list (hash, subject, seconds
 # per step) and, with W, `git range-diff W...P`. Seconds come from $SECONDS, which bash 3.2 has.
 #
+#   classify OLD NEW   print how a push changed a pull request, one word: unchanged (the same
+#                      commit), presentation (the same tree), relocation (every commit keeps
+#                      its patch-id, the base moved) or content
 #   rules P            the rules step alone, which builds nothing
 #
 # A presented series reads as work done, not as the history of how it was reviewed. Two rules
@@ -54,7 +58,7 @@ export GIT_NO_REPLACE_OBJECTS=1
 unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE
 
 here="$(cd "$(dirname "$0")" && pwd)"
-usage="usage: scripts/present-check [-B base] [-b branch] [--skip-quick] [W] P | rules [-B base] P"
+usage="usage: scripts/present-check [-B base] [-b branch] [--skip-quick] [W] P | classify [-B base] OLD NEW | rules [-B base] P"
 
 die() {
 	printf 'present-check: %s\n' "$*" >&2
@@ -68,7 +72,7 @@ sha() { git rev-parse --verify -q "$1^{commit}" || die "not a commit: $1"; }
 short() { git rev-parse --short "$1"; }
 
 base=main branch="" skip_quick=0 mode=check
-case "${1-}" in rules)
+case "${1-}" in classify | rules)
 	mode="$1"
 	shift
 	;;
@@ -87,6 +91,14 @@ while [ $# -gt 0 ]; do
 done
 git rev-parse --git-dir >/dev/null 2>&1 || die "not inside a git repository"
 git rev-parse -q --verify "$base^{commit}" >/dev/null || die "no such base: $base"
+
+# patch_ids <tip>: the patch-id of each commit of base..tip, oldest first, one per line.
+patch_ids() {
+	local c
+	for c in $(git rev-list --reverse --no-merges "$(git merge-base "$base" "$1")..$1"); do
+		git diff-tree -p "$c" | git patch-id --stable | cut -d' ' -f1
+	done
+}
 
 # The words of review-prose: the tools that read a series and the bookkeeping of their
 # rounds. An extended regex, matched whole (grep -w) and in any case.
@@ -150,6 +162,22 @@ check_rules() {
 if [ "$mode" = rules ]; then
 	[ $# -eq 1 ] || die "$usage"
 	check_rules "$(sha "$1")"
+	exit 0
+fi
+if [ "$mode" = classify ]; then
+	[ $# -eq 2 ] || die "$usage"
+	# One assignment per ref: in `a="$(f)" b="$(g)"` only g's status is seen, so a bad a is lost.
+	old="$(sha "$1")"
+	new="$(sha "$2")"
+	if [ "$old" = "$new" ]; then
+		echo unchanged
+	elif [ "$(git rev-parse "$old^{tree}")" = "$(git rev-parse "$new^{tree}")" ]; then
+		echo presentation
+	elif [ "$(patch_ids "$old")" = "$(patch_ids "$new")" ]; then
+		echo relocation
+	else
+		echo content
+	fi
 	exit 0
 fi
 
