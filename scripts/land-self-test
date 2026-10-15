@@ -242,7 +242,7 @@ CARD='## What\n### What changes\n## How checked\n## Limits\n## Verdict'
 pull() { # pull <state> <draft> <base> <merged> [body]
 	fixture "repos/land-test/fpl/pulls/7" <<-EOF
 	{"number": 7, "state": "$1", "draft": $2, "merged": $4, "body": "${5-$CARD}",
-	 "html_url": "https://github.com/land-test/fpl/pull/7", "user": {"login": "psjg-claude"},
+	 "html_url": "https://github.com/land-test/fpl/pull/7", "user": {"login": "${OPENER:-psjg-claude}", "type": "${OPENER_TYPE-User}"},
 	 "base": {"ref": "$3"},
 	 "head": {"sha": "$at", "ref": "$BR", "repo": {"full_name": "land-test/fpl"}}}
 	EOF
@@ -607,11 +607,35 @@ param_case "the last push approved by someone else" 1 "require_last_push_approva
 	1 "" '"require_last_push_approval": true'
 param_case "a team required for some paths" 1 "pull_request required_reviewers" \
 	1 "" '"required_reviewers": [{"file_patterns": ["*"], "minimum_approvals": 1, "reviewer": {"id": 1, "type": "Team"}}]'
-param_case "a parameter GitHub does not document, enabled" 1 \
-	"require_extra_approval_for_unattributed_changes: true" \
-	1 "" '"require_extra_approval_for_unattributed_changes": true'
+param_case "a parameter not known here, enabled" 1 "pull_request require_x: true" \
+	1 "" '"require_x": true'
 param_case "a parameter not known here, false" 0 "a parameter that is false asks nothing" \
-	1 "" '"require_extra_approval_for_unattributed_changes": false'
+	1 "" '"require_x": false'
+
+# require_extra_approval_for_unattributed_changes: one approval more of a pull request no
+# user account opened (GitHub's docs: Copilot under its own App identity). The live ruleset
+# on main sets it, so a user account's pull request must land, and an App's must not.
+unattributed='"require_extra_approval_for_unattributed_changes": true'
+param_case "the extra approval for unattributed changes, a user account opened it" 0 \
+	"land/rules" 1 "" "$unattributed"
+says "ok  land/attributed" "it judges who opened it"
+for kind in Bot ""; do
+	OPENER=Copilot OPENER_TYPE="$kind" forge
+	rules "$lint" 1 "" "$unattributed"
+	expect 1 "the extra approval for unattributed changes, opened by type '$kind'" --dry-run 7
+	says "NO  land/attributed" "it names the rule"
+	says "GitHub wants 2 approvals of it, scripts/land counts 1" "it says why one is not enough"
+	says "ok  land/rules" "the parameter itself is judged"
+done
+OPENER=Copilot OPENER_TYPE=Bot param_case \
+	"the extra approval for unattributed changes, at zero approvals" 0 "land/rules" \
+	0 "" "$unattributed"
+says "ok  land/attributed" "a rule that asks no approval asks none more"
+OPENER=Copilot OPENER_TYPE=Bot param_case "no rule asks the extra approval, an App opened it" \
+	0 "land/rules" 1 "" '"require_extra_approval_for_unattributed_changes": false'
+param_case "the extra approval for unattributed changes, not a bool" 1 \
+	"require_extra_approval_for_unattributed_changes: \"yes\"" \
+	1 "" '"require_extra_approval_for_unattributed_changes": "yes"'
 param_case "a parameter on a rule that has none" 1 "deletion x: 1" \
 	1 '{"type": "deletion", "ruleset_id": 2, "parameters": {"x": 1}}'
 param_case "the branch up to date before merging" 0 "land/ancestor makes it" \

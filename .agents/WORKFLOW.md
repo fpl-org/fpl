@@ -199,7 +199,9 @@ The commits on `main` are the commits that were reviewed, SHAs, committer and al
 GitHub shows the pull request as merged once its head is on its base. Before it asks
 anything it refuses, naming the rule and the remedy, unless the pull request is open, not a
 draft and based on `main`; the head the forge reports is the commit it fetched; the active
-gh account did not write it; a code owner's standing verdict approves that exact head (or
+gh account did not write it; a user account, not an App under its own identity, opened it
+where a rule on `main` asks an extra approval for unattributed changes (`land/attributed`);
+a code owner's standing verdict approves that exact head (or
 you are the code owner, and it approves the head for you after the keypress); nobody's
 standing verdict requests changes; every review thread is resolved; every check the rulesets
 on `main` require concluded success on the head, judged by its latest run; `main` is an
