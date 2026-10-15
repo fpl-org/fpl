@@ -25,3 +25,6 @@ mutants/
 # (.agents/DEVSHELL.md). Per-checkout choices, so they must never travel with a commit.
 .fpl-shell
 .envrc.local
+
+# The OCI image `make image` builds (.agents/DEVSHELL.md)
+result-oci

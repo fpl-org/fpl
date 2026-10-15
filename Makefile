@@ -12,9 +12,10 @@
 #   make <lane>       fix quick check harden ready gates tools map venv pristine clean-noslop
 #   make run FILE=f   run the file f, a path from the root:    make run FILE=path/to/p.fpl
 #   make repl ARGS=a  the REPL, with its arguments a:          make repl ARGS='-e "1 + 2"'
+#   make image        the dev shell as an OCI image, ./result-oci (.agents/DEVSHELL.md)
 .DEFAULT_GOAL := check
 LANES := fix quick check harden ready gates tools map venv pristine clean-noslop
-.PHONY: $(LANES) run repl
+.PHONY: $(LANES) run repl image
 
 $(LANES):
 	@$(MAKE) --no-print-directory -C bootstrap $@
@@ -36,3 +37,12 @@ run:
 repl:
 	$(VENV)
 	@$(FPLPY) -m fpl.repl $(ARGS)
+
+# The dev shell as an OCI image (packages.<linux system>.oci in flake.nix). dockerTools builds
+# for Linux only, so on a Mac the system is the Linux one of the same architecture, and Nix
+# needs a Linux builder for it. The image is a tarball: `docker load < result-oci`.
+HOST_SYSTEM  ?= $(shell nix eval --impure --raw --expr builtins.currentSystem)
+IMAGE_SYSTEM ?= $(subst darwin,linux,$(HOST_SYSTEM))
+
+image:
+	nix build ".#packages.$(IMAGE_SYSTEM).oci" --out-link result-oci
