@@ -68,6 +68,10 @@ git worktree prune
 `scripts/new-worktree` is the vendor-neutral entry point; `.claude/commands/new-worktree.md`
 is a thin wrapper over it.
 
+`scripts/sweep` tables every worktree and unattached branch (merged, commits `main` lacks by
+patch, dirty files, pull request, owner) with a proposal: keep, review or archive. It changes
+nothing: a person reads the table and decides.
+
 ## The two sides
 
 | Side | Paths |
