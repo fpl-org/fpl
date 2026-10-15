@@ -218,7 +218,7 @@ unset at
 mkdir -p "$repo/harness/sweep-archive"
 printf 'in the way\n' >"$repo/harness/sweep-archive/dirty.patch"
 SWEEP_OWNER_YES=1 sw --apply dirty
-check "a patch already there fails the row and exits 1" '[ "$rc" -eq 1 ] && grep -q "dirty.patch exists" "$tmp/out"'
+check "a patch already there fails the row and exits 1" '[ "$rc" -eq 1 ] && grep -q "dirty.patch or .*dirty.index.patch exists" "$tmp/out"'
 check "...and the worktree, its branch and the old patch stay" '[ -d "$repo/worktrees/dirty" ] && g rev-parse -q --verify refs/heads/agent/claude/stack/dirty >/dev/null && [ "$(cat "$repo/harness/sweep-archive/dirty.patch")" = "in the way" ]'
 rm -r "$repo/harness"
 SWEEP_OWNER_YES=1 sw --apply merged
@@ -350,6 +350,33 @@ rm -f "$tmp/raced"
 SWEEP_RACE="$ng -C '$repo/worktrees/movewt' commit -q --allow-empty -m moved" \
 	PATH="$tmp/race:$PATH" SWEEP_FRESH_MIN=0 SWEEP_OWNER_YES=1 sw --apply movewt
 check "a detached worktree that moved on while being tagged is left, not removed with its new commit" '[ "$rc" -eq 1 ] && grep -q "head moved while being saved" "$tmp/out" && [ "$(git -C "$repo/worktrees/movewt" log -1 --format=%s)" = moved ]'
+g worktree add -q "$repo/worktrees/stagedgone" -b agent/claude/stack/stagedgone main
+printf 'only-staged\n' >"$repo/worktrees/stagedgone/ghost.txt"
+printf 'staged-edit\n' >"$repo/worktrees/stagedgone/f.txt"
+git -C "$repo/worktrees/stagedgone" add ghost.txt f.txt
+rm "$repo/worktrees/stagedgone/ghost.txt"
+printf 'base\n' >"$repo/worktrees/stagedgone/f.txt" # the files hold nothing the index does not
+SWEEP_FRESH_MIN=0 SWEEP_OWNER_YES=1 sw --apply stagedgone
+check "staged content the files no longer hold is saved in a second patch before the removal" '[ "$rc" -eq 0 ] && [ ! -d "$repo/worktrees/stagedgone" ] && grep -q "^+only-staged" "$repo/harness/sweep-archive/stagedgone.index.patch" && grep -q "^+staged-edit" "$repo/harness/sweep-archive/stagedgone.index.patch" && grep -q "staged in harness/sweep-archive/stagedgone.index.patch" "$tmp/out"'
+check "...and no patch of the files, which hold nothing, is made or named" '[ ! -e "$repo/harness/sweep-archive/stagedgone.patch" ] && ! grep -q "dirty files in" "$tmp/out"'
+# restore <name>: in the clone, its tag, then its files patch, then its index patch (--cached)
+restore() {
+	local p="$repo/harness/sweep-archive/$1"
+	git -C "$tmp/v" fetch -q "$repo" "refs/tags/*:refs/tags/*"
+	git -C "$tmp/v" clean -qfd
+	git -C "$tmp/v" checkout -q -f "archive/agent/claude/stack/$1"
+	[ ! -e "$p.patch" ] || git -C "$tmp/v" apply "$p.patch"
+	git -C "$tmp/v" apply --cached "$p.index.patch"
+}
+restore stagedgone
+check "...and that patch, applied with --cached, gives the staged state back" '[ "$(git -C "$tmp/v" show :ghost.txt)" = only-staged ] && [ "$(git -C "$tmp/v" show :f.txt)" = staged-edit ]'
+g worktree add -q "$repo/worktrees/partial" -b agent/claude/stack/partial main
+printf 'staged\n' >"$repo/worktrees/partial/part.txt"
+git -C "$repo/worktrees/partial" add part.txt
+printf 'on disk\n' >"$repo/worktrees/partial/part.txt"
+SWEEP_FRESH_MIN=0 SWEEP_OWNER_YES=1 sw --apply partial
+restore partial
+check "a file staged as one text and changed to another gets both back" '[ "$(git -C "$tmp/v" show :part.txt)" = staged ] && [ "$(cat "$tmp/v/part.txt")" = "on disk" ]'
 g branch agent/claude/stack/occupied main
 rm -f "$tmp/raced"
 SWEEP_RACE="$ng -C '$repo' worktree add -q '$repo/worktrees/occupy' agent/claude/stack/occupied" \
