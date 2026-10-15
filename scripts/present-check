@@ -27,12 +27,16 @@
 #
 #   rules P            the rules step alone, which builds nothing
 #
-# A presented series reads as work done, not as the history of how it was reviewed. A rule
-# says so, and a refusal names the commit, the rule and the remedy:
+# A presented series reads as work done, not as the history of how it was reviewed. Two rules
+# say so, and each refusal names the commit, the rule and the remedy:
 #
 #   fix-on-series  a commit typed fix that changes only files the merge-base does not hold
 #                  repairs the series itself: it is folded into the lemma it corrects, or told
 #                  as a lemma of its own. A fix is a fix of something main holds.
+#   review-prose   a message that names the review instead of arguing from the code: one of
+#                  the words of review_words, below, whole and in any case. The lines are
+#                  joined first, so a phrase that wraps at the margin is still found; the
+#                  trailer block is left out, so Assisted-By may name any model.
 #
 #   -B base       what the series is on top of (default main; CI passes origin/main)
 #   -b branch     judge the commits for this branch (default: P's name when it is one)
@@ -84,10 +88,14 @@ done
 git rev-parse --git-dir >/dev/null 2>&1 || die "not inside a git repository"
 git rev-parse -q --verify "$base^{commit}" >/dev/null || die "no such base: $base"
 
+# The words of review-prose: the tools that read a series and the bookkeeping of their
+# rounds. An extended regex, matched whole (grep -w) and in any case.
+review_words='codex|coderabbit|gpt|chatgpt|openai|found by|fix-forward|p1|p2|review round|reviewer'
+
 # rules <merge-base> <commit>...: print each commit that breaks a rule of a finished series,
 # with its remedy; the exit status is whether there is none.
 rules() {
-	local mb="$1" c f subject own bad=0 fix='^fix[(!:]'
+	local mb="$1" c f subject own words bad=0 fix='^fix[(!:]'
 	shift
 	for c in "$@"; do
 		subject="$(git log -1 --format=%s "$c")"
@@ -104,6 +112,24 @@ EOF
 				bad=1
 			fi
 		fi
+		# The message without its trailer block (git's last paragraph, when git reads trailers
+		# there), its lines joined.
+		words="$(
+			git log -1 --format=%B "$c" | awk -v t="$(git log -1 --format='%(trailers:only)' "$c" | head -c 1)" '
+				{ l[NR] = $0 }
+				END {
+					n = NR
+					while (n > 0 && l[n] == "") n--
+					if (t != "") while (n > 0 && l[n] != "") n--
+					for (i = 1; i <= n; i++) print l[i]
+				}' | tr -s '[:space:]' ' ' | grep -oiwE "$review_words" | tr '[:upper:]' '[:lower:]' |
+				sort -u | tr '\n' ' ' || true
+		)"
+		if [ -n "$words" ]; then
+			printf 'review-prose: %s %s\n' "$(short "$c")" "$subject"
+			printf '    it names %s: argue from the code and its measurements, and credit who read the series in the pull request body\n' "${words% }"
+			bad=1
+		fi
 	done
 	return "$bad"
 }
@@ -118,7 +144,7 @@ check_rules() {
 		printf '%s\n' "$out" >&2
 		red "a commit of $base..$(short "$1") does not read as finished work (above)"
 	}
-	echo "ok    rules (fix-on-series)"
+	echo "ok    rules (fix-on-series, review-prose)"
 }
 
 if [ "$mode" = rules ]; then

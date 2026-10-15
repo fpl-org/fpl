@@ -171,7 +171,7 @@ run "two Series-Ids" 1 "more than one Series-Id" -- sid2
 run "a lemma without Series-Id" 1 "has no Series-Id" -- sid3
 run "no scripts/series: not judged" 0 "skip  Series-Id" -- sid4
 
-# A finished series: no fix of the series' own files.
+# A finished series: no fix of the series' own files, and no message about the review.
 git checkout -q -b fixself main
 add h1 && commit "feat(w): add h1"
 echo more >>h1 && git add h1 && commit "fix(w): mend h1"
@@ -182,6 +182,15 @@ git checkout -q -b fixmain main
 echo mended >>base && add h2 && git add base && commit "fix(w): mend base, add h2"
 add h3 && commit "feat(w): add h3"
 run "a fix of main" 0 "ok    rules" "green, 2 commits" -- fixmain
+git checkout -q -b prose main
+add k1 && commit "feat(w): one" "As the CodeRabbit bot said, this holds."
+add k2 && commit "feat(w): two" "Plain words: codexes, gpt4, reviewers and P10 are no names."
+add k3 && commit "feat(w): three" "$(printf 'A phrase wrapped at the margin is found\nby the words, not the lines.')"
+add k4 && commit "feat(w): ask the reviewer"
+add k5 && commit "feat(w): five" "$(printf 'Trailers are authorship.\n\nAssisted-By: gpt-6-1\nSession-Id: s')"
+run "review prose" 1 "review-prose" "one" "three" "ask the reviewer" "coderabbit" -- prose
+check "review prose: three refused; the plain words and the trailers pass" \
+	test "$("$pc" rules prose 2>&1 | grep -c 'review-prose')" -eq 3
 run "rules, green" 0 "ok    rules" -- rules fixmain
 
 # Self-tests of touched paths run; those of untouched paths do not.
