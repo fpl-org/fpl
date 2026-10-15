@@ -1308,6 +1308,43 @@ says "-f name=fpl/series -f head_sha=$HS" "it writes the receipt on the head"
 says "series d1g3st" "with the digest scripts/series gives"
 at="$H" HEAD_SHA="$H"
 
+# The install line in harness/workflows/README.md makes a commit the owner's hooks accept: its
+# message, the -m arguments of its git commit joined as git joins them, passes
+# .githooks/commit-msg in a checkout of the harness on a detached HEAD, where the owner makes
+# it. The same message without its Human-Only line is refused, so the check can fail. The
+# checkout is a new repository under $tmp: GIT_DIR and its kin were unset at the top, so git
+# init makes it there and nowhere else.
+install_msg() { # install_msg [a paragraph to leave out]
+	python3 - "$root/harness/workflows/README.md" "${1:-}" <<'PY'
+import shlex
+import sys
+
+line = next(x for x in open(sys.argv[1]) if x.startswith("    git checkout --detach"))
+words = shlex.split(line)
+i, paragraphs = words.index("commit"), []
+while i < len(words) and words[i] != "&&":
+    if words[i] == "-m":
+        paragraphs.append(words[i + 1])
+    i += 1
+print("\n\n".join(p for p in paragraphs if p != sys.argv[2]))
+PY
+}
+hooked="$tmp/hooked"
+git init -q -b main "$hooked"
+cp -R "$root/.githooks" "$root/scripts" "$hooked/"
+(cd "$hooked" && git commit -q --allow-empty --no-verify -m base && git checkout -q --detach)
+install_msg >"$tmp/install-msg"
+rc=0
+(cd "$hooked" && .githooks/commit-msg "$tmp/install-msg") >"$tmp/out" 2>&1 || rc=$?
+total=$((total + 1))
+verdict 0 "$rc" "the README's install commit passes commit-msg on a detached HEAD"
+install_msg "Human-Only: true" >"$tmp/install-msg"
+rc=0
+(cd "$hooked" && .githooks/commit-msg "$tmp/install-msg") >"$tmp/out" 2>&1 || rc=$?
+total=$((total + 1))
+verdict 1 "$rc" "the install commit without Human-Only: true is refused"
+says "commit-msg [provenance-assisted]" "it names the gate"
+
 # The header's land/rules entry says two things, which it keeps in sentences of their own: the
 # requirements scripts/land does not make (which the bypass would leave unenforced), and the
 # schema the forge's answer must have. The entry must say both, and no sentence may hold both.
