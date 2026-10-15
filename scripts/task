@@ -923,6 +923,11 @@ def loading_units(f):
         and "2 tasks are named" in shared.stderr
         and "  Q4" not in f.out("list"),
     )
+    redo = f.out("load", "-n", os.path.join(HERE, os.pardir, ".agents", "tasks", "redo.tsv"))
+    f.check(
+        "the repository's own units file passes every check of load",
+        "(dry run, nothing written)" in redo and "  A5" not in f.out("list"),
+    )
 
 
 def refusals(f):
