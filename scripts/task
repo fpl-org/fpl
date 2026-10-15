@@ -27,6 +27,7 @@ went through `rad init`. `--self-test` runs the whole thing in a throwaway Radic
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -258,6 +259,35 @@ def check_unit(path, names, unit):
             die(f"{path}: {label_} names {ref}, which is not a row")
 
 
+def leak_gate(units):
+    """Every title and brief through scripts/leak-check --text, before anything is written.
+
+    A task is signed and replicated, and a COB cannot be taken back out of a peer's store,
+    so a refusal here names the unit and nothing has been written yet. For the same reason
+    the check always blocks: FPL_LEAK_GATE=warn or off, meant for text that can still be
+    amended, does not reach it. What leak-check says while passing -- that it could not
+    scan, say -- is passed on to stderr, once per distinct message.
+    """
+    said = []
+    for label_, _, _, title, brief in units:
+        with tempfile.NamedTemporaryFile("w", suffix=".txt") as handle:
+            handle.write(f"{title}\n\n{brief}\n")
+            handle.flush()
+            done = subprocess.run(
+                [os.path.join(HERE, "leak-check"), "--text", handle.name],
+                env=dict(os.environ, FPL_LEAK_GATE="block"),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        message = done.stderr.strip()
+        if done.returncode != 0:
+            die(f"{label_}: leak-check refused its title or brief; nothing written\n{message}")
+        if message and message not in said:
+            said.append(message)
+            print(message, file=sys.stderr)
+
+
 def load(graph, path, dry):
     """Create the tasks of a unit file that do not exist yet, then the links between them.
 
@@ -269,6 +299,7 @@ def load(graph, path, dry):
     units = read_units(path)
     ids = store_ids(graph, units)
     plan = links(graph, units, ids)
+    leak_gate(units)  # the slow check last: one leak-check per unit
     created = create(graph, units, ids, dry)
     linked = sum(link(graph, ids, step, dry) for step in plan)
     print(f"task: {created} created, {linked} links{' (dry run, nothing written)' if dry else ''}")
@@ -648,8 +679,8 @@ class Fixture:
             sys.exit(f"self-test: {' '.join(cmd)}\n{done.stdout}{done.stderr}")
         return done
 
-    def task(self, *args, ok=True):
-        return self.sh(sys.executable, os.path.abspath(__file__), *args, ok=ok)
+    def task(self, *args, ok=True, extra=None):
+        return self.sh(sys.executable, os.path.abspath(__file__), *args, ok=ok, extra=extra)
 
     def out(self, *args):
         """What a task command that must succeed prints."""
@@ -815,6 +846,21 @@ def refusals(f):
             f"{name} in a file is refused before a write",
             refused.returncode == 2 and says in refused.stderr and "  Q" not in f.out("list"),
         )
+    if not shutil.which("gitleaks"):
+        print("task: self-test: no gitleaks on PATH, leak refusal not exercised", file=sys.stderr)
+        return
+    f.file("repo/.git/leak-patterns", "zztermzz\n")
+    bad = f.file("bad.tsv", "Q1\t-\t\tname\tmentions zztermzz\n")
+    leaked = f.task("load", bad, ok=False)
+    f.check(
+        "a private term stops the load before a write",
+        leaked.returncode == 2 and "Q1" in leaked.stderr and "  Q1" not in f.out("list"),
+    )
+    warned = f.task("load", bad, ok=False, extra={"FPL_LEAK_GATE": "warn"})
+    f.check(
+        "and FPL_LEAK_GATE=warn does not let it through",
+        warned.returncode == 2 and "  Q1" not in f.out("list"),
+    )
 
 
 def loops(f):
