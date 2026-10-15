@@ -4,6 +4,7 @@
     scripts/task new "<title>" [-d <description>] [-b <id>]... [-p <id>]   open a task
     scripts/task list [--all]        open tasks; --all includes done and dropped
     scripts/task ready               tasks nothing waits on (not lanes); exit 1 if a loop is left
+    scripts/task load [-n] <file>    create the tasks a file lists; a rerun creates nothing
     scripts/task tree                every task under what it is part of, with what it waits on
     scripts/task show <id>
     scripts/task start|done|drop|reopen <id>
@@ -206,6 +207,148 @@ def line(graph, oid):
     return f"{oid[:7]}  {task['state']:<7}  {task['title']}{who}{tail}"
 
 
+def read_rows(path):
+    """The rows of a unit file as (label, part, blockers, title, brief), each on its own."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+    except OSError as err:
+        die(f"{path}: {err.strerror}")
+    units = []
+    for n, raw in enumerate(lines, 1):
+        if not raw.strip() or raw.startswith("#"):
+            continue
+        cols = raw.split("\t")
+        if len(cols) != 5 or "" in (cols[0], cols[3], cols[4]):
+            die(f"{path}:{n}: want label, partOf, blockedBy, name, brief, tab-separated")
+        label_, part, blockers, name, brief = cols
+        part = None if part in ("", "-") else part
+        units.append(
+            (label_, part, [b for b in blockers.split(",") if b], f"{label_} {name}", brief)
+        )
+    return units
+
+
+def read_units(path):
+    """The rows of a unit file: (label, part, blockers, title, brief), checked against each other.
+
+    Five tab-separated columns; blank lines and lines starting with '#' are skipped. The title
+    is '<label> <name>', so a label is one word that does not end in ':', or the title would
+    read back as another label. Every label a row names as parent or blocker must be a row,
+    spelled as that row spells it. Two labels that differ only in case are one label twice,
+    since `resolve` and `load` find a task by its label whatever the case.
+    """
+    units = read_rows(path)
+    names = [u[0] for u in units]
+    if len({n.lower() for n in names}) != len(names):
+        die(f"{path}: a label is listed twice (labels compare without case)")
+    for unit in units:
+        check_unit(path, names, unit)
+    return units
+
+
+def check_unit(path, names, unit):
+    """One row of a unit file: its label reads back from its title, and every label it names
+    is one of `names`."""
+    label_, part, blockers, title, _ = unit
+    if label({"title": title}) != label_:
+        die(f"{path}: '{label_}': a label is one word not ending in ':', as a title's is read")
+    for ref in [*([part] if part else []), *blockers]:
+        if ref not in names:
+            die(f"{path}: {label_} names {ref}, which is not a row")
+
+
+def load(graph, path, dry):
+    """Create the tasks of a unit file that do not exist yet, then the links between them.
+
+    Two passes, so the file may list a blocker after what it blocks. A unit counts as
+    existing when a task's first word is its label, in any case, as `resolve` reads one; so a
+    second run creates nothing and adds only a link that is missing. Every refusal that can
+    be made before a write is made before the first one.
+    """
+    units = read_units(path)
+    ids = store_ids(graph, units)
+    plan = links(graph, units, ids)
+    created = create(graph, units, ids, dry)
+    linked = sum(link(graph, ids, step, dry) for step in plan)
+    print(f"task: {created} created, {linked} links{' (dry run, nothing written)' if dry else ''}")
+
+
+def store_ids(graph, units):
+    """The store's tasks by folded label. A label two tasks share is refused when a unit
+    uses it, before any write: neither could be told from the other."""
+    named = {}
+    for oid, task in graph.tasks.items():
+        named.setdefault(label(task).lower(), []).append(oid)
+    for label_, *_ in units:
+        if len(named.get(label_.lower(), [])) > 1:
+            die(f"{label_}: {len(named[label_.lower()])} tasks are named so; rename one first")
+    return {key: oids[0] for key, oids in named.items()}
+
+
+def create(graph, units, ids, dry):
+    """Open every unit that is no task yet and add it to `ids`; the number opened."""
+    created = 0
+    for label_, _, _, title, brief in units:
+        if label_.lower() in ids:
+            continue
+        print(f"{'would create' if dry else 'create'}  {title}")
+        created += 1
+        if dry:
+            continue
+        oid = graph.act(
+            None, f"open: {title}", {"type": "open", "title": title, "description": brief}
+        )
+        if not graph.show(oid).get("title"):
+            die(
+                f"{label_}: {oid[:7]} was written but the reducer did not open it; nothing after it"
+            )
+        ids[label_.lower()] = oid
+    return created
+
+
+def link(graph, ids, step, dry):
+    """Write one unit's missing links, from `links`, and read them back; the number of links.
+
+    `rad cob update` succeeds whether the reducer applies an action or skips it, so the
+    task is read again and the first link that did not take stops the load.
+    """
+    label_, part, todo, reparent = step
+    verb = "would link" if dry else "link"
+    for b in todo:
+        print(f"{verb}  {label_} <- {b}")
+    if reparent:
+        print(f"{verb}  {label_} part of {part}")
+    if dry or not (todo or reparent):
+        return len(todo) + reparent
+    actions = [{"type": "block", "by": ids[b.lower()]} for b in todo]
+    actions += [{"type": "part", "of": ids[part.lower()]}] if reparent else []
+    state = graph.show(graph.act(ids[label_.lower()], f"link {label_}", *actions))
+    missing = [f"<- {b}" for b in todo if ids[b.lower()] not in state.get("blockedBy", [])]
+    if reparent and state.get("partOf") != ids[part.lower()]:
+        missing.append(f"part of {part}")
+    if missing:
+        die(
+            f"{label_}: rad took {', '.join(missing)} but the reducer did not apply it; "
+            "the units before it are written, and a rerun adds only what is missing"
+        )
+    return len(todo) + reparent
+
+
+def links(graph, units, ids):
+    """(label, part, blockers, reparent) for every unit: the links `load` has to add, as
+    labels, and whether its parent changes."""
+    names = {oid: label(t).lower() for oid, t in graph.tasks.items()}
+    plan = []
+    for label_, part, blockers, _, _ in units:
+        old = graph.tasks.get(ids.get(label_.lower()), {})
+        held = {names.get(b) for b in old.get("blockedBy", [])}
+        todo = [b for b in blockers if b.lower() not in held]
+        reparent = part is not None and names.get(old.get("partOf")) != part.lower()
+        plan.append((label_, part, todo, reparent))
+    return plan
+
+
 def tree(graph):
     """Every task under what it is part of; each open leaf says `ready` or what it waits on.
 
@@ -271,6 +414,9 @@ def parser():
     new.add_argument("-b", "--blocked-by", action="append", default=[])
     new.add_argument("-p", "--part-of")
     sub.add_parser("tree")
+    loading = sub.add_parser("load")
+    loading.add_argument("file")
+    loading.add_argument("-n", "--dry-run", action="store_true")
     part = sub.add_parser("part")
     part.add_argument("id")
     part.add_argument("of", help="a task, or 'none' to clear")
@@ -395,6 +541,10 @@ def editing(graph, args):
     graph.act(oid, "edit", action)
 
 
+def loading(graph, args):
+    load(graph, args.file, args.dry_run)
+
+
 def drawing(graph, _args):
     return tree(graph)
 
@@ -405,6 +555,7 @@ COMMANDS = {
     "new": opening,
     "list": listing,
     "ready": listing,
+    "load": loading,
     "tree": drawing,
     "part": parting,
     "show": showing,
@@ -611,6 +762,61 @@ def lanes(f, lexer, parser):
     f.check("a lane whose parts are all closed is ready", lane in f.out("ready"))
 
 
+def loading_units(f):
+    """load: a file of units, twice over, in another case, and next to tasks made by hand."""
+    units = f.file(
+        "units.tsv",
+        "# a comment\n"
+        "L9\t-\t\tlane\tThe lane.\n"
+        "L2\tL9\tL1\tsecond\tListed before what it waits on.\n"
+        "L1\tL9\t\tfirst\tThe first.\n",
+    )
+    dry = f.out("load", "-n", units)
+    f.check("load -n writes nothing", "3 created, 3 links" in dry and "  L9" not in f.out("list"))
+    f.check("load creates the units and links them", "3 created, 3 links" in f.out("load", units))
+    drawn = f.out("tree")
+    f.check("loaded tree nests and orders", "    " in drawn and "L2 second  <- L1" in drawn)
+    f.check("a second load creates nothing", "0 created, 0 links" in f.out("load", units))
+    with open(units, "a", encoding="utf-8") as handle:
+        handle.write("L3\tL9\tL2\tthird\tOpened by hand first.\n")
+    f.task("new", "L3 third")
+    f.check(
+        "a load links a task its own identity opened, and checks it took",
+        "0 created, 2 links" in f.out("load", units) and "L3 third  <- L2" in f.out("tree"),
+    )
+    folded = f.file("folded.tsv", "l9\t-\t\tlane\tThe lane.\nl1\tl9\t\tfirst\tThe first.\n")
+    f.check(
+        "a label in another case is the same unit", "0 created, 0 links" in f.out("load", folded)
+    )
+    f.task("new", "l1 a second task of that name")
+    shared = f.task(
+        "load", f.file("shared.tsv", "L1\t-\t\tfirst\tx\nQ4\t-\tL1\tfour\tx\n"), ok=False
+    )
+    f.check(
+        "a label two tasks share is refused before a write",
+        shared.returncode == 2
+        and "2 tasks are named" in shared.stderr
+        and "  Q4" not in f.out("list"),
+    )
+
+
+def refusals(f):
+    """Files load refuses before its first write: each says why and leaves no task."""
+    f.check(
+        "a missing file is refused", f.task("load", f"{f.tmp}/absent", ok=False).returncode == 2
+    )
+    for name, rows, says in (
+        ("two labels that differ in case only", "Q3\t-\t\tone\tx\nq3\t-\t\ttwo\tx\n", "twice"),
+        ("a label of two words", "Q 1\t-\t\tone\tx\n", "'Q 1': a label is one word"),
+        ("a label ending in a colon", "Q1:\t-\t\tone\tx\n", "'Q1:': a label is one word"),
+    ):
+        refused = f.task("load", f.file("bad.tsv", rows), ok=False)
+        f.check(
+            f"{name} in a file is refused before a write",
+            refused.returncode == 2 and says in refused.stderr and "  Q" not in f.out("list"),
+        )
+
+
 def loops(f):
     """A loop may be recorded; what it may not do is make `ready` go quiet."""
     left = f.out("new", "span: pick the representation").strip()
@@ -663,6 +869,8 @@ def self_test():
         f.init(lambda: tree_bytes(f"{tmp}/decoy/.git") == before)
         lexer, parser = basics(f)
         lanes(f, lexer, parser)
+        loading_units(f)
+        refusals(f)
         loops(f)
         oid = json.loads(f.out("show", lexer))["id"]
         rid = f.sh("rad", ".").stdout.strip()
