@@ -327,6 +327,7 @@ def load(graph, path, dry):
         if len(named.get(label_.lower(), [])) > 1:
             die(f"{label_}: {len(named[label_.lower()])} tasks are named so; rename one first")
     ids = {key: oids[0] for key, oids in named.items()}  # folded label -> task
+    plan = links(graph, units, ids)
     created = 0
     for label_, _, _, title, brief in units:
         if label_.lower() in ids:
@@ -338,13 +339,8 @@ def load(graph, path, dry):
             if not graph.show(oid).get("title"):
                 die(f"{label_}: {oid[:7]} was written but the reducer did not open it; nothing after it")
             ids[label_.lower()] = oid
-    names = {oid: label(t).lower() for oid, t in graph.tasks.items()}
     linked = 0
-    for label_, part, blockers, _, _ in units:
-        old = graph.tasks.get(ids.get(label_.lower()), {})
-        held = {names.get(b) for b in old.get("blockedBy", [])}
-        todo = [b for b in blockers if b.lower() not in held]
-        reparent = part is not None and names.get(old.get("partOf")) != part.lower()
+    for label_, part, todo, reparent in plan:
         for b in todo:
             print(f"{'would link' if dry else 'link'}  {label_} <- {b}")
         if reparent:
@@ -354,9 +350,38 @@ def load(graph, path, dry):
             actions = [{"type": "block", "by": ids[b.lower()]} for b in todo]
             if reparent:
                 actions.append({"type": "part", "of": ids[part.lower()]})
-            graph.act(ids[label_.lower()], f"link {label_}", *actions)
+            oid = graph.act(ids[label_.lower()], f"link {label_}", *actions)
+            state = graph.show(oid)
+            missing = [f"<- {b}" for b in todo if ids[b.lower()] not in state.get("blockedBy", [])]
+            if reparent and state.get("partOf") != ids[part.lower()]:
+                missing.append(f"part of {part}")
+            if missing:
+                die(f"{label_}: rad took {', '.join(missing)} but the reducer did not apply it; "
+                    "the units before it are written, and a rerun adds only what is missing")
     print(f"task: {created} created, {linked} links{' (dry run, nothing written)' if dry else ''}")
     return created, linked
+
+
+def links(graph, units, ids):
+    """(label, part, blockers, reparent) for every unit: the links `load` has to add, as
+    labels, and whether its parent changes. Before any write, it refuses a link to a task
+    this identity may not link: the reducer would skip it without a word (only the author
+    sets a parent; the author or the assignee a blocker), while `rad cob update` succeeds.
+    """
+    names = {oid: label(t).lower() for oid, t in graph.tasks.items()}
+    me, plan = None, []
+    for label_, part, blockers, _, _ in units:
+        old = graph.tasks.get(ids.get(label_.lower()), {})
+        held = {names.get(b) for b in old.get("blockedBy", [])}
+        todo = [b for b in blockers if b.lower() not in held]
+        reparent = part is not None and names.get(old.get("partOf")) != part.lower()
+        if old and (todo or reparent):
+            me = me or rad("self", "--did").strip()
+            if me != old.get("author") and (reparent or me != old.get("assignee")):
+                die(f"{label_}: its task is not yours to link (author {old.get('author')}); "
+                    "nothing written")
+        plan.append((label_, part, todo, reparent))
+    return plan
 
 
 def tree(graph):
@@ -681,6 +706,13 @@ def self_test():
         tree_out = task("tree").stdout
         check("loaded tree nests and orders", "    " in tree_out and "L2 second  <- L1" in tree_out)
         check("a second load creates nothing", "0 created, 0 links" in task("load", units).stdout)
+        with open(units, "a") as handle:
+            handle.write("L3\tL9\tL2\tthird\tOpened by hand first.\n")
+        task("new", "L3 third")
+        relinked = task("load", units)
+        check("a load links a task its own identity opened, and checks it took",
+              "0 created, 2 links" in relinked.stdout
+              and "L3 third  <- L2" in task("tree").stdout)
         folded = f"{tmp}/folded.tsv"
         with open(folded, "w") as handle:
             handle.write("l9\t-\t\tlane\tThe lane.\nl1\tl9\t\tfirst\tThe first.\n")
