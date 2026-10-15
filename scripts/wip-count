@@ -10,7 +10,10 @@ The cap (.agents/WORKFLOW.md, "The cap") is on work the owner has to read: every
 every open pull request of fpl-org/fpl that is not a draft. A draft is not counted: the owner
 decided that work parked as a draft does not yet ask for his time. A pull request stacked on
 another counts its own commits only, the ones between its base and its head, so a stack is
-not counted twice.
+not counted twice. A commit that two open pull requests both carry (a stack opened with the
+wrong base, or the same branch opened twice) is counted once too. The forge lists at most 250
+commits of a pull request, far above the cap, so a longer one only counts as 250: it is over
+the cap either way.
 
 The text line is the nag: run it before opening a pull request, and see how much room is
 left. Over the cap it says by how much; the brake workflow (harness/workflows/brake.yml)
@@ -115,23 +118,29 @@ def asks_changes(reviews: list[dict[str, Any]], owner: str) -> bool:
 
 
 def count(get: Get, repo: str, cap: int, owner: str) -> dict[str, Any]:
-    """The count, the pull requests it is made of, and the drain list, read from `get`."""
-    prs, drain, total = [], [], 0
-    for pr in get(f"repos/{repo}/pulls?state=open&per_page=100"):
+    """The count, the pull requests it is made of, and the drain list, read from `get`. A commit
+    is counted once, under the lowest-numbered open pull request that carries it."""
+    prs, drain, seen = [], [], set()
+    for pr in sorted(get(f"repos/{repo}/pulls?state=open&per_page=100"), key=lambda p: p["number"]):
         number, draft, head = int(pr["number"]), bool(pr["draft"]), pr["head"]
-        commits = 0 if draft else int(get(f"repos/{repo}/pulls/{number}")["commits"])
-        total += commits
-        prs.append({"number": number, "draft": draft, "head": head["ref"], "commits": commits})
+        shas = (
+            []
+            if draft
+            else [c["sha"] for c in get(f"repos/{repo}/pulls/{number}/commits?per_page=100")]
+        )
+        fresh = [sha for sha in dict.fromkeys(shas) if sha not in seen]  # not on a lower number
+        seen.update(fresh)
+        prs.append({"number": number, "draft": draft, "head": head["ref"], "commits": len(fresh)})
         here = (head.get("repo") or {}).get("full_name") == repo
         if here and asks_changes(get(f"repos/{repo}/pulls/{number}/reviews?per_page=100"), owner):
             drain.append(head["ref"])
     return {
         "ok": True,
         "repo": repo,
-        "count": total,
+        "count": len(seen),
         "cap": cap,
-        "left": max(cap - total, 0),
-        "over": total > cap,
+        "left": max(cap - len(seen), 0),
+        "over": len(seen) > cap,
         "prs": prs,
         "drain": sorted(drain),
     }
@@ -191,10 +200,11 @@ def main(argv: list[str]) -> int:
 R = "fpl-org/fpl"
 
 
-def pr(n: int, commits: int, draft: bool = False, fork: bool = False, *reviews: Any) -> Any:
-    """One open pull request as the forge lists it, with its detail and its reviews."""
+def pr(n: int, commits: Any, draft: bool = False, fork: bool = False, *reviews: Any) -> Any:
+    """One open pull request as the forge lists it: `commits` is a number, or their ids."""
     head = {"ref": f"agent/claude/stack/p{n}", "repo": {"full_name": "x/fpl" if fork else R}}
-    return n, {"number": n, "draft": draft, "head": head}, commits, list(reviews)
+    shas = commits if isinstance(commits, list) else [f"{n}:{i}" for i in range(commits)]
+    return n, {"number": n, "draft": draft, "head": head}, shas, list(reviews)
 
 
 def rv(login: str, state: str) -> dict[str, Any]:
@@ -203,8 +213,8 @@ def rv(login: str, state: str) -> dict[str, Any]:
 
 def forge(*open_prs: Any) -> Get:
     paths: dict[str, Any] = {f"repos/{R}/pulls?state=open&per_page=100": [p[1] for p in open_prs]}
-    for n, _, commits, reviews in open_prs:
-        paths[f"repos/{R}/pulls/{n}"] = {"number": n, "commits": commits}
+    for n, _, shas, reviews in open_prs:
+        paths[f"repos/{R}/pulls/{n}/commits?per_page=100"] = [{"sha": sha} for sha in shas]
         paths[f"repos/{R}/pulls/{n}/reviews?per_page=100"] = reviews
     return lambda path: paths[path]
 
@@ -217,6 +227,12 @@ CR, OK, CM, DI = "CHANGES_REQUESTED", "APPROVED", "COMMENTED", "DISMISSED"
 CASES: list[tuple[str, Get, str, list[str]]] = [
     ("no open pull request", forge(), "0/50, nog 50", []),
     ("a draft is not counted", forge(pr(1, 3), pr(2, 40, True)), "3/50, nog 47", []),
+    (
+        "a commit on two pull requests is one",
+        forge(pr(1, ["a", "b", "c"]), pr(2, ["c", "b", "d"])),
+        "4/50, nog 46",
+        [],
+    ),
     ("at the cap is not over it", forge(pr(1, 30), pr(2, 20)), "50/50, nog 0", []),
     (
         "over the cap says by how much",
