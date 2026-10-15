@@ -210,7 +210,9 @@ def read_units(path):
     """The rows of a unit file: (label, part, blockers, title, brief), checked against each other.
 
     Five tab-separated columns; blank lines and lines starting with '#' are skipped. The title
-    is '<label> <name>'. Every label a row names as parent or blocker must be a row.
+    is '<label> <name>'. Every label a row names as parent or blocker must be a row, spelled as
+    that row spells it. Two labels that differ only in case are one label twice, since
+    `resolve` and `load` find a task by its label whatever the case.
     """
     try:
         lines = open(path, encoding="utf-8").read().splitlines()
@@ -229,8 +231,8 @@ def read_units(path):
              [b for b in blockers.split(",") if b], f"{label_} {name}", brief)
         )
     names = [u[0] for u in units]
-    if len(set(names)) != len(names):
-        die(f"{path}: a label is listed twice")
+    if len({n.lower() for n in names}) != len(names):
+        die(f"{path}: a label is listed twice (labels compare without case)")
     # The reducer's own `apply` decides, so its limits are written down once.
     reducer = runpy.run_path(os.path.join(HERE, "rad-cob-dagtaak"), run_name="rad-cob-dagtaak")
     for label_, _, _, title, brief in units:
@@ -303,15 +305,23 @@ def load(graph, path, dry):
     """Create the tasks of a unit file that do not exist yet, then the links between them.
 
     Two passes, so the file may list a blocker after what it blocks. A unit counts as
-    existing when a task's first word is its label, so a second run creates nothing and
-    adds only a link that is missing. Returns (created, linked).
+    existing when a task's first word is its label, in any case, as `resolve` reads one; so a
+    second run creates nothing and adds only a link that is missing. A label two tasks share
+    is refused before any write: neither could be told from the other. Returns
+    (created, linked).
     """
     units = read_units(path)
     leak_gate(units)
-    ids = {label(t): oid for oid, t in graph.tasks.items()}
+    named = {}
+    for oid, task in graph.tasks.items():
+        named.setdefault(label(task).lower(), []).append(oid)
+    for label_, *_ in units:
+        if len(named.get(label_.lower(), [])) > 1:
+            die(f"{label_}: {len(named[label_.lower()])} tasks are named so; rename one first")
+    ids = {key: oids[0] for key, oids in named.items()}  # folded label -> task
     created = 0
     for label_, _, _, title, brief in units:
-        if label_ in ids:
+        if label_.lower() in ids:
             continue
         print(f"{'would create' if dry else 'create'}  {title}")
         created += 1
@@ -319,24 +329,24 @@ def load(graph, path, dry):
             oid = graph.act(None, f"open: {title}", {"type": "open", "title": title, "description": brief})
             if not graph.show(oid).get("title"):
                 die(f"{label_}: {oid[:7]} was written but the reducer did not open it; nothing after it")
-            ids[label_] = oid
-    names = {oid: label(t) for oid, t in graph.tasks.items()}
+            ids[label_.lower()] = oid
+    names = {oid: label(t).lower() for oid, t in graph.tasks.items()}
     linked = 0
     for label_, part, blockers, _, _ in units:
-        old = graph.tasks.get(ids.get(label_), {})
+        old = graph.tasks.get(ids.get(label_.lower()), {})
         held = {names.get(b) for b in old.get("blockedBy", [])}
-        todo = [b for b in blockers if b not in held]
-        reparent = part is not None and names.get(old.get("partOf")) != part
+        todo = [b for b in blockers if b.lower() not in held]
+        reparent = part is not None and names.get(old.get("partOf")) != part.lower()
         for b in todo:
             print(f"{'would link' if dry else 'link'}  {label_} <- {b}")
         if reparent:
             print(f"{'would link' if dry else 'link'}  {label_} part of {part}")
         linked += len(todo) + reparent
         if (todo or reparent) and not dry:
-            actions = [{"type": "block", "by": ids[b]} for b in todo]
+            actions = [{"type": "block", "by": ids[b.lower()]} for b in todo]
             if reparent:
-                actions.append({"type": "part", "of": ids[part]})
-            graph.act(ids[label_], f"link {label_}", *actions)
+                actions.append({"type": "part", "of": ids[part.lower()]})
+            graph.act(ids[label_.lower()], f"link {label_}", *actions)
     print(f"task: {created} created, {linked} links{' (dry run, nothing written)' if dry else ''}")
     return created, linked
 
@@ -663,6 +673,23 @@ def self_test():
         tree_out = task("tree").stdout
         check("loaded tree nests and orders", "    " in tree_out and "L2 second  <- L1" in tree_out)
         check("a second load creates nothing", "0 created, 0 links" in task("load", units).stdout)
+        folded = f"{tmp}/folded.tsv"
+        with open(folded, "w") as handle:
+            handle.write("l9\t-\t\tlane\tThe lane.\nl1\tl9\t\tfirst\tThe first.\n")
+        check("a label in another case is the same unit",
+              "0 created, 0 links" in task("load", folded).stdout)
+        with open(folded, "w") as handle:
+            handle.write("Q3\t-\t\tone\tx\nq3\t-\t\ttwo\tx\n")
+        twice = task("load", folded, ok=False)
+        check("two labels that differ in case only are refused",
+              twice.returncode == 2 and "listed twice" in twice.stderr)
+        task("new", "l1 a second task of that name")
+        with open(folded, "w") as handle:
+            handle.write("L1\t-\t\tfirst\tThe first.\nQ4\t-\tL1\tfour\tx\n")
+        shared = task("load", folded, ok=False)
+        check("a label two tasks share is refused before a write",
+              shared.returncode == 2 and "2 tasks are named" in shared.stderr
+              and "Q4" not in task("list").stdout)
         bad = f"{tmp}/bad.tsv"
         with open(bad, "w") as handle:
             handle.write("Q1\t-\t\tname\tmentions zztermzz\n")
