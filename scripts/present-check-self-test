@@ -168,6 +168,17 @@ printf '#!/bin/sh\nexit 1\n' >scripts/foo-self-test
 git add scripts && commit "fix(scripts): break foo"
 run "self-test red" 1 "selftest is red" -- --skip-quick touched
 
+# A workflow, drafted under harness/ or installed under .github/workflows, runs the audit.
+git checkout -q -b workflows main
+add scripts/present-check-self-test 755
+printf '#!/bin/sh\necho audit >>"$TESTLOG"\n' >scripts/present-check-self-test
+git add scripts && commit "test(scripts): the audit"
+add .github/workflows/series.yml && commit "ci(workflow): installed"
+add harness/workflows/series.yml && commit "ci(workflow): drafted"
+: >"$TESTLOG"
+run "workflows" 0 "green, 3 commits" -- --skip-quick workflows
+check "workflows: the audit ran for the test, the installed and the draft workflow" lines "$TESTLOG" 3
+
 # classify: one word for how a push changed a pull request.
 check "classify unchanged" test "$("$pc" classify work work)" = unchanged
 check "classify presentation" test "$("$pc" classify work pres)" = presentation

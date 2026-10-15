@@ -18,7 +18,8 @@
 #   Series-Id   when scripts/series exists in P's tree, every commit of base..P carries a
 #               Series-Id trailer and the range holds exactly one distinct value
 #   each lemma  `make quick` in a detached worktree of the commit and, when it touches
-#               scripts/, .githooks/ or harness/, the self-tests that cover the touched path
+#               scripts/, .githooks/, harness/ or .github/workflows/, the self-tests that
+#               cover the touched path
 #
 # With one ref there is no W, so the tree, merge-base and range-diff steps are left out; that
 # is what a pull request's CI has. At the end it prints the lemma list (hash, subject, seconds
@@ -182,7 +183,7 @@ selftests() {
 			fi
 			;;
 		.githooks/*) printf '%s\n' scripts/pre-push-self-test scripts/spec-guard-self-test ;;
-		harness/*) echo scripts/present-check-self-test ;;
+		harness/* | .github/workflows/*) echo scripts/present-check-self-test ;;
 		esac
 		: # a failed test above is no failure of the loop (pipefail)
 	done | sort -u | while read -r x; do
