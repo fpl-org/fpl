@@ -157,6 +157,21 @@ for v in true false; do
 	GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.indentHeuristic GIT_CONFIG_VALUE_0=$v "$BASH" scripts/series manifest "$slide0..HEAD" >"$tmp/out" 2>&1
 	same "diff.indentHeuristic=$v does not change the manifest" "$(cat "$tmp/out")" "$man2"
 done
+# A blank context line: with diff.suppressBlankEmpty it loses its leading space, and the plain
+# patch id changes (it can even come out as two ids).
+git switch -q -c agent/claude/stack/blank "$base0"
+printf 'a\n\nb\n\nc\n' >blank; git add blank
+git -c core.hooksPath=/dev/null commit -q -m "chore(demo): blank" -m "Human-Only: true"
+blank0="$(git rev-parse HEAD)"
+printf 'a\n\nB\n\nc\n' >blank
+git -c core.hooksPath=/dev/null commit -q -a -m "chore(demo): blank more" -m "Human-Only: true"
+pid_sbe="$(git -c diff.suppressBlankEmpty=true diff-tree -p HEAD | git patch-id --verbatim | cut -d' ' -f1 | tr '\n' ' ')"
+pid_plain="$(git -c diff.suppressBlankEmpty=false diff-tree -p HEAD | git patch-id --verbatim | cut -d' ' -f1 | tr '\n' ' ')"
+differ "the fixture really is sensitive to diff.suppressBlankEmpty" "$pid_sbe" "$pid_plain"
+sr 0 "manifest of the blank-line change" "" manifest "$blank0..HEAD"
+man3="$(cat "$tmp/out")"
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.suppressBlankEmpty GIT_CONFIG_VALUE_0=true "$BASH" scripts/series manifest "$blank0..HEAD" >"$tmp/out" 2>&1
+same "diff.suppressBlankEmpty=true does not change the manifest" "$(cat "$tmp/out")" "$man3"
 git switch -q agent/claude/stack/demo
 
 # --- check: stray commits ----------------------------------------------------------------------

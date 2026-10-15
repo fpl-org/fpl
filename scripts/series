@@ -219,8 +219,9 @@ cmd_manifest() { # manifest <range>
 	printf '{\n  "commits": [\n'
 	for c in $list; do
 		# Pinned so the caller's diff config cannot change the id: prefixes, renames, context,
-		# algorithm, hunk boundaries.
-		pid="$(git -c core.quotePath=true diff-tree -p --root --no-ext-diff --no-textconv --no-color --no-renames \
+		# algorithm, hunk boundaries, and diff.suppressBlankEmpty (the one config key the plumbing
+		# reads: on, a blank context line loses its leading space and the patch id changes, measured).
+		pid="$(git -c core.quotePath=true -c diff.suppressBlankEmpty=false diff-tree -p --root --no-ext-diff --no-textconv --no-color --no-renames \
 			-U3 --src-prefix=a/ --dst-prefix=b/ --diff-algorithm=myers --indent-heuristic "$c" | git patch-id --verbatim | cut -d' ' -f1)"
 		msg="$({ git cat-file commit "$c" | awk '/^$/ { exit } /^author / { sub(/^author /, ""); sub(/ [0-9]+ [-+][0-9]+$/, ""); print }'
 			git cat-file commit "$c" | sed '1,/^$/d'; } | sha256)"
