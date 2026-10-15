@@ -25,6 +25,25 @@ Above the cap the flipper that switches it on will have to exclude the heads of 
 requests, so that fixes on a pull request he asked changes for stay pushable: with the brake
 as it is here every branch but `main` is locked. A later unit measures and builds that.
 
+## Where the forge says less than the docs
+
+The two exports are the forge as it is (`scripts/ruleset-check`: in sync on 2026-10-15), and
+in two places that is less than the docs claim:
+
+- `main: PR-only, linear` requires `branch-lint` and `commit-lint`, and no other check.
+  `.github/workflows/noslop.yml` says to mark `noslop / check` required on main to make it a
+  hard gate; that was never done. A red or unrun noslop run so blocks neither the forge nor
+  `scripts/land`, which waits for the checks the live rulesets require.
+- `review blockers: main and current stack bases` covers `~DEFAULT_BRANCH` only, whatever its
+  name says. `.agents/WORKFLOW.md` says dismiss-stale-reviews is also on for
+  `walker/01-syntax`, `walker/06-match` and `asm-layers`. None of the three is a branch on the
+  forge any more, so the gap costs nothing today; the name and that sentence are stale.
+
+Both are the owner's to settle: edit the file in a reviewed pull request, then the forge to
+match, and the check holds the two together from then on; or correct the docs. The files do
+not run ahead of the forge: a file that asked for more than the forge enforces would only make
+the check report drift, and the live rulesets are not an agent's to change.
+
 ## Checking
 
     scripts/ruleset-check          # exit 0 in sync, 1 drift, 2 cannot read; --json for machines
