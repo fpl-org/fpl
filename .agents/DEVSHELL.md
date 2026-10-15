@@ -138,6 +138,17 @@ Update deliberately, as its own commit: `nix flake update`, then `make check` in
   profile, so in the default shell `command -v gh` prints `/run/current-system/sw/bin/gh`. A
   dev shell prepends to `PATH`; it does not hide what the machine already has.
 
+## The same shell as an OCI image
+
+For a runner or a sandbox that has a container runtime and no Nix, `flake.nix` also builds the
+dev shell as an image: `packages.<system>.oci`, for `x86_64-linux` and `aarch64-linux` only,
+since `dockerTools` builds nothing for macOS. Its contents are the tools of the table above
+(`basePackages`, one list shared with the shell, so the two cannot drift), plus `gh`, which the
+shell leaves to a layer, a C compiler (`mkShell` brings one, and `uv` needs it where a wheel
+is missing: `crosshair-tool` on `aarch64-linux`), and the loader that PyPI wheels expect at
+`/lib` and `/lib64`, which a Nix-only root lacks (`ruff` from `uv sync` fails with "No such
+file or directory" without it). It carries no credentials: pass them as the run's environment.
+
 ## Known trap: interactive `nix develop` on a Mac
 
 direnv (above) is the recommended route into the shell — the trap below is what happens
