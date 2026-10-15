@@ -1308,6 +1308,62 @@ says "-f name=fpl/series -f head_sha=$HS" "it writes the receipt on the head"
 says "series d1g3st" "with the digest scripts/series gives"
 at="$H" HEAD_SHA="$H"
 
+# Relocation. Siblings on M0: SA adds a, SB adds b, SC sits on SB and adds c, SX adds an a
+# of its own. SA lands first, so main is SA and SB is no longer above it.
+git switch -q -c sibs "$M0"
+echo a >a && git add a && git commit -q -m "add a"
+SA="$(git rev-parse HEAD)"
+git reset -q --hard "$M0"
+echo b >b && git add b && git commit -q -m "add b"
+SB="$(git rev-parse HEAD)"
+echo c >c && git add c && git commit -q -m "add c"
+SC="$(git rev-parse HEAD)"
+git reset -q --hard "$M0"
+echo x >a && git add a && git commit -q -m "add a, otherwise"
+SX="$(git rev-parse HEAD)"
+git switch -q main
+git branch -q -D sibs
+line() { # line <text> <description>: a line of the last output is exactly the text
+	total=$((total + 1))
+	grep -qxF -- "$1" "$tmp/out" && return
+	fails=$((fails + 1))
+	echo "self-test: $2: no line '$1'" >&2
+	sed 's/^/    /' "$tmp/out" >&2
+}
+FPL_LAND_QUICK='test -f a && test -f b' expect 0 "--verify relocates SB onto SA" --verify "$SA" "$SB"
+SY="$(sed -n 's/^y=//p' "$tmp/out")"
+says "pick $SB $SY" "it maps the old commit to the new"
+total=$((total + 1))
+if [ "$(git rev-parse "$SY^")" != "$SA" ] || ! git cat-file -e "$SY:b" ||
+	[ "$(git log -1 --format='%an %ae %ad %cn %ce %cd %B' "$SY")" != \
+		"$(git log -1 --format='%an %ae %ad %cn %ce %cd %B' "$SB")" ]; then
+	fails=$((fails + 1))
+	echo "self-test: SB's pick $SY is not SB's change, author, committer and message on SA" >&2
+fi
+FPL_LAND_QUICK=true expect 0 "--verify again" --verify "$SA" "$SB"
+line "y=$SY" "the same main and head derive the same commits"
+FPL_LAND_QUICK=false expect 1 "--verify, the check fails on a pick" --verify "$SA" "$SB"
+says "'false' fails on $SY, the pick of $SB" "it names the pick and the commit it relocates"
+FPL_LAND_QUICK=true expect 0 "--verify, a pick that conflicts" --verify "$SA" "$SX"
+line "conflict $SX a" "it names the commit and the file"
+line "y=" "and derives nothing"
+FPL_LAND_QUICK=true expect 0 "--verify, a child of the relocated SB" --verify "$SY" "$SC"
+line "drop $SB" "main holds SB's pair: the child's range starts above it"
+says "pick $SC " "the child's own commit is picked"
+# RP and RQ make the same change, x to y, at two places of r with the same context: one pair.
+# Main holds RP's pick once (on RZ); RQ is no commit of main's and must not be dropped.
+git switch -q -c twins "$M0"
+{ seq 3 | sed 's/.*/k/'; echo x; seq 7 | sed 's/.*/k/'; echo x; seq 3 | sed 's/.*/k/'; } >r
+git add r && git commit -q -m "add r" && RB="$(git rev-parse HEAD)"
+sed '4s/x/y/' r >r.new && mv r.new r && git commit -q -am "x to y" && RP="$(git rev-parse HEAD)"
+sed '12s/x/y/' r >r.new && mv r.new r && git commit -q -am "x to y" && RQ="$(git rev-parse HEAD)"
+git reset -q --hard "$RB" && echo z >z && git add z && git commit -q -m "add z" && git cherry-pick "$RP" >/dev/null
+RM="$(git rev-parse HEAD)"
+git switch -q main && git branch -q -D twins
+FPL_LAND_QUICK=true expect 0 "--verify, two commits with one pair, main holding one" --verify "$RM" "$RQ"
+line "drop $RP" "the one main holds is dropped"
+says "pick $RQ " "the other is picked: a commit on main answers for one commit, once"
+
 # The install line in harness/workflows/README.md makes a commit the owner's hooks accept: its
 # message, the -m arguments of its git commit joined as git joins them, passes
 # .githooks/commit-msg in a checkout of the harness on a detached HEAD, where the owner makes

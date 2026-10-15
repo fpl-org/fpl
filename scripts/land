@@ -3,6 +3,7 @@
 # scripts/land — the maintainer's half of landing a pull request: look, decide, fast-forward.
 #
 #   scripts/land [--dry-run] [--remote <name>] [<number | url>]
+#   scripts/land --verify <main> <head>
 #
 # Lands an approved pull request by pushing its head to main without force: a fast-forward.
 # The commits keep their SHAs, so a pull request stacked on the landed one keeps its commits,
@@ -156,12 +157,14 @@ die() {
 }
 usage() {
 	echo "usage: scripts/land [--ci] [--dry-run] [--remote <name>] [<number | url>]" >&2
+	echo "       scripts/land --verify <main> <head>" >&2
 	exit 2
 }
 
 # The JSON half: every reading of the forge's answers, and the judgement, in one program.
 # python3 because the default dev shell has it and no jq; bash 3.2 cannot hold JSON.
 read -r -d '' PY <<'PY' || :
+import hashlib
 import json
 import os
 import re
@@ -746,6 +749,60 @@ def trailers(revs, key):
     return [(r[0], [x.strip() for x in r[1:] if x.strip()]) for r in rows]
 
 
+def pair(c):
+    """(patch id, SHA-256 of author and raw message) of commit c: the pair scripts/series
+    manifest prints, its diff pinned the same way against the caller's configuration."""
+    diff = git("-c", "core.quotePath=true", "diff-tree", "-p", "--root", "--no-ext-diff",
+               "--no-textconv", "--no-color", "--no-renames", "-U3", "--src-prefix=a/",
+               "--dst-prefix=b/", "--diff-algorithm=myers", "--indent-heuristic", c)
+    pid = git("patch-id", "--verbatim", stdin=diff).split()[:1]
+    head, _, msg = git("cat-file", "commit", c).partition(b"\n\n")
+    who = next(x for x in head.split(b"\n") if x.startswith(b"author "))
+    who = re.sub(rb" \d+ [-+]\d{4}$", b"", who[7:])
+    return (pid[0].decode() if pid else "-", hashlib.sha256(who + b"\n" + msg).hexdigest())
+
+
+def derive(main, head):
+    """The relocation of head onto main, with git alone: the commits of head that main
+    lacks, less a leading run whose pairs main holds already (a relocated parent's), each
+    picked onto the last by `git merge-tree` and written by `git commit-tree` with its own
+    author, committer, dates and message, unsigned, the merge's rename settings pinned. No
+    clock is read, so the same main and head give the same commits wherever git does. Prints `drop <old>`,
+    `pick <old> <new>` per commit and `y <Y>`, or `conflict <old> <files>` and exit 1."""
+    base = git("merge-base", main, head).decode().strip()
+    olds = git("rev-list", "--reverse", f"{base}..{head}").decode().split()
+    landed = [pair(c) for c in git("rev-list", f"{base}..{main}").decode().split()]
+    while olds and pair(olds[0]) in landed:  # each commit on main answers for one, once
+        landed.remove(pair(olds[0]))
+        print("drop", olds.pop(0))
+    onto = main
+    for c in olds:
+        tree = subprocess.run(("git", "-c", "merge.renames=true", "-c",
+                               "merge.directoryRenames=conflict", "merge-tree",
+                               "--write-tree", "--name-only",
+                               "--no-messages", f"--merge-base={c}^", onto, c),
+                              capture_output=True, check=False).stdout.decode().split("\n")
+        if not re.fullmatch(r"[0-9a-f]{40,64}", tree[0]) or tree[1:] != [""]:
+            print("conflict", c, " ".join(x for x in tree[1:] if x))
+            sys.exit(1)
+        head_, _, msg = git("cat-file", "commit", c).partition(b"\n\n")
+        env = dict(os.environ)
+        for line in head_.decode().split("\n"):
+            role, _, rest = line.partition(" ")
+            if role in ("author", "committer"):
+                m = re.fullmatch(r"(.*) <(.*)> (\d+ [-+]\d{4})", rest)
+                env |= {f"GIT_{role.upper()}_{k}": m[i] for i, k in
+                        ((1, "NAME"), (2, "EMAIL"), (3, "DATE"))}
+        onto = subprocess.run(("git", "-c", "i18n.commitEncoding=UTF-8", "commit-tree",
+                               "--no-gpg-sign", tree[0], "-p", onto), input=msg,
+                              env=env, capture_output=True, check=True).stdout.decode().strip()
+        print("pick", c, onto)
+    if not olds:
+        print("conflict", head, "(nothing is left once main's pairs are dropped)")
+        sys.exit(1)
+    print("y", onto)
+
+
 def judge_series(v, main, span):
     """land/series and land/series-fresh, judged once main holds scripts/series: one
     Series-Id on every commit, and no commit on main carries it yet."""
@@ -981,6 +1038,8 @@ def main(cmd, *args):
             print(rid)
     elif cmd == "push-remedy":
         print(push_remedy(load(args[0])["login"]))
+    elif cmd == "derive":
+        derive(*args)
     elif cmd == "judge":
         sys.exit(judge(*args))
     elif cmd == "still":
@@ -1005,6 +1064,27 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
 }
 GQL
 
+# --verify <main> <head>: the half of a relocation that holds no secret (land.yml's verify
+# job). It derives the relocation of <head> onto <main> (derive, above), runs
+# $FPL_LAND_QUICK (default `make quick`) on each new commit in a worktree of its own, and
+# prints the map and last y=<Y>. The land job derives Y again with git alone and lands only
+# a Y equal to it (relocate/trees), so what PR code in this job prints decides nothing. A
+# conflict is not refused here: it prints y= and the land job names it (relocate/clean).
+if [ "${1:-}" = --verify ]; then
+	[ $# -eq 3 ] || usage
+	quick="${FPL_LAND_QUICK:-make quick}"
+	tmp="$(mktemp -d "${TMPDIR:-/tmp}/land.XXXXXX")"
+	trap 'git worktree remove -f "$tmp/w" >/dev/null 2>&1 || :; rm -rf "$tmp"' EXIT
+	py derive "$2" "$3" >"$tmp/map" || { cat "$tmp/map"; echo "y="; exit 0; }
+	git worktree add -q --detach "$tmp/w" "$2"
+	while read -r what old new; do
+		[ "$what" = pick ] || continue
+		git -C "$tmp/w" checkout -q --detach "$new"
+		(cd "$tmp/w" && eval "$quick") >&2 || die "relocate: '$quick' fails on $new, the pick of $old"
+	done <"$tmp/map"
+	sed 's/^y /y=/' "$tmp/map"
+	exit 0
+fi
 ci=0 dry=0 remote=github target=""
 while [ $# -gt 0 ]; do
 	case "$1" in
