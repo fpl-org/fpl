@@ -21,8 +21,8 @@ count must never let the brake off.
 The token (GH_TOKEN) must be allowed to administer the repository: in the workflow it is
 the fpl-brake App's. With --dry-run it reads, says what it would write, and writes nothing.
 Where GITHUB_STEP_SUMMARY is set the count, the decision, the rules and bypass actors seen
-before and after (a tripwire for a PUT that dropped them), and the lag go there; the lag is
-the seconds from --since (the event's time) to the end of the run.
+before and after (a tripwire for a PUT that dropped them, which fails with both counts), and
+the lag go there; the lag is the seconds from --since (the event's time) to the end of the run.
 
     FPL_BRAKE_REPO      owner/name (default: the count's repo)
     FPL_BRAKE_RULESET   the ruleset's name (default: brake: all branches except main)
@@ -111,7 +111,11 @@ def flip(call: Call, count: dict[str, Any], repo: str, name: str, dry: bool) -> 
         return [*report, f"dry run, would PUT {json.dumps(body)}"]
     after = call("PUT", path, body)
     if any(after.get(k) != now.get(k) for k in ("rules", "bypass_actors")):
-        raise ValueError("the write changed the rules or the bypass actors: read the ruleset now")
+        raise ValueError(
+            "the write changed the rules or the bypass actors, read the ruleset now: "
+            f"seen {len(now.get('rules', []))} rules, bypass_actors {tripwire(now)}; "
+            f"after {len(after.get('rules', []))} rules, bypass_actors {tripwire(after)}"
+        )
     return [
         *report,
         f"set: {after['enforcement']}, exclude {after['conditions']['ref_name']['exclude']}",
@@ -265,7 +269,7 @@ CASES: list[tuple[str, tuple[Any, ...], dict[str, Any], bool, Any]] = [
         ("disabled", [MAIN], 1, 0, True),
         n(60),
         False,
-        "changed the rules",
+        "seen 2 rules, bypass_actors not shown; after 0 rules",
     ),
     ("no brake ruleset changes nothing", ("disabled", [MAIN], 0), n(60), False, "0 rulesets"),
     ("two brake rulesets change nothing", ("disabled", [MAIN], 2), n(60), False, "2 rulesets"),
