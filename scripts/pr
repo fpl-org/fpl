@@ -50,7 +50,8 @@
 #
 # It talks to the forge over its API, with python3 from the default dev shell, so the
 # github layer is not needed. The token is gh's if gh has one for the machine account,
-# else the one in .git/agent-credentials (.agents/WORKFLOW.md). FPL_API_URL names another
+# else the one in .git/agent-credentials (.agents/WORKFLOW.md, which lists the permissions it
+# needs: --ready also reads check runs and commit statuses). FPL_API_URL names another
 # API for scripts/pr-self-test; only this machine's loopback is accepted.
 set -euo pipefail
 
@@ -194,7 +195,7 @@ if root != "https://api.github.com" and not root.startswith("http://127.0.0.1:")
     die(f"FPL_API_URL '{root}' is neither GitHub nor this machine; the token stays home")
 
 
-def api(path, payload=None, method=None):
+def api(path, payload=None, method=None, refused=""):
     request = urllib.request.Request(
         root + path,
         data=None if payload is None else json.dumps(payload).encode(),
@@ -211,7 +212,8 @@ def api(path, payload=None, method=None):
             return json.load(response)
     except urllib.error.HTTPError as error:
         detail = json.loads(error.read() or b"{}")
-        die(f"{path}: {error.code} {detail.get('message', error.reason)}")
+        remedy = f"; {refused}" if refused and error.code == 403 else ""
+        die(f"{path}: {error.code} {detail.get('message', error.reason)}{remedy}")
 
 
 def open_pull(branch):
@@ -246,6 +248,10 @@ elif command == "ready":
     number = args[0]
     wait, poll = float(os.environ["FPL_PR_WAIT"]), float(os.environ["FPL_PR_POLL"])
     deadline = time.monotonic() + wait
+    unread = (
+        "the token needs Checks read and Commit statuses read beside the rest"
+        " (.agents/WORKFLOW.md, The agent's credential)"
+    )
     while True:
         pull = api(f"/repos/{slug}/pulls/{number}")
         if pull["state"] != "open":
@@ -256,9 +262,11 @@ elif command == "ready":
         sha = pull["head"]["sha"]
         pending = [f"review requested from {u['login']}" for u in pull["requested_reviewers"]]
         pending += [f"review requested from team {t['slug']}" for t in pull["requested_teams"]]
-        runs = api(f"/repos/{slug}/commits/{sha}/check-runs?per_page=100")["check_runs"]
-        pending += [f"check {r['name']} is {r['status']}" for r in runs if r["status"] != "completed"]
-        statuses = api(f"/repos/{slug}/commits/{sha}/status?per_page=100")["statuses"]
+        runs = api(f"/repos/{slug}/commits/{sha}/check-runs?per_page=100", refused=unread)
+        pending += [
+            f"check {r['name']} is {r['status']}" for r in runs["check_runs"] if r["status"] != "completed"
+        ]
+        statuses = api(f"/repos/{slug}/commits/{sha}/status?per_page=100", refused=unread)["statuses"]
         pending += [f"status {s['context']} is pending" for s in statuses if s["state"] == "pending"]
         if not pending:
             break

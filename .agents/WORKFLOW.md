@@ -426,9 +426,11 @@ git -c credential.helper="store --file=$PWD/.git/agent-credentials" push origin 
 
 It sits inside `.git/`, so it is per clone and never committed. The token is a fine-grained
 personal access token of the machine account, scoped to this repository alone, with Contents
-and Pull requests read/write and Metadata read — and no Workflows. Rule 8 is then a property
-of the credential rather than of anyone's discipline: the push is refused, not remembered to
-be avoided.
+and Pull requests read/write, and Metadata, Checks and Commit statuses read — and no
+Workflows. Rule 8 is then a property of the credential rather than of anyone's discipline:
+the push is refused, not remembered to be avoided. Checks and Commit statuses are for
+`scripts/pr --ready`, which reads the check runs and commit statuses of the head; a private
+repository refuses both (403) to a token without them.
 
 The maintainer creates it (the account's settings, then approve the request as an owner of
 the organisation) and writes the file. It expires; a push then fails with 403 and a new token

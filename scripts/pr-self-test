@@ -47,7 +47,7 @@ echo '[]' >"$forge/pulls.json"
 echo '{"check_runs": []}' >"$forge/checks.json"
 echo '{"statuses": []}' >"$forge/status.json"
 cat >"$tmp/forge.py" <<'PY'
-import json, sys
+import json, os, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -96,6 +96,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, "{}")
         if len(parts) == 6 and parts[5] == "requested_reviewers" and method == "POST":
             return self.reply(201, "{}")
+        if len(parts) == 6 and parts[3] == "commits" and os.path.exists(f"{forge}/deny-checks"):
+            return self.reply(403, '{"message": "Resource not accessible by personal access token"}')
         if len(parts) == 6 and parts[3] == "commits" and parts[5] == "check-runs":
             return self.reply(200, fixture("checks.json"))
         if len(parts) == 6 and parts[3] == "commits" and parts[5] == "status":
@@ -325,6 +327,18 @@ pull 5 true '[]'
 run 0 "ready once the bots are quiet" --ready 5
 logged 1 "POST /graphql" "marked ready"
 logged 1 "PR_node_5" "by the node of the pull request"
+# A token without Checks and Commit statuses read: a private repository answers 403, and the
+# refusal says which permissions the credential lacks; .agents/WORKFLOW.md lists them.
+: >"$forge/deny-checks"
+run 1 "ready with a token that may not read checks" --ready 5
+says err "the token needs Checks read and Commit statuses read" "names the missing permissions"
+logged 1 "POST /graphql" "still not marked twice"
+rm "$forge/deny-checks"
+total=$((total + 1))
+grep -Fq "Metadata, Checks and Commit statuses read" "$root/.agents/WORKFLOW.md" || {
+	fails=$((fails + 1))
+	echo "self-test: .agents/WORKFLOW.md does not grant the token what --ready reads" >&2
+}
 pull 5 false '[]'
 run 0 "ready twice" --ready 5
 says err "ready already" "nothing to do"
