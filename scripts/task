@@ -273,6 +273,51 @@ def reducer():
     return runpy.run_path(os.path.join(HERE, "rad-cob-dagtaak"), run_name="rad-cob-dagtaak")
 
 
+def path(edges, src, dst):
+    """The nodes from `src` to `dst` along `edges` (node -> the nodes it points at), both
+    ends included, or None; `[src]` when they are the same node."""
+    seen, stack = {src}, [[src]]
+    while stack:
+        trail = stack.pop()
+        if trail[-1] == dst:
+            return trail
+        for nxt in edges.get(trail[-1], ()):
+            if nxt not in seen:
+                seen.add(nxt)
+                stack.append([*trail, nxt])
+    return None
+
+
+def refuse_loops(graph, units, ids, plan):
+    """Refuse a load whose new links would close a loop, of blockers or of parents.
+
+    The graph is the store's links with the planned ones laid over it: a parent the file
+    gives replaces the task's old one, blockers add up. A loop through an old link alone was
+    recorded on purpose (`block --force`) and is not this load's to judge, so only a new link
+    `u -> v` is checked, by looking for a way back from `v` to `u`. A row that is its own
+    parent or blocker is the loop of one. `block` stops before it closes a loop and `part`
+    refuses to; this keeps `load` from writing what those would not.
+    """
+    node = {u[0]: ids.get(u[0].lower(), "new " + u[0]) for u in units}
+    names = {oid: label(t) or oid[:7] for oid, t in graph.tasks.items()}
+    names.update({v: k for k, v in node.items()})
+    waits = {oid: list(t.get("blockedBy", [])) for oid, t in graph.tasks.items()}
+    parent = {oid: [t["partOf"]] if t.get("partOf") else [] for oid, t in graph.tasks.items()}
+    new = []
+    for label_, part, todo, reparent in plan:
+        for b in todo:
+            waits.setdefault(node[label_], []).append(node[b])
+            new.append(("waits on", waits, node[label_], node[b]))
+        if reparent:
+            parent[node[label_]] = [node[part]]
+            new.append(("is part of", parent, node[label_], node[part]))
+    for kind, edges, u, v in new:
+        back = path(edges, v, u)
+        if back:
+            loop = " -> ".join(names.get(n, n[:7]) for n in [u, *back])
+            die(f"{loop}: each {kind} the next; a load closes no loop. Nothing written")
+
+
 def leak_gate(units):
     """Every title and brief through scripts/leak-check --text, before anything is written.
 
@@ -313,6 +358,7 @@ def load(graph, path, dry):
     units = read_units(path)
     ids = store_ids(graph, units)
     plan = links(graph, units, ids)
+    refuse_loops(graph, units, ids, plan)
     leak_gate(units)  # the slow check last: one leak-check per unit
     created = create(graph, units, ids, dry)
     linked = sum(link(graph, ids, step, dry) for step in plan)
@@ -847,6 +893,26 @@ def loading_units(f):
     f.check(
         "a label in another case is the same unit", "0 created, 0 links" in f.out("load", folded)
     )
+    for name, rows, says in (
+        (
+            "a blocker that closes a loop through the store",
+            "L9\t-\t\tlane\tx\nL3\tL9\t\tthird\tx\nL1\tL9\tL3\tfirst\tx\n",
+            "L1 -> L3 -> L2 -> L1: each waits on",
+        ),
+        (
+            "a parent that closes a loop through the store",
+            "L9\tL1\t\tlane\tx\nL1\t-\t\tfirst\tx\n",
+            "L9 -> L1 -> L9: each is part of",
+        ),
+    ):
+        refused = f.task("load", f.file("closing.tsv", rows), ok=False)
+        f.check(
+            f"{name} is refused before a write",
+            refused.returncode == 2
+            and says in refused.stderr
+            and json.loads(f.out("show", "L1"))["blockedBy"] == []
+            and json.loads(f.out("show", "L9"))["partOf"] is None,
+        )
     f.task("new", "l1 a second task of that name")
     shared = f.task(
         "load", f.file("shared.tsv", "L1\t-\t\tfirst\tx\nQ4\t-\tL1\tfour\tx\n"), ok=False
@@ -876,6 +942,9 @@ def refusals(f):
         ("a label ending in a colon", "Q1:\t-\t\tone\tx\n", "'Q1:': a label is one word"),
         ("a title over the reducer's limit", f"Q1\t-\t\t{'n' * 200}\tx\n", "Q1: the reducer"),
         ("a brief over the reducer's limit", f"Q1\t-\t\tone\t{'b' * 10_001}\n", "Q1: the reducer"),
+        ("a blocker loop", "Q1\t-\tQ2\tone\tx\nQ2\t-\tQ1\ttwo\tx\n", "Q1 -> Q2 -> Q1"),
+        ("a row its own parent", "Q1\tQ1\t\tone\tx\n", "Q1 -> Q1"),
+        ("a parent loop", "Q1\tQ2\t\tone\tx\nQ2\tQ1\t\ttwo\tx\n", "Q1 -> Q2 -> Q1"),
     ):
         refused = f.task("load", f.file("bad.tsv", rows), ok=False)
         f.check(
