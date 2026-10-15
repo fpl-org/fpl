@@ -122,6 +122,61 @@
         pkgs.gnumake
       ];
 
+      # The dev shell as an OCI image, for a runner or a sandbox that has a container runtime
+      # and no Nix (.agents/DEVSHELL.md). `dockerTools` builds only for Linux, so there is no
+      # `aarch64-darwin` attribute: `nix build .#oci` works on a Linux host, and from a Mac as
+      # `nix build .#packages.aarch64-linux.oci` with a Linux builder. The contents are the
+      # default shell's tools plus `gh`, which the shell leaves to a layer, because a runner
+      # that gets nothing but the image is the one that has to talk to the forge. Credentials
+      # are not baked in; the caller passes them as the run's environment.
+      ociImage =
+        pkgs:
+        pkgs.dockerTools.buildLayeredImage {
+          name = "fpl-dev";
+          tag = "latest";
+          contents =
+            basePackages pkgs
+            ++ [ pkgs.gh ]
+            ++ [
+              pkgs.stdenv.cc # mkShell brings it; uv builds sdists (crosshair-tool on aarch64)
+              pkgs.cacert # git and uv speak https
+              pkgs.dockerTools.binSh # /bin/sh
+              pkgs.dockerTools.usrBinEnv # #!/usr/bin/env bash in scripts/
+              pkgs.dockerTools.fakeNss # passwd and group, which git and uv look the user up in
+            ];
+          # The dynamic loader where a PyPI wheel looks for it: ruff, z3 and the other binary
+          # wheels uv installs name /lib/ld-linux-aarch64.so.1 or /lib64/ld-linux-x86-64.so.2,
+          # and a Nix-only root has neither, so they fail with "No such file or directory".
+          extraCommands =
+            let
+              loader = pkgs.stdenv.cc.bintools.dynamicLinker;
+            in
+            ''
+              mkdir -p -m 1777 tmp
+              mkdir -p work lib lib64
+              ln -s ${loader} lib/${baseNameOf loader}
+              ln -s ${loader} lib64/${baseNameOf loader}
+            '';
+          config = {
+            WorkingDir = "/work";
+            Cmd = [ "bash" ];
+            Env = [
+              # Writable whoever runs it: `docker run --user "$(id -u):$(id -g)"` has no home
+              # of its own, and uv and git want one for their caches.
+              "HOME=/tmp"
+              "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+              # The same environment the dev shell sets (mkFplShell).
+              "UV_PYTHON=${pkgs.python312}/bin/python3.12"
+              "UV_PYTHON_DOWNLOADS=never"
+              "LD_LIBRARY_PATH=${pkgs.stdenv.cc.cc.lib}/lib"
+              # A bind-mounted checkout belongs to another user than the one the container runs as.
+              "GIT_CONFIG_COUNT=1"
+              "GIT_CONFIG_KEY_0=safe.directory"
+              "GIT_CONFIG_VALUE_0=*"
+            ];
+          };
+        };
+
       # The one place the line limits live. Everything that states one is generated from here
       # by `nix run .#gen-config`: .editorconfig, quality/ruff-limits.toml (which
       # quality/ruff.toml extends) and .githooks/commit-limits (which .githooks/commit-rules
@@ -307,6 +362,11 @@
 
       # The line limits, one source (see `limits` above): `nix eval --json .#lib.limits`.
       lib.limits = limits;
+
+      # Linux only, because dockerTools is: see ociImage.
+      packages = nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" ] (system: {
+        oci = ociImage nixpkgs.legacyPackages.${system};
+      });
 
       apps = forAllSystems (pkgs: {
         gen-config = {
