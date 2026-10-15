@@ -2,26 +2,40 @@
 #
 # scripts/present-check — prove that a presented series is the series that was worked.
 #
-#   scripts/present-check [-B base] W P
+#   scripts/present-check [-B base] [-b branch] [W] P
 #
 # The work tip W is what the agents built and checked; the presented tip P is the same change
 # told as a short series a person reads (.agents/WORKFLOW.md). Telling it again may reword,
-# split, reorder and rebase, but not change what the series adds up to. This proves that,
-# cheapest check first, stopping at the first red:
+# split, reorder and rebase, but not change what the series adds up to, and every lemma must
+# stand on its own. With both refs this proves that, cheapest check first, stopping at the
+# first red:
 #
 #   trees       W and P hold the same tree (git rev-parse <ref>^{tree})
 #   merge-base  both fork from `base` at the same commit
+#   commit-lint scripts/commit-lint over base..P, judged for the branch when P is a local
+#               branch or -b names one (else its Stack: and agent-branch gates are left out)
+#   each lemma  `make quick` in a detached worktree of the commit
 #
-# At the end it prints `git range-diff W...P`, the story told against the work.
+# With one ref there is no W, so the tree, merge-base and range-diff steps are left out; that
+# is what a pull request's CI has. At the end it prints the lemma list (hash, subject, seconds
+# per step) and, with W, `git range-diff W...P`. Seconds come from $SECONDS, which bash 3.2 has.
 #
 #   -B base       what the series is on top of (default main; CI passes origin/main)
+#   -b branch     judge the commits for this branch (default: P's name when it is one)
 #
-# Exit 0: green. 1: a check is red. 2: usage or tooling.
+# One temporary worktree serves all lemmas, moved with a forced checkout and `git clean -fdx`
+# that spares only .venv, so nothing a lemma left behind can make the next one pass. The .venv
+# stays because syncing it adds about 25 s a lemma (measured: 77 s for the first lemma, 51 s
+# with it kept) and make resyncs it when quality/uv.lock changes; the running checkout's own
+# is never shared. FPL_PRESENT_QUICK (default `make quick`) and FPL_PRESENT_LINT (default
+# scripts/commit-lint) name the commands; scripts/present-check-self-test stands in a fixture
+# through them. Exit 0: green. 1: a check is red. 2: usage or tooling.
 set -euo pipefail
 export GIT_NO_REPLACE_OBJECTS=1
 unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE
 
-usage="usage: scripts/present-check [-B base] W P"
+here="$(cd "$(dirname "$0")" && pwd)"
+usage="usage: scripts/present-check [-B base] [-b branch] [W] P"
 
 die() {
 	printf 'present-check: %s\n' "$*" >&2
@@ -34,12 +48,12 @@ red() {
 sha() { git rev-parse --verify -q "$1^{commit}" || die "not a commit: $1"; }
 short() { git rev-parse --short "$1"; }
 
-base=main
+base=main branch=""
 while [ $# -gt 0 ]; do
 	case "$1" in
-	-B)
+	-B | -b)
 		[ -n "${2-}" ] || die "$usage"
-		base="$2"
+		if [ "$1" = -B ]; then base="$2"; else branch="$2"; fi
 		shift 2
 		;;
 	-*) die "$usage" ;;
@@ -49,25 +63,99 @@ done
 git rev-parse --git-dir >/dev/null 2>&1 || die "not inside a git repository"
 git rev-parse -q --verify "$base^{commit}" >/dev/null || die "no such base: $base"
 
-[ $# -eq 2 ] || die "$usage"
-w="$(sha "$1")"
-p="$(sha "$2")"
+case $# in
+1) w="" p="$(sha "$1")" ;;
+2)
+	w="$(sha "$1")"
+	p="$(sha "$2")"
+	;;
+*) die "$usage" ;;
+esac
+if [ -z "$branch" ]; then
+	full="$(git rev-parse -q --symbolic-full-name "${!#}" 2>/dev/null || true)"
+	case "$full" in refs/heads/*) branch="${full#refs/heads/}" ;; esac
+fi
+
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/present-check.XXXXXX")"
+# cleanup: remove the lemma worktree this run made. `git worktree prune` is repository-wide, so
+# it runs only when removal failed and left a stale entry of ours; a run that made no worktree
+# touches no registration at all.
+cleanup() {
+	if [ -e "$tmp/wt" ]; then
+		git worktree remove --force "$tmp/wt" 2>/dev/null || {
+			rm -rf "$tmp/wt"
+			git worktree prune 2>/dev/null || true
+		}
+	fi
+	rm -rf "$tmp"
+}
+trap cleanup EXIT
 
 printf 'present-check: base %s (%s), presented %s\n' "$(short "$base")" "$base" "$(short "$p")"
 
-[ "$(git rev-parse "$w^{tree}")" = "$(git rev-parse "$p^{tree}")" ] ||
-	red "trees differ: work $(short "$w") and presented $(short "$p") do not hold the same code; a presentation may only change the story"
-echo "ok    trees equal ($(git rev-parse --short "$p^{tree}"))"
-# One assignment each, as for the refs: a failed merge-base would be lost behind the second.
-mw="$(git merge-base "$base" "$w")" ||
-	die "work $(short "$w") shares no history with $base; pass -B the base the work forked from"
-mp="$(git merge-base "$base" "$p")" ||
-	die "presented $(short "$p") shares no history with $base; present on the base the work was made on"
-[ "$mw" = "$mp" ] ||
-	red "merge-base differs: work forks from $(short "$mw"), presented from $(short "$mp"); present on the base the work was made on, then rebase both"
-echo "ok    merge-base equal ($(short "$mp"))"
+if [ -n "$w" ]; then
+	[ "$(git rev-parse "$w^{tree}")" = "$(git rev-parse "$p^{tree}")" ] ||
+		red "trees differ: work $(short "$w") and presented $(short "$p") do not hold the same code; a presentation may only change the story"
+	echo "ok    trees equal ($(git rev-parse --short "$p^{tree}"))"
+	# One assignment each, as for the refs: a failed merge-base would be lost behind the second.
+	mw="$(git merge-base "$base" "$w")" ||
+		die "work $(short "$w") shares no history with $base; pass -B the base the work forked from"
+	mp="$(git merge-base "$base" "$p")" ||
+		die "presented $(short "$p") shares no history with $base; present on the base the work was made on"
+	[ "$mw" = "$mp" ] ||
+		red "merge-base differs: work forks from $(short "$mw"), presented from $(short "$mp"); present on the base the work was made on, then rebase both"
+	echo "ok    merge-base equal ($(short "$mp"))"
+fi
+
+lint_args=()
+[ -z "$branch" ] || lint_args=(-b "$branch")
+lint_out="$tmp/lint"
+"${FPL_PRESENT_LINT:-$here/commit-lint}" ${lint_args[@]+"${lint_args[@]}"} "$base..$p" >"$lint_out" 2>&1 ||
+	{
+		cat "$lint_out" >&2
+		red "commit-lint refuses a commit of $base..$p"
+	}
+echo "ok    commit-lint ($(tail -n 1 "$lint_out"))"
+
+commits="$(git rev-list --reverse --no-merges "$base..$p")"
+[ -n "$commits" ] || die "no commits in $base..$p"
+
+# step <label> <command>: run in the lemma's worktree, print one line, stop on red.
+lemma_wt="$tmp/wt"
+step() {
+	local started=$SECONDS out="$tmp/step"
+	if (cd "$lemma_wt" && bash -c "$2") >"$out" 2>&1; then
+		printf '        %-8s ok   %ss  %s\n' "$1" "$((SECONDS - started))" "$2"
+	else
+		tail -n 40 "$out" >&2
+		red "$1 is red at $cur: $2"
+	fi
+	times="$times $1=$((SECONDS - started))s"
+}
+
+list="" n=0 total_start=$SECONDS
+for c in $commits; do
+	n=$((n + 1))
+	cur="$(git log -1 --format='%h %s' "$c")"
+	times=""
+	printf '== %d. %s\n' "$n" "$cur"
+	if [ "$n" -eq 1 ]; then
+		git worktree add --detach -q "$lemma_wt" "$c"
+	else
+		git -C "$lemma_wt" checkout -q --detach -f "$c"
+		git -C "$lemma_wt" clean -fdxq -e .venv
+	fi
+	step quick "${FPL_PRESENT_QUICK:-make quick}"
+	list="$list$n. $cur [${times# }]
+"
+done
 
 echo
-echo "range-diff $(short "$w")...$(short "$p"):"
-git range-diff "$w...$p"
-echo "present-check: green"
+echo "lemmas of $base..$(short "$p"):"
+printf '%s' "$list"
+if [ -n "$w" ]; then
+	echo
+	echo "range-diff $(short "$w")...$(short "$p"):"
+	git range-diff "$w...$p"
+fi
+printf 'present-check: green, %d commits, %ss\n' "$n" "$((SECONDS - total_start))"
