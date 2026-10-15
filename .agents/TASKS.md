@@ -40,7 +40,8 @@ says `ready` or `<-` the labels of what it waits on, so one command shows both s
 is left out of `ready` while it has an open part, since its parts are what is picked up; once
 every part is done or dropped, closing it is the work left, and it is listed. A `part` that would close a
 loop is refused; one that arrives anyway is listed after the tree, with exit 1, as `ready`
-does for blockers. `partOf` was added to the reducer when the store was still empty: operations
+does for blockers. A parent this clone has not received is drawn as a root marked `?` with
+its parts under it, also with exit 1. `partOf` was added to the reducer when the store was still empty: operations
 written before it replay unchanged.
 
 `task load FILE` creates the tasks of a units file, five tab-separated columns (label, partOf,
@@ -48,10 +49,18 @@ blockedBy, name, brief; the title is `<label> <name>`). `.agents/tasks/redo.tsv`
 harness redo's DAG: ids and short English briefs, no owner steps. A tasks store is not part of
 a clone, so the file is how a reviewer sees what was loaded, in a diff. The loader:
 
-- runs every title and brief through `scripts/leak-check --text` before the first write, and
-  refuses, naming the unit, if one is flagged: a task is signed and replicated, and a COB
-  cannot be taken back out of a peer's store;
-- is idempotent: a unit whose label already is the first word of a task is not created again;
+- refuses, naming the unit and before the first write, whatever it could not take back
+  afterwards: a task is signed and replicated, and a COB cannot be taken back out of a peer's
+  store. That is a label that is not one word or ends in `:`, two labels that differ only in
+  case, a reference to a label the file lacks, a row the reducer would not open (title over
+  200, brief over 10 000 characters), a label two tasks of the store share, a link to a task
+  this identity may not link, more than 64 blockers on a task, a new link that closes a loop
+  of blockers or parents with the store's own, and a title or brief that
+  `scripts/leak-check --text` flags (always in block mode, whatever `FPL_LEAK_GATE` says);
+- reads back every task it opens and every link it writes, and stops at the first one the
+  reducer did not apply;
+- is idempotent: a unit whose label already is the first word of a task, in any case, is not
+  created again;
 - takes `-n` to say what it would create and link, writing nothing.
 
 ## Loops
