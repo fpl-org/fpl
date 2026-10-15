@@ -65,3 +65,16 @@ triggers back.
 - Not yet proven: a PUT that also carries `conditions` keeps `rules` and `bypass_actors`.
   The summary prints both before and after each write; read it on the first live flip.
 - `app-id` is deprecated for `client-id` in the pinned token action; it still works.
+
+## series.yml
+
+Install (owner):
+
+```bash
+git mv harness/workflows/series.yml .github/workflows/
+```
+
+It needs `scripts/present-check` on `main` first.
+
+- `series.yml` judges each push lemma by lemma and comments. Its required check, once marked
+  so, is `lemmas`.

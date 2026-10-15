@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # scripts/present-check-self-test — proof that scripts/present-check refuses each thing it is
-# there to refuse and passes what it should. Run by `make gates`.
+# there to refuse, passes what it should, and that the draft Action under harness/workflows
+# keeps the properties its header promises. Run by `make gates`.
 #
 # The fixture is a small repository in a temp directory, git's global and system config pointed
 # away from the maintainer's. FPL_PRESENT_QUICK and FPL_PRESENT_LINT stand in for make quick
@@ -225,6 +226,102 @@ check "classify content" test "$("$pc" classify work extra)" = content
 # A ref that is no commit is no "content": either side stops the run.
 run "classify, no such OLD" 2 "not a commit: nosuch" -- classify nosuch work
 run "classify, no such NEW" 2 "not a commit: nosuch" -- classify work nosuch
+
+# The draft Action: the properties its header promises, read from the file itself. The draft
+# sits under harness/workflows; once the owner has installed it, under .github/workflows.
+yml="$root/harness/workflows/series.yml"
+[ -f "$yml" ] || yml="$root/.github/workflows/series.yml"
+wfdir="$root/.github/workflows"
+# lacks <body> <needle>...: say each needle the workflow text does not hold; fail if any.
+lacks() {
+	local body="$1" needle bad=0
+	shift
+	for needle in "$@"; do
+		grep -qF -- "$needle" "$body" || { echo "lacks: $needle" && bad=1; }
+	done
+	return "$bad"
+}
+# audit_common <file> <body>: what every draft keeps: pinned actions, no secrets, a timeout on
+# each job, and job ids no other installed workflow has (a required check is named by its job).
+audit_common() {
+	local bad=0 other
+	if grep -E 'uses:' "$2" | grep -vE '@[0-9a-f]{40}([[:space:]]|$)'; then bad=1; fi
+	if grep -E 'secrets[.]' "$2"; then bad=1; fi
+	awk '
+		/^jobs:/ { injobs = 1; next }
+		injobs && /^  [a-z][a-z0-9_-]*:/ { job = $1; jobs[job] = 1 }
+		/timeout-minutes:/ { timed[job] = 1 }
+		END { for (j in jobs) if (!timed[j]) print "no timeout-minutes: " j }' "$2" | { ! grep .; } || bad=1
+	# Judged by name, not by identity: a mutated copy is another file than the installed
+	# workflow but stands for it, and must not be refused for sharing every id with it.
+	for other in "$wfdir"/*.yml; do
+		[ -f "$other" ] && [ "$(basename "$other")" != "$(basename "$1")" ] || continue
+		ids <"$other"
+	done | sort -u >"$tmp/audit.others"
+	ids <"$2" | sort -u | comm -12 - "$tmp/audit.others" | sed 's/^/shared job id: /' | { ! grep .; } || bad=1
+	return "$bad"
+}
+audit() { # audit <file>: print each broken promise of series.yml; the exit status is whether there is none
+	local body="$tmp/audit.body" bad=0
+	grep -vE '^[[:space:]]*#' "$1" >"$body"
+	audit_common "$1" "$body" || bad=1
+	lacks "$body" 'set -eu' 'synchronize' 'reopened' 'edited' 'persist-credentials: false' \
+		"needs.lemmas.result != 'cancelled'" || bad=1
+	# A skipped job reports success, and a review event would skip them all under the names of
+	# checks a push judged: no review trigger and no actions: write here, and no job `if` that
+	# reads the event: the check job runs on every pull_request event, and only the comment job
+	# tells a base edit from a text edit.
+	if grep -E 'pull_request_review|actions: write|github[.]event_name' "$body"; then bad=1; fi
+	if job lemmas <"$body" | cond | grep -E 'action|changes'; then bad=1; fi
+	job comment <"$body" | cond | grep -qF 'changes.base != null' || { echo "comment: posts on text edits" && bad=1; }
+	job comment <"$body" | cond | grep -qF 'head.repo.full_name == github.repository' || { echo "comment: posts for a fork" && bad=1; }
+	return "$bad"
+}
+ids() { # ids: the job ids of the workflow on stdin, one per line
+	awk '/^jobs:/ { injobs = 1; next } injobs && /^  [a-z][a-z0-9_-]*:/ { sub(":.*", "", $1); print $1 }'
+}
+job() { # job <id>: the lines of one job of the workflow on stdin
+	awk -v j="$1:" '/^jobs:/ { injobs = 1; next } injobs && /^  [a-z][a-z0-9_-]*:/ { cur = $1 } injobs && cur == j'
+}
+cond() { # cond: the `if:` of the job on stdin, with its continuation lines
+	awk '/^    if:/ { on = 1; print; next } on && /^    [a-z-]+:/ { on = 0 } on'
+}
+check "series.yml keeps its promises" audit "$yml"
+refuses() { ! "$@"; }
+# The state after the owner installs the draft: .github/workflows holds series.yml and
+# noslop.yml, with its job `check`. A mutated copy then has every id of the installed file, so
+# a refusal proves nothing unless the unmodified copy is accepted beside it first.
+mkdir -p "$tmp/inst" "$tmp/mut"
+cp "$yml" "$tmp/inst/series.yml"
+printf 'jobs:\n  check:\n    runs-on: ubuntu-latest\n' >"$tmp/inst/noslop.yml"
+wfdir="$tmp/inst"
+cp "$yml" "$tmp/mut/series.yml"
+check "an unmodified series.yml is accepted beside the installed workflows" audit "$tmp/mut/series.yml"
+# mutate <audit> <file> <sed script>...: each script applied to the draft must be refused.
+mutate() {
+	local fn="$1" src="$2" broken
+	shift 2
+	for broken in "$@"; do
+		sed -e "$broken" "$src" >"$tmp/mut/$(basename "$src")"
+		check "$fn refuses: $broken" refuses "$fn" "$tmp/mut/$(basename "$src")" >/dev/null
+	done
+}
+mutate audit "$yml" 's/timeout-minutes/timeout-hours/' 's/\(uses: [^@]*\)@[0-9a-f]\{40\}/\1@v4/' \
+	's/github[.]token/secrets.TOKEN/' \
+	's/persist-credentials: false/persist-credentials: true/' 's/set -eu$/set -u/' \
+	"/^  lemmas:\$/a\\
+    if: github.event.action != 'edited'" \
+	"/github.event.action != 'edited' || github.event.changes.base != null/d" \
+	's/^    types: \[opened/  pull_request_review:\
+    types: [submitted]\
+  pull_request:\
+&/' \
+	's/head.repo.full_name == github.repository/head.repo.full_name != github.repository/' \
+	's/^permissions:$/&\
+  actions: write/'
+sed -e 's/^  lemmas:/  check:/' -e 's/needs[.]lemmas/needs.check/' -e 's/needs: lemmas/needs: check/' "$yml" >"$tmp/mut/series.yml"
+out="$(audit "$tmp/mut/series.yml" || :)" # not a process substitution: it could outlive $tmp
+check "the audit names a job id noslop.yml also has" grep -qx 'shared job id: check' <<<"$out"
 
 echo "present-check self-test: $fails of $total checks failed (bash $BASH_VERSION)"
 if [ -z "${PRESENT_CHECK_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ] && ! [ /bin/bash -ef "$BASH" ]; then
