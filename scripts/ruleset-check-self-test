@@ -325,9 +325,14 @@ run 2 "no files at all" ""
 # without GH_TOKEN the token is gh's, asked for the host of the API root, not gh's default one
 build
 mkdir "$tmp/fakegh"
-printf '#!/bin/sh\necho "$*" >"%s/gh-args"\necho fake-token\n' "$tmp" >"$tmp/fakegh/gh"
+# quoted heredoc, the file name in the environment: nothing of $tmp is ever source text
+cat >"$tmp/fakegh/gh" <<'SH'
+#!/bin/sh
+echo "$*" >"$FAKE_GH_ARGS"
+echo fake-token
+SH
 chmod +x "$tmp/fakegh/gh"
-GH_TOKEN="" PATH="$tmp/fakegh:$PATH" run 0 "a token from gh" ""
+FAKE_GH_ARGS="$tmp/gh-args" GH_TOKEN="" PATH="$tmp/fakegh:$PATH" run 0 "a token from gh" ""
 total=$((total + 1))
 [ "$(cat "$tmp/gh-args" 2>/dev/null)" = "auth token --hostname 127.0.0.1" ] || fail "gh was asked: $(cat "$tmp/gh-args" 2>/dev/null)"
 # the host gh keeps a token under: github.com for the public API, an Enterprise Server's own
