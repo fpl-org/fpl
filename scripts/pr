@@ -216,6 +216,22 @@ def api(path, payload=None, method=None, refused=""):
         die(f"{path}: {error.code} {detail.get('message', error.reason)}{remedy}")
 
 
+def pages(path, key, refused=""):
+    """Every item under `key` of a paginated list: GitHub caps a page at 100 and a head can
+    carry more check runs or status contexts than that. Reads page after page until the
+    items reach the list's own total_count, or a page is empty, or, with no total_count, short.
+    The combined status's top-level state is not a shortcut: it reads pending when a head has
+    no statuses at all, which is the common case, and --ready would never succeed."""
+    items, page = [], 1
+    while True:
+        got = api(f"{path}?per_page=100&page={page}", refused=refused)
+        items += got[key]
+        total = got.get("total_count")
+        if not got[key] or (len(items) >= total if total is not None else len(got[key]) < 100):
+            return items
+        page += 1
+
+
 def open_pull(branch):
     owner = slug.split("/")[0]
     found = api(f"/repos/{slug}/pulls?state=open&head={owner}:{branch}")
@@ -262,11 +278,9 @@ elif command == "ready":
         sha = pull["head"]["sha"]
         pending = [f"review requested from {u['login']}" for u in pull["requested_reviewers"]]
         pending += [f"review requested from team {t['slug']}" for t in pull["requested_teams"]]
-        runs = api(f"/repos/{slug}/commits/{sha}/check-runs?per_page=100", refused=unread)
-        pending += [
-            f"check {r['name']} is {r['status']}" for r in runs["check_runs"] if r["status"] != "completed"
-        ]
-        statuses = api(f"/repos/{slug}/commits/{sha}/status?per_page=100", refused=unread)["statuses"]
+        runs = pages(f"/repos/{slug}/commits/{sha}/check-runs", "check_runs", unread)
+        pending += [f"check {r['name']} is {r['status']}" for r in runs if r["status"] != "completed"]
+        statuses = pages(f"/repos/{slug}/commits/{sha}/status", "statuses", unread)
         pending += [f"status {s['context']} is pending" for s in statuses if s["state"] == "pending"]
         if not pending:
             break
