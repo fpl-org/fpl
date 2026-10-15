@@ -1299,6 +1299,7 @@ echo x >a && git add a && git commit -q -m "add a, otherwise"
 SX="$(git rev-parse HEAD)"
 git switch -q main
 git branch -q -D sibs
+git push -q "$REMOTE" "$SA:refs/heads/sa" "$SB:refs/heads/sb"
 line() { # line <text> <description>: a line of the last output is exactly the text
 	total=$((total + 1))
 	grep -qxF -- "$1" "$tmp/out" && return
@@ -1326,6 +1327,50 @@ line "y=" "and derives nothing"
 FPL_LAND_QUICK=true expect 0 "--verify, a child of the relocated SB" --verify "$SY" "$SC"
 line "drop $SB" "main holds SB's pair: the child's range starts above it"
 says "pick $SC " "the child's own commit is picked"
+
+# Two siblings as pull request #7, one after the other: SA lands; then SB, approved on SB,
+# is relocated onto SA and lands as SY without a new approval.
+at="$SA" HEAD_SHA="$SA"
+forge
+git --git-dir="$REMOTE" update-ref "refs/heads/$BR" "$SA"
+GH_TOKEN=t expect 0 "--ci, sibling SA lands" --ci 7
+main_is "$SA" "SA fast-forwards main"
+at="$SB" HEAD_SHA="$SB"
+forge
+git --git-dir="$REMOTE" update-ref refs/heads/main "$SA"
+git --git-dir="$REMOTE" update-ref "refs/heads/$BR" "$SB"
+GH_TOKEN=t expect 1 "--ci, sibling SB without --relocate" --ci --dry-run 7
+says "NO  land/ancestor" "a stale head is refused as before"
+GH_TOKEN=t expect 1 "--ci, SB with a Y --verify did not derive" --ci --dry-run --relocate "$SA" 7
+says "NO  relocate/trees" "it names the rule"
+expect 1 "--relocate without --ci" --dry-run --relocate "$SY" 7
+HEAD_SHA="$SY" GH_TOKEN=t expect 0 "--ci, SB relocates onto SA and lands on the approval of SB" \
+	--ci --relocate "$SY" 7
+for rule in relocate/clean relocate/trees relocate/ids land/ancestor land/approved; do
+	says "ok  $rule" "relocated: $rule holds"
+done
+says "- $SB -> $SY" "it prints the old-to-new map"
+main_is "$SY" "main is the relocation"
+total=$((total + 1))
+[ "$(git --git-dir="$REMOTE" rev-parse -q --verify "refs/heads/$BR")" = "" ] ||
+	{ fails=$((fails + 1)); echo "self-test: the relocated branch was not deleted" >&2; }
+called
+first "-X POST repos/land-test/fpl/issues/7/comments" "--force-with-lease=refs/heads/$BR:$SY :refs/heads/$BR" \
+	"the map is posted before the branch goes"
+first "--force-with-lease=refs/heads/$BR:$SB $SY:refs/heads/$BR" "-X POST repos/land-test/fpl/issues/7/comments" \
+	"the reviewed head becomes the relocation under a lease, after main"
+lacks "pulls/7/reviews -f" "nobody approved anything again"
+forge
+git --git-dir="$REMOTE" update-ref refs/heads/main "$SA"
+git --git-dir="$REMOTE" update-ref "refs/heads/$BR" "$SB"
+reviews "$(review 1 psjg APPROVED "$SB")"
+reviews "$(review 1 psjg DISMISSED "$SB")" read2
+HEAD_SHA="$SY" GH_TOKEN=t expect 1 "--ci, the approval is dismissed while main moves" --ci --relocate "$SY" 7
+says "LOUD: main is $SY, but what it was landed on changed; $BR stays $SB" "it leaves the head"
+total=$((total + 1))
+[ "$(git --git-dir="$REMOTE" rev-parse "refs/heads/$BR")" = "$SB" ] ||
+	{ fails=$((fails + 1)); echo "self-test: the head moved without a standing approval" >&2; }
+at="$H" HEAD_SHA="$H"
 
 # The install line in harness/workflows/README.md makes a commit the owner's hooks accept: its
 # message, the -m arguments of its git commit joined as git joins them, passes

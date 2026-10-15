@@ -2,7 +2,7 @@
 #
 # scripts/land — the maintainer's half of landing a pull request: look, decide, fast-forward.
 #
-#   scripts/land [--dry-run] [--remote <name>] [<number | url>]
+#   scripts/land [--ci [--relocate <Y>]] [--dry-run] [--remote <name>] [<number | url>]
 #   scripts/land --verify <main> <head>
 #
 # Lands an approved pull request by pushing its head to main without force: a fast-forward.
@@ -74,6 +74,13 @@
 #   land/patch-fresh        no commit's `git patch-id --verbatim` is one on main already
 #   land/card               the body has the card's headings: What, What changes, How
 #                           checked, Limits, Verdict
+#   relocate/clean          with --relocate, a head main is no ancestor of: each commit of
+#                           it main lacks, less a leading run whose pairs main holds (a
+#                           relocated parent's), applies to main, merged by git alone
+#   relocate/trees          the commits derived are those --verify derived and checked
+#   relocate/ids            each pick keeps its commit's pair (patch id, author and message)
+#   relocate/lease          the head is the one reviewed, in this repository, when main is
+#                           pushed, and when the head is moved to the relocation
 #
 # --ci is the lander App's mode (harness/workflows/land.yml): no terminal, no browser, no
 # keypress, and no approval given; it acts as the token in GH_TOKEN and refuses without one,
@@ -89,6 +96,13 @@
 # GitHub shows the merge it retargets to main each pull request based on the landed branch,
 # and only then deletes the branch, if it still is at the head that landed: deleting it
 # first closes them.
+#
+# --relocate <Y>, with --ci: a head main is no ancestor of, because a sibling landed first,
+# is relocated instead of refused. Y is what --verify printed in the job without secrets;
+# the relocation is derived again here and lands only when it is Y and every relocate/*
+# holds: main becomes Y, what it was landed on is read again, the head becomes Y under a
+# lease on the reviewed head, and the old-to-new map is posted on the pull request. The
+# approval of the reviewed head carries to Y: each commit's patch and message are the same.
 #
 # Then it prints the conversation, opens the diff in the browser and stops for a keypress.
 # After Enter it approves the head when it said it would, checks everything again, and pushes:
@@ -149,7 +163,7 @@ die() {
 	exit 1
 }
 usage() {
-	echo "usage: scripts/land [--ci] [--dry-run] [--remote <name>] [<number | url>]" >&2
+	echo "usage: scripts/land [--ci [--relocate <Y>]] [--dry-run] [--remote <name>] [<number | url>]" >&2
 	echo "       scripts/land --verify <main> <head>" >&2
 	exit 2
 }
@@ -515,11 +529,15 @@ def judge_checks(v, d, rules, repo, n, head, upto=None):
                 v.ok("land/checks", f"{what} succeeded on {h}")
 
 
-def judge_history(v, main, head, ancestor, merges):
-    """land/ancestor and land/linear: the push is a fast-forward and adds no merge."""
+def judge_history(v, main, head, ancestor, merges, start=None):
+    """land/ancestor and land/linear: the push is a fast-forward and adds no merge; with
+    --relocate, a stale head whose relocation onto main applies is one."""
     h = head[:12]
     if ancestor == "yes":
         v.ok("land/ancestor", f"main {main[:12]} is an ancestor of {h}: a fast-forward")
+    elif start:
+        v.ok("land/ancestor", f"main {main[:12]} is not an ancestor of {h}; its relocation"
+             " onto main is, and lands if relocate/* hold")
     else:
         v.no("land/ancestor", f"main {main[:12]} is not an ancestor of {h}",
              "restack before approval, never after: when it is approved, the owner first"
@@ -760,7 +778,7 @@ def derive(main, head):
                               env=env, capture_output=True, check=True).stdout.decode().strip()
         print("pick", c, onto)
     if not olds:
-        print("conflict", head, "(nothing is left once main's pairs are dropped)")
+        print("conflict", head, "no file: main holds every commit's pair already")
         sys.exit(1)
     print("y", onto)
 
@@ -794,12 +812,14 @@ CARD = ("What", "What changes", "How checked", "Limits", "Verdict")
 MOST = (10, 600)  # land/size: commits, and lines added plus removed
 
 
-def judge_range(v, pr, main, head, bodies):
+def judge_range(v, pr, main, head, bodies, base=None):
     """land/size, land/workflows, land/gpt, land/series, land/series-fresh, land/patch-fresh
-    and land/card: the commits main..head, and the pull request's body."""
-    span, h = f"{main}..{head}", head[:12]
+    and land/card: the commits base..head (base: main, or below the range a relocation
+    picks), judged fresh against main, and the pull request's body."""
+    base = base or main
+    span, h = f"{base}..{head}", head[:12]
     commits = git("rev-list", span).decode().split()
-    rows = [r.split("\t") for r in git("diff", "--numstat", main, head).decode().splitlines()]
+    rows = [r.split("\t") for r in git("diff", "--numstat", base, head).decode().splitlines()]
     lines = sum(int(r[0]) + int(r[1]) for r in rows if r[0] != "-")
     if len(commits) <= MOST[0] and lines <= MOST[1]:
         v.ok("land/size", f"{len(commits)} commits, {lines} lines")
@@ -848,6 +868,34 @@ def judge_range(v, pr, main, head, bodies):
         v.ok("land/card", "the body holds the card")
 
 
+def judge_relocation(v, d, claimed):
+    """relocate/clean, relocate/trees and relocate/ids, on the map derive wrote to d/map:
+    every pick applies; the commits derived here are the ones --verify ran make quick on
+    (the same SHA is the same tree at every step); each pick has its commit's pair, so
+    the owner's approval of the head carries to it. Returns the first commit picked."""
+    rows = [r.split(" ", 2) for r in open(f"{d}/map").read().splitlines()]
+    if not rows or rows[-1][0] != "y":
+        old, files = (rows[-1][1:] + ["", ""])[:2] if rows else ("", "nothing derived")
+        v.no("relocate/clean", f"{old[:12]} does not apply to main: it conflicts in {files}",
+             "the author rebases it onto main and asks the code owner to review again")
+        return None
+    picks = [r[1:] for r in rows if r[0] == "pick"]
+    y = rows[-1][1]
+    v.ok("relocate/clean", f"{len(picks)} commit(s) apply to main as {y[:12]}")
+    if y == claimed:
+        v.ok("relocate/trees", f"--verify derived {y[:12]} too: its trees passed make quick")
+    else:
+        v.no("relocate/trees", f"--verify derived {claimed[:12] or 'nothing'}, this {y[:12]}",
+             "dispatch the run again: main or the head moved between its two jobs")
+    odd = [o[:12] for o, n in picks if pair(o) != pair(n)]
+    if odd:
+        v.no("relocate/ids", "the relocation changes the pair of " + " ".join(odd),
+             "the code owner reviews the relocation, published as a candidate")
+    else:
+        v.ok("relocate/ids", "each pick keeps its commit's patch id and message")
+    return picks[0][0]
+
+
 def judge_autodelete(v, d):
     """land/autodelete: the repository setting "Automatically delete head branches" is off;
     anything but a plain false (unset, unreadable) refuses."""
@@ -861,7 +909,7 @@ def judge_autodelete(v, d):
              " head branches")
 
 
-def judge(d, repo, fetched, main, ancestor, merges, ci):  # noqa: PLR0913, PLR0917
+def judge(d, repo, fetched, main, ancestor, merges, ci, relocate="0", claimed=""):  # noqa: PLR0913, PLR0917
     """Print one line per check and return 1 when any refuses, 3 when none does but the
     approval is yours to give in this run, else 0."""
     pr = load(f"{d}/pr.json")
@@ -880,8 +928,9 @@ def judge(d, repo, fetched, main, ancestor, merges, ci):  # noqa: PLR0913, PLR09
              " on main on the forge (Settings > Rules) and fix what the API does not show")
     else:
         judge_checks(v, d, rules, repo, pr["number"], pr["head"]["sha"])
-    judge_history(v, main, pr["head"]["sha"], ancestor, merges)
-    judge_range(v, pr, main, fetched, bodies)
+    start = judge_relocation(v, d, claimed) if relocate == "1" and ancestor != "yes" else None
+    judge_history(v, main, pr["head"]["sha"], ancestor, merges, start)
+    judge_range(v, pr, main, fetched, bodies, start and f"{start}^")
     if not fault:
         judge_rules(v, d, rules, me, ci)
     if v.refused:
@@ -1046,10 +1095,11 @@ if [ "${1:-}" = --verify ]; then
 	sed 's/^y /y=/' "$tmp/map"
 	exit 0
 fi
-ci=0 dry=0 remote=github target=""
+ci=0 dry=0 remote=github target="" relocate=0 claimed=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--ci) ci=1 ;;
+	--relocate) [ $# -ge 2 ] || usage; relocate=1 claimed="$2"; shift ;;
 	--dry-run) dry=1 ;;
 	--remote) [ $# -ge 2 ] || usage; remote="$2"; shift ;;
 	-*) usage ;;
@@ -1057,6 +1107,7 @@ while [ $# -gt 0 ]; do
 	esac
 	shift
 done
+[ "$relocate" -eq 0 ] || [ "$ci" -eq 1 ] || die "--relocate is the lander's: it needs --ci"
 if [ "$ci" -eq 1 ]; then
 	[ -n "${GH_TOKEN:-}" ] || die "land/ci: --ci acts as the token in GH_TOKEN, and none is set;" \
 		"remedy: mint the fpl-lander App's token into GH_TOKEN (harness/workflows/land.yml)"
@@ -1167,6 +1218,14 @@ gather() {
 	if git merge-base --is-ancestor "$main" "$fetched"; then ancestor=yes; fi
 	merges="$(git rev-list --count --min-parents=2 "$main..$fetched")" ||
 		die "cannot count the merges between main and the head"
+	# y: with --relocate, the relocation of a stale head, derived here with git alone.
+	y="" span="$main..$fetched"
+	: >"$tmp/map"
+	if [ "$relocate" -eq 1 ] && [ "$ancestor" = no ]; then
+		py derive "$main" "$fetched" >"$tmp/map" || :
+		y="$(sed -n 's/^y //p' "$tmp/map")"
+		[ -z "$y" ] || span="$(sed -n 's/^pick \([^ ]*\) .*/\1/p' "$tmp/map" | head -1)^..$fetched"
+	fi
 	# GitHub reads the first of these that main has.
 	local f
 	: >"$tmp/codeowners"
@@ -1203,7 +1262,8 @@ read_rules() {
 # and the approval is yours to give in this run.
 judge() {
 	local rc=0
-	py judge "$tmp" "$slug" "$fetched" "$main" "$ancestor" "$merges" "$ci" || rc=$?
+	py judge "$tmp" "$slug" "$fetched" "$main" "$ancestor" "$merges" "$ci" "$relocate" "$claimed" ||
+		rc=$?
 	refused=0 approve=0
 	case "$rc" in
 	0) ;;
@@ -1229,6 +1289,14 @@ children() {
 	done
 }
 
+# tip: what main becomes, the head or its relocation; then the head becomes it, under a
+# lease on the head that was reviewed.
+tip="$head"
+if [ -n "$y" ]; then
+	tip="$y"
+	push="git push $dest $y:refs/heads/main, then the head:"
+	push="$push git push --force-with-lease=refs/heads/$headref:$head $dest $y:refs/heads/$headref"
+fi
 if [ "$dry" -eq 1 ]; then
 	[ "$refused" -eq 0 ] || echo "land: nothing would be pushed until the refusals are gone; then:"
 	[ "$approve" -eq 0 ] || echo "land: would approve $head as $(py fields "$tmp/me.json" login)"
@@ -1278,10 +1346,10 @@ cp "$tmp/statuses.json" "$tmp/statuses.judged.json"
 # the contract between the two scripts. Without scripts/series on main there is none.
 if [ "$ci" -eq 1 ] && git cat-file -e "$main:scripts/series" 2>/dev/null; then
 	git show "$main:scripts/series" >"$tmp/series" && chmod +x "$tmp/series"
-	digest="$("$tmp/series" digest "$main..$head")" || die "scripts/series digest failed; nothing landed"
+	digest="$("$tmp/series" digest "$span")" || die "scripts/series digest failed; nothing landed"
 	api -X POST "repos/$slug/check-runs" -f name=fpl/series -f head_sha="$head" \
 		-f status=completed -f conclusion=success -f "output[title]=series $digest" \
-		-f "output[summary]=manifest digest $digest of $main..$head, approved on $head" \
+		-f "output[summary]=manifest digest $digest of $span, approved on $head" \
 		>/dev/null || die "cannot write the fpl/series check run; nothing landed"
 fi
 
@@ -1291,7 +1359,12 @@ if [ "$ci" -eq 1 ]; then # git pushes as the token's App; the checkout persists 
 	GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
 	export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader GIT_CONFIG_VALUE_0
 fi
-if ! out="$(git push "$dest" "$head:refs/heads/main" 2>&1)"; then
+# relocate/lease: the head is still the one reviewed, and a branch of this repository.
+if [ -n "$y" ]; then
+	[ "$headrepo" = "$slug" ] && [ "$(git ls-remote "$dest" "refs/heads/$headref" | cut -f1)" = "$head" ] ||
+		die "relocate/lease: $headref is not $head in $slug any more; nothing landed"
+fi
+if ! out="$(git push "$dest" "$tip:refs/heads/main" 2>&1)"; then
 	printf '%s\n' "$out" >&2
 	case "$out" in
 	*GH013* | *"rule violation"*)
@@ -1308,7 +1381,18 @@ printf '%s\n' "$out"
 [ -z "${kids:-}" ] || printf 'land: retarget what is stacked on %s to main:\n%s\n' "$headref" "$kids"
 
 now="$(git ls-remote "$dest" refs/heads/main | cut -f1)"
-[ "$now" = "$head" ] || die "LOUD: main on the forge is ${now:-unreadable}, not $head; look before anything else lands"
+[ "$now" = "$tip" ] || die "LOUD: main on the forge is ${now:-unreadable}, not $tip; look before anything else lands"
+# A relocation: what main was landed on, read again before the reviewed head is moved; then
+# the head becomes main under a lease on it, and GitHub shows the merge.
+if [ -n "$y" ]; then
+	read_reviews
+	read_rules
+	read_checks
+	py still "$tmp" "$slug" "$head" "$n" "$ci" ||
+		die "LOUD: main is $y, but what it was landed on changed; $headref stays $head: look at #$n"
+	git push "$dest" "--force-with-lease=refs/heads/$headref:$head" "$y:refs/heads/$headref" >/dev/null 2>&1 ||
+		die "LOUD: relocate/lease: main is $y, but $headref moved off $head; look at #$n"
+fi
 waited=0 limit="${FPL_LAND_WAIT:-30}"
 while :; do
 	api "repos/$slug/pulls/$n" >"$tmp/pr.json" || die "cannot read #$n after the push"
@@ -1318,7 +1402,18 @@ while :; do
 	sleep 3
 	waited=$((waited + 3))
 done
-echo "land: #$n is merged; main is $head"
+echo "land: #$n is merged; main is $tip"
+if [ -n "$y" ]; then
+	{
+		echo "Relocated onto main and landed as $y. Each commit kept its patch id and message"
+		echo "(relocate/ids), so the approval of $head carried. Old -> new:"
+		echo
+		sed -n 's/^pick \(.*\) \(.*\)/- \1 -> \2/p' "$tmp/map"
+	} >"$tmp/body"
+	api -X POST "repos/$slug/issues/$n/comments" -F "body=@$tmp/body" >/dev/null ||
+		echo "land: LOUD: the old-to-new map could not be posted on #$n; it is:" >&2
+	cat "$tmp/body"
+fi
 # retarget, with --ci: each pull request stacked on the landed branch goes to main, and only
 # then is the branch deleted, once GitHub shows the merge: a branch deleted first closes the
 # pull requests based on it (measured 2026-10-14).
@@ -1333,18 +1428,20 @@ retarget() {
 	done
 	# Deleted only where it still is the head that landed: a push to it since is no one's
 	# review, and the lease refuses to take it down.
-	if git push "$dest" "--force-with-lease=refs/heads/$headref:$head" ":refs/heads/$headref" \
+	if git push "$dest" "--force-with-lease=refs/heads/$headref:$tip" ":refs/heads/$headref" \
 		>/dev/null 2>&1; then
 		echo "land: deleted $headref"
 	else
-		echo "land: kept $headref: it is no longer at $head, or could not be deleted" >&2
+		echo "land: kept $headref: it is no longer at $tip, or could not be deleted" >&2
 	fi
 }
 [ "$ci" -eq 0 ] || retarget ||
 	die "LOUD: #$n landed, but its children could not all be retargeted, so $headref stays;" \
 		"retarget each (gh api --hostname github.com -X PATCH repos/$slug/pulls/<n> -f base=main)," \
 		"then delete it"
-# The window, seen from the other side: what the push relied on, read again.
+# The window, seen from the other side: what the push relied on, read again. A relocation
+# read it before the head moved, which may dismiss the approval as stale.
+[ -z "$y" ] || exit 0
 read_reviews
 read_rules
 read_checks
