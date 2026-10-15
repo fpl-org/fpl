@@ -241,6 +241,34 @@ touch -t 202001010000 "$repo/worktrees/staged/f.txt"
 git -C "$repo/worktrees/staged" update-index --chmod=+x f.txt
 sw
 check "a deleted file and a staged change count as recent work" '[ "$(action worktrees/deleted)/$(action worktrees/staged)" = review/review ]'
+# a clean worktree goes without --force, ignored files with it
+printf 'ignored.log\n' >"$repo/.git/info/exclude"
+printf 'x\n' >"$repo/worktrees/old/ignored.log"
+SWEEP_OWNER_YES=1 sw --apply old
+check "a clean worktree holding an ignored file is removed, no patch made" '[ "$rc" -eq 0 ] && [ ! -d "$repo/worktrees/old" ] && [ ! -e "$repo/harness/sweep-archive/old.patch" ]'
+
+# --- apply: another session moves in between the table and the removal ---------------------------
+# A git that runs $SWEEP_RACE once, just before the tag is made: the window the checks must close.
+mkdir -p "$tmp/race"
+cat >"$tmp/race/git" <<EOF
+#!/bin/sh
+if [ "\$1" = tag ] && [ -n "\${SWEEP_RACE:-}" ] && [ ! -e "$tmp/raced" ]; then : >"$tmp/raced"; sh -c "\$SWEEP_RACE"; fi
+exec "$(command -v git)" "\$@"
+EOF
+chmod +x "$tmp/race/git"
+g branch agent/claude/stack/racebr main
+g worktree add -q "$repo/worktrees/racewt" -b agent/claude/stack/racewt main
+touch -t 202001010000 "$(git -C "$repo/worktrees/racewt" rev-parse --absolute-git-dir)/HEAD"
+rm -f "$tmp/raced"
+export SWEEP_RACE="git -C '$repo' update-ref refs/heads/agent/claude/stack/racebr \$(git -C '$repo' commit-tree -p agent/claude/stack/racebr -m race 'main^{tree}')"
+PATH="$tmp/race:$PATH" SWEEP_OWNER_YES=1 sw --apply racebr
+check "a branch without a worktree that moved meanwhile is not deleted" '[ "$rc" -eq 1 ] && grep -q "branch delete" "$tmp/out" && [ "$(g rev-list --count main..agent/claude/stack/racebr)" = 1 ]'
+rm -f "$tmp/raced"
+export SWEEP_RACE="printf 'late\n' >'$repo/worktrees/racewt/late.txt'"
+PATH="$tmp/race:$PATH" SWEEP_OWNER_YES=1 sw --apply racewt
+check "a clean worktree dirtied meanwhile is left with its file" '[ "$rc" -eq 1 ] && [ "$(cat "$repo/worktrees/racewt/late.txt")" = late ] && g rev-parse -q --verify refs/heads/agent/claude/stack/racewt >/dev/null'
+unset SWEEP_RACE
+
 if [ "$fails" -eq 0 ]; then
 	echo "sweep self-test: $total checks passed (bash ${BASH_VERSION%%(*})"
 else

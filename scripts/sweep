@@ -37,9 +37,13 @@
 #   1. the dirty files, untracked ones too, as harness/sweep-archive/<name>.patch (git-ignored;
 #      refused when it exists), made in a scratch index so the worktree's own stays as it was
 #   2. a tag on the head: archive/<branch>, or archive/worktree/<name> when detached
-#   3. git worktree remove --force, then git branch -D: the tag keeps the commits reachable
-# A worktree whose head moved since the table was made is skipped. Ignored files (.venv) go
-# with the directory. A name picks a row by its name, its branch or its last path component.
+#   3. git worktree remove (--force only when a patch was made and the files still match it),
+#      then the branch is deleted only if it is still at the head tagged: the tag keeps the
+#      commits reachable
+# A head that moved since the table was made is skipped; what is dirty is read again at the
+# moment of removal, and a worktree that changed after its patch was made is left. Ignored
+# files (.venv) go with the directory. A name picks a row by its name, its branch or its last
+# path component.
 #
 # The base is the local `main` (SWEEP_BASE): a lagging main only makes rows look less merged,
 # the safe direction. Nothing is fetched or pruned. SWEEP_FORGE=0 skips the forge; SWEEP_REPO
@@ -292,6 +296,7 @@ archive_dir="$root/harness/sweep-archive"
 printf '%s\n' "$names" >"$tmp/names"
 applied=0 failed=0 skipped=0
 say() { printf 'apply\t%s\t%s\n' "$1" "$2"; }
+tip() { git rev-parse -q --verify "refs/heads/$1" 2>/dev/null || true; }
 # snap <worktree> <file>: its dirty files, untracked ones too, as a patch over HEAD (empty when
 # clean), made in a scratch index so the worktree's own stays as it was.
 snap() {
@@ -313,11 +318,13 @@ while IFS="$tab" read -r kind name b merged new dirty pr owner action note sha p
 	fi
 	if [ "$kind" = wt ]; then
 		now="$(git_in "$path" rev-parse HEAD)" || { say "$name" "FAILED: cannot read its head"; failed=$((failed + 1)); continue; }
-		if [ "$now" != "$sha" ]; then
-			say "$name" "skipped: its head moved since the table"
-			skipped=$((skipped + 1))
-			continue
-		fi
+	else
+		now="$(tip "$b")"
+	fi
+	if [ "$now" != "$sha" ]; then
+		say "$name" "skipped: its head moved since the table"
+		skipped=$((skipped + 1))
+		continue
 	fi
 	if [ "$b" != - ]; then tag="archive/$b"; else tag="archive/worktree/${name##*/}"; fi
 	if old="$(git rev-parse -q --verify "refs/tags/$tag")" && [ "$old" != "$sha" ]; then tag="$tag-$(printf '%.7s' "$sha")"; fi
@@ -345,12 +352,23 @@ while IFS="$tab" read -r kind name b merged new dirty pr owner action note sha p
 		failed=$((failed + 1))
 		continue
 	fi
-	if [ "$kind" = wt ] && ! git worktree remove --force -- "$path" 2>/dev/null; then
-		say "$name" "FAILED: worktree remove; tag $tag stays"
-		failed=$((failed + 1))
-		continue
+	# Clean, it goes without --force, which refuses a worktree touched since; dirty, only if the
+	# files are still the ones in the patch.
+	if [ "$kind" = wt ]; then
+		if [ -n "$patch" ] && ! { snap "$path" "$tmp/snap2" && cmp -s "$tmp/snap1" "$tmp/snap2"; }; then
+			say "$name" "FAILED: it changed while being saved; tag $tag and $patch stay"
+			failed=$((failed + 1))
+			continue
+		fi
+		if ! git worktree remove ${patch:+--force} -- "$path" 2>/dev/null; then
+			say "$name" "FAILED: worktree remove; tag $tag stays"
+			failed=$((failed + 1))
+			continue
+		fi
 	fi
-	if [ "$b" != - ] && ! git branch -D -- "$b" >/dev/null 2>&1; then
+	# update-ref -d with the old value is a compare-and-swap: a branch that moved since the tag
+	# was made stays, with its new commits.
+	if [ "$b" != - ] && ! git update-ref -d "refs/heads/$b" "$sha" 2>/dev/null; then
 		say "$name" "FAILED: branch delete; tag $tag stays"
 		failed=$((failed + 1))
 		continue
