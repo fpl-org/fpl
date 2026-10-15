@@ -19,9 +19,13 @@ his token is not his word. Ask the forge as the machine account; a URL printed, 
 failing, means stop: present the history as built, saying why under Limits.
 
     F='.[]|select(.user.login=="psjg")|select(((.body//"")|gsub("^\\s+|\\s+$";""))!="@codex review")|.html_url'
+    T=$(gh auth token --user psjg-claude) || exit 1
     for q in pulls/$N/reviews pulls/$N/comments issues/$N/comments; do
-      GH_TOKEN=$(gh auth token --user psjg-claude) gh api --paginate "repos/fpl-org/fpl/$q" --jq "$F" || exit 1
+      GH_TOKEN=$T gh api --paginate "repos/fpl-org/fpl/$q" --jq "$F" || exit 1
     done
+
+The token is taken on a line of its own: in `GH_TOKEN=$(…) gh api …` a failed lookup is lost,
+`gh` falls back to the machine's active account, and the check would run as psjg.
 
 **The series.** Exposition order: concept (the names, docs or types the rest is said in),
 invariant (the rule, as the check that keeps it, where it can stand before the code), mechanism
@@ -45,14 +49,20 @@ with the hooks on: `git commit --author="<builder>" --cleanup=verbatim -F <messa
    of a sub-series: its commits stay as they are), one lemma per commit.
 4. All trailers before any check: `scripts/series stamp <B>..HEAD` when `scripts/series` is
    in the tree; then on every commit, last in its block, `Presented-By: <model slug> <session id>`:
-   `M=$(mktemp); git rebase -x "git log -1 --format=%B >$M && git interpret-trailers --in-place
-   --trailer 'Presented-By: <slug> <id>' $M && git commit -q --amend --allow-empty --cleanup=verbatim -F $M" <B>`
-   (author kept; `FPL_ATOMIC_GATE=off`, the diff is unchanged). Nothing touches a message after step 6.
+   `M=$(mktemp "$(git rev-parse --absolute-git-dir)/presented.XXXXXX") || exit 1; export M
+   PB='<slug> <id>'; export PB; git rebase -x 'git log -1 --format=%B >"$M" && git interpret-trailers
+   --in-place --trailer "Presented-By: $PB" "$M" && git commit -q --amend --allow-empty
+   --cleanup=verbatim -F "$M"' <B>; rm -f "$M"` (author kept; `FPL_ATOMIC_GATE=off`, the diff is
+   unchanged; the scratch file lives in the git directory, and the paths reach the exec line as
+   quoted variables, so a path with a space or a metacharacter breaks nothing). Nothing touches a
+   message after step 6.
 5. `scripts/present-check -B <B> W P` when it is on main; else by hand: `git diff --quiet W P`,
    `git rebase -x 'make quick' <B>` on P, `scripts/commit-lint -b <branch> <B>..P`. Red: fix P, not W.
 6. `scripts/series manifest <B>..P`, when present: it hashes the final messages.
 7. The card from `.agents/REVIEW-CARD.md`, through `scripts/leak-check --text`.
-8. `git push --force-with-lease=refs/heads/<branch>:<W sha> <token URL> P:refs/heads/<branch>`.
+8. Run the silence check again, now: his word may have come while you built, and the lease guards
+   the branch, not the comments. Any URL printed or query failing: stop, push nothing. Then
+   `git push --force-with-lease=refs/heads/<branch>:<W sha> <token URL> P:refs/heads/<branch>`.
 9. The card as the body and the review request: `scripts/pr --update-body N <card>`, then
    `--ready N` once the draft bots are quiet, then `--reviewer N psjg`; where `scripts/pr` lacks
    these flags, the forge wrapper your orchestrator names. When Codex answers on the ready pull
