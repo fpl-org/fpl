@@ -274,6 +274,13 @@ a forge in fixtures and a bare repository on disk.
   approved (`land/ancestor`): restack before approval, never after. A pull request that
   lands while a fix for a bug it carries waits further up names the bug under "Still
   waiting" in its "What merging this changes for FPL" section.
+- **A pull request over `land/size` is split, not rewritten.** `land/size` refuses more than
+  10 commits or 600 lines added plus removed. Pick a commit of the range where the subject
+  changes and where both halves fit both limits (`git rev-list --count <base>..<cut>`,
+  `git diff --shortstat <base> <cut>`, and the same from `<cut>` to the head). A new branch
+  at that commit becomes the lower pull request, based on `main`; the old one is retargeted
+  onto it. No commit changes, so the pull requests stacked above keep their base, and the
+  two land bottom first like any stack.
 - **Never squash a multi-commit PR.** Squashing collapses the atomic commits, and their
   bodies and trailers, into one. (A one-commit PR is the only case where it is harmless.)
 - After a landing, `git fetch github`: `github/main` is the landed head, and the branches of
