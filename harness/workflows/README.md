@@ -29,4 +29,7 @@ it, or an agent's `Assisted-By` and `Session-Id`, `.githooks/commit-msg` refuses
 
     git checkout --detach github/main && cp harness/workflows/land.yml .github/workflows/land.yml && git add .github/workflows/land.yml && git commit -m "ci(land): install the lander" -m "Human-Only: true" && git push github HEAD:refs/heads/main && git checkout main
 
-Then run it once by hand: Actions > land > Run workflow, `pr` = an approved pull request.
+Then run it once by hand: Actions > land > Run workflow, `pr` = an approved pull request. A
+run lands at most one pull request and starts no other run. The relay job of `series.yml`
+(drafted in #168, not installed) dispatches a run on each approval by the owner; until it is
+installed, each landing is a dispatch by hand.

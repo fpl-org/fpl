@@ -3,9 +3,14 @@
 #
 # A dispatch on main names a pull request. One run lands at most one pull request: that one
 # when `scripts/land --ci` lets it, else the first other open pull request on main it lets,
-# by number. It stops after the first push. The push to main starts the next run (the relay
-# in series.yml dispatches it), since a single concurrency group drops the dispatches queued
-# behind a running one.
+# by number. It stops after the first push, and nothing here starts another run: its only
+# trigger is workflow_dispatch. What dispatches it is the relay job of series.yml, drafted in
+# its own pull request (#168, not on main): it runs on each approving review by the owner and
+# dispatches this workflow with that pull request's number. Until that is installed, and for
+# a pull request the last run left open, the next run is dispatched by hand (Actions > land >
+# Run workflow). A single concurrency group keeps one run going and at most one waiting; a
+# later dispatch replaces the waiting one, which is no loss: every run tries, in turn, each
+# open pull request on main.
 #
 # Both jobs check out the commit of main the dispatch started from, not the moving ref: what
 # verify proved is what land runs with the key.
