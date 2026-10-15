@@ -88,7 +88,9 @@ patch_ids() {
 
 if [ "$mode" = classify ]; then
 	[ $# -eq 2 ] || die "$usage"
-	old="$(sha "$1")" new="$(sha "$2")"
+	# One assignment per ref: in `a="$(f)" b="$(g)"` only g's status is seen, so a bad a is lost.
+	old="$(sha "$1")"
+	new="$(sha "$2")"
 	if [ "$old" = "$new" ]; then
 		echo unchanged
 	elif [ "$(git rev-parse "$old^{tree}")" = "$(git rev-parse "$new^{tree}")" ]; then
@@ -103,7 +105,10 @@ fi
 
 case $# in
 1) w="" p="$(sha "$1")" ;;
-2) w="$(sha "$1")" p="$(sha "$2")" ;;
+2)
+	w="$(sha "$1")"
+	p="$(sha "$2")"
+	;;
 *) die "$usage" ;;
 esac
 if [ -z "$branch" ]; then
