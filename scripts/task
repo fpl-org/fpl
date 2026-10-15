@@ -25,6 +25,7 @@ went through `rad init`. `--self-test` runs the whole thing in a throwaway Radic
 """
 
 import argparse
+import functools
 import json
 import os
 import runpy
@@ -235,25 +236,17 @@ def read_units(path):
     """The rows of a unit file: (label, part, blockers, title, brief), checked against each other.
 
     Five tab-separated columns; blank lines and lines starting with '#' are skipped. The title
-    is '<label> <name>'. Every label a row names as parent or blocker must be a row, spelled as
-    that row spells it. Two labels that differ only in case are one label twice, since
-    `resolve` and `load` find a task by its label whatever the case.
+    is '<label> <name>', so a label is one word that does not end in ':', or the title would
+    read back as another label. Every label a row names as parent or blocker must be a row,
+    spelled as that row spells it. Two labels that differ only in case are one label twice,
+    since `resolve` and `load` find a task by its label whatever the case.
     """
     units = read_rows(path)
     names = [u[0] for u in units]
     if len({n.lower() for n in names}) != len(names):
         die(f"{path}: a label is listed twice (labels compare without case)")
-    # The reducer's own `apply` decides, so its limits are written down once.
-    reducer = runpy.run_path(os.path.join(HERE, "rad-cob-dagtaak"), run_name="rad-cob-dagtaak")
-    for label_, part, blockers, title, brief in units:
-        if not reducer["apply"]({}, {"type": "open", "title": title, "description": brief}, None):
-            die(
-                f"{path}: {label_}: the reducer would not open it; a title takes at most "
-                f"{reducer['MAX_TITLE']} characters, a brief {reducer['MAX_DESCRIPTION']}"
-            )
-        for ref in [*([part] if part else []), *blockers]:
-            if ref not in names:
-                die(f"{path}: {label_} names {ref}, which is not a row")
+    for unit in units:
+        check_unit(path, names, unit)
     for kind, edges in (
         ("waits on", {u[0]: u[2] for u in units}),
         ("is part of", {u[0]: [u[1]] if u[1] else [] for u in units}),
@@ -262,6 +255,29 @@ def read_units(path):
         if loop:
             die(f"{path}: {' -> '.join(loop)}: each {kind} the next, and a unit file holds no loop")
     return units
+
+
+def check_unit(path, names, unit):
+    """One row of a unit file: its label reads back from its title, the reducer would open
+    it, and every label it names is one of `names`."""
+    label_, part, blockers, title, brief = unit
+    if label({"title": title}) != label_:
+        die(f"{path}: '{label_}': a label is one word not ending in ':', as a title's is read")
+    if not reducer()["apply"]({}, {"type": "open", "title": title, "description": brief}, None):
+        die(
+            f"{path}: {label_}: the reducer would not open it; a title takes at most "
+            f"{reducer()['MAX_TITLE']} characters, a brief {reducer()['MAX_DESCRIPTION']}"
+        )
+    for ref in [*([part] if part else []), *blockers]:
+        if ref not in names:
+            die(f"{path}: {label_} names {ref}, which is not a row")
+
+
+@functools.cache
+def reducer():
+    """scripts/rad-cob-dagtaak's globals: its own `apply` and limits decide what a load may
+    write, so they are written down once. runpy compiles it in memory, leaving no bytecode."""
+    return runpy.run_path(os.path.join(HERE, "rad-cob-dagtaak"), run_name="rad-cob-dagtaak")
 
 
 def loop_in(edges):
@@ -852,6 +868,8 @@ def refusals(f):
     )
     for name, rows, says in (
         ("two labels that differ in case only", "Q3\t-\t\tone\tx\nq3\t-\t\ttwo\tx\n", "twice"),
+        ("a label of two words", "Q 1\t-\t\tone\tx\n", "'Q 1': a label is one word"),
+        ("a label ending in a colon", "Q1:\t-\t\tone\tx\n", "'Q1:': a label is one word"),
         ("a title over the reducer's limit", f"Q1\t-\t\t{'n' * 200}\tx\n", "Q1: the reducer"),
         ("a brief over the reducer's limit", f"Q1\t-\t\tone\t{'b' * 10_001}\n", "Q1: the reducer"),
         ("a blocker loop", "Q1\t-\tQ2\tone\tx\nQ2\t-\tQ1\ttwo\tx\n", "Q1 -> Q2 -> Q1"),
