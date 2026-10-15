@@ -177,6 +177,7 @@ gates: venv config-fresh
 	$(BIN)/python $(S)/wip-count --self-test
 	$(S)/leak-check --self-test
 	$(S)/pre-push-self-test
+	$(S)/whoami-check-self-test
 	$(S)/boundary-self-test
 	$(S)/sweep-self-test
 	$(S)/spec-guard-self-test

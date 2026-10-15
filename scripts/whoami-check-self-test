@@ -2,7 +2,7 @@
 #
 # scripts/whoami-check-self-test — proof that scripts/whoami-check reports the three
 # identities, nags when an admin account is among them and only then, never prints the
-# credential's password, and always exits 0.
+# credential's password, and always exits 0. Run by `make gates`.
 #
 # The three probes are stand-ins first on PATH: a git whose `credential fill` answers from
 # $PUSH (and always adds a password line, which must never reach the output), a gh whose
