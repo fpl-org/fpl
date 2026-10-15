@@ -214,6 +214,7 @@ check "classify content" test "$("$pc" classify work extra)" = content
 # The draft sits under harness/workflows; once the owner has installed it, under .github/workflows.
 yml="$root/harness/workflows/series.yml"
 [ -f "$yml" ] || yml="$root/.github/workflows/series.yml"
+wfdir="$root/.github/workflows"
 audit() { # audit <file>: print each broken promise; the exit status is whether there is none
 	local body="$tmp/audit.body" bad=0 needle
 	grep -vE '^[[:space:]]*#' "$1" >"$body"
@@ -234,8 +235,10 @@ audit() { # audit <file>: print each broken promise; the exit status is whether 
 	job relay <"$body" | grep -qF '[ "$HEAD_REPO" = "$REPO" ] ||' || { echo "relay: no fork refusal" && bad=1; }
 	# A required check is named by its job, across workflows: no id here may be another's.
 	local other
-	for other in "$root"/.github/workflows/*.yml; do
-		[ -f "$other" ] && ! [ "$other" -ef "$1" ] || continue
+	# Judged by name, not by identity: a mutated copy is another file than the installed
+	# series.yml but stands for it, and must not be refused for sharing every id with it.
+	for other in "$wfdir"/*.yml; do
+		[ -f "$other" ] && [ "$(basename "$other")" != "$(basename "$1")" ] || continue
 		ids <"$other"
 	done | sort -u >"$tmp/audit.others"
 	ids <"$body" | sort -u | comm -12 - "$tmp/audit.others" | sed 's/^/shared job id: /' | { ! grep .; } || bad=1
@@ -252,18 +255,27 @@ cond() { # cond: the `if:` of the job on stdin, with its continuation lines
 }
 check "series.yml keeps its promises" audit "$yml"
 refuses() { ! "$@"; }
+# The state after the owner installs the draft: .github/workflows holds series.yml and
+# noslop.yml, with its job `check`. A mutated copy then has every id of the installed file, so
+# a refusal proves nothing unless the unmodified copy is accepted beside it first.
+mkdir -p "$tmp/inst" "$tmp/mut"
+cp "$yml" "$tmp/inst/series.yml"
+printf 'jobs:\n  check:\n    runs-on: ubuntu-latest\n' >"$tmp/inst/noslop.yml"
+cp "$yml" "$tmp/mut/series.yml"
+wfdir="$tmp/inst"
+check "an unmodified copy is accepted beside the installed workflow" audit "$tmp/mut/series.yml"
 for broken in 's/timeout-minutes/timeout-hours/' 's/\(uses: [^@]*\)@[0-9a-f]\{40\}/\1@v4/' \
 	's/github[.]token/secrets.TOKEN/' 's/actions: write/actions: read/' \
 	's/persist-credentials: false/persist-credentials: true/' 's/set -eu$/set -u/' \
 	"s/^    if: github.event_name == 'pull_request'\$/&  \&\& github.event.changes.base != null/" \
 	"/github.event.action != 'edited' || github.event.changes.base != null/d" 's/^  lemmas:/  check:/' \
 	'/\[ "$HEAD_REPO" = "$REPO" \] ||/d'; do
-	sed -e "$broken" "$yml" >"$tmp/broken.yml"
-	check "the audit refuses: $broken" refuses audit "$tmp/broken.yml" >/dev/null
+	sed -e "$broken" "$yml" >"$tmp/mut/series.yml"
+	check "the audit refuses: $broken" refuses audit "$tmp/mut/series.yml" >/dev/null
 done
-sed -e 's/^  lemmas:/  check:/' -e 's/needs[.]lemmas/needs.check/' -e 's/needs: lemmas/needs: check/' "$yml" >"$tmp/broken.yml"
+sed -e 's/^  lemmas:/  check:/' -e 's/needs[.]lemmas/needs.check/' -e 's/needs: lemmas/needs: check/' "$yml" >"$tmp/mut/series.yml"
 check "the audit names a job id noslop.yml also has" grep -qx 'shared job id: check' \
-	<(audit "$tmp/broken.yml" || :)
+	<(audit "$tmp/mut/series.yml" || :)
 
 echo "present-check self-test: $fails of $total checks failed (bash $BASH_VERSION)"
 if [ -z "${PRESENT_CHECK_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ] && ! [ /bin/bash -ef "$BASH" ]; then
