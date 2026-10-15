@@ -43,6 +43,7 @@ commits of a patch must be in this clone; a patch pushed from here has them, one
 came in from elsewhere needs a `git fetch rad` first.
 """
 
+import functools
 import html
 import http.cookies
 import http.server
@@ -147,17 +148,27 @@ def forge_number(patch):
     return None
 
 
-def graph(patches):
-    """Open patches as a forest: a patch whose base is another open patch's head hangs
-    under it."""
+@functools.lru_cache(maxsize=None)
+def own_commits(base, head):
+    """The commits a revision adds: its head, and what the head holds that its base does not.
+    Commits never change, so the answer is kept for the life of the page."""
+    return frozenset(run("git", "rev-list", f"{base}..{head}", ok=False).stdout.split()) | {head}
+
+
+def graph(patches, own=own_commits):
+    """Open patches as a forest: a patch hangs under the open patch whose own commits hold
+    its base. That is the patch it was stacked on, whether that patch's head is still the
+    commit it was stacked on or has moved on since (a fix appended above it keeps the base
+    inside its commits). The nearest such patch wins, the one with the fewest commits."""
     open_ = {oid: p for oid, p in patches.items() if p["state"]["status"] == "open"}
-    heads = {latest(p)["oid"]: oid for oid, p in open_.items()}
-    parent = {oid: heads.get(latest(p)["base"]) for oid, p in open_.items()}
+    mine = {oid: own(latest(p)["base"], latest(p)["oid"]) for oid, p in open_.items()}
+    filed = lambda o: latest(open_[o])["description"][0]["timestamp"]
     children = {}
-    for oid, up in parent.items():
-        children.setdefault(up if up != oid else None, []).append(oid)
+    for oid, p in open_.items():
+        up = [o for o in open_ if o != oid and latest(p)["base"] in mine[o]]
+        children.setdefault(min(up, key=lambda o: (len(mine[o]), filed(o)), default=None), []).append(oid)
     for kids in children.values():
-        kids.sort(key=lambda o: latest(open_[o])["description"][0]["timestamp"])
+        kids.sort(key=filed)
     return open_, children
 
 
@@ -1329,17 +1340,25 @@ def files_html(repo, rev, files, all_, hidden, patch=None, p="", readonly=False)
     return "".join(parts)
 
 
-def queue_order(patches):
-    """The open patches in the order they merge: the queue, head first."""
-    open_, children = graph(patches)
-    out = []
+def queue_order(patches, own=own_commits):
+    """The open patches in the order they land: the queue, head first. Never a patch before
+    the one its base belongs to; the filing time only orders patches that do not depend on
+    each other. A patch whose parent has landed is a root, which is why a fast-forward landing
+    needs no replay of what is stacked above it."""
+    open_, children = graph(patches, own)
+    out, seen = [], set()
 
     def walk(up):
         for o in children.get(up, []):
-            out.append((o, up))
-            walk(o)
+            if o not in seen:
+                seen.add(o)
+                out.append((o, up))
+                walk(o)
 
     walk(None)
+    for o in open_:  # a cycle in odd data must not make a patch vanish
+        if o not in seen:
+            out.append((o, None))
     return open_, out
 
 
@@ -2027,6 +2046,50 @@ print(out)
 # comment, the server started on it, and the page driven over HTTP as a browser would.
 
 
+def order_self_test(check):
+    """The queue order, on made-up patches whose commits are named by hand, and the one git
+    question under it (which commits a revision adds) on a real throwaway repository."""
+    def patch(base, head, filed, status="open"):
+        return {"state": {"status": status},
+                "revisions": {head: {"base": base, "oid": head, "description": [{"timestamp": filed}]}}}
+
+    def order(patches, held):
+        own = lambda base, head: frozenset(held.get(head, ())) | {head}
+        return [o for o, _ in queue_order(patches, own)[1]]
+
+    check("a patch filed before the one it is stacked on still reads after it",
+          order({"b": patch("a1", "b1", 1), "a": patch("m", "a1", 2)}, {}) == ["a", "b"])
+    check("a parent that gained a commit keeps what was stacked on its old head",
+          order({"b": patch("a1", "b1", 0), "a": patch("m", "a2", 2), "c": patch("m", "c1", 1)},
+                {"a2": {"a1"}}) == ["c", "a", "b"])
+    check("a child follows its own parent, not the root filed before it",
+          order({"r1": patch("m", "x1", 1), "r2": patch("m", "y1", 2), "c": patch("y1", "c1", 0)}, {})
+          == ["r1", "r2", "c"])
+    check("a patch whose parent landed is a root again",
+          order({"b": patch("a1", "b1", 1), "a": patch("m", "a1", 2, "merged")}, {}) == ["b"])
+    check("a cycle in odd data loses no patch",
+          sorted(order({"a": patch("b1", "a1", 1), "b": patch("a1", "b1", 2)}, {})) == ["a", "b"])
+
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(GIT_CONFIG_GLOBAL="/dev/null", GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
+               GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+    here = os.getcwd()
+    with tempfile.TemporaryDirectory() as tmp:
+        git = lambda *a: subprocess.run(["git", "-C", tmp, *a], capture_output=True, text=True, env=env, check=True).stdout.strip()
+        git("init", "-q", "-b", "main")
+        ids = []
+        for name in ("m", "a1", "a2"):
+            git("commit", "-q", "--allow-empty", "-m", name)
+            ids.append(git("rev-parse", "HEAD"))
+        m, a1, a2 = ids
+        os.chdir(tmp)
+        try:
+            check("a revision adds its head and what lies between its base and head",
+                  own_commits(m, a2) == {a1, a2} and own_commits(a1, a1) == {a1} and own_commits("0" * 40, a2) == {a2})
+        finally:
+            os.chdir(here)
+
+
 def self_test():
     import urllib.request
 
@@ -2036,11 +2099,13 @@ def self_test():
     def check(name, ok):
         checks.append((name, bool(ok)))
 
+    order_self_test(check)
     with tempfile.TemporaryDirectory() as tmp:
         env = dict(os.environ, PATH=f"{tmp}/bin:{os.environ['PATH']}", RAD_HOME=f"{tmp}/home", RAD_PASSPHRASE="self-test",
                    GIT_CONFIG_GLOBAL="/dev/null", GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
                    GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
-        env.pop("SSH_AUTH_SOCK", None)
+        for name in ("SSH_AUTH_SOCK", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+            env.pop(name, None)
         repo = f"{tmp}/repo"
         os.makedirs(repo)
 
