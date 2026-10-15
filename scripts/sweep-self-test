@@ -3,7 +3,7 @@
 # scripts/sweep-self-test — proof that scripts/sweep reads a repository without touching it
 # (every file checksums the same after a dry run) and proposes only what is finished. The
 # fixture has merged, rebase-merged, unmerged, dirty and detached worktrees, branches without
-# one, an open pull request, the do-not-touch names and a stash.
+# one, an open pull request, the do-not-touch names and a stash. Run by `make gates`.
 #
 # It runs in a throwaway repository, with Git's config and HOME pointed away from the
 # maintainer's, and a stub gh that logs its calls: nothing reaches the network. The suite runs

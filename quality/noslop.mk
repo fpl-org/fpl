@@ -176,6 +176,7 @@ gates: venv config-fresh
 	$(S)/leak-check --self-test
 	$(S)/pre-push-self-test
 	$(S)/boundary-self-test
+	$(S)/sweep-self-test
 	$(S)/spec-guard-self-test
 	$(S)/gen-config-self-test
 	$(S)/land-self-test
