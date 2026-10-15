@@ -1327,12 +1327,12 @@ fi
 # review again. Returns 1, offering nothing, when another rule refused.
 offer() {
 	! grep -qvxE 'relocate/(clean|ids)|land/ancestor' "$tmp/refused" || return 1
-	local old new
+	local old new cand="$headref-relocated"
+	case "$headref" in *stack/*/*) cand="${headref%/*}-relocated/${headref##*/}" ;; esac # a part stays last
 	if [ -n "$y" ]; then
-		git push "$dest" "+$y:refs/heads/$headref-relocated" >/dev/null 2>&1 ||
-			die "cannot publish the relocation as $headref-relocated"
+		git push "$dest" "+$y:refs/heads/$cand" >/dev/null 2>&1 || die "cannot publish the relocation as $cand"
 		printf 'The relocation of %s onto main changes a commit that was reviewed. It is %s (%s);\n' \
-			"$head" "$headref-relocated" "$y"
+			"$head" "$cand" "$y"
 		printf 'the range-diff of each changed commit:\n\n```\n'
 		while read -r old; do
 			new="$(sed -n "s/^pick $old //p" "$tmp/map")"
@@ -1342,7 +1342,8 @@ offer() {
 	else
 		printf 'The relocation of %s onto main conflicts: %s.\n' "$head" "$(sed -n 's/^conflict //p' "$tmp/map")"
 	fi >"$tmp/body"
-	echo "Please review it again; nothing landed." >>"$tmp/body"
+	echo "Nothing landed. To land it, the author makes the relocation the head (a push under" \
+		"FPL_FORWARD_ONLY_OVERRIDE=\"conflict: ...\") and a code owner approves that head." >>"$tmp/body"
 	api -X POST "repos/$slug/issues/$n/comments" -F "body=@$tmp/body" >/dev/null ||
 		die "cannot post the relocation of #$n"
 	for old in $(py owners "$tmp/codeowners"); do

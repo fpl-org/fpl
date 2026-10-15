@@ -1415,6 +1415,13 @@ total=$((total + 1))
 called
 first "-X POST repos/land-test/fpl/issues/7/comments" "-X POST repos/land-test/fpl/pulls/7/requested_reviewers" \
 	"the owner is asked once the comment is up"
+BR=agent/x/stack/twin/tip
+forge
+git --git-dir="$REMOTE" update-ref refs/heads/main "$DA"
+git --git-dir="$REMOTE" update-ref "refs/heads/$BR" "$DB"
+GH_TOKEN=t expect 1 "--ci, the same from a stack's tip" --ci --relocate "$DY" 7
+says "is agent/x/stack/twin-relocated/tip ($DY)" "the candidate's name keeps the part last, as branch-lint wants"
+BR=agent/x/stack/feat
 at="$SX" HEAD_SHA="$SX"
 forge
 git --git-dir="$REMOTE" update-ref refs/heads/main "$SA"
