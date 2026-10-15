@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+#
+# scripts/image-self-test — proof that the OCI image of the dev shell is still declared.
+#
+# flake.nix offers the dev shell as an image, packages.<linux system>.oci, and `make image`
+# builds it (.agents/DEVSHELL.md). Building takes minutes and a Linux builder, so the gates
+# do not; this checks what evaluation alone can show:
+#   - the image's derivation evaluates on both Linux systems, and is the one named fpl-dev
+#     (imageName alone is passed through lazily; drvPath forces the contents and the loader
+#     links, so a broken package reference fails here),
+#   - there is no image for darwin, where dockerTools cannot build one: the attribute is
+#     absent, asked as a plain boolean so that an evaluation error is not read as absence,
+#   - `make image` asks for the Linux system, never the host's own, on a Mac too,
+#   - the link it leaves is git-ignored.
+# Each is a hard yes or no; nothing is built and nothing in the checkout is written.
+# Needs nix and make. Runs under bash 3.2 and 5.
+
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+command -v nix >/dev/null 2>&1 || {
+	echo "image-self-test: nix is not on PATH; the image is a flake output (.agents/DEVSHELL.md)" >&2
+	exit 2
+}
+
+fails=0 total=0
+# check <description> <command...>: the command must exit 0.
+check() {
+	local what="$1"
+	shift
+	total=$((total + 1))
+	if "$@" >/dev/null 2>&1; then
+		echo "ok   $what"
+	else
+		echo "FAIL $what" >&2
+		fails=$((fails + 1))
+	fi
+}
+
+for sys in x86_64-linux aarch64-linux; do
+	check "$sys: the image derivation evaluates" nix eval --raw ".#packages.$sys.oci.drvPath"
+	check "$sys: the image is named fpl-dev" \
+		test "$(nix eval --raw ".#packages.$sys.oci.imageName")" = fpl-dev
+done
+# has_oci <system>: whether packages.<system> has an oci attribute; an evaluation error is
+# an error, not an answer.
+has_oci() { nix eval --raw .#packages --apply "p: if (p.$1 or {}) ? oci then \"yes\" else \"no\""; }
+check "aarch64-linux: the oci attribute is asked for correctly (yes)" \
+	test "$(has_oci aarch64-linux)" = yes
+check "aarch64-darwin: no image attribute" test "$(has_oci aarch64-darwin)" = no
+
+# The target on a Mac (aarch64-darwin) and on Linux: the system is the Linux one.
+for host in aarch64-darwin aarch64-linux x86_64-linux; do
+	want="${host%-*}-linux"
+	check "make image on $host builds packages.$want.oci" \
+		bash -c 'out=$(make -n image HOST_SYSTEM="$1") && grep -q -F "packages.$2.oci" <<<"$out"' _ "$host" "$want"
+done
+check "make image maps this host to a Linux system" \
+	bash -c 'out=$(make -n image) && grep -q -E "packages\.[a-z0-9_]+-linux\.oci" <<<"$out"'
+check "result-oci is git-ignored" git check-ignore -q result-oci
+
+echo "image-self-test: $((total - fails))/$total passed"
+[ "$fails" -eq 0 ]

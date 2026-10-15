@@ -178,6 +178,7 @@ gates: venv config-fresh
 	$(S)/boundary-self-test
 	$(S)/spec-guard-self-test
 	$(S)/gen-config-self-test
+	$(S)/image-self-test
 	$(S)/land-self-test
 	$(BIN)/python $(S)/gates
 
