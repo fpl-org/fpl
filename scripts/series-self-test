@@ -217,7 +217,10 @@ echo other >other; git add other; git -c core.hooksPath=/dev/null commit -q -m "
 alt0="$(git rev-parse HEAD)"
 git -c core.hooksPath=/dev/null cherry-pick "$base0..agent/claude/stack/demo" >/dev/null
 sr 0 "manifest of the moved series" "" manifest "$alt0..HEAD"
-same "a move keeps the manifest digest" "$(grep -o '"digest".*' "$tmp/out")" "$(sr 0 x "" manifest "$base0..agent/claude/stack/demo"; grep -o '"digest".*' "$tmp/out")"
+digest_moved="$(grep -o '"digest".*' "$tmp/out")"
+# Run in this shell, not in a command substitution: a verdict counted in a subshell is lost.
+sr 0 "manifest of the original series" "" manifest "$base0..agent/claude/stack/demo"
+same "a move keeps the manifest digest" "$digest_moved" "$(grep -o '"digest".*' "$tmp/out")"
 git switch -q agent/claude/stack/demo
 
 # --- range, revert -----------------------------------------------------------------------------
