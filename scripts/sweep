@@ -407,8 +407,9 @@ while IFS="$tab" read -r kind name b merged new dirty pr owner action note sha p
 		continue
 	fi
 	# update-ref -d with the old value is a compare-and-swap: a branch that moved since the tag
-	# was made stays, with its new commits.
-	if [ "$b" != - ] && ! git update-ref -d "refs/heads/$b" "$sha" 2>/dev/null; then
+	# was made stays, with its new commits. --no-deref: a branch that became a symbolic ref since
+	# the check above, to a branch at the same commit, passes the swap, and would delete its target.
+	if [ "$b" != - ] && ! git update-ref --no-deref -d "refs/heads/$b" "$sha" 2>/dev/null; then
 		say "$name" "FAILED: branch delete; tag $tag stays"
 		failed=$((failed + 1))
 		continue

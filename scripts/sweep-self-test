@@ -292,6 +292,11 @@ rm -f "$tmp/raced"
 SWEEP_RACE_AT=stash SWEEP_RACE="$ng -C '$repo' symbolic-ref refs/heads/agent/claude/stack/symbr refs/heads/main" \
 	PATH="$tmp/race:$PATH" SWEEP_FRESH_MIN=0 SWEEP_OWNER_YES=1 sw --apply symbr
 check "a branch that became a symbolic ref is not deleted, nor its target" '[ "$rc" -eq 1 ] && grep -q "symbolic ref now" "$tmp/out" && [ "$(g rev-parse main)" = "$main_before" ] && [ "$(g symbolic-ref -q refs/heads/agent/claude/stack/symbr)" = refs/heads/main ]'
+g branch agent/claude/stack/symtag main
+rm -f "$tmp/raced"
+SWEEP_RACE="$ng -C '$repo' symbolic-ref refs/heads/agent/claude/stack/symtag refs/heads/main" \
+	PATH="$tmp/race:$PATH" SWEEP_FRESH_MIN=0 SWEEP_OWNER_YES=1 sw --apply symtag
+check "a branch that became a symbolic ref while being tagged does not take main with it" '[ "$(g rev-parse -q --verify refs/heads/main)" = "$main_before" ] && g rev-parse -q --verify refs/tags/archive/agent/claude/stack/symtag >/dev/null'
 g branch agent/claude/stack/occupied main
 rm -f "$tmp/raced"
 SWEEP_RACE="$ng -C '$repo' worktree add -q '$repo/worktrees/occupy' agent/claude/stack/occupied" \
