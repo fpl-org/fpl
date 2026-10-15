@@ -181,6 +181,7 @@ gates: venv config-fresh
 	$(S)/sweep-self-test
 	$(S)/spec-guard-self-test
 	$(S)/gen-config-self-test
+	$(S)/image-self-test
 	$(S)/land-self-test
 	$(S)/series-self-test
 	$(S)/present-check-self-test
