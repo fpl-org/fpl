@@ -696,6 +696,21 @@ if [ -n "$want_stack" ]; then
 			"add the line 'Stack: $want_stack' to the trailers (scripts/acommit does)"
 fi
 
+# 8b. series identity ----------------------------------------------------------
+# The Series-Id: names the series a commit belongs to and outlives every rewrite of it
+# (scripts/series). One a commit: two would make a commit belong to two series, and a value
+# that scripts/series cannot read would break the record it exists to keep.
+n_series="$(grep -c '^Series-Id:' <<<"$trailers" || true)"
+[ "$n_series" -le 1 ] \
+	|| fail series-many "the message holds $n_series 'Series-Id:' trailers; a commit belongs to one series" \
+		"keep one 'Series-Id:' trailer (scripts/series stamp does)"
+if [ "$n_series" -eq 1 ]; then
+	series_val="$(sed -n 's/^Series-Id: //p' <<<"$trailers")"
+	printf '%s' "$series_val" | grep -Eq "^${COMMIT_SERIES_RE}\$" \
+		|| fail series-value "Series-Id: value '$series_val' must match $COMMIT_SERIES_RE" \
+			"mint the id with scripts/series mint <branch>"
+fi
+
 # 9. agent territory ------------------------------------------------------------
 # FPL_BRANCH_GATE = block (default) | warn | off, shared with the ref-name hooks.
 branch_gate="${FPL_BRANCH_GATE:-block}"
