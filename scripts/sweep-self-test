@@ -350,6 +350,18 @@ rm -f "$tmp/raced"
 SWEEP_RACE="$ng -C '$repo/worktrees/movewt' commit -q --allow-empty -m moved" \
 	PATH="$tmp/race:$PATH" SWEEP_FRESH_MIN=0 SWEEP_OWNER_YES=1 sw --apply movewt
 check "a detached worktree that moved on while being tagged is left, not removed with its new commit" '[ "$rc" -eq 1 ] && grep -q "head moved while being saved" "$tmp/out" && [ "$(git -C "$repo/worktrees/movewt" log -1 --format=%s)" = moved ]'
+g branch agent/claude/stack/occupied main
+rm -f "$tmp/raced"
+SWEEP_RACE="$ng -C '$repo' worktree add -q '$repo/worktrees/occupy' agent/claude/stack/occupied" \
+	PATH="$tmp/race:$PATH" SWEEP_FRESH_MIN=0 SWEEP_OWNER_YES=1 sw --apply occupied
+check "a branch checked out meanwhile is not deleted; its worktree's head resolves" '[ "$rc" -eq 1 ] && grep -q "checked out meanwhile" "$tmp/out" && git -C "$repo/worktrees/occupy" rev-parse -q --verify HEAD >/dev/null'
+g branch agent/claude/stack/rebasing main
+gd="$(git -C "$repo/worktrees/unmerged" rev-parse --absolute-git-dir)" # a rebase there detaches its head
+rm -f "$tmp/raced"
+SWEEP_RACE="mkdir '$gd/rebase-merge' && echo refs/heads/agent/claude/stack/rebasing >'$gd/rebase-merge/head-name'" \
+	PATH="$tmp/race:$PATH" SWEEP_FRESH_MIN=0 SWEEP_OWNER_YES=1 sw --apply rebasing
+check "a branch a worktree rebases is not deleted" '[ "$rc" -eq 1 ] && grep -q "checked out meanwhile" "$tmp/out" && g rev-parse -q --verify refs/heads/agent/claude/stack/rebasing >/dev/null'
+rm -rf "$gd/rebase-merge"
 g worktree add -q "$repo/worktrees/embedded" -b agent/claude/stack/embedded main
 printf 'x\n' >"$repo/worktrees/embedded/loose.txt"
 git init -q "$repo/worktrees/embedded/inner"

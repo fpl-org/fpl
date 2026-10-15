@@ -52,9 +52,10 @@
 #      commits reachable
 # A head that moved since the table was made is skipped; what is dirty is read again at the
 # moment of removal, and a worktree that changed after its patch was made is left. A branch
-# that became a symbolic ref by the moment of deletion stays. The one running sweep is never a
-# candidate. Ignored files (.venv) go with the directory. A name picks a row by its name, its
-# branch or its last path component; a name that picks no archive row is said and skipped.
+# that became a symbolic ref, or that a worktree checks out, rebases or bisects at the moment
+# of deletion, stays. The one running sweep is never a candidate. Ignored files (.venv) go
+# with the directory. A name picks a row by its name, its branch or its last path component;
+# a name that picks no archive row is said and skipped.
 #
 # The base is the local `main` (SWEEP_BASE): a lagging main only makes rows look less merged,
 # the safe direction. Nothing is fetched or pruned. SWEEP_FORGE=0 skips the forge; SWEEP_REPO
@@ -375,6 +376,22 @@ pdiff() {
 }
 # mktag <name>: tag the row's head <name>, or find it tagged so already.
 mktag() { git tag -- "$1" "$sha" 2>/dev/null || [ "$(git rev-parse -q --verify "refs/tags/$1^{commit}")" = "$sha" ]; }
+common="$(git rev-parse --path-format=absolute --git-common-dir)"
+# occupied <branch>: checked out, rebased or bisected in some worktree, read now: what git
+# branch -d refuses to delete, and update-ref -d does not check.
+occupied() {
+	# The listing is read whole before it is searched: grep -q quits at the first match, and a
+	# git still writing then dies of SIGPIPE, which pipefail turns into "not found" and a delete.
+	# A listing that cannot be read counts as occupied.
+	local d list nl='
+'
+	list="$(git worktree list --porcelain)" || return 0
+	case "$nl$list$nl" in *"${nl}branch refs/heads/$1$nl"*) return 0 ;; esac
+	for d in "$common" "$common"/worktrees/*; do
+		grep -Fxqs -e "refs/heads/$1" -e "$1" "$d/rebase-merge/head-name" "$d/rebase-apply/head-name" "$d/BISECT_START" && return 0
+	done
+	return 1
+}
 # snap <worktree> <file>: its dirty files, untracked ones too, as a patch over HEAD (empty when
 # clean), made in a scratch index so the worktree's own stays as it was.
 snap() {
@@ -460,6 +477,11 @@ while IFS="$tab" read -r kind name b merged new dirty pr owner action note sha p
 			failed=$((failed + 1))
 			continue
 		fi
+	fi
+	if [ "$b" != - ] && occupied "$b"; then
+		say "$name" "FAILED: $b was checked out meanwhile; tag $tag stays"
+		failed=$((failed + 1))
+		continue
 	fi
 	# update-ref -d with the old value is a compare-and-swap: a branch that moved since the tag
 	# was made stays, with its new commits. --no-deref: a branch that became a symbolic ref since
