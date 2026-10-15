@@ -56,7 +56,7 @@ trap 'rm -rf "$tmp"' EXIT
 export GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home" \
 	XDG_CONFIG_HOME="$tmp/xdg" GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid \
 	GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid TMPDIR="$tmp/scratch"
-unset SWEEP_FORGE SWEEP_BASE SWEEP_REPO SWEEP_GH_USER
+unset SWEEP_FORGE SWEEP_FRESH_MIN SWEEP_BASE SWEEP_REPO SWEEP_GH_USER
 # shellcheck disable=SC2046 # one variable name per line, no spaces
 unset $(git rev-parse --local-env-vars)
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$TMPDIR" "$tmp/stub"
@@ -155,7 +155,7 @@ col() { awk -F'\t' -v n="$1" -v c="$2" '$2 == n { print $c }' "$tmp/out"; }
 action() { col "$1" 9; }
 
 # --- the table ------------------------------------------------------------------------------
-export SWEEP_REPO=fpl-org/fpl
+export SWEEP_FRESH_MIN=0 SWEEP_REPO=fpl-org/fpl
 before="$(fingerprint)"
 sw
 check "a dry run exits 0" '[ "$rc" -eq 0 ]'
@@ -179,6 +179,30 @@ check "the token is never printed" '! grep -q stub-token "$tmp/out" "$tmp/err"'
 SWEEP_FORGE=0 sw
 check "SWEEP_FORGE=0 asks nothing and leaves pr as ?" '[ ! -s "$tmp/gh.log" ] && [ "$(col worktrees/merged 7)" = "?" ]'
 
+# --- fresh ------------------------------------------------------------------------------------
+g worktree add -q "$repo/worktrees/young" -b agent/claude/stack/young main
+g worktree add -q "$repo/worktrees/old" -b agent/claude/stack/old main
+printf 'x\n' >"$repo/worktrees/young/loose.txt"
+unset SWEEP_FRESH_MIN
+sw
+check "a worktree touched a moment ago is review, not archive" '[ "$(action worktrees/young)/$(action worktrees/old)" = review/review ] && grep -q "touched in the last 60 min" "$tmp/out"'
+SWEEP_FRESH_MIN=08 sw
+check "SWEEP_FRESH_MIN=08 is eight minutes, not a bad octal number" '[ "$rc" -eq 0 ] && grep -q "touched in the last 8 min" "$tmp/out"'
+old_gitdir="$(git -C "$repo/worktrees/old" rev-parse --absolute-git-dir)"
+touch -t 202001010000 "$old_gitdir/HEAD"
+sw
+check "once old enough, archive; the one still young stays review" '[ "$(action worktrees/old)/$(action worktrees/young)" = archive/review ]'
+# index-only work: a deleted file leaves no file to date, a staged mode change leaves an old one
+for n in deleted staged; do
+	g worktree add -q "$repo/worktrees/$n" -b "agent/claude/stack/$n" main
+	touch -t 202001010000 "$(git -C "$repo/worktrees/$n" rev-parse --absolute-git-dir)/HEAD"
+done
+rm "$repo/worktrees/deleted/f.txt"
+touch -t 202001010000 "$(git -C "$repo/worktrees/deleted" rev-parse --absolute-git-dir)/index"
+touch -t 202001010000 "$repo/worktrees/staged/f.txt"
+git -C "$repo/worktrees/staged" update-index --chmod=+x f.txt
+sw
+check "a deleted file and a staged change count as recent work" '[ "$(action worktrees/deleted)/$(action worktrees/staged)" = review/review ]'
 # --- a merge commit is not a patch ---------------------------------------------------------------
 # A branch whose only commit by patch is in the base, plus a merge with a change of its own, is
 # not "all in the base": git cherry skips the merge. SWEEP_BASE keeps main where the checks above
@@ -192,7 +216,7 @@ printf 'resolution\n' >"$tmp/mw1/merge-only.txt"
 git -C "$tmp/mw1" add merge-only.txt
 g branch agent/claude/stack/mergey "$(git -C "$tmp/mw1" commit-tree -p HEAD -p main -m merge "$(git -C "$tmp/mw1" write-tree)")"
 g branch agent/claude/stack/plainside "$(git -C "$tmp/mw1" rev-parse HEAD)"
-SWEEP_BASE=basebr sw
+SWEEP_BASE=basebr SWEEP_FRESH_MIN=0 sw
 check "a branch whose merge commit is not in the base is review, its patch-equal twin without the merge is archive" '[ "$(col agent/claude/stack/mergey 5)/$(action agent/claude/stack/mergey)/$(col agent/claude/stack/plainside 5)/$(action agent/claude/stack/plainside)" = 1/review/0/archive ]'
 
 if [ "$fails" -eq 0 ]; then

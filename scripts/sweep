@@ -26,7 +26,8 @@
 #   action  by the first rule that fits:
 #             keep     on the do-not-touch list (below), Cursor's or an app session's, or its
 #                      pull request is open
-#             review   locked, its directory gone, PSJ's, or new > 0: a person decides
+#             review   locked, its directory gone, PSJ's, touched in the last SWEEP_FRESH_MIN
+#                      minutes (default 60: a run may use it), or new > 0: a person decides
 #             archive  merged, or new = 0: everything it committed is in the base
 #   note    the reason, in words
 #
@@ -54,6 +55,9 @@ esac
 # A read changes nothing: status must not refresh an index.
 export GIT_OPTIONAL_LOCKS=0
 base="${SWEEP_BASE:-main}"
+fresh="${SWEEP_FRESH_MIN:-60}"
+case "$fresh" in "" | *[!0-9]*) die "SWEEP_FRESH_MIN is minutes, a number: '$fresh'" ;; esac
+fresh=$((10#$fresh)) # 08 is a number of minutes, not a bad octal one
 git rev-parse --verify -q "$base^{commit}" >/dev/null || die "no base '$base'"
 root="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
 [ -d "$root" ] || die "cannot find the root checkout"
@@ -111,6 +115,14 @@ pr_of() {
 }
 
 # --- the rows ------------------------------------------------------------------------------
+# A freshness reference: a file as old as SWEEP_FRESH_MIN minutes, to compare mtimes with -nt.
+ref="$tmp/ref"
+if [ "$fresh" -gt 0 ]; then
+	then_s=$(($(date +%s) - fresh * 60))
+	stamp="$(date -d "@$then_s" +%Y%m%d%H%M.%S 2>/dev/null || date -r "$then_s" +%Y%m%d%H%M.%S)"
+	touch -t "$stamp" "$ref"
+fi
+
 # merged_of <sha>: yes or no; any other answer of git stops the run.
 merged_of() {
 	local rc=0
@@ -134,7 +146,7 @@ rows="$tmp/rows"
 emit() {
 	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@" >>"$rows"
 }
-# decide <path-or-""> <branch-or-""> <merged> <new> <pr> <owner> <locked 0|1> <gone 0|1>
+# decide <path-or-""> <branch-or-""> <merged> <new> <pr> <owner> <locked 0|1> <active 0|1> <gone 0|1>
 # prints "action<TAB>note"
 decide() {
 	if protected "$1" "$2"; then
@@ -143,12 +155,14 @@ decide() {
 		printf 'keep\t%s work\n' "$6"
 	elif [ "$5" = OPEN ]; then
 		printf 'keep\tpull request open\n'
-	elif [ "$8" = 1 ]; then
+	elif [ "$9" = 1 ]; then
 		printf 'review\tdirectory is gone (prunable)\n'
 	elif [ "$7" = 1 ]; then
 		printf 'review\tlocked\n'
 	elif [ "$6" = PSJ ]; then
 		printf 'review\tnot an agent'"'"'s\n'
+	elif [ "$8" = 1 ]; then
+		printf 'review\ttouched in the last %s min\n' "$fresh"
 	elif [ "$3" = yes ] || [ "$4" -eq 0 ]; then
 		printf 'archive\tall of it is in %s\n' "$base"
 	else
@@ -190,7 +204,7 @@ while IFS="$tab" read -r path sha br locked gone; do
 	new="$(new_of "$sha")"
 	pr="$(pr_of "$b")"
 	[ -n "$b" ] || pr='-'
-	dirty=0
+	dirty=0 active=0
 	if [ "$gone" = 1 ] || [ ! -d "$path" ]; then
 		gone=1 dirty='-'
 	else
@@ -201,11 +215,23 @@ while IFS="$tab" read -r path sha br locked gone; do
 			if [ "$skip" = 1 ]; then skip=0; continue; fi
 			case "$ent" in [RC]?* | ?[RC]*) skip=1 ;; esac
 			dirty=$((dirty + 1))
+			f="${ent#???}"
+			if [ "$fresh" -gt 0 ] && [ "$active" = 0 ]; then
+				# a deleted file is dated by the nearest directory that is still there
+				t="$path/$f"
+				while [ ! -e "$t" ] && [ "$t" != "$path" ]; do t="${t%/*}"; done
+				if [ "$t" -nt "$ref" ]; then active=1; fi
+			fi
 		done <"$tmp/status"
 		[ "$dirty" -eq 0 ] || ndirty=$((ndirty + 1))
+		if [ "$fresh" -gt 0 ] && [ "$active" = 0 ]; then
+			gd="$(git_in "$path" rev-parse --absolute-git-dir)"
+			# an index only changes when work is staged: a deletion or a mode change shows no new file
+			if [ "$gd/HEAD" -nt "$ref" ] || { [ "$dirty" -gt 0 ] && [ "$gd/index" -nt "$ref" ]; }; then active=1; fi
+		fi
 	fi
 	IFS="$tab" read -r action note <<EOF
-$(decide "$rel" "$b" "$merged" "$new" "$pr" "$owner" "$([ "$locked" = 1 ] && echo 1 || echo 0)" "$([ "$gone" = 1 ] && echo 1 || echo 0)")
+$(decide "$rel" "$b" "$merged" "$new" "$pr" "$owner" "$([ "$locked" = 1 ] && echo 1 || echo 0)" "$active" "$([ "$gone" = 1 ] && echo 1 || echo 0)")
 EOF
 	[ "$dirty" = 0 ] || [ "$dirty" = '-' ] || note="$note; $dirty dirty"
 	emit wt "$rel" "${b:--}" "$merged" "$new" "$dirty" "$pr" "$owner" "$action" "$note" "$sha" "$path"
@@ -221,7 +247,7 @@ while IFS="$tab" read -r b sha; do
 	merged="$(merged_of "$sha")"
 	new="$(new_of "$sha")"
 	IFS="$tab" read -r action note <<EOF
-$(decide "" "$b" "$merged" "$new" "$(pr_of "$b")" "$owner" 0 0)
+$(decide "" "$b" "$merged" "$new" "$(pr_of "$b")" "$owner" 0 0 0)
 EOF
 	emit br "$b" "$b" "$merged" "$new" '-' "$(pr_of "$b")" "$owner" "$action" "$note" "$sha" ""
 done <"$tmp/branches"
