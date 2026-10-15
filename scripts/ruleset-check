@@ -127,8 +127,10 @@ def keyed(items: Any, key: str, kind: str, value: Any = lambda i: i) -> dict[str
     `k#2` that is also the key of a real object would swallow it, so that is exit 2, never a
     guess.
     """
+    if not isinstance(items, list):
+        raise UnreadableError(f"the {kind}s are {json.dumps(items)[:80]}, no list")
     bucket: dict[str, list[Any]] = {}
-    for item in items or []:
+    for item in items:
         if not isinstance(item, dict) or key not in item:
             raise UnreadableError(f"a {kind} without a {key}: {json.dumps(item)[:80]}")
         bucket.setdefault(str(item[key]), []).append(value(item))
@@ -145,7 +147,10 @@ def keyed(items: Any, key: str, kind: str, value: Any = lambda i: i) -> dict[str
 
 def rule(r: dict[str, Any]) -> Any:
     """A rule as its parameters, a rule without any as its defaults."""
-    params = canon(r.get("parameters") or DEFAULTS.get(r["type"], {}))
+    given = r.get("parameters")
+    if given is not None and not isinstance(given, dict):
+        raise UnreadableError(f"{r['type']} has parameters {json.dumps(given)[:80]}, no object")
+    params = canon(given or DEFAULTS.get(r["type"], {}))
     if "required_status_checks" in params:
         params["required_status_checks"] = keyed(
             params["required_status_checks"],
@@ -160,7 +165,7 @@ def normal(ruleset: dict[str, Any]) -> dict[str, Any]:
     """What the forge enforces for `ruleset`, comparable: see the top of this file."""
     out = canon({k: v for k, v in ruleset.items() if k not in DROPPED})
     out.setdefault("conditions", {}).setdefault("ref_name", {}).setdefault("exclude", [])
-    out["rules"] = keyed(ruleset.get("rules"), "type", "rule", rule)
+    out["rules"] = keyed(ruleset.get("rules", []), "type", "rule", rule)
     if "bypass_actors" not in ruleset:
         return out  # not shown to this token, or not recorded: judge() lists it as unchecked
     if not isinstance(ruleset["bypass_actors"], list):
@@ -241,10 +246,13 @@ def check(repo: str, directory: Path, api: str) -> dict[str, Any]:
         raise UnreadableError(f"GitHub: a ruleset in the list has no numeric id ({e!r})") from e
     found = []
     for name, (fname, wanted) in files.items():
-        live = get(api, f"repos/{repo}/rulesets/{ids[name]}", secret) if name in ids else None
-        found.append(
-            judge(name, fname, wanted, live) if live else entry(name, fname, "missing_live")
-        )
+        if name not in ids:
+            found.append(entry(name, fname, "missing_live"))
+            continue
+        live = get(api, f"repos/{repo}/rulesets/{ids[name]}", secret)
+        if not isinstance(live, dict) or live.get("name") != name:  # not null, [], {}: no ruleset
+            raise UnreadableError(f"GitHub: ruleset {name} came back as {json.dumps(live)[:80]}")
+        found.append(judge(name, fname, wanted, live))
     found += [entry(n, None, "missing_file") for n in sorted(ids.keys() - files.keys())]
     return {"repo": repo, "in_sync": all(r["state"] == "in_sync" for r in found), "rulesets": found}
 

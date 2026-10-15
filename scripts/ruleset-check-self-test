@@ -63,7 +63,8 @@ check="$root/scripts/ruleset-check" files="$root/harness/rulesets" work="$tmp/fi
 
 # The forge: the list and each ruleset by id from state.json (name -> ruleset), the file `fail`
 # beside it makes every answer a 500, the file `redirect` every answer a 302 to /moved/..., the
-# file `short` every body shorter than its declared Content-Length, every request goes to the log.
+# file `short` every body shorter than its declared Content-Length, the file `detail` holds the
+# JSON every ruleset by id is answered with, every request goes to the log.
 cat >"$tmp/forge.py" <<'PY'
 import http.server, json, os, sys
 state, log = sys.argv[1:]
@@ -80,9 +81,12 @@ class H(http.server.BaseHTTPRequestHandler):
             return self.end_headers()
         rss = list(json.load(open(state)).values())
         tail = self.path.split("?")[0].rsplit("/", 1)[1]
-        body = rss if tail == "rulesets" else next((r for r in rss if str(r["id"]) == tail), None)
-        if body is None:
-            return self.send_error(404)
+        if tail != "rulesets" and os.path.exists(state + ".detail"):
+            body = json.load(open(state + ".detail"))
+        else:
+            body = rss if tail == "rulesets" else next((r for r in rss if str(r["id"]) == tail), None)
+            if body is None:
+                return self.send_error(404)
         data = json.dumps(body).encode()
         self.send_response(200)
         short = 100 if os.path.exists(state + ".short") else 0
@@ -149,7 +153,7 @@ fail() { fails=$((fails + 1)); echo "self-test: $*" >&2; }
 fx() { python3 -I "$tmp/fx.py" "$state" "$1"; }
 # build [visible]: the files copied to $work, and a forge that matches them
 build() {
-	rm -rf "$work" "$state.fail" "$state.short" "$state.redirect"
+	rm -rf "$work" "$state.fail" "$state.short" "$state.redirect" "$state.detail"
 	mkdir -p "$work"
 	cp "$files"/*.json "$work/"
 	WORK="$work" fx "build(os.environ['WORK'], ${1:+True})"
@@ -294,6 +298,26 @@ run 2 "a listed ruleset without an id" ""
 build
 fx "s['$BRAKE']['id'] = 'seven'"
 run 2 "a listed ruleset with an id that is no number" ""
+# falsey shapes are shapes too: none of them reads as an empty list, defaults or a missing ruleset
+mend() { python3 -I -c 'import json, sys
+p, code = sys.argv[1] + "/brake.json", sys.argv[2]
+d = json.load(open(p))
+exec(code)
+json.dump(d, open(p, "w"))' "$work" "$1"; }
+for shape in false '{}' null; do
+	build
+	mend "d['rules'] = json.loads('$shape')"
+	run 2 "a file whose rules are $shape" ""
+done
+build
+mend "d['rules'][1]['parameters'] = False"
+run 2 "a file whose rule parameters are false" ""
+for body in null '[]' '{}'; do
+	build
+	printf '%s' "$body" >"$state.detail"
+	run 2 "a live ruleset that comes back as $body" ""
+done
+build
 rm -rf "$work"
 mkdir -p "$work"
 run 2 "no files at all" ""
