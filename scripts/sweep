@@ -43,7 +43,8 @@
 #      commits reachable
 # A head that moved since the table was made is skipped; what is dirty is read again at the
 # moment of removal, and a worktree that changed after its patch was made is left. A branch
-# that became a symbolic ref stays. The one running sweep is never a candidate. Ignored files (.venv) go with the directory. A name
+# that became a symbolic ref, or that a worktree checks out, rebases or bisects at the moment
+# of deletion, stays. The one running sweep is never a candidate. Ignored files (.venv) go with the directory. A name
 # picks a row by its name, its branch or its last path component.
 #
 # The base is the local `main` (SWEEP_BASE): a lagging main only makes rows look less merged,
@@ -305,6 +306,17 @@ printf '%s\n' "$names" >"$tmp/names"
 applied=0 failed=0 skipped=0
 say() { printf 'apply\t%s\t%s\n' "$1" "$2"; }
 tip() { git rev-parse -q --verify "refs/heads/$1" 2>/dev/null || true; }
+common="$(git rev-parse --path-format=absolute --git-common-dir)"
+# occupied <branch>: checked out, rebased or bisected in some worktree, read now: what git
+# branch -d refuses to delete, and update-ref -d does not check.
+occupied() {
+	git worktree list --porcelain | grep -Fxq "branch refs/heads/$1" && return 0
+	local d
+	for d in "$common" "$common"/worktrees/*; do
+		grep -Fxqs -e "refs/heads/$1" -e "$1" "$d/rebase-merge/head-name" "$d/rebase-apply/head-name" "$d/BISECT_START" && return 0
+	done
+	return 1
+}
 # snap <worktree> <file>: its dirty files, untracked ones too, as a patch over HEAD (empty when
 # clean), made in a scratch index so the worktree's own stays as it was.
 snap() {
@@ -378,6 +390,11 @@ while IFS="$tab" read -r kind name b merged new dirty pr owner action note sha p
 			failed=$((failed + 1))
 			continue
 		fi
+	fi
+	if [ "$b" != - ] && occupied "$b"; then
+		say "$name" "FAILED: $b was checked out meanwhile; tag $tag stays"
+		failed=$((failed + 1))
+		continue
 	fi
 	# update-ref -d with the old value is a compare-and-swap: a branch that moved since the tag
 	# was made stays, with its new commits.
