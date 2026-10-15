@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+#
+# scripts/series — the identity of a series of commits, and what follows from having one.
+#
+# A branch name and a SHA both change when a series is rebased, reordered or moved; the
+# Series-Id: trailer (.agents/COMMITS.md) does not. It is minted once and carried by every
+# commit of the series. There is no Patch-Id: trailer: a patch id stored in a message goes
+# stale when a move shifts context lines, and a stale identity is a false one.
+#
+#   series mint <branch>            print <topic>-<7 hex of the branch tip>: the topic is the
+#                                   branch without agent/<id>/, a leading stack/ and a trailing
+#                                   /tip, its slashes joined by dashes. The same branch at the
+#                                   same tip always gives the same id; the id is a record, never
+#                                   re-derived later (the trailer is read, not recomputed).
+#   series stamp <base>..HEAD [id]  add the Series-Id to every commit of the range by a rebase
+#                                   --exec, reusing the id the range already carries, else
+#                                   [id], else a fresh mint. The rebase runs with --update-refs,
+#                                   so every local branch pointing into the range moves with it.
+#                                   Refused on main, on a dirty tree, and once the maintainer has
+#                                   reviewed, approved or commented on the pull request of the
+#                                   branch or of any branch that would move (a rewrite after that
+#                                   is a question to him, not a tool's call).
+#   series check <range>            exactly one Series-Id over the range, on every commit; prints it.
+#
+# Environment: SERIES_GH (the gh to ask the forge; default gh), SERIES_REPO (fpl-org/fpl),
+# SERIES_OWNER (the login whose word freezes a branch; psjg). The forge is only read, with the
+# machine account's token. Plain bash 3.2: no mapfile, no associative arrays.
+
+set -euo pipefail
+
+# A replacement ref (refs/replace/*) would make every command below read another history than
+# the one named; the commits are judged as they landed. The rebase of stamp inherits this.
+export GIT_NO_REPLACE_OBJECTS=1
+
+self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+repo_root="$(git rev-parse --show-toplevel)"
+# shellcheck source=../.githooks/commit-rules
+. "$repo_root/.githooks/commit-rules"
+
+# die <rule> <what> <remedy>: a refusal names its rule, what failed and what to do.
+die() {
+	printf 'series [%s]: %s\n    remedy: %s\n' "$1" "$2" "$3" >&2
+	exit 1
+}
+
+# revs <range>: the commits of a linear range, oldest first; refuses an empty one or a merge.
+revs() {
+	local out
+	[ -n "${1:-}" ] || die usage "a range is needed" "series <cmd> <base>..<tip>"
+	out="$(git rev-list --reverse "$1")" || die range "cannot read the range '$1'" "name it <base>..<tip>"
+	[ -n "$out" ] || die range "the range '$1' holds no commit" "name a non-empty <base>..<tip>"
+	[ -z "$(git rev-list --merges "$1")" ] || die range "the range '$1' holds a merge" "a series is linear"
+	printf '%s\n' "$out"
+}
+
+# require_clean: the index and the working tree both equal HEAD. `git diff HEAD` alone compares the
+# working tree with HEAD and misses a change staged and then undone in the file, which the stamp's
+# rebase would carry or lose.
+require_clean() {
+	{ git diff --quiet HEAD -- && git diff --cached --quiet -- && git diff --quiet --; } \
+		|| die dirty "the index or the tree has uncommitted changes" "commit or stash them"
+}
+
+# ids_of <sha>: the Series-Id values the commit's trailer block holds, one a line.
+ids_of() {
+	git log -1 --format=%B "$1" | commit_trailers | sed -n 's/^[Ss][Ee][Rr][Ii][Ee][Ss]-[Ii][Dd]:[[:space:]]*//p'
+}
+
+# mint_of <branch> [tip]: the id of <branch> at <tip> (default: its tip). The one place the
+# derivation lives.
+mint_of() {
+	local topic tip id
+	tip="$(git rev-parse --verify "${2:-$1}^{commit}" | cut -c1-7)"
+	topic="${1#refs/heads/}"
+	topic="$(printf '%s' "$topic" | sed -E 's#^agent/[a-z]+/##; s#^stack/##; s#/tip$##; s#/#-#g' | tr '[:upper:]' '[:lower:]')"
+	id="$topic-$tip"
+	printf '%s' "$id" | grep -Eq "^${COMMIT_SERIES_RE}\$" \
+		|| die mint "'$id' is not a Series-Id ($COMMIT_SERIES_RE)" "work on a branch whose name is lower-case letters, digits and . _ -"
+	printf '%s\n' "$id"
+}
+
+# insert_id <id>: the message on stdin with 'Series-Id: <id>' written into its trailer block in
+# the place COMMIT_TRAILER_ORDER gives it: after the last known trailer that ranks before it (a
+# trailer's folded continuation lines go with it), else before the first that ranks after it,
+# else last. A message with no trailer block gets one.
+insert_id() {
+	local msg n
+	msg="$(cat)"
+	n="$(printf '%s\n' "$msg" | git -c trailer.separators=: interpret-trailers --only-trailers --only-input | wc -l | tr -d ' ')"
+	printf '%s\n' "$msg" | awk -v order="$COMMIT_TRAILER_ORDER" -v n="$n" -v id="$1" '
+		BEGIN { k = split(order, o, " "); for (i = 1; i <= k; i++) rank[tolower(o[i])] = i; me = rank["series-id"] }
+		{ line[NR] = $0 }
+		END {
+			first = NR - n + 1; at = 0; before = 0
+			for (i = first; i <= NR && n > 0; i++) {
+				if (!match(line[i], /^[A-Za-z0-9-]+[ \t]*:/)) continue
+				key = tolower(line[i]); sub(/[ \t]*:.*/, "", key)
+				if (!(key in rank)) continue
+				if (rank[key] <= me) at = i
+				else if (!before) before = i
+			}
+			if (at) while (at < NR && !match(line[at + 1], /^[A-Za-z0-9-]+[ \t]*:/)) at++
+			if (!at && before) at = before - 1
+			if (!at) at = NR
+			for (i = 1; i <= NR; i++) {
+				print line[i]
+				if (i == at) { if (n == 0) print ""; print "Series-Id: " id }
+			}
+		}'
+}
+
+# cmd__amend <id>: HEAD with the Series-Id added. What stamp runs for each commit (--exec). The
+# soft atomicity judge is off: the diff is unchanged, and it ran when the commit was made. The
+# message goes back verbatim: the caller's commit.cleanup must not strip a comment line or
+# whitespace from the text the manifest hashes.
+cmd__amend() {
+	local have
+	have="$(ids_of HEAD)"
+	[ "$have" != "$1" ] || return 0
+	[ -z "$have" ] || die series-other "$(git rev-parse --short HEAD) carries Series-Id '$have', not '$1'" "stamp the range with the id it carries"
+	git log -1 --format=%B | insert_id "$1" | FPL_ATOMIC_GATE=off git commit -q --amend --allow-empty --cleanup=verbatim -F -
+}
+
+# forge_silent <branch>: refuses when the owner has a review, comment or approval on the pull
+# requests of <branch>. Read-only GETs with the machine account's token; a forge that cannot be
+# asked is a refusal too (failing open would let the guard pass when it is blind). Every call names
+# github.com (GH_HOST must not send the question to another forge, whose silence would pass the
+# guard) and reads every page (a branch name reused by many pull requests, a long thread). The
+# match reads its whole input: a grep -q that leaves at the first hit can make printf die of
+# SIGPIPE on a long answer, and under pipefail the refusal is then skipped.
+forge_silent() {
+	local gh="${SERIES_GH:-gh}" repo="${SERIES_REPO:-fpl-org/fpl}" owner="${SERIES_OWNER:-psjg}" tok prs pr kind who
+	tok="$("$gh" auth token --hostname github.com --user psjg-claude 2>/dev/null)" && [ -n "$tok" ] \
+		|| die forge-token "no token for the machine account to ask the forge with" "log gh in as psjg-claude"
+	prs="$(GH_TOKEN="$tok" "$gh" api --hostname github.com --paginate "repos/$repo/pulls?state=all&head=${repo%%/*}:$1" --jq '.[].number' 2>/dev/null)" \
+		|| die forge-query "the forge did not answer for branch $1" "retry when it is reachable"
+	for pr in $prs; do
+		for kind in "pulls/$pr/reviews" "issues/$pr/comments" "pulls/$pr/comments"; do
+			who="$(GH_TOKEN="$tok" "$gh" api --hostname github.com --paginate "repos/$repo/$kind" --jq '.[].user.login' 2>/dev/null)" \
+				|| die forge-query "the forge did not answer for $kind" "retry when it is reachable"
+			printf '%s\n' "$who" | grep -Fix -- "$owner" >/dev/null \
+				&& die owner-spoke "$owner has spoken on pull request #$pr ($kind)" "ask him: a rewrite now is a question to the reviewer"
+		done
+	done
+	return 0
+}
+
+cmd_mint() { [ -n "${1:-}" ] || die usage "a branch is needed" "series mint <branch>"; mint_of "$1"; }
+
+cmd_stamp() { # stamp <base>..HEAD [id]
+	local range="${1:-}" base branch ids n id exec_cmd c err list sha name
+	[[ "$range" == *..* && "$range" != *...* ]] || die range "stamp wants <base>..HEAD, not '$range'" "series stamp <base>..HEAD"
+	base="${range%%..*}"
+	branch="$(git branch --show-current)"
+	[ -n "$branch" ] && [ "$branch" != main ] || die branch "stamping rewrites the current branch, which must not be main or detached" "switch to the work branch"
+	[ "$(git rev-parse "${range#*..}")" = "$(git rev-parse HEAD)" ] || die range "the range must end at HEAD" "series stamp <base>..HEAD"
+	git merge-base --is-ancestor "$base" HEAD \
+		|| die base "'$base' is not an ancestor of HEAD, so the rebase would move the series onto other history, not only add the id" "name a base on this branch: series stamp <base>..HEAD"
+	require_clean
+	forge_silent "$branch"
+	list="$(revs "$range")"
+	# The rebase below runs with --update-refs: every other local branch pointing into the range
+	# moves too, and its pull request has the same claim on the maintainer's word as this one's.
+	while read -r sha name; do
+		name="${name#refs/heads/}"
+		[ "$name" != "$branch" ] || continue
+		case $'\n'"$list"$'\n' in *$'\n'"$sha"$'\n'*) forge_silent "$name" ;; esac
+	done < <(git for-each-ref --format='%(objectname) %(refname)' refs/heads)
+	ids="$(for c in $list; do ids_of "$c"; done | sort -u)"
+	n="$(printf '%s' "$ids" | grep -c . || true)"
+	[ "$n" -le 1 ] || die series-mixed "the range carries $n different Series-Ids" "a series has one id; fix the stray commit"
+	id="${ids:-${2:-$(mint_of "$branch")}}"
+	printf '%s' "$id" | grep -Eq "^${COMMIT_SERIES_RE}\$" || die series-value "'$id' is not a Series-Id ($COMMIT_SERIES_RE)" "series mint <branch>"
+	printf -v exec_cmd '%q %q _amend %q' "$BASH" "$self" "$id"
+	# commit.cleanup is pinned for the picks too: under strip, the replay of the commits after the
+	# first one cut their comment-like lines (measured), not only the amend does.
+	err="$(GIT_SEQUENCE_EDITOR=: git -c commit.cleanup=verbatim rebase -q --update-refs --exec "$exec_cmd" "$base" 2>&1)" || {
+		printf '%s\n' "$err" >&2
+		git rebase --abort >/dev/null 2>&1 || true
+		die rebase "the rebase that adds the id was refused, and is undone" "fix what the message above names, then stamp again"
+	}
+	printf '%s\n' "$id"
+}
+
+cmd_check() { # check <range>
+	local c v list ids=""
+	list="$(revs "${1:-}")"
+	for c in $list; do
+		v="$(ids_of "$c")"
+		[ -n "$v" ] || die series-missing "$(git rev-parse --short "$c") carries no Series-Id" "series stamp $1"
+		[ "$(printf '%s\n' "$v" | wc -l | tr -d ' ')" = 1 ] || die series-many "$(git rev-parse --short "$c") carries several Series-Ids" "keep one"
+		ids="$ids$v"$'\n'
+	done
+	[ "$(printf '%s' "$ids" | sort -u | wc -l | tr -d ' ')" = 1 ] \
+		|| die series-mixed "the range carries more than one Series-Id" "a range is one series; check its bounds"
+	printf '%s' "$ids" | sort -u
+}
+
+case "${1:-}" in
+mint | stamp | check | _amend) c="cmd_${1}"; shift; "$c" "$@" ;;
+*) die usage "series {mint|stamp|check} ..." "see the header of scripts/series" ;;
+esac
