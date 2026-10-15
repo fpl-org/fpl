@@ -33,9 +33,9 @@
 #      here again, under the name it arrives with. The commits a push adds are those of the
 #      local sha that no branch at the URL ($2) holds, as git ls-remote lists them now.
 #      That reads an update, a new branch and a new stack on a parent not merged yet alike:
-#      the parent's commits are on the remote under their own name, and scripts/pr bases
-#      the child's pull request on the tail of the queue, so the workflow does not judge
-#      them under the child's name either (a pull request based elsewhere would). A branch
+#      the parent's commits are on the remote under their own name, and a child stacked
+#      with scripts/pr -B <parent> has its pull request based on the parent, so the
+#      workflow does not judge them under the child's name either. A branch
 #      at the URL whose commit is not here cannot be excluded, so the range only grows:
 #      the gate errs strict, never loose. A push to main, a tag, a deletion and
 #      a push to Radicle are not judged: the workflow judges none of them. Any git command
