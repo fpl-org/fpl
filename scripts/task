@@ -447,12 +447,52 @@ def main(argv):
         graph.act(oid, "edit", action)
 
 
+def without_git_location(environ):
+    """`environ` less every GIT_* variable, so git finds a repository by its working
+    directory or -C alone. Under `git rebase -x`, a hook or an editor, git hands
+    GIT_DIR (and its kin: `git rev-parse --local-env-vars`) down to what it runs; a
+    child's `git init` then re-initialises THAT repository whatever its cwd, and with
+    GIT_DIR set but no GIT_WORK_TREE it writes core.bare=true into it. Dropping the
+    whole GIT_ prefix is a superset of git's own list and needs no git to compute.
+    """
+    return {k: v for k, v in environ.items() if not k.startswith("GIT_")}
+
+
+def tree_bytes(top):
+    """Every file under `top` with its contents: a repository's whole state, to compare."""
+    seen = {}
+    for root, _, files in os.walk(top):
+        for name in files:
+            path = os.path.join(root, name)
+            with open(path, "rb") as handle:
+                seen[os.path.relpath(path, top)] = handle.read()
+    return seen
+
+
 def self_test():
-    """End to end against a real rad, in a throwaway home and repository."""
+    """End to end against a real rad, in a throwaway home and repository.
+
+    It runs with GIT_DIR pointing at a linked worktree of a decoy repository, as
+    `git rebase -x` in a worktree hands the caller's down, and checks at the end that
+    the decoy did not change by a byte. That is the shape that bit: a `git init` under
+    such a GIT_DIR writes core.bare=true into the shared config of every worktree.
+    """
     me = os.path.abspath(__file__)
     with tempfile.TemporaryDirectory() as tmp:
+        decoy = f"{tmp}/decoy"
+        clean = dict(without_git_location(os.environ), GIT_CONFIG_GLOBAL="/dev/null")
+        for cmd in (
+            ["init", "-q", decoy],
+            ["-C", decoy, "-c", "user.name=t", "-c", "user.email=t@t"]
+            + ["commit", "-q", "--allow-empty", "-m", "decoy"],
+            ["-C", decoy, "worktree", "add", "-q", "-b", "w", f"{tmp}/decoy-w"],
+        ):
+            subprocess.run(["git", *cmd], env=clean, check=True, capture_output=True)
+        before = tree_bytes(f"{decoy}/.git")
+        inherited = os.environ.get("GIT_DIR")
+        os.environ["GIT_DIR"] = f"{decoy}/.git/worktrees/decoy-w"
         env = dict(
-            os.environ,
+            without_git_location(os.environ),
             RAD_HOME=f"{tmp}/home",
             RAD_PASSPHRASE="self-test",
             GIT_CONFIG_GLOBAL="/dev/null",
@@ -467,9 +507,11 @@ def self_test():
             return done
 
         sh("rad", "auth", "--alias", "selftest")
-        sh("git", "init", "-q", "-b", "main")
+        sh("git", "-C", repo, "init", "-q", "-b", "main")
         sh(
             "git",
+            "-C",
+            repo,
             "-c",
             "user.name=t",
             "-c",
@@ -601,6 +643,12 @@ def self_test():
             json.loads(task("show", lexer).stdout)["id"],
         ).stdout
         check("every operation is a signed-off commit with an author", log.count("author") >= 3)
+        untouched = tree_bytes(f"{decoy}/.git") == before
+        check("an inherited GIT_DIR's repository is left as it was", untouched)
+        if inherited is None:
+            del os.environ["GIT_DIR"]
+        else:
+            os.environ["GIT_DIR"] = inherited
 
     failed = [name for name, ok in checks if not ok]
     for name in failed:
