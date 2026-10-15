@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """scripts/task — FPL's task graph, kept in the repository as Radicle COBs.
 
-    scripts/task new "<title>" [-d <description>] [-b <id>]...   open a task, optionally blocked
+    scripts/task new "<title>" [-d <description>] [-b <id>]... [-p <id>]   open a task
     scripts/task list [--all]        open tasks; --all includes done and dropped
     scripts/task ready               tasks nothing is waiting on; exit 1 if a loop is left
     scripts/task show <id>
     scripts/task start|done|drop|reopen <id>
     scripts/task block [-f] <id> <by>  <id> must wait for <by>;  unblock removes it
+    scripts/task part <id> <of>|none <id> is a part of <of> (a lane, a group); one parent
     scripts/task assign <id> <did>|me|nobody
     scripts/task edit <id> [-t <title>] [-d <description>]
 
@@ -138,6 +139,14 @@ class Graph:
                     stack.append((nxt, edges(nxt)))
         return found
 
+    def parent_chain(self, oid):
+        """`oid` and the parents above it, nearest first; stops at a repeat (a loop)."""
+        chain = []
+        while oid in self.tasks and oid not in chain:
+            chain.append(oid)
+            oid = self.tasks[oid].get("partOf")
+        return chain
+
     def act(self, oid, message, *actions):
         with tempfile.NamedTemporaryFile("w", suffix=".jsonl") as handle:
             handle.write("".join(json.dumps(a) + "\n" for a in actions))
@@ -204,6 +213,10 @@ def parser():
     new.add_argument("title")
     new.add_argument("-d", "--description", default="")
     new.add_argument("-b", "--blocked-by", action="append", default=[])
+    new.add_argument("-p", "--part-of")
+    part = sub.add_parser("part")
+    part.add_argument("id")
+    part.add_argument("of", help="a task, or 'none' to clear")
     sub.add_parser("list").add_argument("--all", action="store_true")
     sub.add_parser("ready")
     sub.add_parser("show").add_argument("id")
@@ -229,6 +242,8 @@ def opening(graph, args):
     blockers = [graph.resolve(b) for b in args.blocked_by]
     actions = [{"type": "open", "title": args.title, "description": args.description}]
     actions += [{"type": "block", "by": b} for b in blockers]
+    if args.part_of:
+        actions.append({"type": "part", "of": graph.resolve(args.part_of)})
     print(graph.act(None, f"open: {args.title}", *actions)[:7])
 
 
@@ -259,6 +274,15 @@ def report_loops(graph):
         ids = " -> ".join(o[:7] for o in [*loop, loop[0]])
         print(f"# waiting on each other, nothing here can start: {ids}")
     return 1 if loops else 0
+
+
+def parting(graph, args):
+    oid = graph.resolve(args.id)
+    of = None if args.of == "none" else graph.resolve(args.of)
+    if of and oid in graph.parent_chain(of):
+        die("that makes a loop: a task cannot be part of itself or of one of its own parts")
+    graph.act(oid, f"part {args.of}", {"type": "part", "of": of})
+    graph.must_change(oid, "partOf", of)
 
 
 def showing(graph, args):
@@ -314,6 +338,7 @@ COMMANDS = {
     "new": opening,
     "list": listing,
     "ready": listing,
+    "part": parting,
     "show": showing,
     **dict.fromkeys(VERBS, moving),
     "block": blocking,
@@ -454,10 +479,16 @@ def basics(f):
     return lexer, parser
 
 
-def lanes(f):
-    """Labels: a task is named by the first word of its title."""
-    f.out("new", "lane-X the lane")
+def lanes(f, lexer):
+    """part, -p and labels."""
+    lane = f.out("new", "lane-X the lane").strip()
+    f.out("new", "X1 a unit", "-p", lane)
+    f.task("part", lexer, lane)
+    lane_id = json.loads(f.out("show", lane))["id"]
+    f.check("part and -p are stored", json.loads(f.out("show", "X1"))["partOf"] == lane_id)
     f.check("a label names a task", f.task("show", "lane-X").returncode == 0)
+    f.check("part loop refused", f.task("part", lane, "X1", ok=False).returncode == 2)
+    f.task("part", lexer, "none")
 
 
 def loops(f):
@@ -511,7 +542,7 @@ def self_test():
         f = Fixture(tmp)
         f.init(lambda: tree_bytes(f"{tmp}/decoy/.git") == before)
         lexer, _ = basics(f)
-        lanes(f)
+        lanes(f, lexer)
         loops(f)
         oid = json.loads(f.out("show", lexer))["id"]
         rid = f.sh("rad", ".").stdout.strip()
