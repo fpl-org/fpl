@@ -377,6 +377,15 @@ printf 'on disk\n' >"$repo/worktrees/partial/part.txt"
 SWEEP_FRESH_MIN=0 SWEEP_OWNER_YES=1 sw --apply partial
 restore partial
 check "a file staged as one text and changed to another gets both back" '[ "$(git -C "$tmp/v" show :part.txt)" = staged ] && [ "$(cat "$tmp/v/part.txt")" = "on disk" ]'
+g worktree add -q "$repo/worktrees/symdirty" -b agent/claude/stack/symdirty main
+printf 'x\n' >"$repo/worktrees/symdirty/loose.txt"
+mkdir "$tmp/outside"
+mv "$repo/harness" "$repo/harness.real"
+ln -s "$tmp/outside" "$repo/harness"
+SWEEP_FRESH_MIN=0 SWEEP_OWNER_YES=1 sw --apply symdirty
+check "a patch is never written through a symlink: the row fails, nothing is removed" '[ "$rc" -eq 1 ] && grep -q "symlink" "$tmp/out" && [ -z "$(ls -A "$tmp/outside")" ] && [ -d "$repo/worktrees/symdirty" ] && g rev-parse -q --verify refs/heads/agent/claude/stack/symdirty >/dev/null'
+rm "$repo/harness"
+mv "$repo/harness.real" "$repo/harness"
 g branch agent/claude/stack/occupied main
 rm -f "$tmp/raced"
 SWEEP_RACE="$ng -C '$repo' worktree add -q '$repo/worktrees/occupy' agent/claude/stack/occupied" \

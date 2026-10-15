@@ -44,11 +44,12 @@
 # since an open pull request is what keeps a branch. Each row goes in the order that loses
 # nothing:
 #   1. the dirty files, untracked ones too, as harness/sweep-archive/<name>.patch (git-ignored,
-#      private: mode 600; refused when it exists), made in a scratch index so the worktree's own
-#      stays as it was, and with git diff options that no config can turn into something git
-#      apply refuses; and what is staged, as <name>.index.patch, because the files may no longer
-#      hold it: a staged file deleted since is in the index only. On the tag, `git apply
-#      <name>.patch` gives the files back, then `git apply --cached <name>.index.patch` the index
+#      private: mode 600; refused when it exists or the way to it holds a symlink), made in a
+#      scratch index so the worktree's own stays as it was, and with git diff options that no
+#      config can turn into something git apply refuses; and what is staged, as
+#      <name>.index.patch, because the files may no longer hold it: a staged file deleted since
+#      is in the index only. On the tag, `git apply <name>.patch` gives the files back, then
+#      `git apply --cached <name>.index.patch` the index
 #   2. a tag on the head: archive/<branch>, or archive/worktree/<name> when detached; when that
 #      name is taken by another commit or no valid tag, archive/sha/<sha>
 #   3. git worktree remove (--force only when a patch was made and the files still match it),
@@ -481,6 +482,12 @@ while IFS="$tab" read -r kind name b merged new dirty pr owner action note sha p
 		fi
 		if [ -s "$tmp/snap1" ] || [ -s "$tmp/snap1.index" ]; then
 			p="$archive_dir/${name##*/}"
+			# a symlink anywhere on the way would put the patch outside the repository
+			if [ -L "$root/harness" ] || [ -L "$archive_dir" ] || [ -L "$p.patch" ] || [ -L "$p.index.patch" ]; then
+				say "$name" "FAILED: ${archive_dir#"$root"/} is or holds a symlink; left as it is"
+				failed=$((failed + 1))
+				continue
+			fi
 			if [ -e "$p.patch" ] || [ -e "$p.index.patch" ]; then
 				say "$name" "FAILED: $p.patch or $p.index.patch exists; move it away"
 				failed=$((failed + 1))
