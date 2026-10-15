@@ -116,7 +116,8 @@
 # approvals and the rules last keeps their window to the time it takes to judge. After the
 # push it reads main (LOUD unless it is the head), the pull request (LOUD unless GitHub shows
 # it merged), the approvals, the rules and the checks on the head again: LOUD when no code
-# owner's approval of the head stands, changes are requested, the rules differ in any way
+# owner's approval of the head stands (with --ci, none but the author's, which land/author
+# did not count before the push either), changes are requested, the rules differ in any way
 # from the ones judged, or a check they require did not succeed on the head. The checks are
 # judged on the check runs and commit statuses there were when they were judged before the
 # push, those the forge numbered at most the highest it had then: the push to main starts
@@ -335,6 +336,16 @@ def standing(d):
     return last
 
 
+def counted(last, owners, head, author, ci):
+    """The code owners whose standing approval of the head counts, and those left out:
+    with --ci the author's is left out (land/author), before the push and after it alike,
+    so the approval the push relied on is the one held against the forge after it."""
+    at_head = [w for w, r in last.items() if w.lower() in owners
+               and r["state"] == "APPROVED" and r.get("commit_id") == head]
+    mine = [w for w in at_head if ci and w.lower() == author.lower()]
+    return [w for w in at_head if w not in mine], mine
+
+
 def judge_reviews(v, d, pr, me, repo, ci):
     """land/codeowners, land/approved and land/changes-requested, and with --ci land/author:
     the approval that counts is not the author's. Returns whether the approval is yours to
@@ -362,12 +373,10 @@ def judge_reviews(v, d, pr, me, repo, ci):
     v.ok("land/codeowners", "code owners: " + ", ".join(f"@{o}" for o in sorted(owners)))
     approved = [(w, r) for w, r in last.items()
                 if w.lower() in owners and r["state"] == "APPROVED"]
-    at_head = [w for w, r in approved if r.get("commit_id") == head]
     older = ", ".join(f"@{w} on {str(r.get('commit_id'))[:12]}" for w, r in approved)
     author = pr["user"]["login"]
+    at_head, mine = counted(last, owners, head, author, ci)
     if ci:
-        mine = [w for w in at_head if w.lower() == author.lower()]
-        at_head = [w for w in at_head if w not in mine]
         if mine and not at_head:
             v.no("land/author", f"the only approval of {h} is by @{author}, its author",
                  f"a code owner other than the author approves {h} on the forge")
@@ -856,9 +865,10 @@ def changed_rules(judged, now):
     return lines or ["a rule is listed a different number of times"]
 
 
-def still(d, repo, head, n):
+def still(d, repo, head, n, ci):
     """After the push, on what the forge says then: a code owner's approval of the head
-    still stands, nobody's standing verdict requests changes, the rules on main are the
+    still stands, with --ci one not the author's (counted as land/author counts it before
+    the push), nobody's standing verdict requests changes, the rules on main are the
     ones judged before the push, every one of them is one judged here, and every check
     they require succeeded on the head, judged as land/checks judges it on the runs and
     statuses that were there when the checks were judged (ceiling): the push to main
@@ -869,9 +879,11 @@ def still(d, repo, head, n):
     last = standing(d)
     with open(f"{d}/codeowners") as f:
         owners = codeowners(f.read())[0] or set()
-    if not any(w.lower() in owners and r["state"] == "APPROVED" and r.get("commit_id") == head
-               for w, r in last.items()):
-        loud.append((f"no code owner's approval of {head[:12]} stands any more",
+    author = load(f"{d}/pr.json")["user"]["login"]
+    at_head, mine = counted(last, owners, head, author, ci == "1")
+    if not at_head:
+        but = f" (the author @{mine[0]}'s does not count)" if mine else ""
+        loud.append((f"no code owner's approval of {head[:12]} stands any more{but}",
                      f"ask the code owner why; if #{n} should not have landed, revert it"
                      " in a pull request"))
     asking = sorted(w for w, r in last.items() if r["state"] == "CHANGES_REQUESTED")
@@ -1249,5 +1261,5 @@ retarget() {
 read_reviews
 read_rules
 read_checks
-py still "$tmp" "$slug" "$head" "$n" ||
+py still "$tmp" "$slug" "$head" "$n" "$ci" ||
 	die "LOUD: main is $head, but what it was landed on changed during the push; look at #$n before anything else lands"

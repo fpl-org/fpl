@@ -1158,6 +1158,23 @@ git --git-dir="$REMOTE" update-ref refs/heads/main "$MO"
 reviews "$(review 1 psjg-claude APPROVED "$HGO" "gpt-ok: ${HGO:0:7}"), $(review 2 psjg APPROVED "$HGO" "fine")"
 GH_TOKEN=t expect 1 "--ci, the author's gpt-ok is no owner's attestation" --ci --dry-run 7
 says "NO  land/gpt" "it names the rule"
+# After the push, --ci counts the approvals as land/author did before it: the author's alone
+# is none. Both owners approve; the other's is dismissed while the push goes, the author's
+# stands. In --ci the reviews are read once before the push, so the second read is after it.
+both="$(review 1 psjg-claude APPROVED "$HGO"), $(review 2 psjg APPROVED "$HGO" "gpt-ok: ${HGO:0:7}")"
+forge
+git --git-dir="$REMOTE" update-ref refs/heads/main "$MO"
+reviews "$both"
+reviews "$(review 1 psjg-claude APPROVED "$HGO"), $(review 2 psjg DISMISSED "$HGO")" read2
+GH_TOKEN=t expect 1 "--ci, the other owner's approval is dismissed while the push goes" --ci 7
+says "LOUD: no code owner's approval of ${HGO:0:12} stands any more (the author @psjg-claude's does not count)" \
+	"the author's approval left standing does not hide it"
+main_is "$HGO" "main moved all the same: this detects, it cannot undo"
+forge
+git --git-dir="$REMOTE" update-ref refs/heads/main "$MO"
+reviews "$both"
+GH_TOKEN=t expect 0 "--ci, both owners' approvals stand after the push" --ci 7
+lacks "LOUD" "the other owner's approval counts after the push as before it"
 at="$H" HEAD_SHA="$H"
 forge
 pull open false main @MERGED@ '## What\n## What changes\n## How checked\n## Limits'
