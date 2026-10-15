@@ -25,8 +25,10 @@ went through `rad init`. `--self-test` runs the whole thing in a throwaway Radic
 """
 
 import argparse
+import functools
 import json
 import os
+import runpy
 import shutil
 import subprocess
 import sys
@@ -249,14 +251,26 @@ def read_units(path):
 
 
 def check_unit(path, names, unit):
-    """One row of a unit file: its label reads back from its title, and every label it names
-    is one of `names`."""
-    label_, part, blockers, title, _ = unit
+    """One row of a unit file: its label reads back from its title, the reducer would open
+    it, and every label it names is one of `names`."""
+    label_, part, blockers, title, brief = unit
     if label({"title": title}) != label_:
         die(f"{path}: '{label_}': a label is one word not ending in ':', as a title's is read")
+    if not reducer()["apply"]({}, {"type": "open", "title": title, "description": brief}, None):
+        die(
+            f"{path}: {label_}: the reducer would not open it; a title takes at most "
+            f"{reducer()['MAX_TITLE']} characters, a brief {reducer()['MAX_DESCRIPTION']}"
+        )
     for ref in [*([part] if part else []), *blockers]:
         if ref not in names:
             die(f"{path}: {label_} names {ref}, which is not a row")
+
+
+@functools.cache
+def reducer():
+    """scripts/rad-cob-dagtaak's globals: its own `apply` and limits decide what a load may
+    write, so they are written down once. runpy compiles it in memory, leaving no bytecode."""
+    return runpy.run_path(os.path.join(HERE, "rad-cob-dagtaak"), run_name="rad-cob-dagtaak")
 
 
 def leak_gate(units):
@@ -368,14 +382,28 @@ def link(graph, ids, step, dry):
 
 def links(graph, units, ids):
     """(label, part, blockers, reparent) for every unit: the links `load` has to add, as
-    labels, and whether its parent changes."""
+    labels, and whether its parent changes. Before any write, it refuses what the reducer
+    would skip without a word while `rad cob update` succeeds: a link to a task this
+    identity may not link (only the author sets a parent; the author or the assignee a
+    blocker), and more blockers on one task than the reducer keeps.
+    """
     names = {oid: label(t).lower() for oid, t in graph.tasks.items()}
-    plan = []
+    me, plan = None, []
     for label_, part, blockers, _, _ in units:
         old = graph.tasks.get(ids.get(label_.lower()), {})
         held = {names.get(b) for b in old.get("blockedBy", [])}
         todo = [b for b in blockers if b.lower() not in held]
         reparent = part is not None and names.get(old.get("partOf")) != part.lower()
+        count = len(old.get("blockedBy", [])) + len(todo)
+        if count > reducer()["MAX_BLOCKERS"]:
+            die(f"{label_}: {count} blockers; the reducer keeps {reducer()['MAX_BLOCKERS']}")
+        if old and (todo or reparent):
+            me = me or rad("self", "--did").strip()
+            if me != old.get("author") and (reparent or me != old.get("assignee")):
+                die(
+                    f"{label_}: its task is not yours to link (author {old.get('author')}); "
+                    "nothing written"
+                )
         plan.append((label_, part, todo, reparent))
     return plan
 
@@ -838,8 +866,16 @@ def refusals(f):
     )
     for name, rows, says in (
         ("two labels that differ in case only", "Q3\t-\t\tone\tx\nq3\t-\t\ttwo\tx\n", "twice"),
+        (
+            "more blockers than the reducer keeps",
+            "".join(f"Z{n}\t-\t\tz\tx\n" for n in range(65))
+            + f"Q1\t-\t{','.join(f'Z{n}' for n in range(65))}\tone\tx\n",
+            "Q1: 65 blockers",
+        ),
         ("a label of two words", "Q 1\t-\t\tone\tx\n", "'Q 1': a label is one word"),
         ("a label ending in a colon", "Q1:\t-\t\tone\tx\n", "'Q1:': a label is one word"),
+        ("a title over the reducer's limit", f"Q1\t-\t\t{'n' * 200}\tx\n", "Q1: the reducer"),
+        ("a brief over the reducer's limit", f"Q1\t-\t\tone\t{'b' * 10_001}\n", "Q1: the reducer"),
     ):
         refused = f.task("load", f.file("bad.tsv", rows), ok=False)
         f.check(
