@@ -13,9 +13,10 @@ set disabled and the exclusions go back to main alone.
 It is idempotent: the ruleset is read first, and written only when its enforcement or its
 excluded refs differ from what they should be. The write is a PUT of `enforcement` and
 `conditions` alone, with the included refs copied from what was read; `rules` and
-`bypass_actors` are not sent, so the forge keeps them. A count that says `"ok": false`, a
-ruleset that is not there, and an answer of another shape change nothing and exit 1: an
-unreadable count must never let the brake off.
+`bypass_actors` are not sent, so the forge keeps them. A count whose `ok` is not the JSON
+true, or that lacks a whole `count` and `cap` or a `drain` list of branch names, a ruleset
+that is not there, and an answer of another shape change nothing and exit 1: an unreadable
+count must never let the brake off.
 
 The token (GH_TOKEN) must be allowed to administer the repository: in the workflow it is
 the fpl-brake App's. With --dry-run it reads, says what it would write, and writes nothing.
@@ -81,10 +82,13 @@ def wanted(count: dict[str, Any]) -> tuple[str, list[str]]:
 
 def flip(call: Call, count: dict[str, Any], repo: str, name: str, dry: bool) -> list[str]:
     """Bring the ruleset to what `count` asks; the lines of the report. Raises on refusal."""
-    if not count.get("ok"):
+    if count.get("ok") is not True:  # a string "false" is truthy: only a true JSON true passes
         raise ValueError(f"the count is unreadable ({count.get('error')}): nothing changed")
     if any(type(count.get(k)) is not int for k in ("count", "cap")):
         raise ValueError("the count has no whole number count and cap: nothing changed")
+    drain = count.get("drain")
+    if not isinstance(drain, list) or any(not isinstance(h, str) or not h for h in drain):
+        raise ValueError("the count has no drain list of branch names: nothing changed")
     found = [r for r in listed(call, f"repos/{repo}/rulesets") if r["name"] == name]
     if len(found) != 1:
         raise ValueError(f"{len(found)} rulesets named {name!r} on {repo}: nothing changed")
@@ -200,6 +204,10 @@ def n(count: int, *drain: str, ok: bool = True) -> dict[str, Any]:
     }
 
 
+def without(count: dict[str, Any], key: str) -> dict[str, Any]:
+    return {k: v for k, v in count.items() if k != key}
+
+
 ON = ["refs/heads/main", "refs/heads/a", "refs/heads/b"]
 CASES: list[tuple[str, tuple[Any, ...], dict[str, Any], bool, Any]] = [
     # name, forge (enforcement, exclude, rulesets so named), count, dry run, writes or error
@@ -231,6 +239,27 @@ CASES: list[tuple[str, tuple[Any, ...], dict[str, Any], bool, Any]] = [
         ("active", [MAIN]),
     ),
     ("a count of another shape changes nothing", ("active", ON, 1), {"ok": True}, False, "whole"),
+    (
+        "an ok that is not true changes nothing",
+        ("active", ON, 1),
+        {**n(0), "ok": "false"},
+        False,
+        "unreadable",
+    ),
+    (
+        "a count with no drain list changes nothing",
+        ("active", ON, 1),
+        without(n(0), "drain"),
+        False,
+        "drain list",
+    ),
+    (
+        "a drain that is not a list changes nothing",
+        ("active", ON, 1),
+        {**n(0), "drain": "ab"},
+        False,
+        "drain list",
+    ),
     (
         "a write that dropped the rules is loud",
         ("disabled", [MAIN], 1, 0, True),
