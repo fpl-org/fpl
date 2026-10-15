@@ -57,7 +57,10 @@ jobs:
           ACTION: ${{ github.event.action }}
           PR: ${{ github.event.pull_request.number }}
         run: |
-          set -u
+          # errexit is said here, not left to the runner's default shell: if main cannot be
+          # fetched or its worktree made, the job stops red. Without it, a failed fetch would
+          # leave the FETCH_HEAD that checkout wrote, not main, under the "trusted" judge.
+          set -eu
           out="$RUNNER_TEMP/series"
           mkdir -p "$out"
           git fetch --no-tags origin main

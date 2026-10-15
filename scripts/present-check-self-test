@@ -187,7 +187,7 @@ audit() { # audit <file>: print each broken promise; the exit status is whether 
 	grep -vE '^[[:space:]]*#' "$1" >"$body"
 	if grep -E 'uses:' "$body" | grep -vE '@[0-9a-f]{40}([[:space:]]|$)'; then bad=1; fi
 	if grep -E 'secrets[.]' "$body"; then bad=1; fi
-	for needle in 'actions: write' 'pull_request_review:' 'land.yml' 'synchronize' 'reopened' 'edited' 'persist-credentials: false' 'head.repo.full_name' "needs.check.result != 'cancelled'"; do
+	for needle in 'set -eu' 'actions: write' 'pull_request_review:' 'land.yml' 'synchronize' 'reopened' 'edited' 'persist-credentials: false' 'head.repo.full_name' "needs.check.result != 'cancelled'"; do
 		grep -qF "$needle" "$body" || { echo "lacks: $needle" && bad=1; }
 	done
 	awk '
@@ -201,7 +201,7 @@ check "series.yml keeps its promises" audit "$yml"
 refuses() { ! "$@"; }
 for broken in 's/timeout-minutes/timeout-hours/' 's/\(uses: [^@]*\)@[0-9a-f]\{40\}/\1@v4/' \
 	's/github[.]token/secrets.TOKEN/' 's/actions: write/actions: read/' \
-	's/persist-credentials: false/persist-credentials: true/'; do
+	's/persist-credentials: false/persist-credentials: true/' 's/set -eu$/set -u/'; do
 	sed -e "$broken" "$yml" >"$tmp/broken.yml"
 	check "the audit refuses: $broken" refuses audit "$tmp/broken.yml" >/dev/null
 done
