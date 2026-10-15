@@ -89,7 +89,7 @@ git checkout -q work -- f1 f2
 commit "feat(x): one and two"
 git checkout -q work -- f3
 commit "feat(x): three, told last"
-run presentation 0 "trees equal" "merge-base equal" "ok    commit-lint" \
+run presentation 0 "trees equal" "merge-base equal" "ok    commit-lint" "skip  Series-Id" \
 	"lemmas of main" "1. " "2. " "quick=" "range-diff" "told last" "green, 2 commits" -- work pres
 check "presentation: quick ran once per presented commit" lines "$LOG" 2
 check "presentation: the second lemma did not see the first one's leftovers" test ! -s "$LEFT"
@@ -147,6 +147,29 @@ touch "$FLAG/lint-fail"
 run "lint red" 1 "commit-lint refuses" -- pres
 check "lint red: nothing built" lines "$LOG" 0
 rm "$FLAG/lint-fail"
+
+# Series-Id: judged only where scripts/series exists in P's tree.
+mk_series() { # mk_series <branch> <series?> <id-or-empty>...: one commit per id given
+	local b="$1" series="$2"
+	shift 2
+	git checkout -q -b "$b" main
+	[ "$series" != yes ] || { add scripts/series 755 && commit "feat(scripts): series" "Series-Id: $1"; }
+	local n=0 id
+	for id in "$@"; do
+		n=$((n + 1))
+		add "s$n"
+		if [ -n "$id" ]; then commit "feat(z): lemma $n" "Series-Id: $id"; else commit "feat(z): lemma $n"; fi
+	done
+}
+mk_series sid1b yes s1 s1
+mk_series sid2 yes s1 s2
+mk_series sid3 yes s1 ""
+mk_series sid4 no s1 s2
+git checkout -q sid1b
+run "one Series-Id" 0 "Series-Id (s1)" -- sid1b
+run "two Series-Ids" 1 "more than one Series-Id" -- sid2
+run "a lemma without Series-Id" 1 "has no Series-Id" -- sid3
+run "no scripts/series: not judged" 0 "skip  Series-Id" -- sid4
 
 # Self-tests of touched paths run; those of untouched paths do not.
 git checkout -q -b touched main
