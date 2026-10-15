@@ -35,6 +35,7 @@ changes nothing on an unreadable count.
     FPL_WIP_OWNER  whose request for changes keeps a branch pushable (default psjg)
 """
 
+import io
 import json
 import os
 import re
@@ -43,7 +44,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
-from http.client import HTTPException
+from http.client import HTTPException, IncompleteRead
 from typing import Any
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -78,8 +79,9 @@ def token() -> str:
     return done.stdout.strip() if done.returncode == 0 else ""
 
 
-def getter(secret: str) -> Get:
-    """GET one REST path; a list is followed through every `Link: rel="next"` page."""
+def getter(secret: str, opener: Callable[..., Any] = urlopen) -> Get:
+    """GET one REST path; a list is followed through every `Link: rel="next"` page. `opener`
+    is urlopen, or a stand-in the self-test serves canned answers with."""
     headers = {"Accept": "application/vnd.github+json", "User-Agent": "fpl-wip-count"}
     if secret:
         headers["Authorization"] = f"Bearer {secret}"
@@ -88,7 +90,7 @@ def getter(secret: str) -> Get:
         url, items = f"{API}/{path}", None
         while url:
             try:
-                with urlopen(Request(url, headers=headers, method="GET"), timeout=20) as answer:
+                with opener(Request(url, headers=headers, method="GET"), timeout=20) as answer:
                     page = json.load(answer)
                     link = answer.headers.get("Link") or ""
             except HTTPError as e:
@@ -270,6 +272,50 @@ CASES: list[tuple[str, Get, str, list[str]]] = [
 ]
 
 
+class Answer:
+    """What `urlopen` returns, canned: a JSON body and a Link header."""
+
+    def __init__(self, body: Any, link: str = "") -> None:
+        self.body, self.headers = io.BytesIO(json.dumps(body).encode()), {"Link": link}
+
+    def read(self, size: int = -1) -> bytes:
+        return self.body.read(size)
+
+    def __enter__(self) -> "Answer":
+        return self
+
+    def __exit__(self, *_exc: Any) -> bool:
+        return False
+
+
+def served(*answers: Any) -> Callable[..., Any]:
+    """An opener that hands out `answers` in turn; an exception among them is raised."""
+    queue = iter(answers)
+
+    def opener(_request: Request, **_options: Any) -> Answer:
+        answer = next(queue)
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer  # type: ignore[no-any-return]
+
+    return opener
+
+
+def transport_failures() -> list[str]:
+    """What getter must do, against canned answers: the names of the checks it fails."""
+    more = f'<{API}/x?page=2>; rel="next"'
+    elsewhere = '<https://elsewhere.example/x>; rel="next"'
+    paged = getter("", served(Answer([1, 2], more), Answer([3])))("x")
+    foreign = getter("", served(Answer([1], elsewhere)))("x")
+    cut = measure(getter("", served(IncompleteRead(b"{", 10))), R, 50, "psjg")
+    checks = {
+        "a list is followed through its next pages": paged == [1, 2, 3],
+        "a next page on another host is not followed": foreign == [1],
+        "a cut-off answer is an unreadable forge": not cut["ok"] and "Incomplete" in cut["error"],
+    }
+    return [name for name, held in checks.items() if not held]
+
+
 def self_test() -> int:
     """Each case: the line it must print (when given), the pull requests it must drain, and,
     unless the line says `?`, that the forge was read: a case that expects nothing drained
@@ -291,7 +337,10 @@ def self_test() -> int:
             if not line(saved(file)).startswith(want):
                 failed += 1
                 print(f"wip-count self-test: FAIL --from {file}: {line(saved(file))!r}")
-    total = len(CASES) + 2
+    for name in transport_failures():
+        failed += 1
+        print(f"wip-count self-test: FAIL {name}")
+    total = len(CASES) + 2 + 3
     print(f"wip-count self-test: {total - failed}/{total} cases pass")
     return 1 if failed else 0
 
