@@ -160,10 +160,13 @@ ready: harden gates
 # The harness's own Python, judged by the same ruff it judges others with.
 HARNESS := $(addprefix $(S)/,crap props escapes mutants gates forward-only diagrams ruff-limits \
              wip-count brake-flip) \
-           $(Q)/noslop_pytest.py
+           $(addprefix $(S)/,task rad-cob-dagtaak) $(Q)/noslop_pytest.py
 
 # config-fresh is a prerequisite, as it is of check; scripts/gen-config-self-test is the proof
 # that it still bites, and scripts/ruff-limits --self-test that the width check does.
+# scripts/task needs rad, which only the radicle layer of the dev shell carries, so its
+# self-test runs in that shell; nix is already required here (config-fresh). The reducer,
+# scripts/rad-cob-dagtaak, needs nothing but Python.
 gates: venv config-fresh
 	$(BIN)/ruff check --config $(Q)/ruff.toml $(HARNESS)
 	$(BIN)/ruff format --config $(Q)/ruff.toml --check $(HARNESS)
@@ -187,6 +190,8 @@ gates: venv config-fresh
 	$(S)/land-self-test
 	$(S)/series-self-test
 	$(S)/present-check-self-test
+	$(BIN)/python $(S)/rad-cob-dagtaak --self-test
+	nix develop $(ROOT)#radicle -c python3 $(S)/task --self-test
 	$(BIN)/python $(S)/gates
 
 # Each tool syncs its own locked environment into <tool>/.venv, so its dependencies never
