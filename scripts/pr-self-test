@@ -280,6 +280,17 @@ logged 1 "A body from a file." "with the file's text"
 run 1 "replacing a body with a private term" --update-body 5 "$tmp/leaky.md"
 says err "nothing was sent" "leak gate on --update-body"
 logged 1 "PATCH /repos/pr-test/fpl/pulls/5" "no second patch"
+# A file that changes after the gate passed it: a leak-check that appends to the file once it
+# has judged it stands in for a writer racing the request. The text sent is the text judged.
+mv scripts/leak-check scripts/leak-check.real
+printf '#!/bin/sh\nrc=0\n"$0.real" "$@" || rc=$?\necho CHANGED-AFTER-CHECK >>"%s"\nexit $rc\n' \
+	"$tmp/body.md" >scripts/leak-check
+chmod +x scripts/leak-check
+run 0 "replacing a body that changes after the gate" --update-body 5 "$tmp/body.md"
+logged 2 "PATCH /repos/pr-test/fpl/pulls/5" "the body is patched again"
+logged 0 "CHANGED-AFTER-CHECK" "with the text the gate judged, not the file's later text"
+mv scripts/leak-check.real scripts/leak-check
+printf 'A body from a file.\n\nWith two paragraphs.\n' >"$tmp/body.md"
 run 1 "a pull request number that is not one" --update-body five "$tmp/body.md"
 run 1 "a missing file" --update-body 5 "$tmp/nowhere.md"
 run 1 "--update-body with a branch beside it" --update-body 5 "$tmp/body.md" "$FEAT"

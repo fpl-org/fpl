@@ -280,12 +280,18 @@ pyapi() {
 		FPL_PR_POLL="${FPL_PR_POLL:-15}" python3 -c "$pysrc" "$@"
 }
 
+# What goes to the forge is first written here and leak-checked here, and the copy is what
+# is sent: a file read twice, once for the gate and once for the request, could change in
+# between, and the forge would get text the gate never saw.
+said="$(mktemp -d)"
+trap 'rm -rf -- "$said"' EXIT
+
 # The modes that work on a pull request already open need no branch.
 case "$mode" in
 update-body)
-	[ -r "$arg" ] || die "cannot read '$arg'"
-	"$top/scripts/leak-check" --text "$arg" || die "nothing was sent"
-	pyapi update-body "$num" "$arg"
+	cat -- "$arg" >"$said/body" || die "cannot read '$arg'"
+	"$top/scripts/leak-check" --text "$said/body" || die "nothing was sent"
+	pyapi update-body "$num" "$said/body"
 	exit 0
 	;;
 ready)
@@ -346,8 +352,6 @@ fi
 
 # The forge is public: the title, the text and the branch name go through the leak gate
 # first (scripts/leak-check; FPL_LEAK_GATE=warn overrides), dry run or not.
-said="$(mktemp -d)"
-trap 'rm -rf -- "$said"' EXIT
 printf '%s\n%s\n\n%s\n' "$branch" "$title" "$text" >"$said/pull-request"
 "$top/scripts/leak-check" --text "$said/pull-request" || die "nothing was sent"
 
