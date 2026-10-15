@@ -13,9 +13,10 @@
 #   make run FILE=f   run the file f, a path from the root:    make run FILE=path/to/p.fpl
 #   make repl ARGS=a  the REPL, with its arguments a:          make repl ARGS='-e "1 + 2"'
 #   make image        the dev shell as an OCI image, ./result-oci (.agents/DEVSHELL.md)
+#   make image-quick  make quick inside the loaded image, on this checkout
 .DEFAULT_GOAL := check
 LANES := fix quick check harden ready gates tools map venv pristine clean-noslop
-.PHONY: $(LANES) run repl image
+.PHONY: $(LANES) run repl image image-quick
 
 $(LANES):
 	@$(MAKE) --no-print-directory -C bootstrap $@
@@ -46,3 +47,11 @@ IMAGE_SYSTEM ?= $(subst darwin,linux,$(HOST_SYSTEM))
 
 image:
 	nix build ".#packages.$(IMAGE_SYSTEM).oci" --out-link result-oci
+
+# make quick inside the loaded image, on this checkout, as the caller: as root one test fails.
+# The tmpfs over /work/.venv gives the container a venv of its own: the host's was synced for
+# the host, and its stamp would have the lanes run the host's binaries. Docker mounts a tmpfs
+# root-owned and noexec, hence exec,mode=1777.
+image-quick:
+	docker run --rm --user "$$(id -u):$$(id -g)" -v "$(CURDIR)":/work \
+	  --tmpfs /work/.venv:exec,mode=1777 fpl-dev make quick
