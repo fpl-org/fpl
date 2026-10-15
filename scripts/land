@@ -66,7 +66,8 @@
 #   land/size               at most 10 commits and 600 lines added plus removed
 #   land/workflows          no commit touches .github/workflows: those land by the owner path
 #   land/gpt                a commit whose Assisted-By names a GPT model is named by a line
-#                           gpt-ok: <sha> in a code owner's approval of the head
+#                           gpt-ok: <sha> in a code owner's approval of the head, a prefix of
+#                           at least 7 hex digits that no other commit of the range shares
 #   land/series             once main holds scripts/series: one Series-Id on every commit
 #   land/series-fresh       and no commit on main carries it yet
 #   land/patch-fresh        no commit's `git patch-id --verbatim` is one on main already
@@ -757,12 +758,19 @@ def judge_range(v, pr, main, head, bodies):
              " owner pushes the head to main with his deploy key")
     else:
         v.ok("land/workflows", "it touches no file in .github/workflows")
-    oks = re.findall(r"gpt-ok:\s*([0-9a-f]{7,40})", "\n".join(bodies))
+    # A gpt-ok names the one commit of the range its abbreviation matches; one that matches
+    # two names neither, or a single line could attest a commit ground to share its prefix.
+    oks = set(re.findall(r"gpt-ok:\s*([0-9a-f]{7,40})", "\n".join(bodies)))
+    match = {o: [c for c in commits if c.startswith(o)] for o in oks}
+    named = {m[0] for m in match.values() if len(m) == 1}
+    vague = sorted(o for o, m in match.items() if len(m) > 1)
     gpt = [c for c, vals in trailers(span, "Assisted-By")
-           if any("gpt" in x.lower() for x in vals) and not any(c.startswith(o) for o in oks)]
+           if any("gpt" in x.lower() for x in vals) and c not in named]
     if gpt:
-        v.no("land/gpt", "a GPT model assisted " + " ".join(c[:12] for c in gpt),
-             f"the code owner reads each and approves {h} with a line gpt-ok: <sha> for it")
+        v.no("land/gpt", "a GPT model assisted " + " ".join(c[:12] for c in gpt)
+             + (f"; gpt-ok {', '.join(vague)} matches more than one commit" if vague else ""),
+             f"the code owner reads each and approves {h} with a line gpt-ok: <sha> for it,"
+             " a prefix no other commit of the range shares")
     else:
         v.ok("land/gpt", "no commit a GPT model assisted lacks the owner's gpt-ok")
     judge_series(v, main, span)

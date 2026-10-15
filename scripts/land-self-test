@@ -1175,6 +1175,48 @@ git --git-dir="$REMOTE" update-ref refs/heads/main "$MO"
 reviews "$both"
 GH_TOKEN=t expect 0 "--ci, both owners' approvals stand after the push" --ci 7
 lacks "LOUD" "the other owner's approval counts after the push as before it"
+# Two commits a GPT model assisted whose SHAs share their first 7 digits, siblings on M0, and
+# HV, a merge of both. Python hashes commit objects of fixed text, a counter in the message,
+# until two prefixes meet (about 20 000 tries by the birthday bound, well under a second);
+# git then writes those two texts, so the SHAs are the ones hashed.
+python3 - "$(git -C "$repo" rev-parse "$M0^{tree}")" "$M0" "$tmp/v" <<'PY'
+import hashlib
+import sys
+
+tree, parent, out = sys.argv[1:]
+seen, i = {}, 0
+while True:
+    text = (f"tree {tree}\nparent {parent}\nauthor t <t@example.invalid> 0 +0000\n"
+            f"committer t <t@example.invalid> 0 +0000\n\nassisted {i}\n\n"
+            "Assisted-By: gpt-6.1-sol\n").encode()
+    sha = hashlib.sha1(b"commit %d\0" % len(text) + text).hexdigest()
+    if sha[:7] in seen:
+        break
+    seen[sha[:7]] = text
+    i += 1
+open(out + "1", "wb").write(seen[sha[:7]])
+open(out + "2", "wb").write(text)
+PY
+V1="$(git -C "$repo" hash-object -t commit -w "$tmp/v1")"
+V2="$(git -C "$repo" hash-object -t commit -w "$tmp/v2")"
+HV="$(git -C "$repo" commit-tree "$M0^{tree}" -p "$V1" -p "$V2" -m "both")"
+git -C "$repo" push -q "$REMOTE" "$HV:refs/heads/hv"
+total=$((total + 1))
+if [ "${V1:0:7}" != "${V2:0:7}" ] || [ "$V1" = "$V2" ]; then
+	fails=$((fails + 1))
+	echo "self-test: the two commits do not share a prefix: $V1 $V2" >&2
+fi
+at="$HV" HEAD_SHA="$HV"
+forge
+reviews "$(review 1 psjg APPROVED "$HV" "gpt-ok: ${V1:0:7}")"
+expect 1 "one gpt-ok whose prefix two assisted commits share" --dry-run 7
+says "NO  land/gpt" "it attests neither"
+says "gpt-ok ${V1:0:7} matches more than one commit" "it names the prefix"
+forge
+reviews "$(review 1 psjg APPROVED "$HV" "gpt-ok: $V1 gpt-ok: $V2")"
+expect 1 "a gpt-ok for each, in full (the merge between them is refused)" --dry-run 7
+says "ok  land/gpt" "each names one commit"
+at="$H" HEAD_SHA="$H"
 at="$H" HEAD_SHA="$H"
 forge
 pull open false main @MERGED@ '## What\n## What changes\n## How checked\n## Limits'
