@@ -4,6 +4,7 @@
     scripts/task new "<title>" [-d <description>] [-b <id>]... [-p <id>]   open a task
     scripts/task list [--all]        open tasks; --all includes done and dropped
     scripts/task ready               tasks nothing waits on (not lanes); exit 1 if a loop is left
+    scripts/task tree                every task under what it is part of, with what it waits on
     scripts/task show <id>
     scripts/task start|done|drop|reopen <id>
     scripts/task block [-f] <id> <by>  <id> must wait for <by>;  unblock removes it
@@ -205,6 +206,61 @@ def line(graph, oid):
     return f"{oid[:7]}  {task['state']:<7}  {task['title']}{who}{tail}"
 
 
+def tree(graph):
+    """Every task under what it is part of; each open leaf says `ready` or what it waits on.
+
+    A label names a blocker where one is known, an object id where not. Two things make the
+    exit code 1, the way a blocker loop does for `ready`, each with a comment after the
+    tree. Tasks whose parents loop back on themselves cannot be reached from a root: they
+    are listed. A parent this clone has not received (partial replication, a peer's
+    operation) is drawn as a root marked `?`, with its parts under it, rather than letting
+    them pass for roots that are part of nothing.
+    """
+    kids = {}
+    for oid, task in graph.tasks.items():
+        # Filed under the parent as recorded: a task that is its own part stays under
+        # itself, out of reach of every root, and so is lost.
+        kids.setdefault(task.get("partOf"), []).append(oid)
+    for group in kids.values():
+        group.sort(key=lambda o: (graph.tasks[o]["title"], o))
+    absent = sorted(p for p in kids if p is not None and p not in graph.tasks)
+    shown = set()
+    for root in kids.get(None, []) + absent:
+        draw(graph, kids, root, "", shown)
+    lost = sorted(o[:7] for o in graph.tasks if o not in shown)
+    for note, ids in (
+        ("not in this clone, parts shown under it", [p[:7] for p in absent]),
+        ("part of each other, not shown above", lost),
+    ):
+        if ids:
+            print(f"# {note}: {' '.join(ids)}")
+    return 1 if absent or lost else 0
+
+
+def draw(graph, kids, oid, indent, shown):
+    """Print `oid` at `indent` and its parts below it, adding each to `shown`."""
+    shown.add(oid)
+    task = graph.tasks.get(oid)
+    if task is None:
+        print(f"{indent}{oid[:7]}  {'?':<7}  (not in this clone)")
+    else:
+        leaf = task["state"] in OPEN_STATES and oid not in kids
+        mark = waits(graph, oid) if leaf else ""
+        print(f"{indent}{oid[:7]}  {task['state']:<7}  {task['title']}{mark}")
+    for child in kids.get(oid, []):
+        draw(graph, kids, child, indent + "    ", shown)
+
+
+def waits(graph, oid):
+    """What an open leaf of the tree shows: `  ready`, or `  <- ` and what it waits on."""
+
+    def name(b):
+        return label(graph.tasks[b]) if b in graph.tasks else b[:7]
+
+    waiting = sorted(graph.waiting_on(oid), key=name)
+    return f"  <- {' '.join(name(b) for b in waiting)}" if waiting else "  ready"
+
+
 def parser():
     """The command line, as the module's docstring gives it."""
     top = argparse.ArgumentParser(prog="scripts/task", description=__doc__.split("\n\n")[0])
@@ -214,6 +270,7 @@ def parser():
     new.add_argument("-d", "--description", default="")
     new.add_argument("-b", "--blocked-by", action="append", default=[])
     new.add_argument("-p", "--part-of")
+    sub.add_parser("tree")
     part = sub.add_parser("part")
     part.add_argument("id")
     part.add_argument("of", help="a task, or 'none' to clear")
@@ -338,12 +395,17 @@ def editing(graph, args):
     graph.act(oid, "edit", action)
 
 
+def drawing(graph, _args):
+    return tree(graph)
+
+
 # Each command, by name: it gets the graph and the parsed arguments, and returns the exit
 # code, or None for 0.
 COMMANDS = {
     "new": opening,
     "list": listing,
     "ready": listing,
+    "tree": drawing,
     "part": parting,
     "show": showing,
     **dict.fromkeys(VERBS, moving),
@@ -422,11 +484,11 @@ class Fixture:
         )
         os.makedirs(self.repo)
 
-    def sh(self, *cmd, ok=True):
+    def sh(self, *cmd, ok=True, extra=None):
         done = subprocess.run(
             cmd,
             cwd=self.repo,
-            env=self.env,
+            env={**self.env, **(extra or {})},
             capture_output=True,
             text=True,
             check=False,
@@ -444,6 +506,22 @@ class Fixture:
 
     def check(self, name, ok):
         self.checks.append((name, bool(ok)))
+
+    def file(self, name, text):
+        path = f"{self.tmp}/{name}"
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return path
+
+    def raw(self, oid, action):
+        """Write `action` on task `oid` with rad itself, past scripts/task's own checks, as
+        a peer could; rad finds the reducer on PATH."""
+        self.sh(
+            *("rad", "cob", "update", "--repo", self.sh("rad", ".").stdout.strip()),
+            *("--type", TYPE, "--object", oid, "--message", "raw"),
+            self.file("raw.jsonl", json.dumps(action) + "\n"),
+            extra={"PATH": HERE + os.pathsep + self.env.get("PATH", "")},
+        )
 
     def init(self, untouched):
         """rad auth, a git repository with one commit, rad init. `untouched` is asked
@@ -485,16 +563,49 @@ def basics(f):
     return lexer, parser
 
 
-def lanes(f, lexer):
-    """part, -p and labels, and a lane in ready."""
+def lanes(f, lexer, parser):
+    """part, -p, labels, and the tree, a part-of loop that arrives from a peer included."""
     lane = f.out("new", "lane-X the lane").strip()
     unit = f.out("new", "X1 a unit", "-p", lane).strip()
     f.task("part", lexer, lane)
     lane_id = json.loads(f.out("show", lane))["id"]
     f.check("part and -p are stored", json.loads(f.out("show", "X1"))["partOf"] == lane_id)
     f.check("a label names a task", f.task("show", "lane-X").returncode == 0)
+    shown = f.out("tree").splitlines()
+    f.check(
+        "tree nests a part under its lane",
+        any(row.startswith(lane) for row in shown)
+        and any(row.startswith("    " + unit) for row in shown),
+    )
+    f.check("tree says ready", any("X1 a unit  ready" in row for row in shown))
     f.check("part loop refused", f.task("part", lane, "X1", ok=False).returncode == 2)
     f.task("part", lexer, "none")
+    f.task("block", unit, parser)
+    f.check(
+        "tree names a blocker by its label",
+        any(row.endswith("<- parser") for row in f.out("tree").splitlines()),
+    )
+    # A task that is its own part, as a peer may send it: the reducer cannot see the loop,
+    # so tree has to report it rather than draw a root.
+    f.raw(lane_id, {"type": "part", "of": lane_id})
+    looped = f.task("tree", ok=False)
+    f.check(
+        "a task its own part is reported, not drawn as a root",
+        looped.returncode == 1
+        and lane in looped.stdout.splitlines()[-1]
+        and not looped.stdout.startswith(lane),
+    )
+    # A parent this clone does not have: its parts are drawn under it, not as roots.
+    f.raw(lane_id, {"type": "part", "of": "f" * 40})
+    orphan = f.task("tree", ok=False)
+    f.check(
+        "a part of a task this clone lacks is drawn under it, not as a root",
+        orphan.returncode == 1
+        and "fffffff  ?" in orphan.stdout
+        and f"\n    {lane}" in orphan.stdout
+        and "not in this clone, parts shown under it: fffffff" in orphan.stdout,
+    )
+    f.task("part", lane, "none")
     f.check("a lane is not ready", lane not in f.out("ready"))
     f.task("drop", unit)
     f.check("a lane whose parts are all closed is ready", lane in f.out("ready"))
@@ -550,8 +661,8 @@ def self_test():
         before = tree_bytes(f"{tmp}/decoy/.git")
         f = Fixture(tmp)
         f.init(lambda: tree_bytes(f"{tmp}/decoy/.git") == before)
-        lexer, _ = basics(f)
-        lanes(f, lexer)
+        lexer, parser = basics(f)
+        lanes(f, lexer, parser)
         loops(f)
         oid = json.loads(f.out("show", lexer))["id"]
         rid = f.sh("rad", ".").stdout.strip()
