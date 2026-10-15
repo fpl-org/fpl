@@ -5,18 +5,18 @@
 # worktree of its own (scripts/present-check), so a series is judged lemma by lemma. It posts
 # one comment: whether the push changed the presentation (the same tree, another story),
 # relocated the series (the same patches, a moved base) or changed its content, the lemma list
-# with seconds, and the range-diff against the head the push replaced. When the owner approves,
-# a relay dispatches land.yml on main with the pull request number; until that workflow
-# arrives (a later unit) the relay fails loudly and changes nothing.
+# with seconds, and the range-diff against the head the push replaced. The owner's approval is
+# relayed by series-relay.yml, a workflow of its own: a review event would otherwise start this
+# workflow too, and the jobs it skipped would report success under the names of the checks a
+# push just judged.
 #
-# Three jobs, split by what they may do: `lemmas` runs the pull request's code and only reads;
+# Two jobs, split by what they may do: `lemmas` runs the pull request's code and only reads;
 # `comment` holds the one write, to the conversation, and runs none of that code (a fork's
-# token cannot write, so for a fork the text goes to the run's summary page instead); `relay` holds
-# actions: write and nothing else, which GitHub withholds from a fork's run, so for a fork it
-# refuses and names the dispatch the owner makes by hand. The judge is main's, as in commit-lint.yml: present-check
-# runs from a worktree of main, so a pull request cannot loosen its own verdict. Refs, SHAs and
-# numbers reach the shell through env, never through an expression in the script text. There is
-# no secret here; the jobs use the token GitHub gives each run.
+# token cannot write, so for a fork the text goes to the run's summary page instead). The judge
+# is main's, as in commit-lint.yml: present-check runs from a worktree of main, so a pull
+# request cannot loosen its own verdict. Refs, SHAs and numbers reach the shell through env,
+# never through an expression in the script text. There is no secret here; the jobs use the
+# token GitHub gives each run.
 name: series
 
 on:
@@ -26,8 +26,6 @@ on:
     # a job skipped by its `if` reports success, so a skipped edit run would stand in for a red
     # one on the same head. Only the comment skips edits that did not move the base.
     types: [opened, synchronize, reopened, edited]
-  pull_request_review:
-    types: [submitted]
 
 permissions:
   contents: read
@@ -35,7 +33,6 @@ permissions:
 jobs:
   # Not `check`: noslop.yml has a job of that name, and a required check is named by its job.
   lemmas:
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     # A text edit has a group of its own, so it never cancels a push's run and its comment.
@@ -117,8 +114,7 @@ jobs:
     # comments, and a cancelled check leaves nothing to post.
     needs: lemmas
     if: >-
-      always() && github.event_name == 'pull_request'
-      && needs.lemmas.result != 'skipped' && needs.lemmas.result != 'cancelled'
+      always() && needs.lemmas.result != 'skipped' && needs.lemmas.result != 'cancelled'
       && (github.event.action != 'edited' || github.event.changes.base != null)
       && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
@@ -139,32 +135,3 @@ jobs:
           # The target comes from the event, never from the artifact: the artifact is written
           # by the pull request's own code.
           gh api "repos/$REPO/issues/$PR/comments" -F body=@series/comment.md >/dev/null
-
-  relay:
-    if: >-
-      github.event_name == 'pull_request_review'
-      && github.event.review.state == 'approved'
-      && github.event.review.user.login == 'psjg'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      actions: write
-    steps:
-      - name: Dispatch land.yml on main
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          # A fork's run gets a read-only token whatever this job asks for: say so, not a 403.
-          [ "$HEAD_REPO" = "$REPO" ] || {
-            echo "::error::pull request $PR comes from the fork $HEAD_REPO, whose run cannot hold actions: write; nothing was dispatched: run land.yml on main by hand with pr=$PR"
-            exit 1
-          }
-          # Fails loudly while land.yml is not on main, and has changed nothing by then.
-          gh workflow view land.yml --repo "$REPO" --ref main >/dev/null 2>&1 || {
-            echo "::error::land.yml is not on main yet; nothing was dispatched for pull request $PR"
-            exit 1
-          }
-          gh workflow run land.yml --repo "$REPO" --ref main -f pr="$PR"
