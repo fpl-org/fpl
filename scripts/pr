@@ -25,6 +25,10 @@
 # that has not yet started a check is not pending to the forge: run it after a push has
 # had a minute to start its checks. No labels are set or read.
 #
+# A call to the forge that gets no answer ends in an error, not a hang: each call may wait
+# FPL_PR_TIMEOUT seconds (default 30) for the forge to send, and during --ready no longer
+# than what is left of FPL_PR_WAIT, but at least one second.
+#
 # A pull request is based on main. It is based on another branch only when that is a stack
 # the author chose: -B <parent> names the head branch of a pull request that is open, and
 # the branch must already be built on it. If it is not, this stops and says how to rebase
@@ -180,10 +184,12 @@ esac
 # The forge side, one python program for every call: pyapi <command> <argument>...
 # It first checks that the token is the machine account's, whichever command follows.
 read -r -d '' pysrc <<'PY' || true
-import json, os, sys, time, urllib.error, urllib.request
+import json, os, socket, sys, time, urllib.error, urllib.request
 
 slug, login, token = os.environ["FPL_SLUG"], os.environ["FPL_LOGIN"], os.environ["FPL_TOKEN"]
 root = os.environ.get("FPL_API_URL", "https://api.github.com")
+cap = float(os.environ["FPL_PR_TIMEOUT"])
+deadline = None  # set by ready: the end of the wait the caller allowed
 
 
 def die(message):
@@ -193,6 +199,15 @@ def die(message):
 
 if root != "https://api.github.com" and not root.startswith("http://127.0.0.1:"):
     die(f"FPL_API_URL '{root}' is neither GitHub nor this machine; the token stays home")
+
+
+def bound():
+    """Seconds one call to the forge may wait on its socket: the cap, and while --ready waits,
+    no more than is left of the wait, but at least a second, so that a wait of 0 still reads
+    once. The limit is on each wait for the forge to send, not on the whole transfer."""
+    if deadline is None:
+        return cap
+    return min(cap, max(deadline - time.monotonic(), 1.0))
 
 
 def api(path, payload=None, method=None, refused=""):
@@ -207,13 +222,19 @@ def api(path, payload=None, method=None, refused=""):
         },
         method=method or ("GET" if payload is None else "POST"),
     )
+    seconds = bound()
     try:
-        with urllib.request.urlopen(request) as response:
+        with urllib.request.urlopen(request, timeout=seconds) as response:
             return json.load(response)
     except urllib.error.HTTPError as error:
         detail = json.loads(error.read() or b"{}")
         remedy = f"; {refused}" if refused and error.code == 403 else ""
         die(f"{path}: {error.code} {detail.get('message', error.reason)}{remedy}")
+    except (urllib.error.URLError, OSError) as error:
+        reason = getattr(error, "reason", error)
+        if isinstance(reason, socket.timeout):
+            die(f"{path}: no answer in {seconds:.1f}s (FPL_PR_TIMEOUT, FPL_PR_WAIT)")
+        die(f"{path}: {reason}")
 
 
 def pages(path, key, refused=""):
@@ -311,6 +332,7 @@ elif command == "ready":
         if time.monotonic() >= deadline:
             die(f"#{number} at {sha[:7]} is not quiet after {wait:g}s: " + "; ".join(pending))
         time.sleep(min(poll, max(deadline - time.monotonic(), 0)))
+    deadline = None  # the wait is over; the mutation gets the cap, not what is left
     marked = api(
         "/graphql",
         {
@@ -327,7 +349,7 @@ else:
 PY
 pyapi() {
 	FPL_SLUG="$slug" FPL_LOGIN="$login" FPL_TOKEN="$token" FPL_PR_WAIT="${FPL_PR_WAIT:-900}" \
-		FPL_PR_POLL="${FPL_PR_POLL:-15}" python3 -c "$pysrc" "$@"
+		FPL_PR_POLL="${FPL_PR_POLL:-15}" FPL_PR_TIMEOUT="${FPL_PR_TIMEOUT:-30}" python3 -c "$pysrc" "$@"
 }
 
 # What goes to the forge is first written here and leak-checked here, and the copy is what
