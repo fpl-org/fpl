@@ -336,7 +336,8 @@ def tree(graph):
     kids = {}
     for oid, task in graph.tasks.items():
         parent = task.get("partOf")
-        kids.setdefault(parent if parent in graph.tasks and parent != oid else None, []).append(oid)
+        # A task that is its own part stays under itself, out of reach of every root: lost.
+        kids.setdefault(parent if parent in graph.tasks else None, []).append(oid)
     for group in kids.values():
         group.sort(key=lambda o: (graph.tasks[o]["title"], o))
     shown = set()
@@ -534,8 +535,10 @@ def self_test():
         repo = f"{tmp}/repo"
         os.makedirs(repo)
 
-        def sh(*cmd, ok=True):
-            done = subprocess.run(cmd, cwd=repo, env=env, capture_output=True, text=True)
+        def sh(*cmd, ok=True, extra=None):
+            done = subprocess.run(
+                cmd, cwd=repo, env={**env, **(extra or {})}, capture_output=True, text=True
+            )
             if ok and done.returncode != 0:
                 sys.exit(f"self-test: {' '.join(cmd)}\n{done.stdout}{done.stderr}")
             return done
@@ -616,6 +619,19 @@ def self_test():
         task("block", unit, parser)
         check("tree names a blocker by its label", any(l.endswith("<- parser") for l in task("tree").stdout.splitlines()))
 
+        # A task that is its own part, as a peer may send it: the reducer cannot see the
+        # loop, so tree has to report it rather than draw a root.
+        lane_id = json.loads(task("show", lane).stdout)["id"]
+        with open(f"{tmp}/self-part.jsonl", "w") as handle:
+            handle.write(json.dumps({"type": "part", "of": lane_id}) + "\n")
+        sh("rad", "cob", "update", "--repo", sh("rad", ".").stdout.strip(), "--type", TYPE,
+           "--object", lane_id, "--message", "part of itself", f"{tmp}/self-part.jsonl",
+           extra={"PATH": HERE + os.pathsep + env.get("PATH", "")})
+        looped = task("tree", ok=False)
+        check("a task its own part is reported, not drawn as a root",
+              looped.returncode == 1 and lane in looped.stdout.splitlines()[-1]
+              and not looped.stdout.startswith(lane))
+        task("part", lane, "none")
         check("a lane is not ready", lane not in task("ready").stdout)
 
         # load: a file of units, twice over, then a refusal before anything is written.
