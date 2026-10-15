@@ -28,7 +28,7 @@ mkdir "$tmp/bin"
 chmod +x "$tmp/bin/"*
 
 fails=0
-# expect <bash> <name> <PUSH> <GH> <SSH> <nag: yes|no> <extra grep -F pattern or ''> [URL]
+# expect <bash> <name> <PUSH> <GH> <SSH> <nag: yes|no> <a line the output must have, after 'whoami-check: ', or ''> [URL]
 expect() {
 	local sh="$1" name="$2" out rc=0
 	out="$(PATH="$tmp/bin:$PATH" PUSH="$3" GH="$4" SSH="$5" "$sh" "$root/scripts/whoami-check" ${8:+"$8"} 2>&1)" || rc=$?
@@ -41,7 +41,8 @@ expect() {
 		case "$out" in *NAG*) echo "FAIL $name ($sh): NAG without an admin account"; fails=$((fails + 1)) ;; esac
 	fi
 	if [ -n "$7" ]; then
-		case "$out" in *"$7"*) : ;; *) echo "FAIL $name ($sh): missing '$7'"; fails=$((fails + 1)) ;; esac
+		# A whole line, not a substring: "ssh:      psjg" is also a prefix of "ssh:      psjg-claude".
+		printf '%s\n' "$out" | grep -qxF "whoami-check: $7" || { echo "FAIL $name ($sh): no line '$7'"; fails=$((fails + 1)); }
 	fi
 }
 
@@ -52,26 +53,26 @@ run() {
 	expect "$sh" only-push psjg psjg-claude psjg-claude yes ""
 	expect "$sh" only-gh psjg-claude psjg psjg-claude yes "gh:       psjg"
 	expect "$sh" only-ssh psjg-claude psjg-claude psjg yes "ssh:      psjg"
-	expect "$sh" all-fail "" "" "" no "unknown"
+	expect "$sh" all-fail "" "" "" no "ssh:      unknown"
 	expect "$sh" mixed-fail psjg-claude "" "" no "username=psjg-claude"
 	# Given the destination URL, only the identity its transport uses is judged.
-	expect "$sh" url-https-admin-helper psjg psjg-claude psjg-claude yes "goes by https" "https://github.com/o/r.git"
-	expect "$sh" url-https-machine-helper psjg-claude psjg psjg no "goes by https" "https://github.com/o/r.git"
-	expect "$sh" url-ssh-machine-key psjg psjg psjg-claude no "goes by ssh" "git@github.com:o/r.git"
-	expect "$sh" url-ssh-admin-key psjg-claude psjg-claude psjg yes "goes by ssh" "ssh://git@github.com/o/r.git"
-	expect "$sh" url-token psjg psjg psjg no "credentials in the URL" "https://x-access-token:TOKEN-IN-URL@github.com/o/r.git"
-	expect "$sh" url-https-bare-user psjg psjg-claude psjg-claude yes "goes by https" "https://psjg@github.com/o/r.git"
+	expect "$sh" url-https-admin-helper psjg psjg-claude psjg-claude yes "this push goes by https" "https://github.com/o/r.git"
+	expect "$sh" url-https-machine-helper psjg-claude psjg psjg no "this push goes by https" "https://github.com/o/r.git"
+	expect "$sh" url-ssh-machine-key psjg psjg psjg-claude no "this push goes by ssh" "git@github.com:o/r.git"
+	expect "$sh" url-ssh-admin-key psjg-claude psjg-claude psjg yes "this push goes by ssh" "ssh://git@github.com/o/r.git"
+	expect "$sh" url-token psjg psjg psjg no "this push goes by https with credentials in the URL" "https://x-access-token:TOKEN-IN-URL@github.com/o/r.git"
+	expect "$sh" url-https-bare-user psjg psjg-claude psjg-claude yes "this push goes by https" "https://psjg@github.com/o/r.git"
 	expect "$sh" url-other psjg psjg-claude psjg-claude yes "username=psjg" "rad://zabc/o/r"
 	# The ssh probe is never interactive and is not run for a destination that does not use ssh.
 	local log="$tmp/bin/ssh.log" out
 	rm -f "$log"
-	expect "$sh" ssh-probe-run psjg psjg-claude psjg-claude yes "ssh:      psjg"
+	expect "$sh" ssh-probe-run psjg psjg-claude psjg-claude yes "ssh:      psjg-claude"
 	case "$(cat "$log" 2>/dev/null)" in
 	*BatchMode=yes*ConnectTimeout=5*) : ;;
 	*) echo "FAIL ssh-probe-flags ($sh): not BatchMode=yes with ConnectTimeout=5"; fails=$((fails + 1)) ;;
 	esac
 	rm -f "$log"
-	expect "$sh" ssh-probe-skipped psjg-claude psjg psjg no "not used by this push" "https://github.com/o/r.git"
+	expect "$sh" ssh-probe-skipped psjg-claude psjg psjg no "ssh:      not used by this push" "https://github.com/o/r.git"
 	if [ -e "$log" ]; then echo "FAIL ssh-probe-skipped ($sh): ssh ran for an https destination"; fails=$((fails + 1)); fi
 	# The admin list is configurable.
 	out="$(PATH="$tmp/bin:$PATH" PUSH=bob GH=bob SSH=bob FPL_ADMIN_ACCOUNTS="bob" "$sh" "$root/scripts/whoami-check" 2>&1)"
