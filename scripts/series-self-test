@@ -3,8 +3,8 @@
 # scripts/series-self-test — proof that the identity of a series still holds: the Series-Id
 # trailer is accepted once and in its place by .githooks/commit-msg, and scripts/series mints it
 # deterministically, stamps it onto a range without changing a patch, refuses to stamp once the
-# maintainer has spoken, checks it, writes a byte-stable manifest, finds a series on main and
-# undoes it in one commit. Run by `make gates`.
+# maintainer has spoken, checks it, writes a byte-stable manifest and prints its digest alone,
+# finds a series on main and undoes it in one commit. Run by `make gates`.
 #
 # Everything happens in a throwaway repository, with Git's global and system config, HOME and
 # XDG_CONFIG_HOME pointed away from the maintainer's, and a stub gh in place of the forge. The
@@ -97,6 +97,18 @@ sr 0 "manifest" '"digest"' manifest "$base0..HEAD"
 cp "$tmp/out" "$tmp/man0"
 sr 0 "manifest, again" "" manifest "$base0..HEAD"
 verdict "manifest is byte-stable" "$(cmp -s "$tmp/out" "$tmp/man0" && echo 0 || echo 1)" 0 ""
+# digest: the manifest's digest alone, one line, as scripts/land reads it for the fpl/series
+# receipt; and from a copy outside the tree, where the lander runs main's scripts/series.
+d0="$(grep -o '"digest": "[0-9a-f]*"' "$tmp/man0" | cut -d'"' -f4)"
+sr 0 "digest" "$d0" digest "$base0..HEAD"
+cp "$tmp/out" "$tmp/dig" # same writes $tmp/out: read the answer from a copy
+same "digest prints the manifest's digest and nothing else" "$(cat "$tmp/dig")" "$d0"
+same "digest prints one line" "$(wc -l <"$tmp/dig" | tr -d ' ')" 1
+cp scripts/series "$tmp/series.copy"
+"$BASH" "$tmp/series.copy" digest "$base0..HEAD" >"$tmp/out" 2>&1 && rc=0 || rc=$?
+verdict "digest from a copy outside the tree, as the lander runs it" "$rc" 0 "$d0"
+sr 1 "digest refuses an empty range" "range" digest "HEAD..HEAD"
+same "a refused digest prints nothing on stdout" "$("$BASH" scripts/series digest HEAD..HEAD 2>/dev/null || true)" ""
 
 # --- stamp: the forge's say first -----------------------------------------------------------------
 export STUB_PR=7 STUB_LOG="$tmp/gh.log"
@@ -221,6 +233,10 @@ digest_moved="$(grep -o '"digest".*' "$tmp/out")"
 # Run in this shell, not in a command substitution: a verdict counted in a subshell is lost.
 sr 0 "manifest of the original series" "" manifest "$base0..agent/claude/stack/demo"
 same "a move keeps the manifest digest" "$digest_moved" "$(grep -o '"digest".*' "$tmp/out")"
+sr 0 "digest of the moved series" "" digest "$alt0..HEAD"
+digest_moved="$(cat "$tmp/out")"
+sr 0 "digest of the original series" "" digest "$base0..agent/claude/stack/demo"
+same "a move keeps the digest" "$digest_moved" "$(cat "$tmp/out")"
 git switch -q agent/claude/stack/demo
 
 # --- range, revert -----------------------------------------------------------------------------

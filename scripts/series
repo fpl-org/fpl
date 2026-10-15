@@ -26,6 +26,9 @@
 #                                   --verbatim of its diff) and the SHA-256 of author and raw
 #                                   message, plus a digest over all (patch id, message) pairs.
 #                                   Byte-stable: no clock, no config of the caller's in the diff.
+#   series digest <range>           the digest of the manifest alone, one line of 64 hex digits:
+#                                   the receipt scripts/land writes as the fpl/series check run.
+#                                   Exit 0 with that line; 1 on any refusal, with nothing on stdout.
 #   series range <id>               the first-parent range <base>..<tip> on main whose commits
 #                                   carry <id>; refused when they are not one contiguous run.
 #   series revert <id> [branch]     one commit, on a new branch off main, that undoes the whole
@@ -225,12 +228,17 @@ cmd_check() { # check <range>
 	printf '%s' "$ids" | sort -u
 }
 
-cmd_manifest() { # manifest <range>
-	local c pid pj msg list pairs="" sep="" digest
+# manifest_of <range>: the one definition of what a manifest holds. Sets man_rows, one
+# "<sha> <patch id or -> <msg sha256>" line a commit, oldest first, and man_digest, the SHA-256
+# over the "<patch id or -> <msg sha256>" lines. manifest prints both as JSON, digest the digest
+# alone. Called in this shell, never in a command substitution: errexit is off in one, and a git
+# step that failed there would pass into the digest unnoticed.
+manifest_of() {
+	local c pid msg list pairs=""
 	# The list first: a command substitution in the for line would swallow revs's refusal and
 	# leave a well-formed manifest of nothing behind, with exit 0.
 	list="$(revs "${1:-}")"
-	printf '{\n  "commits": [\n'
+	man_rows=""
 	for c in $list; do
 		# Pinned so the caller's diff config cannot change the id: prefixes, renames, context,
 		# algorithm, hunk boundaries, and diff.suppressBlankEmpty (the one config key the plumbing
@@ -239,14 +247,27 @@ cmd_manifest() { # manifest <range>
 			-U3 --src-prefix=a/ --dst-prefix=b/ --diff-algorithm=myers --indent-heuristic "$c" | git patch-id --verbatim | cut -d' ' -f1)"
 		msg="$({ git cat-file commit "$c" | awk '/^$/ { exit } /^author / { sub(/^author /, ""); sub(/ [0-9]+ [-+][0-9]+$/, ""); print }'
 			git cat-file commit "$c" | sed '1,/^$/d'; } | sha256)"
-		pj=null; [ -z "$pid" ] || pj="\"$pid\""
-		printf '%s    {"sha": "%s", "patch_id": %s, "msg_sha256": "%s"}' "$sep" "$c" "$pj" "$msg"
-		sep=$',\n'
+		man_rows="$man_rows$c ${pid:--} $msg"$'\n'
 		pairs="$pairs${pid:--} $msg"$'\n'
 	done
-	digest="$(printf '%s' "$pairs" | sha256)"
-	printf '\n  ],\n  "digest": "%s"\n}\n' "$digest"
+	man_digest="$(printf '%s' "$pairs" | sha256)"
 }
+
+cmd_manifest() { # manifest <range>
+	local c pid msg pj sep=""
+	manifest_of "${1:-}"
+	printf '{\n  "commits": [\n'
+	while read -r c pid msg; do
+		pj=null; [ "$pid" = - ] || pj="\"$pid\""
+		printf '%s    {"sha": "%s", "patch_id": %s, "msg_sha256": "%s"}' "$sep" "$c" "$pj" "$msg"
+		sep=$',\n'
+	done < <(printf '%s' "$man_rows")
+	printf '\n  ],\n  "digest": "%s"\n}\n' "$man_digest"
+}
+
+# digest <range>: the manifest's digest and nothing else, one line: what scripts/land writes into
+# the fpl/series check run as the receipt of a landing.
+cmd_digest() { manifest_of "${1:-}"; printf '%s\n' "$man_digest"; }
 
 cmd_range() { # range <id>
 	local id="${1:-}" main c n=0 newest="" oldest=""
@@ -316,6 +337,6 @@ cmd_revert() { # revert <id> [branch]
 }
 
 case "${1:-}" in
-mint | stamp | check | manifest | range | revert | _amend) c="cmd_${1}"; shift; "$c" "$@" ;;
-*) die usage "series {mint|stamp|check|manifest|range|revert} ..." "see the header of scripts/series" ;;
+mint | stamp | check | manifest | digest | range | revert | _amend) c="cmd_${1}"; shift; "$c" "$@" ;;
+*) die usage "series {mint|stamp|check|manifest|digest|range|revert} ..." "see the header of scripts/series" ;;
 esac
