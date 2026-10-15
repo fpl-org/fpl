@@ -30,6 +30,8 @@
 # stubs them. Runs under bash 3.2.
 
 set -u
+# The admin list is split on spaces below: no word of it may expand as a pathname.
+set -f
 
 admins="${FPL_ADMIN_ACCOUNTS:-psjg}"
 machine="${FPL_MACHINE_ACCOUNT:-psjg-claude}"

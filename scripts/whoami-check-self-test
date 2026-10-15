@@ -77,6 +77,12 @@ run() {
 	# The admin list is configurable.
 	out="$(PATH="$tmp/bin:$PATH" PUSH=bob GH=bob SSH=bob FPL_ADMIN_ACCOUNTS="bob" "$sh" "$root/scripts/whoami-check" 2>&1)"
 	case "$out" in *NAG*) : ;; *) echo "FAIL admins-env ($sh): no NAG"; fails=$((fails + 1)) ;; esac
+	# A glob in the admin list is a name, not a pathname pattern: with a file "bob" in the working
+	# directory, "*" must not become "bob" and nag a non-admin.
+	mkdir "$tmp/glob" && : >"$tmp/glob/bob"
+	out="$(cd "$tmp/glob" && PATH="$tmp/bin:$PATH" PUSH=bob GH=bob SSH=bob FPL_ADMIN_ACCOUNTS="*" "$sh" "$root/scripts/whoami-check" 2>&1)"
+	case "$out" in *NAG*) echo "FAIL admins-glob ($sh): '*' expanded against the working directory"; fails=$((fails + 1)) ;; esac
+	rm -rf "$tmp/glob"
 	# Without timeout on PATH it still works (a stock Mac).
 	rm -f "$tmp/bin/timeout"
 	expect "$sh" no-timeout psjg psjg psjg yes "ssh:      psjg"
