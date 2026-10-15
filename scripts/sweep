@@ -41,9 +41,9 @@
 #      then the branch is deleted only if it is still at the head tagged: the tag keeps the
 #      commits reachable
 # A head that moved since the table was made is skipped; what is dirty is read again at the
-# moment of removal, and a worktree that changed after its patch was made is left. Ignored
-# files (.venv) go with the directory. A name picks a row by its name, its branch or its last
-# path component.
+# moment of removal, and a worktree that changed after its patch was made is left. The one
+# running sweep is never a candidate. Ignored files (.venv) go with the directory. A name
+# picks a row by its name, its branch or its last path component.
 #
 # The base is the local `main` (SWEEP_BASE): a lagging main only makes rows look less merged,
 # the safe direction. Nothing is fetched or pruned. SWEEP_FORGE=0 skips the forge; SWEEP_REPO
@@ -66,8 +66,11 @@ case "${1:-}" in
 --apply)
 	mode=apply
 	shift
-	for n in "$@"; do names="${names:+$names
-}$n"; done
+	for n in "$@"; do
+		[ -n "$n" ] || die "an empty name selects nothing: give names, or none for all"
+		names="${names:+$names
+}$n"
+	done
 	;;
 --self-test) exec "$here/sweep-self-test" ;;
 *) die "usage: scripts/sweep [--dry-run | --apply [name ...]]" ;;
@@ -86,6 +89,7 @@ fresh="${SWEEP_FRESH_MIN:-60}"
 case "$fresh" in "" | *[!0-9]*) die "SWEEP_FRESH_MIN is minutes, a number: '$fresh'" ;; esac
 git rev-parse --verify -q "$base^{commit}" >/dev/null || die "no base '$base'"
 root="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+self="$(git rev-parse --show-toplevel)"
 [ -d "$root" ] || die "cannot find the root checkout"
 tab="$(printf '\t')"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/sweep.XXXXXX")"
@@ -255,6 +259,7 @@ while IFS="$tab" read -r path sha br locked gone; do
 	IFS="$tab" read -r action note <<EOF
 $(decide "$rel" "$b" "$merged" "$new" "$pr" "$owner" "$([ "$locked" = 1 ] && echo 1 || echo 0)" "$active" "$([ "$gone" = 1 ] && echo 1 || echo 0)")
 EOF
+	[ "$path" != "$self" ] || { action=keep note="sweep runs here"; }
 	[ "$dirty" = 0 ] || [ "$dirty" = '-' ] || note="$note; $dirty dirty"
 	emit wt "$rel" "${b:--}" "$merged" "$new" "$dirty" "$pr" "$owner" "$action" "$note" "$sha" "$path"
 done <"$tmp/wt"

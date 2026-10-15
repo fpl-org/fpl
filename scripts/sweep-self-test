@@ -150,7 +150,7 @@ fingerprint() {
 # sw <args>: scripts/sweep from the repository, output in $tmp/out, exit code in $rc.
 sw() {
 	rc=0
-	(cd "$repo" && "$sweep" "$@") >"$tmp/out" 2>"$tmp/err" || rc=$?
+	(cd "${at:-$repo}" && "$sweep" "$@") >"$tmp/out" 2>"$tmp/err" || rc=$?
 }
 # col <name> <n>: the n-th field of the row called name in the last output.
 col() { awk -F'\t' -v n="$1" -v c="$2" '$2 == n { print $c }' "$tmp/out"; }
@@ -186,6 +186,17 @@ before="$(fingerprint)"
 sw --apply
 check "--apply without SWEEP_OWNER_YES exits 2" '[ "$rc" -eq 2 ]'
 check "--apply without SWEEP_OWNER_YES changes nothing" '[ "$(fingerprint)" = "$before" ]'
+
+# --- apply: an empty name, the checkout that runs sweep ------------------------------------------
+before="$(fingerprint)"
+SWEEP_OWNER_YES=1 sw --apply ""
+check "an empty name selects nothing: refused, nothing changed" '[ "$rc" -eq 1 ] && grep -q "empty name" "$tmp/err" && [ "$(fingerprint)" = "$before" ]'
+at="$repo/worktrees/rebased"
+sw
+check "run from a linked worktree, that worktree is keep, the others as before" '[ "$(action worktrees/rebased)/$(action worktrees/merged)" = keep/archive ] && grep -q "sweep runs here" "$tmp/out"'
+SWEEP_OWNER_YES=1 sw --apply rebased
+check "--apply from a worktree does not remove that worktree" '[ "$rc" -eq 0 ] && [ -d "$repo/worktrees/rebased" ] && g rev-parse -q --verify refs/heads/agent/claude/stack/rebased >/dev/null'
+unset at
 
 # --- apply: one named row, a patch in the way ------------------------------------------------
 mkdir -p "$repo/harness/sweep-archive"
