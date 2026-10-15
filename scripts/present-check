@@ -117,9 +117,16 @@ if [ -z "$branch" ]; then
 fi
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/present-check.XXXXXX")"
+# cleanup: remove the lemma worktree this run made. `git worktree prune` is repository-wide, so
+# it runs only when removal failed and left a stale entry of ours; a run that made no worktree
+# touches no registration at all.
 cleanup() {
-	git worktree remove --force "$tmp/wt" 2>/dev/null || true
-	git worktree prune 2>/dev/null || true
+	if [ -e "$tmp/wt" ]; then
+		git worktree remove --force "$tmp/wt" 2>/dev/null || {
+			rm -rf "$tmp/wt"
+			git worktree prune 2>/dev/null || true
+		}
+	fi
 	rm -rf "$tmp"
 }
 trap cleanup EXIT

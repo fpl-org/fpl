@@ -113,6 +113,16 @@ run "no such P" 2 "not a commit: nosuch" -- work nosuch
 run "classify, no such OLD" 2 "not a commit: nosuch" -- classify nosuch work
 run "classify, no such NEW" 2 "not a commit: nosuch" -- classify work nosuch
 
+# A run leaves the registration of other worktrees alone: one whose directory is away (an
+# unmounted disk) is not pruned, whether the run built lemmas or died on a usage error.
+git worktree add -q --detach "$tmp/away" main
+mv "$tmp/away" "$tmp/away.moved"
+run "away worktree, green run" 0 "green, 2 commits" -- pres
+run "away worktree, usage error" 2 "not a commit" -- nosuch pres
+check "away worktree: still registered" test -d "$(git rev-parse --git-common-dir)/worktrees/away"
+mv "$tmp/away.moved" "$tmp/away"
+git worktree remove --force "$tmp/away"
+
 # Merge-base differs, trees equal: main moves by an empty commit; the series is told again on it.
 git checkout -q -b main2 main
 git commit -q --allow-empty -m "chore(x): move main"
