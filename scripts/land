@@ -18,6 +18,13 @@
 #   land/base               it is based on main
 #   land/head               the head the forge reports is the commit refs/pull/<n>/head holds
 #   land/author             the active gh account did not write it
+#   land/attributed         where a pull_request rule on main that asks one approval or
+#                           more sets require_extra_approval_for_unattributed_changes, a
+#                           user account opened the pull request, not an App under its own
+#                           identity: for that GitHub wants one approval more than the
+#                           rule's count, and this script counts one. GitHub's docs (public
+#                           preview) scope it to a pull request Copilot opens that no person
+#                           is attributed for; any account not of type User is refused here
 #   land/codeowners         main's CODEOWNERS names one set of users for every path, the only
 #                           form judged here (today: `* @psjg`)
 #   land/approved           a code owner's standing verdict approves that exact head, or you
@@ -630,6 +637,9 @@ ENFORCED = {
         "require_last_push_approval": lambda b: b is False,
         # Teams that must approve some paths are not read here.
         "required_reviewers": lambda r: r == [],
+        # land/attributed: a user account opened the pull request, so GitHub asks no
+        # approval more than the count. A value that is no bool is no setting GitHub has.
+        "require_extra_approval_for_unattributed_changes": lambda b: isinstance(b, bool),
         # Who may dismiss a review, and the merge button's methods: a push is neither.
         "dismissal_restriction": lambda d: True,
         "allowed_merge_methods": lambda m: True,
@@ -687,6 +697,33 @@ def judge_rules(v, d, rules, me, ci):
         else:
             v.no("land/bypass", f"ruleset '{rs.get('name')}' lets you (@{me}) past it {can}",
                  BYPASS_REMEDY)
+
+
+def judge_attributed(v, pr, rules):
+    """land/attributed. A pull_request rule that sets
+    require_extra_approval_for_unattributed_changes asks one approval more of a pull request
+    no person is attributed for, and nothing of one when the rule asks no approval at all.
+    GitHub's docs (available rules for rulesets, "Additional approval for unattributed
+    Copilot pull requests", public preview) name one case: Copilot opens it under its own
+    App identity. scripts/land counts one code owner's approval, so there it lands only what
+    a user account opened: an App's account (type Bot), or an answer that names no type, is
+    refused, since a user account is the one kind the docs say needs no approval more."""
+    counts = [dig(r, "parameters.required_approving_review_count") for r in rules
+              if r["type"] == "pull_request"
+              and dig(r, "parameters.require_extra_approval_for_unattributed_changes") is True]
+    counts = [c for c in counts if c >= 1]
+    who = pr.get("user") or {}
+    login, kind = who.get("login"), who.get("type")
+    if not counts:
+        v.ok("land/attributed", "no rule on main asks more of an unattributed pull request")
+    elif kind == "User":
+        v.ok("land/attributed", f"@{login}, a user account, opened it: no approval more")
+    else:
+        v.no("land/attributed", f"@{login} ({kind or 'no account type'}) opened it, no user"
+             f" account: GitHub wants {max(counts) + 1} approvals of it, scripts/land counts 1",
+             "open the pull request again from a user account, or the owner clears 'Require"
+             " an additional approval for unattributed Copilot pull requests' in each ruleset"
+             " on main")
 
 
 def git(*args, stdin=None):
@@ -827,6 +864,7 @@ def judge(d, repo, fetched, main, ancestor, merges, ci):  # noqa: PLR0913, PLR09
     judge_history(v, main, pr["head"]["sha"], ancestor, merges)
     judge_range(v, pr, main, fetched, bodies)
     if not fault:
+        judge_attributed(v, pr, rules)
         judge_rules(v, d, rules, me, ci)
     if v.refused:
         print(f"land: #{pr['number']} refused by {', '.join(sorted(v.refused))}")
