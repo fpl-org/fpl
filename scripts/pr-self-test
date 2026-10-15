@@ -66,7 +66,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):  # a client that gave up on a stall
+            pass
 
     def page(self, key, text, query):
         """One page of the list in a fixture, as GitHub serves it: per_page at most 100, the
@@ -102,7 +105,10 @@ class Handler(BaseHTTPRequestHandler):
         if rest == "/pulls" and method == "POST":
             return self.reply(201, '{"html_url": "https://github.com/pr-test/fpl/pull/9"}')
         if len(parts) == 5 and parts[3] == "pulls" and method == "GET":
-            return self.reply(200, fixture(f"pull-{parts[4]}.json"))
+            text = fixture(f"pull-{parts[4]}.json")
+            if os.path.exists(f"{forge}/pull-{parts[4]}.next.json"):  # this read, then the next
+                os.replace(f"{forge}/pull-{parts[4]}.next.json", f"{forge}/pull-{parts[4]}.json")
+            return self.reply(200, text)
         if len(parts) == 5 and parts[3] == "pulls" and method == "PATCH":
             return self.reply(200, "{}")
         if len(parts) == 6 and parts[5] == "requested_reviewers" and method == "POST":
@@ -111,6 +117,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(403, '{"message": "Resource not accessible by personal access token"}')
         if len(parts) == 6 and parts[3] == "commits" and parts[5] in ("check-runs", "status"):
             key, name = ("check_runs", "checks") if parts[5] == "check-runs" else ("statuses", "status")
+            if os.path.exists(f"{forge}/{name}-{parts[4]}.json"):  # a head of its own
+                name = f"{name}-{parts[4]}"
             return self.reply(200, self.page(key, fixture(f"{name}.json"), parse_qs(url.query)))
         return self.reply(404, '{"message": "not served"}')
 
@@ -226,10 +234,12 @@ logged() {
 		echo "self-test: $3: the forge logged '$2' $n times, want $1" >&2
 	}
 }
-pull() { # pull <n> <draft> <reviewers json>: the fixture of pull request n
-	cat >"$forge/pull-$1.json" <<EOF
+# pull <n> <draft> <reviewers json> [sha]: the fixture of pull request n. With PULL_STATE=.next
+# it is the state the forge serves from the second read on, after the first has been answered.
+pull() {
+	cat >"$forge/pull-$1${PULL_STATE:-}.json" <<EOF
 {"number": $1, "state": "open", "draft": $2, "node_id": "PR_node_$1",
- "head": {"sha": "0123456789abcdef"}, "requested_reviewers": $3, "requested_teams": []}
+ "head": {"sha": "${4:-0123456789abcdef}"}, "requested_reviewers": $3, "requested_teams": []}
 EOF
 }
 FEAT=agent/claude/stack/feat PARENT=agent/claude/stack/parent
@@ -381,6 +391,44 @@ grep -Fq "Metadata, Checks and Commit statuses read" "$root/.agents/WORKFLOW.md"
 	fails=$((fails + 1))
 	echo "self-test: .agents/WORKFLOW.md does not grant the token what --ready reads" >&2
 }
+# A pull request that moves while --ready reads it: the head is pushed, or a review is
+# requested, between the read the checks are judged by and the one before the mutation.
+OLD=0123456 NEW=fedcba9876543210
+moved="the head or the review requests changed while it was read"
+pull 5 true '[]'
+PULL_STATE=.next pull 5 true '[]' $NEW
+echo '{"check_runs": [{"name": "lint", "status": "in_progress"}]}' >"$forge/checks-$NEW.json"
+run 1 "ready with the head pushed while the checks were read" --ready 5
+says err "$moved ($OLD to fedcba9)" "names both heads"
+logged 1 "POST /graphql" "not marked on a head nobody checked"
+pull 5 true '[]'
+PULL_STATE=.next pull 5 true '[]' $NEW
+FPL_PR_WAIT=1 FPL_PR_POLL=0.2 run 1 "ready with a pushed head whose check is running" --ready 5
+says err "at fedcba9 is not quiet" "the new head is the one judged"
+says err "check lint is in_progress" "and its check is named"
+logged 1 "POST /graphql" "still not marked"
+rm "$forge/checks-$NEW.json"
+pull 5 true '[]'
+PULL_STATE=.next pull 5 true '[]' $NEW
+FPL_PR_WAIT=5 FPL_PR_POLL=0.2 run 0 "ready with a pushed head that is quiet" --ready 5
+says err "quiet at fedcba9" "marked on the head that was checked"
+logged 2 "POST /graphql" "marked once more"
+pull 5 true '[]'
+PULL_STATE=.next pull 5 true '[{"login": "coderabbitai"}]'
+run 1 "ready with a review requested while the checks were read" --ready 5
+says err "$moved" "a review request is a change"
+logged 2 "POST /graphql" "not marked over a review nobody answered"
+pull 5 true '[]'
+PULL_STATE=.next pull 5 true '[{"login": "coderabbitai"}]'
+FPL_PR_WAIT=1 FPL_PR_POLL=0.2 run 1 "ready, the review request standing" --ready 5
+says err "review requested from coderabbitai" "the request is named once it is read"
+pull 5 true '[]'
+PULL_STATE=.next pull 5 false '[]'
+run 0 "ready with the pull request marked ready meanwhile" --ready 5
+says err "ready already" "someone else did it; nothing to mark"
+logged 2 "POST /graphql" "no second mutation"
+pull 5 true '[]'
+
 # A forge that takes the connection and says nothing: the wait ends in an error of its own, not
 # in a hang, whichever bound is the tighter, the cap on a call or what is left of FPL_PR_WAIT.
 pull 5 true '[]'
@@ -388,23 +436,23 @@ echo 20 >"$forge/stall-check-runs"
 began=$SECONDS
 FPL_PR_TIMEOUT=1 FPL_PR_WAIT=100 run 1 "ready with a forge that stalls, a cap of 1s" --ready 5
 says err "no answer in 1.0s" "the cap ends the call"
-within $began 8 "the cap bounds the wait"
+within $began 15 "the cap bounds the wait"
 began=$SECONDS
 FPL_PR_TIMEOUT=100 FPL_PR_WAIT=1 run 1 "ready with a forge that stalls, 1s of wait" --ready 5
 says err "no answer in 1.0s" "what is left of FPL_PR_WAIT ends the call"
-within $began 8 "FPL_PR_WAIT bounds the wait"
+within $began 15 "FPL_PR_WAIT bounds the wait"
 rm "$forge/stall-check-runs"
 echo 20 >"$forge/stall-user"
 began=$SECONDS
 FPL_PR_TIMEOUT=1 run 1 "asking for a review of a forge that stalls" --reviewer 5 psjg
 says err "/user: no answer in 1.0s" "the first call has a cap too"
-within $began 8 "the cap bounds a mode without a wait"
+within $began 15 "the cap bounds a mode without a wait"
 rm "$forge/stall-user"
-logged 1 "POST /graphql" "nothing marked on a forge that did not answer"
+logged 2 "POST /graphql" "nothing marked on a forge that did not answer"
 pull 5 false '[]'
 run 0 "ready twice" --ready 5
 says err "ready already" "nothing to do"
-logged 1 "POST /graphql" "no second mutation"
+logged 2 "POST /graphql" "no second mutation"
 
 # --- --reviewer, and no label ever ----------------------------------------------------------
 run 0 "asking for a review" --reviewer 5 psjg

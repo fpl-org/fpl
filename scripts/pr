@@ -253,6 +253,17 @@ def pages(path, key, refused=""):
         page += 1
 
 
+def view(pull):
+    """What --ready judged a pull request by, and must find unchanged before it marks it."""
+    return (
+        pull["state"],
+        pull["draft"],
+        pull["head"]["sha"],
+        sorted(u["login"] for u in pull["requested_reviewers"]),
+        sorted(t["slug"] for t in pull["requested_teams"]),
+    )
+
+
 def open_pull(branch):
     owner = slug.split("/")[0]
     found = api(f"/repos/{slug}/pulls?state=open&head={owner}:{branch}")
@@ -304,7 +315,20 @@ elif command == "ready":
         statuses = pages(f"/repos/{slug}/commits/{sha}/status", "statuses", unread)
         pending += [f"status {s['context']} is pending" for s in statuses if s["state"] == "pending"]
         if not pending:
-            break
+            # Read the pull request again before the mutation: a push or a review request
+            # since the read above would have the mutation mark a head, or a request set,
+            # nobody checked. Anything that moved sends the loop round again, under the
+            # same deadline. One round trip between this read and the mutation remains:
+            # GitHub's mutation takes no expected head to hold it to.
+            latest = api(f"/repos/{slug}/pulls/{number}")
+            if view(latest) == view(pull):
+                break
+            if latest["state"] != "open" or not latest["draft"]:
+                continue  # the top of the loop says which
+            pending = [
+                f"the head or the review requests changed while it was read ({sha[:7]} to"
+                f" {latest['head']['sha'][:7]})"
+            ]
         if time.monotonic() >= deadline:
             die(f"#{number} at {sha[:7]} is not quiet after {wait:g}s: " + "; ".join(pending))
         time.sleep(min(poll, max(deadline - time.monotonic(), 0)))
