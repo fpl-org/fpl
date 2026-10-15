@@ -16,6 +16,7 @@
 #
 #   FPL_ADMIN_ACCOUNTS   space-separated logins that count as admin (default: psjg)
 #   FPL_MACHINE_ACCOUNT  the account the remedy names (default: psjg-claude)
+#   FPL_WHOAMI_DEADLINE  seconds each probe may run before it is cut off (default: 10)
 #
 # Usage: whoami-check [DESTINATION-URL]. Run by hand it judges all three. Given the URL a
 # push goes to (.githooks/pre-push passes its $2), it judges only the identity that URL's
@@ -86,15 +87,34 @@ case "$ssh_user" in -* | *[[:cntrl:]]*) ssh_user="git" ;; esac
 case "$ssh_port" in *[!0-9]*) ssh_port="" ;; esac
 [ -z "$via" ] || printf 'whoami-check: this push goes by %s\n' "$via"
 
+# Every probe is cut off after FPL_WHOAMI_DEADLINE seconds (default 10): a credential helper that
+# opens a dialog, a gh that waits on a keychain, a key that waits on a Touch ID tap must not hold
+# up a push. timeout where there is one, else perl's alarm (a stock Mac has perl, not timeout),
+# else no deadline. The empty array is expanded as ${bound[@]+...}: bash 3.2 under set -u fails
+# on a bare "${bound[@]}".
+dl="${FPL_WHOAMI_DEADLINE:-10}"
+case "$dl" in '' | *[!0-9]*) dl=10 ;; esac
+bound=()
+if command -v timeout >/dev/null 2>&1; then
+	bound=(timeout "$dl")
+elif command -v perl >/dev/null 2>&1; then
+	bound=(perl -e 'alarm shift; exec @ARGV' "$dl")
+fi
+
 # push: git's answer for the destination's host, the username line and nothing else. When the
-# URL names the account (user@), that is the account and nobody is asked.
+# URL names the account (user@), that is the account and nobody is asked. Nor does git ask anyone
+# itself: GIT_TERMINAL_PROMPT=0 stops only the terminal prompt, and git tries GIT_ASKPASS,
+# core.askPass and SSH_ASKPASS before it, so all three are set empty. Git takes the first one it
+# finds set, so the empty GIT_ASKPASS alone ends the search; the other two are cleared so the
+# probe does not lean on that order. A credential helper's own dialog is not git's to stop: the
+# deadline cuts it off.
 push=""
 if [ "$c_push" -eq 1 ]; then
 	if [ -n "$named" ]; then
 		push="$named"
 	else
 		push="$(printf 'protocol=%s\nhost=%s\n\n' "$proto" "$host" |
-			GIT_TERMINAL_PROMPT=0 git credential fill 2>/dev/null |
+			GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= SSH_ASKPASS= ${bound[@]+"${bound[@]}"} git -c core.askPass= credential fill 2>/dev/null |
 			sed -n 's/^username=//p' | head -n 1)" || push=""
 	fi
 fi
@@ -102,14 +122,14 @@ fi
 # gh: the account whose block says "Active account: true"; the block opens with the login.
 gh_acct=""
 if [ "$c_gh" -eq 1 ]; then
-	gh_acct="$(gh auth status 2>&1 | awk '
+	gh_acct="$(${bound[@]+"${bound[@]}"} gh auth status 2>&1 | awk '
 		/Logged in to .* account / { for (i = 1; i < NF; i++) if ($i == "account") acct = $(i + 1) }
 		/Active account: true/ { print acct; exit }')" || gh_acct=""
 fi
 
 # ssh: "Hi <login>! You've successfully authenticated ...". ssh exits 1 on success here. Never
-# interactive: BatchMode=yes forbids every prompt, ConnectTimeout=5 bounds the connect, and
-# timeout (where there is one) bounds the whole probe. It dials the destination's own host (user, port and ssh_config
+# interactive: BatchMode=yes forbids every prompt, ConnectTimeout=5 bounds the connect, and the
+# deadline bounds the whole probe. It dials the destination's own host (user, port and ssh_config
 # alias included), so the key ssh_config picks for that name is the key judged. Not run at all
 # when the destination does not use ssh.
 ssh_acct=""
@@ -117,8 +137,7 @@ if [ "$c_ssh" -eq 1 ]; then
 	ssh_cmd=(ssh -o BatchMode=yes -o ConnectTimeout=5)
 	[ -z "$ssh_port" ] || ssh_cmd=("${ssh_cmd[@]}" -p "$ssh_port")
 	ssh_cmd=("${ssh_cmd[@]}" -T -- "${ssh_user:+$ssh_user@}$ssh_host")
-	if command -v timeout >/dev/null 2>&1; then ssh_cmd=(timeout 10 "${ssh_cmd[@]}"); fi
-	ssh_acct="$("${ssh_cmd[@]}" 2>&1 </dev/null | sed -n 's/^Hi \([^!]*\)!.*/\1/p' | head -n 1)" ||
+	ssh_acct="$(${bound[@]+"${bound[@]}"} "${ssh_cmd[@]}" 2>&1 </dev/null | sed -n 's/^Hi \([^!]*\)!.*/\1/p' | head -n 1)" ||
 		ssh_acct=""
 fi
 
