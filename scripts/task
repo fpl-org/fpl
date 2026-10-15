@@ -730,6 +730,9 @@ def self_test():
         check("a label two tasks share is refused before a write",
               shared.returncode == 2 and "2 tasks are named" in shared.stderr
               and "Q4" not in task("list").stdout)
+        redo = task("load", "-n", os.path.join(HERE, os.pardir, ".agents", "tasks", "redo.tsv"))
+        check("the repository's own units file passes every check of load",
+              "(dry run, nothing written)" in redo.stdout and "A5" not in task("list").stdout)
         bad = f"{tmp}/bad.tsv"
         with open(bad, "w") as handle:
             handle.write("Q1\t-\t\tname\tmentions zztermzz\n")
