@@ -68,6 +68,8 @@
 #   land/series             once main holds scripts/series: one Series-Id on every commit
 #   land/series-fresh       and no commit on main carries it yet
 #   land/patch-fresh        no commit's `git patch-id --verbatim` is one on main already
+#   land/card               the body has the card's headings: What, What changes, How
+#                           checked, Limits, Verdict
 #
 # Then it prints the conversation, opens the diff in the browser and stops for a keypress.
 # After Enter it approves the head when it said it would, checks everything again, and pushes:
@@ -675,12 +677,13 @@ def judge_series(v, main, span):
         v.ok("land/series-fresh", f"Series-Id {ids[0]} is not on main yet")
 
 
+CARD = ("What", "What changes", "How checked", "Limits", "Verdict")
 MOST = (10, 600)  # land/size: commits, and lines added plus removed
 
 
-def judge_range(v, main, head):
-    """land/size, land/workflows, land/series, land/series-fresh and land/patch-fresh: the
-    commits main..head."""
+def judge_range(v, pr, main, head):
+    """land/size, land/workflows, land/series, land/series-fresh, land/patch-fresh and
+    land/card: the commits main..head, and the pull request's body."""
     span = f"{main}..{head}"
     commits = git("rev-list", span).decode().split()
     rows = [r.split("\t") for r in git("diff", "--numstat", main, head).decode().splitlines()]
@@ -706,6 +709,15 @@ def judge_range(v, main, head):
              "drop those commits (git rebase main drops them) and push again")
     else:
         v.ok("land/patch-fresh", "no patch of the range is on main yet")
+    body = pr.get("body") or ""
+    heads = {" ".join(m.lower().split())
+             for m in re.findall(r"^#{1,6}[ \t]+(.+?)[ \t#]*$", body, re.M)}
+    missing = [c for c in CARD if c.lower() not in heads]
+    if missing:
+        v.no("land/card", "the body has no heading " + ", ".join(missing),
+             "put the card at the top of the body: " + ", ".join(CARD))
+    else:
+        v.ok("land/card", "the body holds the card")
 
 
 def judge(d, repo, fetched, main, ancestor, merges):  # noqa: PLR0913, PLR0917
@@ -725,7 +737,7 @@ def judge(d, repo, fetched, main, ancestor, merges):  # noqa: PLR0913, PLR0917
     else:
         judge_checks(v, d, rules, repo, pr["number"], pr["head"]["sha"])
     judge_history(v, main, pr["head"]["sha"], ancestor, merges)
-    judge_range(v, main, fetched)
+    judge_range(v, pr, main, fetched)
     if not fault:
         judge_rules(v, d, rules, me)
     if v.refused:
