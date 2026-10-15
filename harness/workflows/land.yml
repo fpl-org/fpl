@@ -18,7 +18,7 @@
 # Two jobs. verify holds no secret, no environment and no cache: it runs what can be checked
 # without the key: main's lander proving itself, and, when main is no ancestor of the
 # dispatched pull request's head (a sister landed first), its relocation onto main with
-# make quick on each pick (scripts/land --verify). PR code runs there, so land trusts only
+# make quick on each pick (scripts/land --verify) and make check on its tip. PR code runs there, so land trusts only
 # the tip Y it hands on, and lands it only when it derives the same Y itself (--relocate). land runs in the environment `land`, whose policy admits main alone, mints the
 # fpl-lander App's token, and runs main's scripts/land with it: every rule, the fpl/series
 # receipt, the fast-forward push as the App, then each child retargeted before the landed
@@ -63,9 +63,12 @@ jobs:
           FPL_LAND_QUICK: nix develop -c make quick
         run: |
           git fetch -q --no-tags origin "refs/pull/$PR/head"
-          git merge-base --is-ancestor HEAD FETCH_HEAD ||
-            scripts/land --verify HEAD FETCH_HEAD | tee -a "$GITHUB_STEP_SUMMARY" |
-            grep '^y=' >>"$GITHUB_OUTPUT"
+          ! git merge-base --is-ancestor HEAD FETCH_HEAD || exit 0
+          scripts/land --verify HEAD FETCH_HEAD | tee -a "$GITHUB_STEP_SUMMARY" >"$RUNNER_TEMP/map"
+          y="$(sed -n 's/^y=//p' "$RUNNER_TEMP/map")"
+          # No required check ever ran on Y's tip: noslop's gate runs on it before Y is handed on.
+          [ -z "$y" ] || { git checkout -q --detach "$y" && nix develop -c make check; }
+          echo "y=$y" >>"$GITHUB_OUTPUT"
 
   land:
     needs: verify

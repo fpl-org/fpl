@@ -10,10 +10,10 @@ reads the diff and pushes it to main himself.
 The lander: `workflow_dispatch` on main with input `pr`, a verify job without secrets and a
 land job in the environment `land` that runs `scripts/land --ci` with the fpl-lander App's
 token. When main is no ancestor of the dispatched head (a sister landed first), verify
-relocates it onto main and runs `nix develop -c make quick` on each pick; land derives the
-relocation again and lands it on the approval of the old head when every commit kept its
-patch id and message, else publishes it as `<head>-relocated` and asks for a review
-(`scripts/land --verify`, `--relocate`). It needs:
+relocates it onto main, runs `make quick` on each pick and `make check` on the tip; land
+derives the relocation again and lands it on the approval of the old head when every commit
+kept its patch id and message, else publishes it as `<head>-relocated` and asks for a
+review (`scripts/land --verify`, `--relocate`). It needs:
 
 - the environment `land` (policy: main only) holding the secrets `LAND_APP_ID` and
   `LAND_APP_KEY`;
