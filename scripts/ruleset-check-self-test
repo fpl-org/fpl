@@ -228,6 +228,19 @@ d["conditions"] = []
 json.dump(d, open(p, "w"))' "$work"
 run 2 "a file whose conditions are not an object" ""
 build
+python3 -I -c 'import json, sys
+p = sys.argv[1] + "/brake.json"
+d = json.load(open(p))
+d["bypass_actors"] = {}
+json.dump(d, open(p, "w"))' "$work"
+run 2 "a file whose bypass_actors is no list" ""
+build visible
+fx "s['$BRAKE']['bypass_actors'] = {}"
+run 2 "a live ruleset whose bypass_actors is no list" ""
+build visible
+fx "s['$BRAKE']['bypass_actors'] = None"
+run 2 "a live ruleset whose bypass_actors is null" ""
+build
 fx "del s['$BRAKE']['id']"
 run 2 "a listed ruleset without an id" ""
 build

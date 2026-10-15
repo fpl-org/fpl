@@ -18,7 +18,8 @@ for the other), and a missing conditions.ref_name.exclude is an empty one.
 
 `bypass_actors` is not in the forge's answer to a token without admin rights (the machine
 accounts'), and a file made with such a token does not record it: it is compared only when both
-sides have it, and listed as unchecked otherwise.
+sides have it, and listed as unchecked otherwise. Absent is not malformed: a bypass_actors that
+is there and is no list is a ruleset that cannot be read (exit 2), never one left unchecked.
 
     exit 0   every file has its live ruleset, every live ruleset its file, no difference
     exit 1   a difference: a field, a ruleset live without a file, or a file not live
@@ -137,11 +138,12 @@ def normal(ruleset: dict[str, Any]) -> dict[str, Any]:
     out = canon({k: v for k, v in ruleset.items() if k not in DROPPED})
     out.setdefault("conditions", {}).setdefault("ref_name", {}).setdefault("exclude", [])
     out["rules"] = keyed(ruleset.get("rules"), "type", "rule", rule)
-    if isinstance(ruleset.get("bypass_actors"), list):
-        by = lambda a: f"{a.get('actor_type')} {a.get('actor_id')}"  # noqa: E731
-        out["bypass_actors"] = {by(a): a.get("bypass_mode") for a in ruleset["bypass_actors"]}
-    else:
-        out.pop("bypass_actors", None)
+    if "bypass_actors" not in ruleset:
+        return out  # not shown to this token, or not recorded: judge() lists it as unchecked
+    if not isinstance(ruleset["bypass_actors"], list):
+        raise UnreadableError(f"bypass_actors is {json.dumps(ruleset['bypass_actors'])}, no list")
+    by = lambda a: f"{a.get('actor_type')} {a.get('actor_id')}"  # noqa: E731
+    out["bypass_actors"] = {by(a): a.get("bypass_mode") for a in ruleset["bypass_actors"]}
     return out
 
 
@@ -170,7 +172,7 @@ def judge(name: str, file: str, wanted: dict[str, Any], live: dict[str, Any]) ->
     """The report on one ruleset that has both a file and a live twin."""
     try:
         a, b = normal(wanted), normal(live)
-    except (AttributeError, TypeError) as e:
+    except (AttributeError, TypeError, UnreadableError) as e:
         raise UnreadableError(f"{name}: not shaped like a ruleset ({e})") from e
     unchecked = []
     if "bypass_actors" not in a or "bypass_actors" not in b:
