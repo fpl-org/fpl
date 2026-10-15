@@ -1340,6 +1340,19 @@ line "y=" "and derives nothing"
 FPL_LAND_QUICK=true expect 0 "--verify, a child of the relocated SB" --verify "$SY" "$SC"
 line "drop $SB" "main holds SB's pair: the child's range starts above it"
 says "pick $SC " "the child's own commit is picked"
+# RP and RQ make the same change, x to y, at two places of r with the same context: one pair.
+# Main holds RP's pick once (on RZ); RQ is no commit of main's and must not be dropped.
+git switch -q -c twins "$M0"
+{ seq 3 | sed 's/.*/k/'; echo x; seq 7 | sed 's/.*/k/'; echo x; seq 3 | sed 's/.*/k/'; } >r
+git add r && git commit -q -m "add r" && RB="$(git rev-parse HEAD)"
+sed '4s/x/y/' r >r.new && mv r.new r && git commit -q -am "x to y" && RP="$(git rev-parse HEAD)"
+sed '12s/x/y/' r >r.new && mv r.new r && git commit -q -am "x to y" && RQ="$(git rev-parse HEAD)"
+git reset -q --hard "$RB" && echo z >z && git add z && git commit -q -m "add z" && git cherry-pick "$RP" >/dev/null
+RM="$(git rev-parse HEAD)"
+git switch -q main && git branch -q -D twins
+FPL_LAND_QUICK=true expect 0 "--verify, two commits with one pair, main holding one" --verify "$RM" "$RQ"
+line "drop $RP" "the one main holds is dropped"
+says "pick $RQ " "the other is picked: a commit on main answers for one commit, once"
 
 # Two siblings as pull request #7, one after the other: SA lands; then SB, approved on SB,
 # is relocated onto SA and lands as SY without a new approval.

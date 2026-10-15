@@ -755,8 +755,9 @@ def derive(main, head):
     `pick <old> <new>` per commit and `y <Y>`, or `conflict <old> <files>` and exit 1."""
     base = git("merge-base", main, head).decode().strip()
     olds = git("rev-list", "--reverse", f"{base}..{head}").decode().split()
-    landed = {pair(c) for c in git("rev-list", f"{base}..{main}").decode().split()}
-    while olds and pair(olds[0]) in landed:
+    landed = [pair(c) for c in git("rev-list", f"{base}..{main}").decode().split()]
+    while olds and pair(olds[0]) in landed:  # each commit on main answers for one, once
+        landed.remove(pair(olds[0]))
         print("drop", olds.pop(0))
     onto = main
     for c in olds:
