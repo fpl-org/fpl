@@ -37,7 +37,7 @@
 # It acts on archive rows, never on the do-not-touch list (checked again at the moment of
 # removal), in the order that loses nothing:
 #   1. the dirty files, untracked ones too, as harness/sweep-archive/<name>.patch (git-ignored;
-#      refused when it exists), made in a scratch index so the worktree's own stays as it was;
+#      refused when it exists or the way to it holds a symlink), made in a scratch index so the worktree's own stays as it was;
 #      and what is staged, as <name>.index.patch (git apply --index), because the files may no
 #      longer hold it: a staged file deleted since is in the index only
 #   2. a tag on the head: archive/<branch>, or archive/worktree/<name> when detached
@@ -385,6 +385,12 @@ while IFS="$tab" read -r kind name b merged new dirty pr owner action note sha p
 		if [ -s "$tmp/snap1" ] || [ -s "$tmp/snap1.index" ]; then
 			patch="$archive_dir/${name##*/}.patch"
 			ipatch="$archive_dir/${name##*/}.index.patch"
+			# a symlink anywhere on the way would put the patch outside the repository
+			if [ -L "$root/harness" ] || [ -L "$archive_dir" ] || [ -L "$patch" ] || [ -L "$ipatch" ]; then
+				say "$name" "FAILED: ${archive_dir#"$root"/} is or holds a symlink; left as it is"
+				failed=$((failed + 1))
+				continue
+			fi
 			if [ -e "$patch" ] || [ -e "$ipatch" ]; then
 				say "$name" "FAILED: $patch or $ipatch exists; move it away"
 				failed=$((failed + 1))
