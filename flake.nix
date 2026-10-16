@@ -363,6 +363,21 @@
         default = walker pkgs;
       });
 
+      # `nix flake check` runs the REPL once, in the build sandbox: one expression through the
+      # package, judged against what the walker prints for it. The package's import check
+      # alone would pass a REPL that starts and cannot evaluate. The environment is the
+      # sandbox's, so the input is an operator's (fpl.repl.provenance), and no log is written.
+      checks = forAllSystems (pkgs: {
+        repl = pkgs.runCommand "fpl-repl-check" { } ''
+          got="$(${nixpkgs.lib.getExe (walker pkgs)} -e '2 | 3 +')"
+          [ "$got" = 5 ] || {
+            echo "fpl -e '2 | 3 +' printed '$got', not 5" >&2
+            exit 1
+          }
+          touch "$out"
+        '';
+      });
+
       apps = forAllSystems (pkgs: {
         # `nix run .#` from a clone, `nix run github:fpl-org/fpl` from anywhere: the REPL, with
         # its arguments after `--` (nix run .# -- -e '2 | 3 +').
