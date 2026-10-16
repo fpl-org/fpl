@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
 # scripts/pr-self-test — proof that scripts/pr bases a pull request on main, stacks only on
-# the branch of an open pull request, opens a draft when asked, and does what --update-body,
-# --ready and --reviewer promise, and nothing else (no label, no queue). Run by `make gates`.
+# the branch of an open pull request, opens a draft unless --no-draft says otherwise, and does
+# what --update-body, --ready and --reviewer promise, and nothing else (no label, no queue).
+# Run by `make gates`.
 #
 # The forge is a small HTTP server of the test's own on 127.0.0.1 (FPL_API_URL, the one
 # address scripts/pr accepts besides GitHub's): it serves fixtures out of a directory and logs
@@ -247,14 +248,14 @@ FEAT=agent/claude/stack/feat PARENT=agent/claude/stack/parent
 # --- the base: main unless the branch of an open pull request is named ---------------------
 run 0 "dry run of the current branch" -n
 says err "base:  main" "default base"
-says err "draft: no" "default is not a draft"
+says err "draft: yes" "a draft by default"
 says err "head:  $FEAT" "head"
 says err "landing: fast-forward by the lander after review" "landing line"
 says err "- feat(x): first" "every subject is listed"
 lacks err "rebase-merge" "no rebase-merge claim"
 lacks err "commits, " "no commit count"
-run 0 "dry run, draft" -n --draft
-says err "draft: yes" "draft flag"
+run 0 "dry run, ready at once" -n --no-draft
+says err "draft: no" "no-draft flag"
 run 0 "-B main is the default" -n -B main
 says err "base:  main" "-B main"
 run 1 "-B a branch the head is not built on" -n -B agent/claude/stack/solo
@@ -296,13 +297,13 @@ run 1 "a body file with a private term" -n --body-file "$tmp/leaky.md"
 says err "nothing was sent" "leak gate on a body file"
 
 # --- filing ---------------------------------------------------------------------------------
-run 0 "filing a draft" --draft
+run 0 "filing, a draft by default"
 says out "https://github.com/pr-test/fpl/pull/9" "the url is printed"
 logged 1 "POST /repos/pr-test/fpl/pulls" "one pull request created"
 logged 1 '"draft": true' "created as a draft"
 logged 1 '"base": "main"' "on main"
-run 0 "filing, not a draft" -t "feat(x): alone" -b "A body." agent/claude/stack/solo
-logged 1 '"draft": false' "ready by default"
+run 0 "filing, not a draft" --no-draft -t "feat(x): alone" -b "A body." agent/claude/stack/solo
+logged 1 '"draft": false' "ready only when asked"
 logged 2 "POST /repos/pr-test/fpl/pulls" "two created"
 echo '[{"number": 5, "html_url": "https://github.com/pr-test/fpl/pull/5", "head": {"ref": "'"$FEAT"'"}}]' \
 	>"$forge/pulls.json"
@@ -336,7 +337,9 @@ mv scripts/leak-check.real scripts/leak-check
 printf 'A body from a file.\n\nWith two paragraphs.\n' >"$tmp/body.md"
 run 1 "a pull request number that is not one" --update-body five "$tmp/body.md"
 run 1 "a missing file" --update-body 5 "$tmp/nowhere.md"
-run 1 "--update-body with a branch beside it" --update-body 5 "$tmp/body.md" "$FEAT"
+run 1 "--ready with --no-draft beside it" --ready 5 --no-draft
+logged 0 "/graphql" "nothing marked"
+run 1 "--update-body with a branch beside it"--update-body 5 "$tmp/body.md" "$FEAT"
 
 # --- --ready --------------------------------------------------------------------------------
 pull 5 true '[]'
