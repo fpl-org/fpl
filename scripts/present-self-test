@@ -1,0 +1,383 @@
+#!/usr/bin/env bash
+#
+# scripts/present-self-test — proof that scripts/present answers each case it is there to
+# answer: silent says so only when the owner has posted nothing, prints every URL of his when
+# he has, and refuses to guess when the forge cannot be asked; stamp writes one Presented-By
+# last in every message and changes nothing else. Run by `make gates`.
+#
+# The forge is a directory of JSON fixtures served by a gh of the test's own, first on PATH:
+# `gh auth token` prints the fixture `token` or fails without one, `gh api <path>` prints the
+# fixture named after the path, through jq when --jq is given, and only for --hostname
+# github.com (another host, or none, is served from ghe/, which is empty). Every call is
+# logged. The repositories are throwaway ones under a directory with a space and a dollar sign
+# in its name, with git's global and system config, HOME and XDG_CONFIG_HOME pointed away from
+# the maintainer's, GH_TOKEN unset, and hooks of the test's own where a case needs one.
+#
+# Where there is a /bin/bash other than the bash running this, the whole run is made a second
+# time with it first on PATH: on a Mac that is bash 3.2. Needs jq, for the gh stand-in.
+
+# The stand-in's script is written in single quotes: it expands when it runs.
+# shellcheck disable=SC2016
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+present="$root/scripts/present"
+command -v jq >/dev/null || {
+	echo "present self-test: jq is not on PATH; the gh stand-in filters the fixtures with it" >&2
+	exit 2
+}
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/present self-test \$.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+: >"$tmp/gitconfig"
+export GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home" \
+	XDG_CONFIG_HOME="$tmp/xdg" GH_CONFIG_DIR="$tmp/gh" GIT_AUTHOR_NAME=t \
+	GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid \
+	GIT_ALLOW_PROTOCOL=file GIT_TERMINAL_PROMPT=0 FORGE="$tmp/forge"
+unset GH_TOKEN GITHUB_TOKEN GH_HOST GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_CONFIG_COUNT \
+	FPL_MODEL FPL_SESSION_ID CLAUDE_CODE_MODEL CLAUDE_CODE_SESSION_ID FPL_ATOMIC_GATE GIT_AUTHOR_DATE
+mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$GH_CONFIG_DIR" "$FORGE"
+
+bin="$tmp/bin"
+mkdir -p "$bin"
+cat >"$bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "gh $*" >>"$FORGE/calls"
+if [ "${1:-}" = auth ]; then
+	[ -r "$FORGE/token" ] || { echo "no oauth token" >&2; exit 1; }
+	cat "$FORGE/token"
+	exit 0
+fi
+[ "${1:-}" = api ] || { echo "gh: unknown command ${1:-}" >&2; exit 1; }
+shift
+host="${GH_HOST:-github.com}" path="" filter=""
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--hostname) host="$2"; shift 2 ;;
+	--jq) filter="$2"; shift 2 ;;
+	--paginate) shift ;;
+	-X | -f | -F) shift 2 ;;
+	*) path="$1"; shift ;;
+	esac
+done
+dir="$FORGE"
+[ "$host" = github.com ] || dir="$FORGE/ghe"
+file="$dir/$(printf %s "$path" | tr -c 'A-Za-z0-9._-' _).json"
+[ -e "$file" ] || { echo "gh: Not Found (HTTP 404) $path" >&2; exit 1; }
+if [ -n "$filter" ]; then jq -r "$filter" <"$file"; else cat "$file"; fi
+EOF
+chmod +x "$bin/gh"
+export PATH="$bin:$PATH"
+
+# The repository: main at M0 with CODEOWNERS and the machine account's identity; the series
+# C1..C3 on `series`, three authors, a message with a comment-like line and a trailing blank, a
+# message that an earlier presenter stamped; `other`, a branch off M0 the series does not hold.
+repo="$tmp/repo"
+git init -q -b main "$repo"
+cd "$repo"
+git remote add github https://github.com/present-test/fpl.git
+mkdir .github
+echo '* @psjg' >.github/CODEOWNERS
+printf '%s\n' 1+psjg-claude@users.noreply.github.com >"$(git rev-parse --git-path agent-identity)"
+git add -A
+git commit -q --author='M <m@example.invalid>' -m base
+M0="$(git rev-parse HEAD)"
+git switch -q -c series
+lemma() { # lemma <author> <file> <message>: one commit, the message kept verbatim
+	echo "$2" >"$2"
+	git add "$2"
+	printf '%s\n' "$3" | git commit -q --author="$1" --date='2026-01-02T03:04:05+0000' --cleanup=verbatim -F -
+}
+lemma 'A <a@example.invalid>' one "docs(x): one"$'\n\n'"why"$'\n\n'"Stack: t"$'\n'"Assisted-By: claude"$'\n'"Session-Id: s"$'\n'"Co-Authored-By: A <a@example.invalid>"
+C1="$(git rev-parse HEAD)"
+lemma 'B <b@example.invalid>' two "feat(x): two"$'\n\n'"# not a comment under verbatim"$'\n'"a line with a trailing blank "$'\n\n'"Stack: t"$'\n'"Human-Only: true"
+C2="$(git rev-parse HEAD)"
+lemma 'C <c@example.invalid>' three "test(x): three"$'\n\n'"why"$'\n\n'"Stack: t"$'\n'"Assisted-By: claude"$'\n'"Session-Id: s"$'\n'"Presented-By: claude-old oid"
+C3="$(git rev-parse HEAD)"
+git switch -q -c other "$M0"
+lemma 'D <d@example.invalid>' four "chore(x): four"$'\n\n'"Human-Only: true"
+OTHER="$(git rev-parse HEAD)"
+git switch -q series
+
+fails=0 total=0
+# expect <exit code> <description> <scripts/present arguments...>: stdout in $tmp/stdout,
+# stderr in $tmp/stderr, both in $tmp/out.
+expect() {
+	local want="$1" what="$2" rc=0
+	shift 2
+	total=$((total + 1))
+	"$present" "$@" >"$tmp/stdout" 2>"$tmp/stderr" </dev/null || rc=$?
+	cat "$tmp/stdout" "$tmp/stderr" >"$tmp/out"
+	if [ "$rc" -ne "$want" ]; then
+		fails=$((fails + 1))
+		echo "self-test: $what: exit $rc, want $want" >&2
+		sed 's/^/    /' "$tmp/out" >&2
+	fi
+}
+# says <text> <description> / lacks: the last output holds, or lacks, the text.
+says() {
+	total=$((total + 1))
+	grep -qF -- "$1" "$tmp/out" && return
+	fails=$((fails + 1))
+	echo "self-test: $2: the output lacks '$1'" >&2
+	sed 's/^/    /' "$tmp/out" >&2
+}
+lacks() {
+	total=$((total + 1))
+	! grep -qF -- "$1" "$tmp/out" && return
+	fails=$((fails + 1))
+	echo "self-test: $2: the output holds '$1'" >&2
+}
+# stdout_is <text> <description>: stdout is exactly the text (empty for none).
+stdout_is() {
+	total=$((total + 1))
+	[ "$(cat "$tmp/stdout")" = "$1" ] && return
+	fails=$((fails + 1))
+	echo "self-test: $2: stdout is not '$1':" >&2
+	sed 's/^/    /' "$tmp/stdout" >&2
+}
+# is <got> <want> <description>
+is() {
+	total=$((total + 1))
+	[ "$1" = "$2" ] && return
+	fails=$((fails + 1))
+	printf 'self-test: %s: got\n%s\nwant\n%s\n' "$3" "$1" "$2" >&2
+}
+called() { cp "$FORGE/calls" "$tmp/out"; }
+
+# --- silent -----------------------------------------------------------------------------------
+PR=repos/present-test/fpl
+fixture() { cat >"$FORGE/$(printf %s "$1" | tr -c 'A-Za-z0-9._-' _).json"; } # fixture <api path>
+item() { printf '{"user": {"login": "%s"}, "html_url": "%s", "body": %s}' "$1" "$2" "${3:-null}"; } # item <login> <url> [body JSON]
+quiet() { # quiet: a forge where only bots and his automated lines have posted
+	rm -rf "$FORGE"
+	mkdir -p "$FORGE/ghe"
+	: >"$FORGE/calls"
+	echo tok >"$FORGE/token"
+	echo '{"login": "psjg-claude"}' | fixture user
+	printf '{"number": 7, "commits": 3, "head": {"sha": "%s"}}' "$C3" | fixture "$PR/pulls/7"
+	printf '[{"sha": "%s"}, {"sha": "%s"}, {"sha": "%s"}]' "$C1" "$C2" "$C3" | fixture "$PR/pulls/7/commits?per_page=100"
+	echo "[$(item 'coderabbitai[bot]' https://forge/r1 '""'), $(item 'chatgpt-codex-connector[bot]' https://forge/r2 '"x"')]" | fixture "$PR/pulls/7/reviews?per_page=100"
+	echo "[$(item 'chatgpt-codex-connector[bot]' https://forge/rc1 '"a finding"')]" | fixture "$PR/pulls/7/comments?per_page=100"
+	echo "[$(item psjg https://forge/i1 '"@codex review"'), $(item psjg https://forge/i2 '"  @codex review\n"'), $(item 'claude[bot]' https://forge/i3 '"ok"')]" | fixture "$PR/issues/7/comments?per_page=100"
+	for c in $C1 $C2 $C3; do echo '[]' | fixture "$PR/commits/$c/comments?per_page=100"; done
+	echo "[$(item psjg https://forge/m0 '"outside the range"')]" | fixture "$PR/commits/$M0/comments?per_page=100"
+}
+
+quiet
+expect 0 "bots and his automated lines only" silent 7
+stdout_is "" "nothing on stdout when he is silent"
+says "psjg is silent on #7" "it says who is silent"
+says "2 '@codex review' line(s) left aside" "it counts the lines it passed over"
+called
+lacks "commits/$M0/comments" "a commit outside the request is not asked about"
+says "gh auth token --hostname github.com --user psjg-claude" "the token is the machine account's, on github.com"
+total=$((total + 1))
+if grep -v -- '--hostname github.com' "$FORGE/calls" | grep -q .; then
+	fails=$((fails + 1))
+	echo "self-test: a call does not name github.com:" >&2
+	grep -v -- '--hostname github.com' "$FORGE/calls" | sed 's/^/    /' >&2
+fi
+
+quiet
+echo "[$(item psjg https://forge/r3 '""')]" | fixture "$PR/pulls/7/reviews?per_page=100"
+expect 1 "an approval with an empty body" silent 7
+stdout_is "https://forge/r3" "the review's URL, alone, on stdout"
+says "[owner-spoke]" "it names the rule"
+says "1 review(s)" "it counts the review"
+says "remedy:" "it says what to do"
+
+quiet
+echo "[$(item psjg https://forge/rc2 '"here"')]" | fixture "$PR/pulls/7/comments?per_page=100"
+expect 1 "a review comment" silent 7
+stdout_is "https://forge/rc2" "its URL"
+
+quiet
+echo "[$(item psjg https://forge/i4 '"@codex review please"')]" | fixture "$PR/issues/7/comments?per_page=100"
+expect 1 "a conversation comment that only starts like the automated line" silent 7
+stdout_is "https://forge/i4" "its URL"
+
+quiet
+echo "[$(item psjg https://forge/c2a '"on the commit"'), $(item psjg https://forge/c2b '"on a line"')]" | fixture "$PR/commits/$C2/comments?per_page=100"
+echo "[$(item psjg https://forge/c3 '"and here"')]" | fixture "$PR/commits/$C3/comments?per_page=100"
+expect 1 "comments on two commits of the request" silent 7
+stdout_is "https://forge/c2a
+https://forge/c2b
+https://forge/c3" "every URL, in the forge's order"
+says "3 commit comment(s) on 3 commit(s)" "it counts them"
+
+quiet
+rm "$FORGE/token"
+expect 2 "no token for the machine account" silent 7
+says "[forge-token]" "it names the rule"
+stdout_is "" "nothing on stdout"
+called
+lacks "gh api" "the forge is never asked as the active account"
+
+quiet
+echo '{"login": "psjg"}' | fixture user
+expect 2 "a token that is the owner's" silent 7
+says "[forge-account]" "it names the rule"
+says "belongs to 'psjg'" "it says whose it is"
+
+quiet
+rm "$FORGE/$(printf %s "$PR/commits/$C3/comments?per_page=100" | tr -c 'A-Za-z0-9._-' _).json"
+expect 2 "one source answers 404 after the others answered" silent 7
+says "[forge-query]" "it names the rule"
+says "commits/$C3/comments" "it names the source"
+
+quiet
+echo '<html>' | fixture "$PR/pulls/7/reviews?per_page=100"
+expect 2 "an answer that is not JSON" silent 7
+says "[forge-query]" "it is a failed query"
+
+quiet
+printf '{"number": 7, "commits": 4, "head": {"sha": "%s"}}' "$C3" | fixture "$PR/pulls/7"
+expect 2 "the request says four commits, the list holds three" silent 7
+says "[forge-shape]" "it names the rule"
+
+quiet
+printf '{"number": 7, "commits": 251, "head": {"sha": "%s"}}' "$C3" | fixture "$PR/pulls/7"
+expect 2 "more commits than one read lists" silent 7
+says "[forge-shape]" "it names the rule"
+says "251 commits" "it says how many"
+
+quiet
+export GH_HOST=ghe.example
+expect 0 "GH_HOST names another forge" silent 7
+unset GH_HOST
+called
+lacks "ghe.example" "no call goes to it"
+
+expect 2 "no number" silent
+says "[usage]" "it names the rule"
+expect 2 "a number that is not one" silent seven
+says "[usage]" "it names the rule"
+expect 2 "no command" ""
+says "[usage]" "it names the rule"
+
+quiet
+rm .github/CODEOWNERS
+expect 2 "no CODEOWNERS" silent 7
+says "[owner-unknown]" "it names the rule"
+echo '* @psjg @other' >.github/CODEOWNERS
+expect 2 "a * rule with two owners" silent 7
+says "[owner-unknown]" "two logins is not one owner"
+echo '* @psjg' >.github/CODEOWNERS
+
+# --- stamp -------------------------------------------------------------------------------------
+snapshot() { # snapshot <commit>: tree, author, message, in $tmp/snap.<commit>
+	git log -1 --format='%T %an <%ae> %ad' "$1" >"$tmp/snap.$1"
+	git log -1 --format=%B "$1" >>"$tmp/snap.$1"
+}
+for c in $C1 $C2 $C3; do snapshot "$c"; done
+expected() { # expected <old commit> <value>: the message as it must read once stamped
+	local old
+	old="$(git log -1 --format=%B "$1")"
+	case "$old" in
+	*"Presented-By: claude-old oid") printf '%s\n' "${old%Presented-By: claude-old oid}Presented-By: $2" ;;
+	*) printf '%s\n%s\n' "$old" "Presented-By: $2" ;;
+	esac
+}
+# stamped <value> <description>: the three commits above M0 hold their tree and author, read
+# as expected, and carry exactly one Presented-By, last.
+stamped() {
+	local i=0 c old new
+	is "$(git rev-list --count "$M0..HEAD")" 3 "$2: three commits"
+	for c in $(git rev-list --reverse "$M0..HEAD"); do
+		i=$((i + 1))
+		case "$i" in 1) old="$C1" ;; 2) old="$C2" ;; *) old="$C3" ;; esac
+		is "$(git log -1 --format='%T %an <%ae> %ad' "$c")" "$(head -n1 "$tmp/snap.$old")" "$2: tree and author of lemma $i unchanged"
+		new="$(git log -1 --format=%B "$c")"
+		is "$new" "$(expected "$old" "$1")" "$2: message of lemma $i"
+		is "$(git log -1 --format='%(trailers:key=Presented-By,valueonly)' "$c" | sed '/^$/d')" "$1" "$2: one Presented-By on lemma $i"
+		is "$(git log -1 --format='%(trailers:only,unfold)' "$c" | sed '/^$/d' | tail -n1)" "Presented-By: $1" "$2: it is the last trailer of lemma $i"
+	done
+}
+
+expect 0 "a series stamped" stamp "$M0..HEAD" "claude-x sid"
+stdout_is "claude-x sid" "the value, on stdout"
+stamped "claude-x sid" "first stamp"
+H1="$(git rev-parse HEAD)"
+expect 0 "stamped again with the same value" stamp "$M0..HEAD" "claude-x sid"
+is "$(git rev-parse HEAD)" "$H1" "stamping twice changes nothing"
+expect 0 "presented again, by another session" stamp "$M0..HEAD" "claude-y sid2"
+stamped "claude-y sid2" "second presenter"
+
+export FPL_MODEL='Claude Fable 5.1' FPL_SESSION_ID=s9
+expect 0 "the value from the environment" stamp "$M0..HEAD"
+unset FPL_MODEL FPL_SESSION_ID
+stdout_is "claude-fable-5-1 s9" "model slug and session id, as acommit derives them"
+stamped "claude-fable-5-1 s9" "environment value"
+expect 2 "no value and no environment" stamp "$M0..HEAD"
+says "[usage]" "it names the rule"
+says "FPL_MODEL" "it names the variable"
+expect 2 "a value of one word" stamp "$M0..HEAD" claude-x
+says "[value]" "it names the rule"
+expect 2 "a slug in upper case" stamp "$M0..HEAD" "Claude-x sid"
+says "[value]" "it names the rule"
+
+H2="$(git rev-parse HEAD)"
+echo dirty >>one
+expect 2 "a dirty tree" stamp "$M0..HEAD" "claude-z s3"
+says "[dirty]" "it names the rule"
+git checkout -q -- one
+expect 2 "a range that does not end at HEAD" stamp "$M0..HEAD~1" "claude-z s3"
+says "[range]" "it names the rule"
+expect 2 "a base the series does not stand on" stamp "$OTHER..HEAD" "claude-z s3"
+says "[base]" "it names the rule"
+expect 2 "an empty range" stamp "HEAD..HEAD" "claude-z s3"
+says "holds no commit" "it says why"
+expect 2 "a three-dot range" stamp "$M0...HEAD" "claude-z s3"
+says "[range]" "it names the rule"
+expect 2 "no such base" stamp "nowhere..HEAD" "claude-z s3"
+says "no such base" "it says why"
+mkdir "$(git rev-parse --git-path rebase-merge)"
+expect 2 "a rebase in progress" stamp "$M0..HEAD" "claude-z s3"
+says "[state]" "it names the rule"
+rmdir "$(git rev-parse --git-path rebase-merge)"
+git merge -q --no-ff -m merged other
+expect 2 "a merge in the range" stamp "$M0..HEAD" "claude-z s3"
+says "holds a merge" "it says why"
+git reset -q --hard "$H2"
+git switch -q main
+expect 2 "main checked out" stamp "$M0..HEAD" "claude-z s3"
+says "[branch]" "it names the rule"
+git switch -q series
+is "$(git rev-parse HEAD)" "$H2" "every refusal left HEAD where it was"
+
+# A hook that refuses the second amend: the rebase stops, is undone, and says so.
+hooks="$tmp/hooks"
+mkdir -p "$hooks"
+printf '#!/bin/sh\n! grep -q "^feat(x): two" "$1"\n' >"$hooks/commit-msg"
+chmod +x "$hooks/commit-msg"
+git config core.hooksPath "$hooks"
+expect 1 "an amend a hook refuses" stamp "$M0..HEAD" "claude-z s3"
+says "[rebase]" "it names the rule"
+says "undone" "it says the rebase is undone"
+is "$(git rev-parse HEAD)" "$H2" "HEAD is where it was"
+total=$((total + 1))
+if [ -e "$(git rev-parse --git-path rebase-merge)" ]; then
+	fails=$((fails + 1))
+	echo "self-test: a refused stamp left a rebase in progress" >&2
+fi
+is "$(git status --porcelain)" "" "the tree is clean after the undo"
+# The soft atomicity judge is switched off for the amend, where a pre-commit hook would see it.
+printf '#!/bin/sh\n[ "${FPL_ATOMIC_GATE:-}" = off ]\n' >"$hooks/pre-commit"
+chmod +x "$hooks/pre-commit"
+rm "$hooks/commit-msg"
+expect 0 "the amend reaches the hooks with FPL_ATOMIC_GATE=off" stamp "$M0..HEAD" "claude-w s4"
+stamped "claude-w s4" "hooks on"
+git config --unset core.hooksPath
+
+echo "present self-test: $fails of $total checks failed (bash ${BASH_VERSINFO[0]}, git $(git version | cut -d' ' -f3))"
+[ "$fails" -eq 0 ] || exit 1
+
+# The same run under /bin/bash where that is another bash (3.2 on a Mac): `present` finds bash
+# through env, so a bash of that version goes first on PATH.
+if [ -z "${PRESENT_SELF_TEST_RUN:-}" ] && [ -x /bin/bash ] && [ "$(/bin/bash -c 'echo "${BASH_VERSINFO[0]}"')" != "${BASH_VERSINFO[0]}" ]; then
+	mkdir -p "$tmp/bash32"
+	ln -s /bin/bash "$tmp/bash32/bash"
+	cd "$root"
+	PRESENT_SELF_TEST_RUN=1 PATH="$tmp/bash32:$PATH" /bin/bash "$0"
+fi
