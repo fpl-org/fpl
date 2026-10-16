@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+#
+# scripts/present — the presenter's tool (.claude/agents/presenter.md): ask whether the owner
+# has spoken on a pull request.
+#
+#   present silent <N>                exit 0 when the owner has posted nothing on pull request
+#                                     N: no review, no review comment, no comment in its
+#                                     conversation, no comment on a commit of the request.
+#                                     Exit 1 when he has, with every URL of his on stdout, one
+#                                     a line; 2 when the forge could not be asked. Only exit 0
+#                                     is a go.
+#
+# silent reads, as the machine account, the four places his word can be: pulls/N/reviews,
+# pulls/N/comments, issues/N/comments, and commits/<sha>/comments for every commit the forge
+# lists under the request (pulls/N/commits: base..head as the forge holds them, which is the
+# work tip until the presented one is pushed). His review arrives as commit comments too,
+# commit-level and line-level, and GitHub's commit page hides the line-level ones; the API
+# serves both. The one line that is not his word is the `@codex review` that a workflow posts
+# with his token: it is left aside, and counted in the summary so a silent verdict shows what
+# it passed over. The owner is the `*` rule of .github/CODEOWNERS, the machine account the
+# login inside .git/agent-identity, the repository the URL of the remote `github`.
+#
+# It fails closed: no token for the machine account, a token that is somebody else's, a query
+# that fails, an answer of the wrong shape, more commits than one read can list, and the check
+# says why and exits 2. The token is taken on a line of its own: in `GH_TOKEN=$(…) gh api …` a
+# failed lookup is lost, gh falls back to the machine's active account, and the check would run
+# as the owner. Every call names github.com, so GH_HOST cannot send the question to another
+# forge, whose silence would mean nothing.
+#
+# Plain bash 3.2: no mapfile, no associative arrays. scripts/present-self-test proves each
+# case, in throwaway repositories against a gh of its own.
+set -euo pipefail
+
+# A replacement ref would make the commands below read another history than the one named.
+export GIT_NO_REPLACE_OBJECTS=1
+
+self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+repo_root="$(git rev-parse --show-toplevel)"
+
+# die <rule> <what> <remedy>: a refusal names its rule, what failed and what to do; exit 2.
+die() {
+	printf 'present [%s]: %s\n    remedy: %s\n' "$1" "$2" "$3" >&2
+	exit 2
+}
+
+# forge <path> [gh api arguments...]: one read of the forge as the machine account, pinned to
+# github.com. $tok is the token taken earlier, on its own line.
+forge() {
+	local path="$1"
+	shift
+	GH_TOKEN="$tok" gh api --hostname github.com "$@" "repos/$slug/$path"
+}
+
+# owner_login: the one login of the `*` rule of .github/CODEOWNERS, the last such rule when
+# there are several, as CODEOWNERS reads them.
+owner_login() {
+	local f="$repo_root/.github/CODEOWNERS" rule who
+	[ -r "$f" ] || die owner-unknown "no readable .github/CODEOWNERS names the owner" "add one with a rule for *"
+	rule="$(awk '$1 == "*" { r = $0 } END { print r }' "$f")"
+	# Read by awk, never split by the shell: the * of the rule is a glob to it.
+	who="$(printf '%s\n' "$rule" | awk 'NF == 2 { print $2 }')"
+	[[ $who =~ ^@[A-Za-z0-9][A-Za-z0-9-]*$ ]] ||
+		die owner-unknown "the * rule of .github/CODEOWNERS does not name exactly one @login: '${rule:-none}'" "write it as '* @<login>'"
+	printf '%s\n' "${who#@}"
+}
+
+# machine_login: the login inside the noreply address of .git/agent-identity, read by the
+# agent-identity beside this script: the checkout that runs the tool, not the one judged.
+machine_login() {
+	local identity login
+	identity="$("${self%/*}/agent-identity" show)" ||
+		die machine-unknown "agent identity unset" "scripts/agent-identity set <id>+<login>@users.noreply.github.com"
+	login="${identity#*+}"
+	login="${login%@*}"
+	[ -n "$login" ] && [ "$login" != "$identity" ] ||
+		die machine-unknown "cannot read a login from '$identity'" "set the machine account's noreply address (.agents/COMMITS.md)"
+	printf '%s\n' "$login"
+}
+
+# repo_slug: owner/repo from the URL of the remote `github`.
+repo_slug() {
+	local url s
+	url="$(git remote get-url github 2>/dev/null)" || die forge-unknown "no remote named github" "git remote add github https://github.com/<owner>/<repo>.git"
+	s="${url%.git}"
+	s="${s#*github.com}"
+	s="${s#[:/]}"
+	case "$s" in
+	*/*) printf '%s\n' "$s" ;;
+	*) die forge-unknown "cannot read owner/repo from the URL of github: '$url'" "point the remote at github.com/<owner>/<repo>" ;;
+	esac
+}
+
+cmd_silent() { # silent <N>
+	local n="${1:-}" owner machine who head count list c q kind out line n_word n_aside=0 filter
+	local reviews=0 review_comments=0 conversation=0 on_commits=0 urls=""
+	[ $# -eq 1 ] && [[ $n =~ ^[1-9][0-9]*$ ]] || die usage "a pull request number is needed" "present silent <N>"
+	owner="$(owner_login)"
+	machine="$(machine_login)"
+	slug="$(repo_slug)"
+	command -v gh >/dev/null || die tooling "no gh on PATH to ask the forge with" "scripts/layer on github, or nix develop .#github -c scripts/present silent $n"
+	# On its own line, so that a failed lookup is a refusal and not an empty GH_TOKEN.
+	tok="$(gh auth token --hostname github.com --user "$machine" 2>/dev/null)" && [ -n "$tok" ] ||
+		die forge-token "gh holds no token for $machine on github.com" "gh auth login --hostname github.com, as $machine"
+	who="$(GH_TOKEN="$tok" gh api --hostname github.com user --jq .login 2>/dev/null)" ||
+		die forge-query "the forge did not say whose token this is" "retry when github.com answers; gh auth status --hostname github.com"
+	[ "$who" = "$machine" ] || die forge-account "the token gh holds for $machine belongs to '$who'" "gh auth login --hostname github.com, as $machine"
+
+	# The commits of the request, as the forge lists them. One read lists at most 250.
+	count="$(forge "pulls/$n" --jq .commits 2>/dev/null)" || die forge-query "the forge did not answer for pulls/$n" "check the number; retry when github.com answers"
+	[[ $count =~ ^[0-9]+$ ]] || die forge-shape "pulls/$n does not say how many commits it holds: '$count'" "retry; if it persists, the API changed under this script"
+	[ "$count" -le 250 ] || die forge-shape "#$n holds $count commits, more than one read of pulls/$n/commits lists" "present a series of at most 10 commits; split the request"
+	list="$(forge "pulls/$n/commits?per_page=100" --paginate --jq '.[].sha' 2>/dev/null)" || die forge-query "the forge did not answer for pulls/$n/commits" "retry when github.com answers"
+	[ "$(printf '%s\n' "$list" | grep -c .)" -eq "$count" ] ||
+		die forge-shape "pulls/$n says $count commits, pulls/$n/commits lists $(printf '%s\n' "$list" | grep -c .)" "retry; the request may have been pushed to while this read it"
+
+	# His items, each as 'word <url>', or 'aside <url>' for the one automated line that is not
+	# his word. The login is a validated word, so it can stand inside the filter.
+	filter='.[] | select(.user.login == "'"$owner"'") | (if ((.body // "") | gsub("^\\s+|\\s+$"; "")) == "@codex review" then "aside " else "word " end) + .html_url'
+	for q in "pulls/$n/reviews" "pulls/$n/comments" "issues/$n/comments" $(for c in $list; do printf 'commits/%s/comments ' "$c"; done); do
+		out="$(forge "$q?per_page=100" --paginate --jq "$filter" 2>/dev/null)" ||
+			die forge-query "the forge did not answer for $q" "retry when github.com answers; a 404 here means the request or a commit of it is gone"
+		n_word=0
+		while IFS= read -r line; do
+			case "$line" in
+			"") ;;
+			"aside "*) n_aside=$((n_aside + 1)) ;;
+			"word "*) n_word=$((n_word + 1)) urls="$urls${line#word }"$'\n' ;;
+			*) die forge-shape "$q answered a line this script does not read: '$line'" "retry; if it persists, the API changed under this script" ;;
+			esac
+		done <<<"$out"
+		case "$q" in
+		pulls/*/reviews) reviews=$n_word ;;
+		pulls/*/comments) review_comments=$n_word ;;
+		issues/*) conversation=$n_word ;;
+		commits/*) on_commits=$((on_commits + n_word)) ;;
+		esac
+	done
+	kind="$reviews review(s), $review_comments review comment(s), $conversation conversation comment(s), $on_commits commit comment(s) on $count commit(s); $n_aside '@codex review' line(s) left aside"
+	if [ -z "$urls" ]; then
+		printf 'present silent: %s is silent on #%s: %s\n' "$owner" "$n" "$kind" >&2
+		return 0
+	fi
+	printf '%s' "$urls"
+	printf 'present [owner-spoke]: %s has spoken on #%s: %s\n    remedy: present the history as built, saying why under Limits; a comment of his that asks for this rewrite is its brief, named on the card (.claude/agents/presenter.md)\n' "$owner" "$n" "$kind" >&2
+	exit 1
+}
+
+tok="" slug=""
+case "${1:-}" in
+silent)
+	c="cmd_$1"
+	shift
+	"$c" "$@"
+	;;
+*) die usage "present silent <N>" "see the header of scripts/present" ;;
+esac
