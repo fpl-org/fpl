@@ -424,6 +424,13 @@
       );
 
       apps = forAllSystems (pkgs: {
+        # `nix run .#` from a clone, `nix run github:fpl-org/fpl` from anywhere: the REPL, with
+        # its arguments after `--` (nix run .# -- -e '2 | 3 +').
+        default = {
+          type = "app";
+          program = nixpkgs.lib.getExe (walker pkgs);
+          meta.description = "The FPL REPL (python -m fpl.repl)";
+        };
         gen-config = {
           type = "app";
           program = "${genConfig pkgs}/bin/gen-config";
