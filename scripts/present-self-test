@@ -2,7 +2,8 @@
 #
 # scripts/present-self-test — proof that scripts/present answers each case it is there to
 # answer: silent says so only when the owner has posted nothing, prints every URL of his when
-# he has, and refuses to guess when the forge cannot be asked. Run by `make gates`.
+# he has, and refuses to guess when the forge cannot be asked; stamp writes one Presented-By
+# last in every message and changes nothing else. Run by `make gates`.
 #
 # The forge is a directory of JSON fixtures served by a gh of the test's own, first on PATH:
 # `gh auth token` prints the fixture `token` or fails without one, `gh api <path>` prints the
@@ -70,7 +71,7 @@ export PATH="$bin:$PATH"
 
 # The repository: main at M0 with CODEOWNERS and the machine account's identity; the series
 # C1..C3 on `series`, three authors, a message with a comment-like line and a trailing blank, a
-# message that an earlier presenter stamped.
+# message that an earlier presenter stamped; `other`, a branch off M0 the series does not hold.
 repo="$tmp/repo"
 git init -q -b main "$repo"
 cd "$repo"
@@ -93,6 +94,10 @@ lemma 'B <b@example.invalid>' two "feat(x): two"$'\n\n'"# not a comment under ve
 C2="$(git rev-parse HEAD)"
 lemma 'C <c@example.invalid>' three "test(x): three"$'\n\n'"why"$'\n\n'"Stack: t"$'\n'"Assisted-By: claude"$'\n'"Session-Id: s"$'\n'"Presented-By: claude-old oid"
 C3="$(git rev-parse HEAD)"
+git switch -q -c other "$M0"
+lemma 'D <d@example.invalid>' four "chore(x): four"$'\n\n'"Human-Only: true"
+OTHER="$(git rev-parse HEAD)"
+git switch -q series
 
 fails=0 total=0
 # expect <exit code> <description> <scripts/present arguments...>: stdout in $tmp/stdout,
@@ -259,6 +264,111 @@ echo '* @psjg @other' >.github/CODEOWNERS
 expect 2 "a * rule with two owners" silent 7
 says "[owner-unknown]" "two logins is not one owner"
 echo '* @psjg' >.github/CODEOWNERS
+
+# --- stamp -------------------------------------------------------------------------------------
+snapshot() { # snapshot <commit>: tree, author, message, in $tmp/snap.<commit>
+	git log -1 --format='%T %an <%ae> %ad' "$1" >"$tmp/snap.$1"
+	git log -1 --format=%B "$1" >>"$tmp/snap.$1"
+}
+for c in $C1 $C2 $C3; do snapshot "$c"; done
+expected() { # expected <old commit> <value>: the message as it must read once stamped
+	local old
+	old="$(git log -1 --format=%B "$1")"
+	case "$old" in
+	*"Presented-By: claude-old oid") printf '%s\n' "${old%Presented-By: claude-old oid}Presented-By: $2" ;;
+	*) printf '%s\n%s\n' "$old" "Presented-By: $2" ;;
+	esac
+}
+# stamped <value> <description>: the three commits above M0 hold their tree and author, read
+# as expected, and carry exactly one Presented-By, last.
+stamped() {
+	local i=0 c old new
+	is "$(git rev-list --count "$M0..HEAD")" 3 "$2: three commits"
+	for c in $(git rev-list --reverse "$M0..HEAD"); do
+		i=$((i + 1))
+		case "$i" in 1) old="$C1" ;; 2) old="$C2" ;; *) old="$C3" ;; esac
+		is "$(git log -1 --format='%T %an <%ae> %ad' "$c")" "$(head -n1 "$tmp/snap.$old")" "$2: tree and author of lemma $i unchanged"
+		new="$(git log -1 --format=%B "$c")"
+		is "$new" "$(expected "$old" "$1")" "$2: message of lemma $i"
+		is "$(git log -1 --format='%(trailers:key=Presented-By,valueonly)' "$c" | sed '/^$/d')" "$1" "$2: one Presented-By on lemma $i"
+		is "$(git log -1 --format='%(trailers:only,unfold)' "$c" | sed '/^$/d' | tail -n1)" "Presented-By: $1" "$2: it is the last trailer of lemma $i"
+	done
+}
+
+expect 0 "a series stamped" stamp "$M0..HEAD" "claude-x sid"
+stdout_is "claude-x sid" "the value, on stdout"
+stamped "claude-x sid" "first stamp"
+H1="$(git rev-parse HEAD)"
+expect 0 "stamped again with the same value" stamp "$M0..HEAD" "claude-x sid"
+is "$(git rev-parse HEAD)" "$H1" "stamping twice changes nothing"
+expect 0 "presented again, by another session" stamp "$M0..HEAD" "claude-y sid2"
+stamped "claude-y sid2" "second presenter"
+
+export FPL_MODEL='Claude Fable 5.1' FPL_SESSION_ID=s9
+expect 0 "the value from the environment" stamp "$M0..HEAD"
+unset FPL_MODEL FPL_SESSION_ID
+stdout_is "claude-fable-5-1 s9" "model slug and session id, as acommit derives them"
+stamped "claude-fable-5-1 s9" "environment value"
+expect 2 "no value and no environment" stamp "$M0..HEAD"
+says "[usage]" "it names the rule"
+says "FPL_MODEL" "it names the variable"
+expect 2 "a value of one word" stamp "$M0..HEAD" claude-x
+says "[value]" "it names the rule"
+expect 2 "a slug in upper case" stamp "$M0..HEAD" "Claude-x sid"
+says "[value]" "it names the rule"
+
+H2="$(git rev-parse HEAD)"
+echo dirty >>one
+expect 2 "a dirty tree" stamp "$M0..HEAD" "claude-z s3"
+says "[dirty]" "it names the rule"
+git checkout -q -- one
+expect 2 "a range that does not end at HEAD" stamp "$M0..HEAD~1" "claude-z s3"
+says "[range]" "it names the rule"
+expect 2 "a base the series does not stand on" stamp "$OTHER..HEAD" "claude-z s3"
+says "[base]" "it names the rule"
+expect 2 "an empty range" stamp "HEAD..HEAD" "claude-z s3"
+says "holds no commit" "it says why"
+expect 2 "a three-dot range" stamp "$M0...HEAD" "claude-z s3"
+says "[range]" "it names the rule"
+expect 2 "no such base" stamp "nowhere..HEAD" "claude-z s3"
+says "no such base" "it says why"
+mkdir "$(git rev-parse --git-path rebase-merge)"
+expect 2 "a rebase in progress" stamp "$M0..HEAD" "claude-z s3"
+says "[state]" "it names the rule"
+rmdir "$(git rev-parse --git-path rebase-merge)"
+git merge -q --no-ff -m merged other
+expect 2 "a merge in the range" stamp "$M0..HEAD" "claude-z s3"
+says "holds a merge" "it says why"
+git reset -q --hard "$H2"
+git switch -q main
+expect 2 "main checked out" stamp "$M0..HEAD" "claude-z s3"
+says "[branch]" "it names the rule"
+git switch -q series
+is "$(git rev-parse HEAD)" "$H2" "every refusal left HEAD where it was"
+
+# A hook that refuses the second amend: the rebase stops, is undone, and says so.
+hooks="$tmp/hooks"
+mkdir -p "$hooks"
+printf '#!/bin/sh\n! grep -q "^feat(x): two" "$1"\n' >"$hooks/commit-msg"
+chmod +x "$hooks/commit-msg"
+git config core.hooksPath "$hooks"
+expect 1 "an amend a hook refuses" stamp "$M0..HEAD" "claude-z s3"
+says "[rebase]" "it names the rule"
+says "undone" "it says the rebase is undone"
+is "$(git rev-parse HEAD)" "$H2" "HEAD is where it was"
+total=$((total + 1))
+if [ -e "$(git rev-parse --git-path rebase-merge)" ]; then
+	fails=$((fails + 1))
+	echo "self-test: a refused stamp left a rebase in progress" >&2
+fi
+is "$(git status --porcelain)" "" "the tree is clean after the undo"
+# The soft atomicity judge is switched off for the amend, where a pre-commit hook would see it.
+printf '#!/bin/sh\n[ "${FPL_ATOMIC_GATE:-}" = off ]\n' >"$hooks/pre-commit"
+chmod +x "$hooks/pre-commit"
+rm "$hooks/commit-msg"
+expect 0 "the amend reaches the hooks with FPL_ATOMIC_GATE=off" stamp "$M0..HEAD" "claude-w s4"
+stamped "claude-w s4" "hooks on"
+git config --unset core.hooksPath
 
 echo "present self-test: $fails of $total checks failed (bash ${BASH_VERSINFO[0]}, git $(git version | cut -d' ' -f3))"
 [ "$fails" -eq 0 ] || exit 1

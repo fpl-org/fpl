@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
-# scripts/present — the presenter's tool (.claude/agents/presenter.md): ask whether the owner
-# has spoken on a pull request.
+# scripts/present — the presenter's two tools (.claude/agents/presenter.md): ask whether the
+# owner has spoken on a pull request, and stamp a series with the line of the session that
+# presented it.
 #
 #   present silent <N>                exit 0 when the owner has posted nothing on pull request
 #                                     N: no review, no review comment, no comment in its
@@ -9,6 +10,14 @@
 #                                     Exit 1 when he has, with every URL of his on stdout, one
 #                                     a line; 2 when the forge could not be asked. Only exit 0
 #                                     is a go.
+#   present stamp <base>..HEAD [value] write `Presented-By: <model slug> <session id>` last in
+#                                     the trailer block of every commit of the range, by a
+#                                     rebase that amends each message and keeps the author and
+#                                     the tree. The value is the argument, else the model and
+#                                     the session the environment names, read as scripts/acommit
+#                                     reads them (FPL_MODEL or CLAUDE_CODE_MODEL, FPL_SESSION_ID
+#                                     or CLAUDE_CODE_SESSION_ID). Exit 0 stamped; 1 when a hook
+#                                     refused an amend, the rebase then undone; 2 usage.
 #
 # silent reads, as the machine account, the four places his word can be: pulls/N/reviews,
 # pulls/N/comments, issues/N/comments, and commits/<sha>/comments for every commit the forge
@@ -26,6 +35,17 @@
 # failed lookup is lost, gh falls back to the machine's active account, and the check would run
 # as the owner. Every call names github.com, so GH_HOST cannot send the question to another
 # forge, whose silence would mean nothing.
+#
+# stamp runs `git rebase --exec` with this script's own `_amend` on each commit: the message
+# comes out of git and goes back through git, so no scratch file is written and no path reaches
+# the exec line but as printf %q writes it. The soft atomicity judge is off for the amend (the
+# diff is unchanged; it ran when the commit was made); commit.cleanup is pinned to verbatim for
+# the picks and the amend, so a comment-like line or trailing blank of a message survives. An
+# existing Presented-By is replaced, not doubled: one presenter a commit, the last one. A
+# commit that already carries the value is left as it is, so stamping twice changes nothing.
+# Refused on main, on a dirty tree, mid-rebase, on a range that does not end at HEAD or whose
+# base is not an ancestor, and on an empty range or one with a merge. A hook that refuses an
+# amend stops the rebase; the rebase is aborted, HEAD is where it was, and the refusal is shown.
 #
 # Plain bash 3.2: no mapfile, no associative arrays. scripts/present-self-test proves each
 # case, in throwaway repositories against a gh of its own.
@@ -145,12 +165,74 @@ cmd_silent() { # silent <N>
 	exit 1
 }
 
+# require_clean: index and working tree both equal HEAD. `git diff HEAD` alone misses a change
+# staged and then undone in the file, which the rebase would carry or lose.
+require_clean() {
+	{ git diff --quiet HEAD -- && git diff --cached --quiet -- && git diff --quiet --; } ||
+		die dirty "the index or the working tree has uncommitted changes" "commit or set them aside first"
+}
+
+# default_value: '<slug> <session id>' from the environment, as scripts/acommit derives them.
+default_value() {
+	local model="${FPL_MODEL:-${CLAUDE_CODE_MODEL:-}}" sid="${FPL_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}" slug
+	[ -n "$model" ] && [ -n "$sid" ] ||
+		die usage "the model or the session is not known" "present stamp <base>..HEAD '<model slug> <session id>', or set FPL_MODEL and FPL_SESSION_ID"
+	slug="$(printf '%s' "$model" | tr '[:upper:] .' '[:lower:]--' | tr -s '-')"
+	printf '%s %s\n' "$slug" "$sid"
+}
+
+cmd_stamp() { # stamp <base>..HEAD [value]
+	local range="${1:-}" base tip value exec_cmd err before re='^[a-z0-9][a-z0-9-]* [^[:space:]]+$'
+	[ $# -ge 1 ] && [ $# -le 2 ] || die usage "a range is needed" "present stamp <base>..HEAD [value]"
+	[[ "$range" == *..* && "$range" != *...* ]] || die range "stamp wants <base>..HEAD, not '$range'" "present stamp <base>..HEAD"
+	base="${range%%..*}"
+	tip="${range#*..}"
+	git rev-parse -q --verify "$base^{commit}" >/dev/null || die range "no such base: '$base'" "name a commit this history holds"
+	[ "$(git rev-parse -q --verify "$tip^{commit}" 2>/dev/null)" = "$(git rev-parse HEAD)" ] ||
+		die range "the range must end at HEAD" "present stamp <base>..HEAD, with the series checked out"
+	[ "$(git branch --show-current)" != main ] || die branch "main is never presented" "check out the series, a branch or a detached HEAD"
+	[ ! -e "$(git rev-parse --git-path rebase-merge)" ] && [ ! -e "$(git rev-parse --git-path rebase-apply)" ] ||
+		die state "a rebase is in progress" "finish or abort it first"
+	git merge-base --is-ancestor "$base" HEAD ||
+		die base "'$base' is not an ancestor of HEAD, so the rebase would move the series onto other history" "name the base the series stands on"
+	require_clean
+	[ -n "$(git rev-list "$range")" ] || die range "the range '$range' holds no commit" "name a non-empty <base>..HEAD"
+	[ -z "$(git rev-list --merges "$range")" ] || die range "the range '$range' holds a merge" "a series is linear"
+	if [ $# -eq 2 ]; then value="$2"; else value="$(default_value)" || exit 2; fi
+	[[ $value =~ $re ]] ||
+		die value "'$value' is not '<model slug> <session id>': a lower-case slug, one space, an id without spaces" "present stamp <base>..HEAD 'claude-opus-5-5 <session id>'"
+	before="$(git rev-parse HEAD)"
+	printf -v exec_cmd '%q %q _amend %q' "$BASH" "$self" "$value"
+	# commit.cleanup is pinned for the picks as well as the amend: under strip, the replay of a
+	# commit cuts its comment-like lines too, not only the amend does.
+	err="$(GIT_SEQUENCE_EDITOR=: git -c commit.cleanup=verbatim rebase -q --no-autosquash --exec "$exec_cmd" "$base" 2>&1)" || {
+		printf '%s\n' "$err" >&2
+		git rebase --abort >/dev/null 2>&1 || true
+		[ "$(git rev-parse HEAD)" = "$before" ] ||
+			die rebase "the rebase was refused and could not be undone: HEAD was $before" "git reset --hard $before, once the tree is as you want it"
+		printf 'present [rebase]: an amend was refused (above), and the rebase is undone; HEAD is %s again\n    remedy: fix what the message names, then stamp again\n' "$(git rev-parse --short HEAD)" >&2
+		exit 1
+	}
+	printf '%s\n' "$value"
+}
+
+# _amend <value>: HEAD with 'Presented-By: <value>' last in its trailer block, replacing one that
+# is there, and unchanged when it already carries the value. What stamp runs for each commit.
+cmd__amend() {
+	local have
+	have="$(git log -1 --format='%(trailers:key=Presented-By,valueonly,unfold)' | sed '/^$/d')"
+	[ "$have" != "$1" ] || return 0
+	git log -1 --format=%B |
+		git -c trailer.separators=: interpret-trailers --where end --if-exists replace --trailer "Presented-By: $1" |
+		FPL_ATOMIC_GATE=off git commit -q --amend --allow-empty --cleanup=verbatim -F -
+}
+
 tok="" slug=""
 case "${1:-}" in
-silent)
+silent | stamp | _amend)
 	c="cmd_$1"
 	shift
 	"$c" "$@"
 	;;
-*) die usage "present silent <N>" "see the header of scripts/present" ;;
+*) die usage "present {silent <N> | stamp <base>..HEAD [value]}" "see the header of scripts/present" ;;
 esac
