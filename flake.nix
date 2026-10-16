@@ -221,6 +221,58 @@
             fi
           '';
         };
+
+      # The walker, bootstrap/fpl, as a package: Python 3.12 with its two runtime dependencies
+      # from nixpkgs, at the versions quality/uv.lock pins (lark 1.3.1, icontract 2.7.3), and
+      # the REPL as the program `fpl` (python -m fpl.repl). Nothing is synced at run time: a
+      # clone's `nix run .#`, and `nix run github:fpl-org/fpl`, start the REPL from the store.
+      # The lanes keep their .venv (quality/noslop.mk): the gate's tools are pinned there, and
+      # several are not in nixpkgs; this package carries the language, not the gate.
+      #
+      # bootstrap/pyproject.toml names no build backend (a console script was weighed and
+      # left, .agents/QUALITY.md), so the package is installed by hand: the module tree into
+      # site-packages, and a two-line program that wrapPython gives the dependencies' path.
+      walker =
+        pkgs:
+        let
+          python = pkgs.python312;
+          # icontract's check phase pulls deal, whose solver needs z3 and whose tests need
+          # Django: 15 to 19 derivations to build wherever the cache lacks them, which is
+          # every python312Packages set on a Mac (measured 2026-10-16). Upstream ran those
+          # tests; this takes the module, 2 to 3 pure-Python builds on every system.
+          icontract = python.pkgs.icontract.overridePythonAttrs (_: {
+            doCheck = false;
+          });
+        in
+        python.pkgs.buildPythonApplication {
+          pname = "fpl";
+          version = "0";
+          format = "other";
+          src = ./bootstrap/fpl;
+          dependencies = [
+            python.pkgs.lark
+            icontract
+          ];
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out/${python.sitePackages}" "$out/bin"
+            cp -r . "$out/${python.sitePackages}/fpl"
+            cat > "$out/bin/fpl" <<EOF
+            #!${python.interpreter}
+            import sys
+            from fpl.repl import main
+            sys.exit(main(sys.argv[1:]))
+            EOF
+            chmod +x "$out/bin/fpl"
+            runHook postInstall
+          '';
+          pythonImportsCheck = [ "fpl.repl" ];
+          meta = {
+            description = "The FPL walker: the REPL as fpl, python -m fpl.repl";
+            mainProgram = "fpl";
+            license = pkgs.lib.licenses.agpl3Only;
+          };
+        };
     in
     {
       devShells = forAllSystems (
@@ -305,6 +357,11 @@
 
       # The line limits, one source (see `limits` above): `nix eval --json .#lib.limits`.
       lib.limits = limits;
+
+      # The walker (see `walker` above): `nix build .#` leaves result/bin/fpl.
+      packages = forAllSystems (pkgs: {
+        default = walker pkgs;
+      });
 
       apps = forAllSystems (pkgs: {
         gen-config = {
