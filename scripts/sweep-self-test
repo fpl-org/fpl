@@ -242,6 +242,11 @@ SWEEP_BASE=basebr SWEEP_FRESH_MIN=0 sw
 check "a branch whose merge commit is not in the base is review, its patch-equal twin without the merge is archive" '[ "$(col agent/claude/stack/mergey 5)/$(action agent/claude/stack/mergey)/$(col agent/claude/stack/plainside 5)/$(action agent/claude/stack/plainside)" = 1/review/0/archive ]'
 SWEEP_BASE=agent/claude/stack/plainside SWEEP_FRESH_MIN=0 sw
 check "the branch named as the base is keep, not an archive row of itself" '[ "$(action agent/claude/stack/plainside)/$(col agent/claude/stack/plainside 10)" = "keep/the base" ]'
+g worktree add -q --detach "$tmp/elsewhere" main
+g worktree add -q --detach "$HOME/.cursor/worktrees/fpl/c1" main
+SWEEP_FRESH_MIN=0 sw
+real="$(cd "$tmp" && pwd -P)" # git lists a worktree by its real path
+check "a detached worktree outside worktrees/ is PSJ's and review, one under .cursor Cursor's and keep" '[ "$(col "$real/elsewhere" 8)/$(action "$real/elsewhere")/$(col "$real/home/.cursor/worktrees/fpl/c1" 8)/$(action "$real/home/.cursor/worktrees/fpl/c1")" = PSJ/review/Cursor/keep ]'
 
 if [ "$fails" -eq 0 ]; then
 	echo "sweep self-test: $total checks passed (bash ${BASH_VERSION%%(*})"

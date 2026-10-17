@@ -21,8 +21,9 @@
 #   pr      OPEN, MERGED or CLOSED for the branch (one read-only forge call for all rows, with
 #           the machine account's token; OPEN beats MERGED beats CLOSED), '-' for none, '?'
 #           when the forge was not asked or did not answer
-#   owner   agent: agent/claude/* and detached worktrees; Cursor: agent/cursor/*; app-session:
-#           under .claude/worktrees, or claude/*; PSJ: the rest, agent/codex/* too (he runs it)
+#   owner   agent: agent/claude/*, and detached worktrees under worktrees/; Cursor: agent/cursor/*,
+#           or under a .cursor directory; app-session: under .claude/worktrees, or claude/*; PSJ:
+#           the rest, agent/codex/* (he runs it) and a detached worktree elsewhere too
 #   action  by the first rule that fits:
 #             keep     on the do-not-touch list (below), the base branch itself, Cursor's or an
 #                      app session's, or its pull request is open
@@ -89,12 +90,16 @@ protected() {
 
 # owner_of <path-from-root or ""> <branch or "">
 owner_of() {
-	case "$1" in .claude/worktrees/*) echo app-session; return ;; esac
+	case "$1" in
+	.claude/worktrees/*) echo app-session; return ;;
+	.cursor/* | */.cursor/*) echo Cursor; return ;;
+	esac
 	case "$2" in
 	agent/cursor/*) echo Cursor ;;
 	claude/*) echo app-session ;;
 	agent/claude/*) echo agent ;;
-	"") if [ -n "$1" ]; then echo agent; else echo PSJ; fi ;;
+	# agents make their worktrees under worktrees/; a detached one elsewhere is not known to be theirs
+	"") case "$1" in worktrees/*) echo agent ;; *) echo PSJ ;; esac ;;
 	*) echo PSJ ;;
 	esac
 }
