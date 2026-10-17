@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# gates: $BIN/python $S/props --self-test
 """scripts/props — every module with code has a property test, and pays its obligations.
 
     scripts/props [--source DIR] [--tests DIR] [--obligations FILE]
