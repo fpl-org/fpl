@@ -1,0 +1,123 @@
+# harness/workflows/land.yml: a DRAFT of the lander, not live. Only the owner installs it
+# under .github/workflows (README.md beside it); no agent token can push that path.
+#
+# A dispatch on main names a pull request. One run lands at most one pull request: that one
+# when `scripts/land --ci` lets it, else the first other open pull request on main it lets,
+# by number. It stops after the first push, and nothing here starts another run: its only
+# trigger is workflow_dispatch. What dispatches it is the relay job of series.yml, drafted in
+# its own pull request (#168, not on main): it runs on each approving review by the owner and
+# dispatches this workflow with that pull request's number. Until that is installed, and for
+# a pull request the last run left open, the next run is dispatched by hand (Actions > land >
+# Run workflow). A single concurrency group keeps one run going and at most one waiting; a
+# later dispatch replaces the waiting one, which is no loss: every run tries, in turn, each
+# open pull request on main.
+#
+# Both jobs check out the commit of main the dispatch started from, not the moving ref: what
+# verify proved is what land runs with the key.
+#
+# Two jobs. verify holds no secret, no environment and no cache: it runs what can be checked
+# without the key: main's lander proving itself, and, when main is no ancestor of the
+# dispatched pull request's head (a sister landed first), its relocation onto main with
+# make quick on each pick (scripts/land --verify) and make check on its tip. PR code runs there, so land trusts only
+# the tip Y it hands on, and lands it only when it derives the same Y itself (--relocate). land runs in the environment `land`, whose policy admits main alone, mints the
+# fpl-lander App's token, and runs main's scripts/land with it: every rule, the fpl/series
+# receipt, the fast-forward push as the App, then each child retargeted before the landed
+# branch is deleted. Nothing of the pull request runs here.
+name: land
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: the pull request to land first
+        required: true
+        type: number
+
+concurrency:
+  group: land
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    outputs:
+      y: ${{ steps.relocate.outputs.y }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - run: scripts/land-self-test
+      - uses: cachix/install-nix-action@0b0e072294b088b73964f1d72dfdac0951439dbd # v31.8.4
+      - id: relocate
+        shell: bash
+        env:
+          PR: ${{ inputs.pr }}
+          FPL_LAND_QUICK: nix develop -c make quick
+        run: |
+          git fetch -q --no-tags origin "refs/pull/$PR/head"
+          ! git merge-base --is-ancestor HEAD FETCH_HEAD || exit 0
+          scripts/land --verify HEAD FETCH_HEAD | tee -a "$GITHUB_STEP_SUMMARY" >"$RUNNER_TEMP/map"
+          y="$(sed -n 's/^y=//p' "$RUNNER_TEMP/map")"
+          # No required check ever ran on Y's tip: noslop's gate runs on it before Y is handed on.
+          [ -z "$y" ] || { git checkout -q --detach "$y" && nix develop -c make check; }
+          echo "y=$y" >>"$GITHUB_OUTPUT"
+
+  land:
+    needs: verify
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: land
+    permissions:
+      contents: read
+    steps:
+      - id: token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.LAND_APP_ID }}
+          private-key: ${{ secrets.LAND_APP_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-checks: write
+          permission-statuses: read
+      # No persisted credential: scripts/land --ci gives the push the App's token itself,
+      # and a second Authorization header would make GitHub refuse it.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: land the first pull request the rules let through
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          FPL_LAND_APP: ${{ steps.token.outputs.app-slug }}[bot]
+          PR: ${{ inputs.pr }}
+          REPO: ${{ github.repository }}
+          Y: ${{ needs.verify.outputs.y }}
+        run: |
+          others="$(gh api --hostname github.com --paginate \
+            "repos/$REPO/pulls?state=open&base=main&per_page=100" \
+            --jq '.[] | select(.draft | not) | .number' | sort -n | grep -vx "$PR" || :)"
+          for n in $PR $others; do
+            before="$(git ls-remote origin refs/heads/main | cut -f1)"
+            # The dispatched pull request alone may be relocated: verify derived its Y.
+            relocate=()
+            [ "$n" != "$PR" ] || relocate=(--relocate "$Y")
+            if scripts/land --ci "${relocate[@]}" --remote origin "$n"; then
+              echo "landed #$n" >>"$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            # A refusal leaves main; a failure after the push does not: then stop, loud.
+            [ "$(git ls-remote origin refs/heads/main | cut -f1)" = "$before" ] || exit 1
+          done
+          echo "nothing landed: every pull request was refused (the log names each rule)" \
+            >>"$GITHUB_STEP_SUMMARY"
+          exit 1
