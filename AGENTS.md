@@ -33,7 +33,7 @@ Keep talk about the vision sober, and the harness small: `docs/notes/2026-09-19-
                       the root: make run FILE=<file.fpl>, make repl
   .claude/            Claude Code commands, subagents, skill, hooks
   scripts/            acommit, commit-lint, restack, setup, agent-identity, new-worktree,
-                      branch-lint, forward-only, layer, pr, review, land, task,
+                      branch-lint, forward-only, layer, pr, review, land, present, task,
                       rad-cob-dagtaak;
                       crap, props, escapes, mutants, gates (the noslop gate);
                       diagrams (make map: the map of the code, never committed)
@@ -137,7 +137,8 @@ is wrong, say so and let the maintainer decide — don't route around it.
   order concept, invariant, mechanism, behaviour, gaps; at most 10 commits and 600 lines), with
   the same tree, and puts the review card in the body. The brief is
   `.claude/agents/presenter.md` (any harness can follow it), the card `.agents/REVIEW-CARD.md`;
-  each presented commit carries a `Presented-By:` trailer (`.agents/COMMITS.md`).
+  each presented commit carries a `Presented-By:` trailer (`.agents/COMMITS.md`). Before any
+  rewrite, `scripts/present silent` asks the forge whether the maintainer has begun to read.
 - **An approved PR is frozen.** Rewrite freely until the maintainer approves; after that,
   fix forward in a new PR on top (`.agents/WORKFLOW.md` rule 10; `.githooks/pre-push` refuses).
 - **Land through a GitHub PR, always**, with `scripts/land`: a fast-forward of `main` to the
