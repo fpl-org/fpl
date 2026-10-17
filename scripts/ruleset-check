@@ -15,12 +15,14 @@ nothing (rules are keyed by type, bypass actors by actor, status checks by conte
 values are sorted; two rules of one type are told apart by their parameters). An `update` rule
 without parameters is one with update_allows_fetch_and_merge=false (measured on
 fpl-org/harness-proef: the forge answers one for the other), and a missing
-conditions.ref_name.exclude is an empty one.
+conditions.ref_name.exclude is an empty one. Values are compared as JSON: true is not 1, and
+a key one side lacks is absent whatever the other side holds.
 
 `bypass_actors` is not in the forge's answer to a token without admin rights (the machine
 accounts'), and a file made with such a token does not record it: it is compared only when both
 sides have it, and listed as unchecked otherwise. Absent is not malformed: a bypass_actors that
-is there and is no list is a ruleset that cannot be read (exit 2), never one left unchecked.
+is there and is no list, or names one actor twice, is a ruleset that cannot be read (exit 2),
+never one left unchecked.
 
     exit 0   every file has its live ruleset, every live ruleset its file, no difference
     exit 1   a difference: a field, a ruleset live without a file, or a file not live
@@ -52,7 +54,7 @@ DROPPED = {"id", "node_id", "created_at", "updated_at", "_links", "source", "sou
 DROPPED |= {"current_user_can_bypass"}
 # Parameters a rule has when it is written without any, as the forge answers for them.
 DEFAULTS: dict[str, dict[str, Any]] = {"update": {"update_allows_fetch_and_merge": False}}
-ABSENT = "<absent>"
+ABSENT = object()  # a key one side lacks: no JSON value is this one, "<absent>" included
 
 
 class UnreadableError(Exception):
@@ -180,19 +182,32 @@ def normal(ruleset: dict[str, Any]) -> dict[str, Any]:
         return out  # not shown to this token, or not recorded: judge() lists it as unchecked
     if not isinstance(ruleset["bypass_actors"], list):
         raise UnreadableError(f"bypass_actors is {json.dumps(ruleset['bypass_actors'])}, no list")
-    by = lambda a: f"{a.get('actor_type')} {a.get('actor_id')}"  # noqa: E731
-    out["bypass_actors"] = {by(a): a.get("bypass_mode") for a in ruleset["bypass_actors"]}
+    # One actor twice would leave the mode of whichever stands last: the order would judge.
+    out["bypass_actors"] = {}
+    for a in ruleset["bypass_actors"]:
+        actor = f"{a.get('actor_type')} {a.get('actor_id')}"
+        if actor in out["bypass_actors"]:
+            raise UnreadableError(f"bypass actor {actor} is listed twice")
+        out["bypass_actors"][actor] = a.get("bypass_mode")
     return out
 
 
 def differences(file: Any, live: Any, path: str = "") -> list[dict[str, Any]]:
-    """Every place two normalised values differ, as {"path", "file", "live"}."""
-    if not (isinstance(file, dict) and isinstance(live, dict)):
-        return [] if file == live else [{"path": path, "file": file, "live": live}]
-    found: list[dict[str, Any]] = []
-    for k in sorted(file.keys() | live.keys()):
-        found += differences(file.get(k, ABSENT), live.get(k, ABSENT), f"{path}.{k}".strip("."))
-    return found
+    """Every place two normalised values differ, as {"path", "file", "live"}.
+
+    Leaves are equal when their JSON is: Python's == holds True for 1 and [True] for [1].
+    """
+    if isinstance(file, dict) and isinstance(live, dict):
+        found: list[dict[str, Any]] = []
+        for k in sorted(file.keys() | live.keys()):
+            at = f"{path}.{k}".strip(".")
+            found += differences(file.get(k, ABSENT), live.get(k, ABSENT), at)
+        return found
+    js = lambda v: json.dumps(v, sort_keys=True)  # noqa: E731
+    if file is not ABSENT and live is not ABSENT and js(file) == js(live):
+        return []
+    shown = lambda v: "<absent>" if v is ABSENT else v  # noqa: E731
+    return [{"path": path, "file": shown(file), "live": shown(live)}]
 
 
 def entry(name: str, file: str | None, state: str, diff: Any = (), unchecked: Any = ()) -> Any:
