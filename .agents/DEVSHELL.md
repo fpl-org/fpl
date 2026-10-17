@@ -45,6 +45,16 @@ config, identity report). It checks `core.hooksPath` first, so every later entry
 Not in the shell: credentials of any kind, and the `claude` CLI that the soft `atomic-check`
 gate calls when it is present (the gate fails open without it, `.agents/COMMITS.md`).
 
+## The walker as a package
+
+`nix run .#` in a clone, and `nix run github:fpl-org/fpl` anywhere, start the REPL
+(`python -m fpl.repl`); its arguments follow `--`: `nix run .# -- -e '2 | 3 +'`.
+`packages.default` is the walker, `bootstrap/fpl`, on Python 3.12 with `lark` and `icontract`
+from nixpkgs, at the versions `quality/uv.lock` pins; nothing is synced when it runs.
+`nix flake check` evaluates one expression through it. The lanes keep the `.venv` above: the
+gate's tools are pinned there, and several are not in nixpkgs. The package carries the
+language, not the gate.
+
 ## Forge tools are opt-in
 
 The default shell has no forge client; the harness runs on git alone (`.agents/WORKFLOW.md`,
