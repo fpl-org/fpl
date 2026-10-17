@@ -1,0 +1,14 @@
+---
+import { getCollection } from "astro:content";
+const concepts = (await getCollection("concepts")).sort((a, b) => a.id.localeCompare(b.id));
+---
+<html lang="en">
+  <body>
+    <h1>FPL bootstrap</h1>
+    <ul>
+      {concepts.map((entry) => (
+        <li><a href={`/${entry.id}`}>{entry.data.title}</a></li>
+      ))}
+    </ul>
+  </body>
+</html>

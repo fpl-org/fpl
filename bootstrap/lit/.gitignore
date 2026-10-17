@@ -1,0 +1,13 @@
+fpl/
+.vendor/
+bin/
+site/node_modules/
+site/dist/
+site/.astro/
+_site/
+.quarto/
+**/*.qmd
+**/__marimo__/
+
+/.quarto/
+**/*.quarto_ipynb
