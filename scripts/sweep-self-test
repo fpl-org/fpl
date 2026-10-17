@@ -211,6 +211,13 @@ touch -t 202001010000 "$repo/worktrees/staged/f.txt"
 git -C "$repo/worktrees/staged" update-index --chmod=+x f.txt
 sw
 check "a deleted file and a staged change count as recent work" '[ "$(action worktrees/deleted)/$(action worktrees/staged)" = review/review ]'
+# a chmod moves only the change time; touch -t sets the modification time back as well
+g worktree add -q "$repo/worktrees/chmodded" -b agent/claude/stack/chmodded main
+chmod +x "$repo/worktrees/chmodded/f.txt"
+gd="$(git -C "$repo/worktrees/chmodded" rev-parse --absolute-git-dir)"
+touch -t 202001010000 "$repo/worktrees/chmodded/f.txt" "$gd/HEAD" "$gd/index"
+sw
+check "a file whose mode changed a moment ago counts as recent work" '[ "$(action worktrees/chmodded)" = review ]'
 # --- a repository inside a worktree -----------------------------------------------------------
 g worktree add -q "$repo/worktrees/embedded" -b agent/claude/stack/embedded main
 printf 'x\n' >"$repo/worktrees/embedded/loose.txt"

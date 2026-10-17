@@ -122,7 +122,7 @@ pr_of() {
 }
 
 # --- the rows ------------------------------------------------------------------------------
-# A freshness reference: a file as old as SWEEP_FRESH_MIN minutes, to compare mtimes with -nt.
+# A freshness reference: a file whose modification time is SWEEP_FRESH_MIN minutes ago.
 ref="$tmp/ref"
 if [ "$fresh" -gt 0 ]; then
 	then_s=$(($(date +%s) - fresh * 60))
@@ -217,7 +217,7 @@ while IFS="$tab" read -r path sha br locked gone; do
 	if [ "$gone" = 1 ] || [ ! -d "$path" ]; then
 		gone=1 dirty='-'
 	else
-		: >"$tmp/dirty"
+		: >"$tmp/dated"
 		git_in "$path" status --porcelain -z -uall >"$tmp/status"
 		skip=0
 		while IFS= read -r -d '' ent; do
@@ -225,15 +225,20 @@ while IFS="$tab" read -r path sha br locked gone; do
 			case "$ent" in [RC]?* | ?[RC]*) skip=1 ;; esac
 			dirty=$((dirty + 1))
 			f="${ent#???}"
-		# with -uall git lists every untracked file; an untracked directory is a repository
-		case "$ent" in '?? '*/) nested="${nested:-${f%/}}" ;; esac
-			if [ "$fresh" -gt 0 ] && [ "$active" = 0 ]; then
+			# with -uall git lists every untracked file; an untracked directory is a repository
+			case "$ent" in '?? '*/) nested="${nested:-${f%/}}" ;; esac
+			if [ "$fresh" -gt 0 ]; then
 				# a deleted file is dated by the nearest directory that is still there
 				t="$path/$f"
 				while [ ! -e "$t" ] && [ "$t" != "$path" ]; do t="${t%/*}"; done
-				if [ "$t" -nt "$ref" ]; then active=1; fi
+				printf '%s\0' "$t" >>"$tmp/dated"
 			fi
 		done <"$tmp/status"
+		# Dated by change time, which every write, chmod and touch -t moves; -nt reads the
+		# modification time, which a chmod leaves and touch -t sets back. One find for them all.
+		# shellcheck disable=SC2016 # expanded by the sh xargs runs
+		[ ! -s "$tmp/dated" ] ||
+			[ -z "$(xargs -0 sh -c 'find "$@" -prune -newercm "$0" -print' "$ref" <"$tmp/dated")" ] || active=1
 		[ "$dirty" -eq 0 ] || ndirty=$((ndirty + 1))
 		if [ "$fresh" -gt 0 ] && [ "$active" = 0 ]; then
 			gd="$(git_in "$path" rev-parse --absolute-git-dir)"
