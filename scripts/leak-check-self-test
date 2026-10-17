@@ -27,7 +27,13 @@ export GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home"
 	XDG_CONFIG_HOME="$tmp/xdg" GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid \
 	GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
 unset FPL_LEAK_GATE GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE
-mkdir -p "$HOME" "$XDG_CONFIG_HOME/fpl"
+mkdir -p "$HOME" "$XDG_CONFIG_HOME/fpl" "$tmp/nossh"
+# The push through the hook runs its message, which asks who would push. No real ssh may answer:
+# a key behind Touch ID asks for a tap at every probe. A stand-in that records its call comes
+# first on PATH, and a call to it fails the test at the end.
+printf '#!/bin/sh\necho "$*" >>"$0.called"\nexit 255\n' >"$tmp/nossh/ssh"
+chmod +x "$tmp/nossh/ssh"
+export PATH="$tmp/nossh:$PATH"
 repo="$tmp/repo"
 git init -q -b main "$repo"
 cd "$repo"
@@ -447,5 +453,10 @@ if leaks "$tmp/log" >"$tmp/leaks"; then
 	sed 's/^/    /' "$tmp/leaks" >&2
 fi
 
+total=$((total + 1))
+if [ -e "$tmp/nossh/ssh.called" ]; then
+	fails=$((fails + 1))
+	echo "self-test: no real ssh: the push asked ssh $(head -n 1 "$tmp/nossh/ssh.called")" >&2
+fi
 echo "leak-check: self-test $([ "$fails" -eq 0 ] && echo ok || echo FAILED) ($total runs, $fails failures)"
 [ "$fails" -eq 0 ]

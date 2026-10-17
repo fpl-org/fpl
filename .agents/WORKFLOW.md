@@ -590,7 +590,9 @@ one is an admin account: push with the machine account token URL
 account out. It always
 exits 0, and `.githooks/pre-push` runs it first as a message, never as a refusal. The hook hands
 it the destination URL, so only the identity that transport uses is judged: a push to an https
-URL that carries its own credentials, as the remedy does, is not nagged.
+URL that carries its own credentials, as the remedy does, is not nagged. A push to a path on
+this machine is judged on none, and the ssh key, which may ask for a Touch ID tap, is asked only
+for a push that goes by ssh.
 
 ## Why this and not a feature branch
 
