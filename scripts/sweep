@@ -14,9 +14,11 @@
 #   name    the worktree's path from the root checkout, or the branch
 #   branch  the branch checked out there, or '-' (detached)
 #   merged  yes when the head is an ancestor of the base (git merge-base --is-ancestor)
-#   new     commits of the head the base lacks by patch (git cherry, the '+' lines): a
-#           rebase-merged pull request is not an ancestor of main but has new = 0; plus its
-#           merge commits the base lacks, which cherry skips and a patch cannot show to be in it
+#   new     commits of the head the base lacks by patch: a rebase-merged pull request is not an
+#           ancestor of main but has new = 0; plus its merge commits the base lacks, which a patch
+#           cannot show to be in it. Patches are compared byte for byte (git patch-id
+#           --verbatim), not as git cherry does: cherry drops whitespace, so 'word word' on the
+#           head and 'wordword' in the base would read as one patch and the head's as in the base
 #   dirty   files `git status --porcelain -uall` lists: modified, staged, untracked; not ignored
 #           ones; '-' for a branch row
 #   pr      OPEN, MERGED or CLOSED for the branch (one read-only forge call for all rows, with
@@ -216,15 +218,27 @@ merged_of() {
 	git merge-base --is-ancestor "$1" "$base" || rc=$?
 	case "$rc" in 0) echo yes ;; 1) echo no ;; *) die "merge-base failed for $1" ;; esac
 }
+# pids <range>: '<patch id> <commit>' for each commit of the range but merges, by git patch-id
+# --verbatim, which keeps whitespace; whatever the config says: the format, signatures, colour,
+# external diff and textconv, renames and diff.relative all stay out of the patch.
+pids() {
+	git log --no-merges --format='commit %H' --no-show-signature --no-color --no-ext-diff \
+		--no-textconv --no-renames --no-relative -p "$1" | git patch-id --verbatim
+}
 # new_of <sha>: how many of its commits the base lacks by patch, and its merge commits the base
-# lacks at all: git cherry skips a merge, whose own changes (a conflict resolution) a patch
-# comparison would not find in the base, so a merge is counted as new until it is an ancestor.
+# lacks at all: the patch of a merge is not compared, as its own changes (a conflict resolution)
+# would not be found in the base, so a merge is counted as new until it is an ancestor. The
+# commits compared are git cherry's: the head's the base lacks with the base's the head lacks. A
+# commit with an empty patch is new, as it is to cherry.
 new_of() {
-	local out plus merges
-	out="$(git cherry "$base" "$1")" || die "cherry failed for $1"
-	plus="$(printf '%s\n' "$out" | grep -c '^+' || true)"
+	local own in_base merges
+	pids "$1..$base" | cut -d' ' -f1 | sort -u >"$tmp/theirs" || die "patch-id failed for $base"
+	own="$(git rev-list --no-merges --count "$base..$1")" || die "rev-list failed for $1"
+	in_base="$(pids "$base..$1" |
+		awk 'NR == FNR { theirs[$1] = 1; next } $1 in theirs { n++ } END { print n + 0 }' "$tmp/theirs" -)" ||
+		die "patch-id failed for $1"
 	merges="$(git rev-list --merges --count "$base..$1")" || die "rev-list failed for $1"
-	echo $((plus + merges))
+	echo $((own - in_base + merges))
 }
 
 rows="$tmp/rows"

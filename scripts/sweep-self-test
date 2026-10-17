@@ -139,6 +139,12 @@ g worktree add -q --detach "$tmp/tmpwt" main
 commit_in "$tmp/tmpwt" w.txt w "work"
 g branch -f agent/claude/stack/wip "$(git -C "$tmp/tmpwt" rev-parse HEAD)"
 g worktree remove --force "$tmp/tmpwt"
+# a branch whose patch differs from one on main only in whitespace: git cherry calls it in main
+g worktree add -q --detach "$tmp/tmpwt" main
+commit_in "$tmp/tmpwt" s.txt 'word word' "spaced work"
+g branch agent/claude/stack/spaced "$(git -C "$tmp/tmpwt" rev-parse HEAD)"
+g worktree remove --force "$tmp/tmpwt"
+commit_in "$repo" s.txt 'wordword' "unspaced work"
 printf 'stashed\n' >>"$repo/f.txt"
 g stash -q
 printf 'agent/claude/stack/openpr\tOPEN\nagent/claude/stack/onforge\tCLOSED\nagent/claude/stack/onforge\tMERGED\nagent/claude/stack/merged\tMERGED\n' >"$tmp/prs.tsv"
@@ -167,6 +173,7 @@ check "the header names the columns" '[ "$(head -n1 "$tmp/out")" = "kind${tab}na
 check "merged: an ancestor of main, archive" '[ "$(col worktrees/merged 4)/$(col worktrees/merged 5)/$(action worktrees/merged)" = yes/0/archive ]'
 check "rebased: not an ancestor, nothing new by patch, archive" '[ "$(col worktrees/rebased 4)/$(col worktrees/rebased 5)/$(action worktrees/rebased)" = no/0/archive ]'
 check "unmerged: one new commit, review" '[ "$(col worktrees/unmerged 5)/$(action worktrees/unmerged)" = 1/review ]'
+check "a patch that differs from main's only in whitespace is new" '[ "$(col agent/claude/stack/spaced 5)/$(action agent/claude/stack/spaced)" = 1/review ]'
 check "dirty counts tracked, staged and untracked files" '[ "$(col worktrees/dirty 6)/$(action worktrees/dirty)" = 3/archive ]'
 check "a detached worktree has no branch and is archive" '[ "$(col worktrees/detached 3)/$(col worktrees/detached 8)/$(action worktrees/detached)" = -/agent/archive ]'
 check "the pull request of a branch is its open one, then its merged one" '[ "$(col worktrees/openpr 7)/$(col agent/claude/stack/onforge 7)/$(col worktrees/merged 7)/$(col worktrees/unmerged 7)" = OPEN/MERGED/MERGED/- ]'
