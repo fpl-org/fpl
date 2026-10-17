@@ -235,11 +235,29 @@ root's `.venv` with `uv sync --frozen` the first time and whenever the lock chan
 ## Proof that the checks bite
 
 A check that passes everything looks the same as a check that found nothing. `make gates` first
-holds the harness's own Python (`scripts/crap`, `props`, `escapes`, `mutants`, `gates`,
-`forward-only`, `diagrams` and the pytest plugin) to the ruff rules it holds others to, then
-runs the self-tests of the six of those scripts that have one, of `scripts/leak-check`, of the
-pre-push hook and of `scripts/boundary`, then
-`scripts/gates`: for each case in `quality/bad/`, the check runs on a small fixture of the
-repository (the harness at its root, a project in `bootstrap/`), where it must pass, and then with the case's bad example laid over it, where it must fail with a
+holds the harness's own Python to the ruff rules it holds others to, then runs the self-test of
+every tool that declares one (below), then `scripts/gates`: for each case in `quality/bad/`, the check runs
+on a small fixture of the repository (the harness at its root, a project in `bootstrap/`), where
+it must pass, and then with the case's bad example laid over it, where it must fail with a
 given message. The first run is the control; without it, a check that fails for an unrelated
 reason would count as having caught something. Adding a check means adding its case.
+
+Neither the lint set nor the self-tests are listed in `quality/noslop.mk`; `scripts/gates-list`
+reads them from the files, so two series that each add a tool do not meet in a shared list.
+Add a self-test as a file, never as a line in `noslop.mk`:
+
+- an executable `scripts/<name>-self-test` runs as it is;
+- a tool whose proof is a flag or needs another shell says so in its own header, one line:
+  `# gates: $BIN/python $S/<name> --self-test` (`$BIN` is the root's `.venv/bin`, `$S` is
+  `scripts/`, `$ROOT` the root);
+- a file of `scripts/` that opens with `#!/usr/bin/env python3` is linted, as is every
+  `quality/*.py`; `# noslop: skip <reason>` in its header keeps one out, the reason required.
+
+They run in the order of their file names, and `scripts/gates` last. `gates-list` refuses, by
+name, a self-test without its exec bit and a gates line it would not read, so a tool cannot
+drop out unseen; `scripts/gates-list-self-test` holds the commands the recipe ran before as a
+floor that must still be found.
+
+Three tools are in neither set: `scripts/export-review`, `import-review` and `review-serve` each
+have a `--self-test` that needs a Radicle home and declare no gates line, and each carries a
+`# noslop: skip` marker that keeps it from ruff. A green `make gates` says nothing about them.
