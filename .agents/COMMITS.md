@@ -200,7 +200,8 @@ through every rebase, reorder and move, which a branch name and a SHA are not. A
 commit, in the form `COMMIT_SERIES_RE` fixes (`series-many`, `series-value`). `scripts/series`
 holds the tooling: `mint` the id, `stamp` it onto a range (refused once the maintainer has
 reviewed or commented on the pull request of the branch, or of any branch the rebase moves with
-it), `check` that a range carries exactly one,
+it, unless his latest review there requests changes: the rewrite is then what he asked for, and
+`stamp` names that review on stderr), `check` that a range carries exactly one,
 `manifest` a range as JSON, `digest` to print the manifest's digest alone (the receipt
 the lander writes as the `fpl/series` check run), `range` to find a series on main, `revert` a
 whole series at once.

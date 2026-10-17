@@ -21,7 +21,9 @@
 #                                   checked out in another worktree, and once the maintainer has
 #                                   reviewed, approved or commented on the pull request of the
 #                                   branch or of any branch that would move (a rewrite after that
-#                                   is a question to him, not a tool's call).
+#                                   is a question to him, not a tool's call), unless his latest
+#                                   review there requests changes: then the rewrite is what he
+#                                   asked for, and the review relied on is named on stderr.
 #   series check <range>            exactly one Series-Id over the range, on every commit; prints it.
 #   series manifest <range>         JSON: per commit the sha, the patch id (git patch-id
 #                                   --verbatim of its diff) and the SHA-256 of author and raw
@@ -157,20 +159,37 @@ cmd__amend() {
 }
 
 # forge_silent <branch>: refuses when the owner has a review, comment or approval on the pull
-# requests of <branch>. Read-only GETs with the machine account's token; a forge that cannot be
-# asked is a refusal too (failing open would let the guard pass when it is blind). Every call names
-# github.com (GH_HOST must not send the question to another forge, whose silence would pass the
-# guard) and reads every page (a branch name reused by many pull requests, a long thread). The
-# match reads its whole input: a grep -q that leaves at the first hit can make printf die of
-# SIGPIPE on a long answer, and under pipefail the refusal is then skipped.
+# requests of <branch>, unless his latest review there requests changes: that review is his
+# request for the rewrite, and it stands until a review of his says otherwise (an approval, a
+# plain review). A comment does not withdraw it: on #179 the one comment after his request was
+# a line a workflow posts under his account. The review relied on is named on stderr. Read-only
+# GETs with the machine account's token; a forge that cannot be asked is a refusal too (failing
+# open would let the guard pass when it is blind). Every call names github.com (GH_HOST must not
+# send the question to another forge, whose silence would pass the guard) and reads every page
+# (a branch name reused by many pull requests, a long thread); reviews come oldest first, so his
+# last line is his latest. The match reads its whole input: a filter that leaves at the first
+# hit can make printf die of SIGPIPE on a long answer, and under pipefail the refusal is then
+# skipped.
 forge_silent() {
-	local gh="${SERIES_GH:-gh}" repo="${SERIES_REPO:-fpl-org/fpl}" owner="${SERIES_OWNER:-psjg}" tok prs pr kind who
+	local gh="${SERIES_GH:-gh}" repo="${SERIES_REPO:-fpl-org/fpl}" owner="${SERIES_OWNER:-psjg}" tok prs pr kind who last state rid
 	tok="$("$gh" auth token --hostname github.com --user psjg-claude 2>/dev/null)" && [ -n "$tok" ] \
 		|| die forge-token "no token for the machine account to ask the forge with" "log gh in as psjg-claude"
 	prs="$(GH_TOKEN="$tok" "$gh" api --hostname github.com --paginate "repos/$repo/pulls?state=all&head=${repo%%/*}:$1" --jq '.[].number' 2>/dev/null)" \
 		|| die forge-query "the forge did not answer for branch $1" "retry when it is reachable"
 	for pr in $prs; do
-		for kind in "pulls/$pr/reviews" "issues/$pr/comments" "pulls/$pr/comments"; do
+		who="$(GH_TOKEN="$tok" "$gh" api --hostname github.com --paginate "repos/$repo/pulls/$pr/reviews" \
+			--jq '.[] | [.user.login, .state, .id] | @tsv' 2>/dev/null)" \
+			|| die forge-query "the forge did not answer for pulls/$pr/reviews" "retry when it is reachable"
+		last="$(printf '%s\n' "$who" | awk -F'\t' -v o="$owner" 'tolower($1) == tolower(o) { l = $0 } END { print l }')"
+		state="$(printf '%s' "$last" | cut -s -f2)" rid="$(printf '%s' "$last" | cut -s -f3)"
+		if [ "$state" = CHANGES_REQUESTED ]; then
+			printf 'series: %s requested changes on pull request #%s in review %s, his latest: the stamp answers it\n' \
+				"$owner" "$pr" "$rid" >&2
+			continue
+		fi
+		[ -z "$last" ] || die owner-spoke "$owner has spoken on pull request #$pr (review ${rid:-?}, ${state:-no state})" \
+			"ask him: a rewrite now is a question to the reviewer"
+		for kind in "issues/$pr/comments" "pulls/$pr/comments"; do
 			who="$(GH_TOKEN="$tok" "$gh" api --hostname github.com --paginate "repos/$repo/$kind" --jq '.[].user.login' 2>/dev/null)" \
 				|| die forge-query "the forge did not answer for $kind" "retry when it is reachable"
 			printf '%s\n' "$who" | grep -Fix -- "$owner" >/dev/null \
