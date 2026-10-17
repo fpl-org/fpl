@@ -14,7 +14,12 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/whoami-check-self-test.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
-mkdir "$tmp/bin"
+mkdir "$tmp/bin" "$tmp/nossh"
+# No real ssh is reached: a stand-in that records its call and fails comes first on PATH for
+# the whole run, under the probes' own stand-ins, and a call to it fails the test at the end.
+printf '#!/bin/sh\necho "$*" >>"$0.called"\nexit 255\n' >"$tmp/nossh/ssh"
+chmod +x "$tmp/nossh/ssh"
+export PATH="$tmp/nossh:$PATH"
 
 # The stand-ins expand $PUSH, $GH and $SSH when they run, not when they are written.
 # shellcheck disable=SC2016
@@ -63,6 +68,16 @@ run() {
 	expect "$sh" url-token psjg psjg psjg no "this push goes by https with credentials in the URL" "https://x-access-token:TOKEN-IN-URL@github.com/o/r.git"
 	expect "$sh" url-https-bare-user psjg psjg-claude psjg-claude yes "this push goes by https" "https://psjg@github.com/o/r.git"
 	expect "$sh" url-other psjg psjg-claude psjg-claude yes "username=psjg" "rad://zabc/o/r"
+	# Only a destination that goes by ssh asks the ssh key: not a path, not another scheme.
+	local url
+	for url in /tmp/r.git ./r.git ../r.git file:///tmp/r.git rad://zabc/o/r; do
+		rm -f "$tmp/bin/ssh.log" "$tmp/bin/gh.log"
+		case "$url" in
+		rad://*) expect "$sh" "no-ssh-for $url" psjg-claude psjg-claude psjg no "" "$url" ;;
+		*) expect "$sh" "no-probe-for $url" psjg psjg psjg no "this push goes by a path on this machine" "$url" ;;
+		esac
+		if [ -e "$tmp/bin/ssh.log" ]; then echo "FAIL no-ssh-for $url ($sh): ssh ran"; fails=$((fails + 1)); fi
+	done
 	# The ssh probe is never interactive and is not run for a destination that does not use ssh.
 	local log="$tmp/bin/ssh.log" out
 	rm -f "$log"
@@ -178,5 +193,9 @@ if [ -x /bin/bash ] && [ "$(/bin/bash -c 'echo $BASH_VERSION')" != "$BASH_VERSIO
 	run /bin/bash
 fi
 
+if [ -e "$tmp/nossh/ssh.called" ]; then
+	echo "FAIL no-real-ssh: an ssh outside the stand-ins was called: $(head -n 1 "$tmp/nossh/ssh.called")"
+	fails=$((fails + 1))
+fi
 if [ "$fails" -ne 0 ]; then echo "whoami-check-self-test: $fails failure(s)"; exit 1; fi
 echo "whoami-check-self-test: ok"
