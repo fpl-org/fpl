@@ -156,6 +156,13 @@
 # the forge; it needs no terminal. A landing needs one: it is for a person. It is a rail, not
 # a lock: whoever can push to main as an admin can do so without it.
 #
+# The dry run is also the by-hand route's rule table: one line for each land/ rule above
+# (with --ci, land/ci and land/autodelete as well; with --relocate on a head main is no
+# ancestor of, relocate/clean, relocate/trees and relocate/ids), `ok`, `NO` with its remedy,
+# or `--` where an answer the rule rests on is missing; a count; and then the lines a person
+# types, in order: the approval it would give, the push, the retarget of what is stacked on
+# the head and the check that main is the head.
+#
 # The repository is the one --remote (default github) points at; its configured URL must be
 # on GitHub. The forge is read and written with `gh api` only (scripts/layer on github), so
 # scripts/land-self-test serves it from fixtures with a gh of its own first on PATH, and
@@ -195,6 +202,18 @@ JUDGED = ("deletion", "non_fast_forward", "required_linear_history", "pull_reque
           "required_status_checks")
 BYPASS = ("always", "exempt")
 PAD = " " * 28
+# Every rule, in the order judge() prints them: a dry run's table holds each one, whether it
+# was judged or not (Verdict.close), and the self-test holds this list to the header's.
+RULES = ("land/remote", "land/open", "land/base", "land/head", "land/author",
+         "land/changes-requested", "land/codeowners", "land/approved", "land/threads",
+         "land/checks", "land/ancestor", "land/linear", "land/size", "land/workflows",
+         "land/gpt", "land/series", "land/series-fresh", "land/patch-fresh", "land/card",
+         "land/attributed", "land/rules", "land/bypass")
+# The rules --ci alone judges (its paragraph above): its table holds them after the others.
+CI_RULES = ("land/ci", "land/autodelete")
+# The rules judge() adds with --relocate, for a head main is no ancestor of; relocate/lease
+# is judged at the push, after the table.
+RELOCATE_RULES = ("relocate/clean", "relocate/trees", "relocate/ids")
 BYPASS_REMEDY = (
     "the owner's one-time step, on GitHub: Settings > Rules > Rulesets, in each ruleset"
     " on main, Bypass list > Repository admin > Always (not 'For pull requests only')"
@@ -308,16 +327,36 @@ def latest_run(runs):
 class Verdict:
     """The lines a judgement prints, and the rules that refused."""
 
-    def __init__(self):
+    def __init__(self, ci=False):
+        self.rules = RULES + CI_RULES if ci else RULES
         self.refused = set()
+        self.passed = set()
+        self.skipped = {}
 
     def ok(self, rule, what):
+        self.passed.add(rule)
         print(f"  ok  {rule:<23} {what}")
 
     def no(self, rule, what, remedy):
         self.refused.add(rule)
         print(f"  NO  {rule:<23} {what}")
         print(f"{PAD}remedy: {remedy}")
+
+    def skip(self, rule, why):
+        """A rule that cannot be judged because an answer it rests on is missing."""
+        self.skipped.setdefault(rule, why)
+
+    def close(self):
+        """The rule table's last lines: a line for each rule that has none yet, so that a
+        dry run names every rule, and the count. A rule judged more than once (one line
+        per required check) counts once; one with a single NO among its lines is refused."""
+        for rule in self.rules:
+            if rule not in self.passed | self.refused:
+                why = self.skipped.get(rule, "an earlier rule stopped the judgement")
+                print(f"  --  {rule:<23} not judged: {why}")
+        ok = len(self.passed - self.refused)
+        left = len(self.rules) - ok - len(self.refused)
+        print(f"land: {len(self.rules)} rules: {ok} ok, {len(self.refused)} NO, {left} not judged")
 
 
 def judge_pull(v, pr, me, fetched, repo, ci):
@@ -397,6 +436,8 @@ def judge_reviews(v, d, pr, me, repo, ci):
     if owners is None:
         v.no("land/codeowners", why,
              "teach scripts/land that CODEOWNERS before it lands anything under it")
+        for rule in ("land/author", "land/approved"):
+            v.skip(rule, "main's CODEOWNERS does not say whose approval counts")
         return False, []
     v.ok("land/codeowners", "code owners: " + ", ".join(f"@{o}" for o in sorted(owners)))
     approved = [(w, r) for w, r in last.items()
@@ -952,14 +993,17 @@ def judge_autodelete(v, d):
              " head branches")
 
 
-def judge(d, repo, fetched, main, ancestor, merges, ci, relocate="0", claimed=""):  # noqa: PLR0913, PLR0917
-    """Print one line per check and return 1 when any refuses, 3 when none does but the
+def judge(d, repo, fetched, main, ancestor, merges, ci, dest, relocate="0", claimed=""):  # noqa: PLR0913, PLR0917
+    """Print one line per rule and return 1 when any refuses, 3 when none does but the
     approval is yours to give in this run, else 0."""
     pr = load(f"{d}/pr.json")
     me = load(f"{d}/me.json")["login"]
     rules = pages(f"{d}/rules.json")
-    v = Verdict()
     ci = ci == "1"
+    v = Verdict(ci)
+    v.ok("land/remote", f"git fetches from and pushes to {dest}, the repository {repo}")
+    if ci:  # the shell refused a missing token, and one the forge shows a user for
+        v.ok("land/ci", "GH_TOKEN is a token the forge shows no user for: the App's")
     judge_pull(v, pr, me, fetched, repo, ci)
     if ci:
         judge_autodelete(v, d)
@@ -969,14 +1013,20 @@ def judge(d, repo, fetched, main, ancestor, merges, ci, relocate="0", claimed=""
     if fault:  # nothing below can be judged against rules that are not there
         v.no("land/rules", fault, "run this again; if it keeps failing, read the rules"
              " on main on the forge (Settings > Rules) and fix what the API does not show")
+        for rule in ("land/checks", "land/attributed", "land/bypass"):
+            v.skip(rule, "the rules on main could not be read")
     else:
         judge_checks(v, d, rules, repo, pr["number"], pr["head"]["sha"])
-    start = judge_relocation(v, d, claimed) if relocate == "1" and ancestor != "yes" else None
+    start = None
+    if relocate == "1" and ancestor != "yes":
+        v.rules += RELOCATE_RULES
+        start = judge_relocation(v, d, claimed)
     judge_history(v, main, pr["head"]["sha"], ancestor, merges, start)
     judge_range(v, pr, main, fetched, bodies, start and f"{start}^")
     if not fault:
         judge_attributed(v, pr, rules)
         judge_rules(v, d, rules, me, ci)
+    v.close()
     with open(f"{d}/refused", "w") as f:
         f.write("".join(f"{r}\n" for r in sorted(v.refused)))
     if v.refused:
@@ -1307,12 +1357,12 @@ read_rules() {
 	done
 }
 
-# judge: print every check; sets refused=1 when one refuses, and approve=1 when none does
+# judge: print every rule; sets refused=1 when one refuses, and approve=1 when none does
 # and the approval is yours to give in this run.
 judge() {
 	local rc=0
-	py judge "$tmp" "$slug" "$fetched" "$main" "$ancestor" "$merges" "$ci" "$relocate" "$claimed" ||
-		rc=$?
+	py judge "$tmp" "$slug" "$fetched" "$main" "$ancestor" "$merges" "$ci" "$dest" "$relocate" \
+		"$claimed" || rc=$?
 	refused=0 approve=0
 	case "$rc" in
 	0) ;;
@@ -1347,12 +1397,14 @@ if [ -n "$y" ]; then
 	push="$push git push --force-with-lease=refs/heads/$headref:$head $dest $y:refs/heads/$headref"
 fi
 if [ "$dry" -eq 1 ]; then
+	# What a person types, in order.
 	[ "$refused" -eq 0 ] || echo "land: nothing would be pushed until the refusals are gone; then:"
 	[ "$approve" -eq 0 ] || echo "land: would approve $head as $(py fields "$tmp/me.json" login)"
 	echo "land: would run: $push"
 	kids="$(children)"
 	[ -z "$kids" ] || printf 'land: then retarget what is stacked on %s:\n%s\n' "$headref" "$kids"
 	[ "$ci" -eq 0 ] || [ "$headrepo" != "$slug" ] || echo "land: and then delete $headref"
+	[ "$refused" -ne 0 ] || echo "land: then check that main is the head: git ls-remote $dest refs/heads/main"
 	exit "$refused"
 fi
 if [ "$ci" -eq 1 ]; then # git pushes as the token's App; the checkout persists no other

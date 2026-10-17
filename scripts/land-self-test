@@ -1252,6 +1252,55 @@ pull open false main @MERGED@ '## What\n## What changes\n## How checked\n## Limi
 expect 1 "a body without the card's Verdict" --dry-run 7
 says "the body has no heading Verdict" "it names the heading"
 
+# The by-hand route: a dry run is the rule table and the lines a person types. ----------------
+# The rules the header names are the rules the table holds, each with a line of its own
+# whether it was judged or not, and the count says how many of each.
+rules_of_header="$(grep -oE '^#   land/[a-z-]+' "$land" | sed 's/^#   //' | sort -u)"
+nrules="$(printf '%s\n' "$rules_of_header" | wc -l | tr -d ' ')"
+# table <description>: the last output holds a verdict line for each rule of the header, and
+# for no other.
+table() {
+	local rule
+	for rule in $rules_of_header; do
+		total=$((total + 1))
+		grep -qE "^ +(ok|NO|--) +$rule " "$tmp/out" && continue
+		fails=$((fails + 1))
+		echo "self-test: $1: the table has no line for $rule" >&2
+	done
+	total=$((total + 1))
+	grep -oE '^ +(ok|NO|--) +land/[a-z-]+' "$tmp/out" | awk '{print $2}' | sort -u >"$tmp/named"
+	printf '%s\n' "$rules_of_header" | cmp -s - "$tmp/named" && return
+	fails=$((fails + 1))
+	echo "self-test: $1: the table names rules the header does not, or the other way round" >&2
+}
+forge
+expect 0 "the whole table, without a terminal" --dry-run 7
+table "a clean dry run"
+says "land: $nrules rules: $nrules ok, 0 NO, 0 not judged" "the count"
+lacks "needs a terminal" "a dry run asks for no terminal"
+says "would run: git push https://github.com/land-test/fpl.git $H:refs/heads/main" \
+	"the push it would make"
+says "then check that main is the head: git ls-remote https://github.com/land-test/fpl.git refs/heads/main" \
+	"and how to see that it landed"
+
+forge
+git --git-dir="$REMOTE" update-ref refs/heads/main "$MC"
+expect 1 "a refusal still names every rule" --dry-run 7
+table "CODEOWNERS with a rule for part of the tree"
+says "--  land/approved           not judged: main's CODEOWNERS does not say whose approval" \
+	"a rule that cannot be judged says why"
+says "land: $nrules rules: " "the count"
+lacks "then check that main is the head" "no check of a landing that would not go"
+
+forge
+echo '[[]]' | fixture "repos/land-test/fpl/rules/branches/main?per_page=100"
+expect 1 "rules on main that cannot be read" --dry-run 7
+table "no rules"
+says "--  land/checks             not judged: the rules on main could not be read" \
+	"the checks wait on the rules"
+says "--  land/bypass             not judged: the rules on main could not be read" \
+	"so does the bypass"
+
 # --ci: the App's mode. ---------------------------------------------------------------------
 forge
 expect 1 "--ci without a token" --ci --dry-run 7
@@ -1264,6 +1313,8 @@ says "NO  land/autodelete" "it names the rule"
 forge
 GH_TOKEN=t expect 0 "--ci dry run" --ci --dry-run 7
 says "ok  land/autodelete" "it judges the setting"
+says "land: $((nrules + 2)) rules: $((nrules + 2)) ok, 0 NO, 0 not judged" \
+	"its table holds the rules of --ci too, land/ci and land/autodelete"
 says "lets App 5318175 past it: always" "it judges the App in the bypass list"
 says "would run: git push https://github.com/land-test/fpl.git $H:refs/heads/main" "it prints the push"
 ruleset 1 always '[{"actor_type": "RepositoryRole", "actor_id": 5, "bypass_mode": "always"}]'
@@ -1404,6 +1455,8 @@ HEAD_SHA="$SY" GH_TOKEN=t expect 0 "--ci, SB relocates onto SA and lands on the 
 for rule in relocate/clean relocate/trees relocate/ids land/ancestor land/approved; do
 	says "ok  $rule" "relocated: $rule holds"
 done
+says "land: $((nrules + 5)) rules: $((nrules + 5)) ok, 0 NO, 0 not judged" \
+	"its table holds the relocate/ rules judge() reaches as well"
 says "- $SB -> $SY" "it prints the old-to-new map"
 main_is "$SY" "main is the relocation"
 total=$((total + 1))
@@ -1456,6 +1509,8 @@ forge
 git --git-dir="$REMOTE" update-ref refs/heads/main "$SA"
 GH_TOKEN=t expect 1 "--ci, a relocation that conflicts" --ci --relocate "" 7
 says "NO  relocate/clean" "it names the rule"
+says "--  relocate/trees          not judged: an earlier rule stopped the judgement" \
+	"what a conflict leaves unjudged has a line too"
 says "conflicts: $SX a." "it names the commit and the file"
 called
 says "pulls/7/requested_reviewers" "the owner is asked to review again"
