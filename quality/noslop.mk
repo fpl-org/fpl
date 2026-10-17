@@ -159,7 +159,7 @@ ready: harden gates
 
 # The harness's own Python, judged by the same ruff it judges others with.
 HARNESS := $(addprefix $(S)/,crap props escapes mutants gates forward-only diagrams ruff-limits \
-             wip-count brake-flip) \
+             wip-count brake-flip ruleset-check) \
            $(addprefix $(S)/,task rad-cob-dagtaak) $(Q)/noslop_pytest.py
 
 # config-fresh is a prerequisite, as it is of check; scripts/gen-config-self-test is the proof
@@ -192,6 +192,7 @@ gates: venv config-fresh
 	$(S)/present-check-self-test
 	$(BIN)/python $(S)/rad-cob-dagtaak --self-test
 	nix develop $(ROOT)#radicle -c python3 $(S)/task --self-test
+	$(S)/ruleset-check-self-test
 	$(BIN)/python $(S)/gates
 
 # Each tool syncs its own locked environment into <tool>/.venv, so its dependencies never
