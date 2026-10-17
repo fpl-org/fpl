@@ -30,7 +30,9 @@ With --json the report is one object: {"repo", "in_sync", "rulesets": [{"name", 
 "state", "differences": [{"path", "file", "live"}], "unchecked": [{"field", "reason"}]}]},
 state being in_sync, drift, missing_live or missing_file. The token is the first of GH_TOKEN,
 GITHUB_TOKEN and gh's, else the read is anonymous; the machine account's is
-GH_TOKEN=$(gh auth token --user psjg-claude). FPL_RULESET_API names another API root.
+GH_TOKEN=$(gh auth token --user psjg-claude). FPL_RULESET_API names another API root; for one
+that is no github.com or ghe.com host the variables are GH_ENTERPRISE_TOKEN and
+GITHUB_ENTERPRISE_TOKEN, as gh reads them.
 """
 
 import argparse
@@ -68,10 +70,18 @@ def host(api: str) -> str:
 
 
 def token(api: str) -> str:
-    """A token to read the forge at `api` with, or "" to read it anonymously."""
-    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
-        if os.environ.get(name):
-            return os.environ[name]
+    """A token to read the forge at `api` with, or "" to read it anonymously.
+
+    The variables are gh's (`gh help environment`): GH_TOKEN and GITHUB_TOKEN are for
+    github.com and the hosts under ghe.com, GH_ENTERPRISE_TOKEN and GITHUB_ENTERPRISE_TOKEN for
+    an Enterprise Server. A token given for the one is never sent to the other.
+    """
+    name = host(api)
+    public = name == "github.com" or name.endswith(".ghe.com")
+    kind = "TOKEN" if public else "ENTERPRISE_TOKEN"
+    for var in (f"GH_{kind}", f"GITHUB_{kind}"):
+        if os.environ.get(var):
+            return os.environ[var]
     if not shutil.which("gh"):
         return ""
     # gh's own default host is not necessarily the one `api` is: ask for the token of its host.
