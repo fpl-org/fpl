@@ -1330,6 +1330,12 @@ expect 1 "a workflow in a draft" --dry-run 7
 says "NO  land/open" "the other refusal is named"
 lacks "alone" "the owner's route is not offered while another rule refuses"
 forge
+echo '{"delete_branch_on_merge": true}' | fixture repos/land-test/fpl
+expect 1 "a workflow, and the repository deletes head branches on merge" --dry-run 7
+says "NO  land/autodelete" "a person's dry run judges the setting too"
+lacks "alone" "the owner's push, which would close the stacked pull requests, is not offered"
+lacks "land: $owner" "nor his line"
+forge
 landing 1 "a person does not land a workflow range here" 7
 says "refused by land/workflows" "it says why"
 main_is "$M0" "nothing was pushed"
@@ -1350,8 +1356,8 @@ says "NO  land/autodelete" "it names the rule"
 forge
 GH_TOKEN=t expect 0 "--ci dry run" --ci --dry-run 7
 says "ok  land/autodelete" "it judges the setting"
-says "land: $((nrules + 2)) rules: $((nrules + 2)) ok, 0 NO, 0 not judged" \
-	"its table holds the rules of --ci too, land/ci and land/autodelete"
+says "land: $((nrules + 1)) rules: $((nrules + 1)) ok, 0 NO, 0 not judged" \
+	"its table holds the rule of --ci too, land/ci"
 says "lets App 5318175 past it: always" "it judges the App in the bypass list"
 says "would run: git push https://github.com/land-test/fpl.git $H:refs/heads/main" "it prints the push"
 ruleset 1 always '[{"actor_type": "RepositoryRole", "actor_id": 5, "bypass_mode": "always"}]'
@@ -1492,7 +1498,7 @@ HEAD_SHA="$SY" GH_TOKEN=t expect 0 "--ci, SB relocates onto SA and lands on the 
 for rule in relocate/clean relocate/trees relocate/ids land/ancestor land/approved; do
 	says "ok  $rule" "relocated: $rule holds"
 done
-says "land: $((nrules + 5)) rules: $((nrules + 5)) ok, 0 NO, 0 not judged" \
+says "land: $((nrules + 4)) rules: $((nrules + 4)) ok, 0 NO, 0 not judged" \
 	"its table holds the relocate/ rules judge() reaches as well"
 says "- $SB -> $SY" "it prints the old-to-new map"
 main_is "$SY" "main is the relocation"

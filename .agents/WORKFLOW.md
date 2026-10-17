@@ -374,7 +374,7 @@ gh api --hostname github.com repos/<o>/<n>/pulls/<number>/reviews \
 ```
 
 **Check.** `scripts/land --dry-run <number>` makes every check the lander makes but those
-of `--ci` alone (`land/ci`, `land/autodelete`, and the `relocate/` rules of `--relocate`),
+of `--ci` alone (`land/ci`, and the `relocate/` rules of `--relocate`),
 from the forge as it is, with no terminal,
 and writes nothing to the forge (it keeps temporary files and fetches the pull request's head
 into this clone's object store). It prints a line for each rule, `ok`,
@@ -387,9 +387,8 @@ not land. It needs `gh`: `scripts/layer on github`.
 
 - Dispatch the lander: Actions, land, Run workflow on `main` with `pr` set to the number, or
   `gh workflow run land.yml --repo github.com/<o>/<n> --ref main -f pr=<number>`. It judges
-  the same rules as the fpl-lander App, and two of its own: `land/ci`, that the token is the
-  App's, and `land/autodelete`, that the repository deletes no branch when its pull request
-  merges. It writes the `fpl/series` check run, fast-forwards `main`, retargets what is
+  the same rules as the fpl-lander App, and one of its own: `land/ci`, that the token is the
+  App's. It writes the `fpl/series` check run, fast-forwards `main`, retargets what is
   stacked on the landed branch, and deletes the branch only if it is still at the head that
   landed. A head `main` is no ancestor of it relocates onto `main` first (`--relocate`): when
   every commit keeps its patch id and message that lands on the old approval, else the
