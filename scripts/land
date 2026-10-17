@@ -160,13 +160,14 @@
 # the forge; it needs no terminal. A landing needs one: it is for a person. It is a rail, not
 # a lock: whoever can push to main as an admin can do so without it.
 #
-# The dry run is also the by-hand route's rule table: one line for each land/ rule above
-# (with --ci, land/ci and land/autodelete as well; with --relocate on a head main is no
-# ancestor of, relocate/clean, relocate/trees and relocate/ids), `ok`, `NO` with its remedy,
-# or `--` where an answer the rule rests on is missing; a count; and then the lines a person
-# types, in order: the approval it would give, the push, the retarget of what is stacked on
-# the head and the check that main is the head. When land/workflows is the only refusal, the
-# push line is the owner's, printed instead of this script's own.
+# The dry run is also the by-hand route's rule table (.agents/WORKFLOW.md, "By hand"): one
+# line for each land/ rule above (with --ci, land/ci and land/autodelete as well; with
+# --relocate on a head main is no ancestor of, relocate/clean, relocate/trees and
+# relocate/ids), `ok`, `NO` with its remedy, or `--` where an answer the rule rests on is
+# missing; a count; and then the lines a person types, in order: the approval it would give,
+# the push, the retarget of what is stacked on the head and the check that main is the head.
+# When land/workflows is the only refusal, the push line is the owner's, printed instead of
+# this script's own.
 #
 # The repository is the one --remote (default github) points at; its configured URL must be
 # on GitHub. The forge is read and written with `gh api` only (scripts/layer on github), so
@@ -221,7 +222,7 @@ CI_RULES = ("land/ci", "land/autodelete")
 # is judged at the push, after the table.
 RELOCATE_RULES = ("relocate/clean", "relocate/trees", "relocate/ids")
 # The owner's route for what this script does not push: his deploy key, through the alias
-# of his ssh config, which asks for a touch.
+# of his ssh config, which asks for a touch (.agents/WORKFLOW.md, "By hand").
 DEPLOY_ALIAS = "github-fpl-deploy"
 BYPASS_REMEDY = (
     "the owner's one-time step, on GitHub: Settings > Rules > Rulesets, in each ruleset"

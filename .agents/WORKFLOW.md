@@ -303,6 +303,151 @@ git log --grep='^Stack: typed-let$'       # the whole stack, years later, forge 
 because the record belongs on a forge; rule 7 keeps the switch to an in-repo review system
 cheap.
 
+Each of these steps, and each the lander takes, has a route without the automation: [By hand](#by-hand).
+
+## By hand
+
+Each step the scripts and workflows take has a route a person can walk with git, `gh` and the
+browser, so the pipeline is never the only way through, and a step that fails can be done by
+hand without guessing what it did. `<o>/<n>` is the repository (`fpl-org/fpl`), `$TOKEN` the
+machine account's token (`gh auth token --user <machine account>`), and every `gh` command
+names `github.com`, as `scripts/land` does.
+
+**Open a draft.** Push with the token in the URL and the helper list emptied (`-c credential.helper=`, so no
+helper is handed the token to store), then
+open the pull request as a draft on `main`. Its body opens with the card's headings (What,
+What changes, How checked, Limits, Verdict), which `land/card` wants.
+
+```
+git -c credential.helper= push "https://x-access-token:$TOKEN@github.com/<o>/<n>.git" HEAD:refs/heads/<branch>
+scripts/leak-check --text card.md        # nothing private in a public body
+GH_TOKEN="$TOKEN" gh pr create --repo github.com/<o>/<n> --draft --base main \
+  --head <branch> --title "<conventional title>" --body-file card.md
+```
+
+**Present.** Presenting rewrites the work branch W into the series a reader meets, P, before
+anyone has said anything on the pull request. Keep W under a tag of its own, rewrite, and
+prove two things: the tree is the same, and every commit is green alone. A tag, not a
+branch: `scripts/setup` turns `rebase.updateRefs` on, and a branch pointing into the range
+being rewritten would move with it, leaving the proof to compare P with P.
+
+```
+scripts/series stamp github/main..<branch>              # one Series-Id on every commit of W
+git tag unpresented/<series> <branch>                   # W, kept so anyone can repeat the proof
+# … rewrite <branch> into P: git rebase -i, or reset and recommit …
+git diff --quiet unpresented/<series> <branch>          # exit 0: tree(W) == tree(P)
+git rebase --exec 'make quick' github/main              # green on every commit
+git -c credential.helper= push --force-with-lease=<branch>:<old head> \
+  "https://x-access-token:$TOKEN@github.com/<o>/<n>.git" <branch>:refs/heads/<branch>
+```
+
+`scripts/present-check -B github/main unpresented/<series> <branch>` makes both proofs in one
+run, and the checks its header names besides.
+
+**Manifest.** The manifest of a range is one pair per commit, the `git patch-id --verbatim`
+of its diff and a hash of its author and raw message, and a digest of the lines. `--verbatim`
+because `--stable` gave one id to a diff and its re-indented copy. Two ranges with the same
+manifest are the same review. `scripts/series manifest <range>` prints it and
+`scripts/series digest <range>` the digest alone; by hand, the same definition, with the diff
+options pinned so that no configuration of the caller's changes an id:
+
+```
+for c in $(git rev-list --reverse github/main..<head>); do
+  p=$(git -c core.quotePath=true -c diff.suppressBlankEmpty=false diff-tree -p --root \
+    --no-ext-diff --no-textconv --no-color --no-renames -U3 --src-prefix=a/ --dst-prefix=b/ \
+    --diff-algorithm=myers --indent-heuristic "$c" | git patch-id --verbatim | cut -d' ' -f1)
+  m=$({ git cat-file commit "$c" | sed -n '/^$/q; s/^author \(.*\) [0-9]* [-+][0-9]*$/\1/p'
+        git cat-file commit "$c" | sed '1,/^$/d'; } | shasum -a 256 | cut -d' ' -f1)
+  echo "$p $m"
+done | tee manifest | shasum -a 256                      # the digest
+```
+
+**Ready and approve.** The pull request is ready when the review bots have said what they
+will and their findings are dealt with: `gh pr ready <number> --repo github.com/<o>/<n>`, or
+the button. The maintainer reads the Commits tab commit by commit and approves in the UI:
+Files changed, Review changes, Approve, Submit. That approves the head the page loaded, so
+reload if the branch moved; `land/approved` reads the SHA the approval names. Check it:
+
+```
+gh api --hostname github.com repos/<o>/<n>/pulls/<number>/reviews \
+  --jq '.[] | [.user.login, .state, .commit_id] | @tsv'
+```
+
+**Check.** `scripts/land --dry-run <number>` makes every check the lander makes but those
+of `--ci` alone (`land/ci`, `land/autodelete`, and the `relocate/` rules of `--relocate`),
+from the forge as it is, with no terminal,
+and writes nothing to the forge (it keeps temporary files and fetches the pull request's head
+into this clone's object store). It prints a line for each rule, `ok`,
+`NO` with its remedy, or `--` with the reason when an answer the rule rests on is missing;
+the count; the approval it would give; the exact push; the retarget of what is stacked on the
+head; and the `git ls-remote` that shows `main` is the head afterwards. A rule refused: do
+not land. It needs `gh`: `scripts/layer on github`.
+
+**Land.** After a clean dry run, one of two ways.
+
+- Dispatch the lander: Actions, land, Run workflow on `main` with `pr` set to the number, or
+  `gh workflow run land.yml --repo github.com/<o>/<n> --ref main -f pr=<number>`. It judges
+  the same rules as the fpl-lander App, and two of its own: `land/ci`, that the token is the
+  App's, and `land/autodelete`, that the repository deletes no branch when its pull request
+  merges. It writes the `fpl/series` check run, fast-forwards `main`, retargets what is
+  stacked on the landed branch, and deletes the branch only if it is still at the head that
+  landed. A head `main` is no ancestor of it relocates onto `main` first (`--relocate`): when
+  every commit keeps its patch id and message that lands on the old approval, else the
+  relocation is published as `<head>-relocated` and the code owners are asked to review it.
+- The owner's deploy key, for a range that touches `.github/workflows` (the App's token has
+  no Workflows permission, so `land/workflows` sends it here) and for an emergency. When
+  `land/workflows` is the only refusal, the dry run prints the line:
+
+  ```
+  git push git@github-fpl-deploy:<o>/<n>.git <head>:refs/heads/main
+  ```
+
+  It is a fast-forward and the key asks for a touch. `github-fpl-deploy` is a `Host` of the
+  owner's ssh config, naming his key.
+
+After the owner's push, run what the dry run printed, which the lander does itself: the
+`gh api … -f base=main` retarget of each pull request stacked on the landed branch, before
+that branch is deleted (deleting it first closes them), and `git ls-remote` to see that
+`main` is the head. Delete the branch under a lease at the head that landed, so that a push
+to it since is kept:
+
+```
+git push --force-with-lease=refs/heads/<branch>:<head> <remote> :refs/heads/<branch>
+```
+
+Either way, check that `main` is the head. A landing by hand writes no `fpl/series` receipt:
+that check run is the lander's alone.
+
+**Relocate.** When another pull request landed first, `main` is no longer an ancestor of the
+head and `land/ancestor` refuses; the lander relocates such a head itself (Land, above). By
+hand: before an approval, restack and push (`scripts/restack`). After one, carry the commits
+over without changing them, compare each with its old self, and push under
+`FPL_FORWARD_ONLY_OVERRIDE="relocate: <Series-Id>"`, which `scripts/forward-only` lets
+through only when every commit kept its pair:
+
+```
+old=$(git merge-base github/main <branch>); was=$(git rev-parse <branch>)
+git rebase --onto github/main "$old" <branch>
+git range-diff "$old..$was" github/main..<branch>      # every pair '=': nothing changed
+```
+
+Every pair `=` and the same manifest means the new head is the old review: the owner
+approves it again. A pair `!` is a commit whose diff changed; it needs reading, not carrying.
+
+**Revert a series.** One commit that undoes the contiguous range, then the usual route:
+
+```
+git switch -c agent/<id>/stack/revert-<series> github/main
+git revert -n <first>^..<last>
+scripts/acommit -t revert -s <scope> -m "<what the series did>" -r "series <series>"
+```
+
+A series is the commits that share a Series-Id (`git log --grep='^Series-Id: <id>$'`); one
+that landed before `scripts/series` carries only its `Stack:` trailer
+(`git log --grep='^Stack: <name>$'`). The range must be contiguous on `main`: a commit of
+another series in between is reverted by its own pull request first. The revert takes a
+Series-Id of its own (`scripts/series stamp`).
+
 ## The cap
 
 Open work is capped at 50 commits: those of every open pull request that is not a draft,
