@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+#
+# scripts/gates-list-self-test — proof that scripts/gates-list finds every self-test and
+# every gates line, in one order on every machine, keeps a skipped file from ruff, and
+# refuses each way a tool could drop out of `make gates` unseen.
+#
+#   the mechanism   a throwaway tree with a copy of gates-list beside fixture tools: the
+#                   commands in C order (a capital before a small letter, whatever the
+#                   caller's locale), each rule of refusal on its own fixture, by name
+#   both shells     every case under /bin/bash (3.2 on macOS) and under the bash on PATH
+#   the floor       every command the recipe of quality/noslop.mk ran before discovery is
+#                   still found in this repository. Only removing a gate edits the floor
+#                   below; adding a tool never does
+
+# The fixtures write $S and $BIN as text, for the recipe to expand, never here.
+# shellcheck disable=SC2016
+
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+tmp="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/gates-list-self-test.XXXXXX")" && pwd)"
+trap 'rm -rf "$tmp"' EXIT
+fails=0
+
+fail() {
+	printf 'gates-list-self-test: %s\n' "$1" >&2
+	fails=$((fails + 1))
+}
+
+# tree <dir>: the fixture, a copy of gates-list among tools of every kind.
+tree() {
+	mkdir -p "$1/scripts" "$1/quality"
+	cp "$here/gates-list" "$1/scripts/"
+	printf '#!/usr/bin/env bash\ntrue\n' >"$1/scripts/b-self-test"
+	printf '#!/usr/bin/env bash\ntrue\n' >"$1/scripts/Z-self-test"
+	chmod +x "$1/scripts/b-self-test" "$1/scripts/Z-self-test"
+	printf '#!/usr/bin/env python3\n# gates: $BIN/python $S/crap --self-test\n"""crap."""\n' \
+		>"$1/scripts/crap"
+	printf '#!/usr/bin/env bash\n#\n# zz: a tool\n# gates:   $S/zz --self-test  \n#\nexit 0\n' \
+		>"$1/scripts/zz"
+	printf '#!/usr/bin/env python3\n"""gates."""\n' >"$1/scripts/gates"
+	printf '#!/usr/bin/env python3\n# noslop: skip older than the rules\n"""old."""\n' \
+		>"$1/scripts/old"
+	printf '#!/usr/bin/env bash\necho "# gates: in a string, not at a line start"\n' \
+		>"$1/scripts/plain"
+	printf '"""the plugin."""\n' >"$1/quality/plugin.py"
+	printf 'not python\n' >"$1/quality/notes.txt"
+}
+
+# expect <shell> <name> <file> <want>: the file holds exactly want.
+expect() {
+	if [ "$(cat "$3")" != "$4" ]; then
+		fail "$1: $2: got"
+		sed 's/^/    /' "$3" >&2
+		printf '  want\n%s\n' "$4" | sed '2,$s/^/    /' >&2
+	fi
+}
+
+# refused <shell> <rule> <setup>: on a fresh tree changed by setup, gates-list exits 1
+# naming the rule.
+refused() {
+	local d="$tmp/r.$2"
+	rm -rf "$d"
+	tree "$d"
+	(cd "$d/scripts" && eval "$3")
+	if "$1" "$d/scripts/gates-list" >"$d/out" 2>"$d/err"; then
+		fail "$1: $2: not refused"
+	elif ! grep -q "gates-list: $2: " "$d/err"; then
+		fail "$1: $2: refused, but not by that rule:"
+		sed 's/^/    /' "$d/err" >&2
+	fi
+}
+
+shells=()
+for sh in /bin/bash "$(command -v bash)"; do
+	[ -x "$sh" ] || continue
+	case " ${shells[*]-} " in *" $sh "*) continue ;; esac
+	shells+=("$sh")
+done
+
+for sh in "${shells[@]}"; do
+	d="$tmp/ok"
+	rm -rf "$d"
+	tree "$d"
+	LC_ALL=en_US.UTF-8 "$sh" "$d/scripts/gates-list" >"$d/cmds" || fail "$sh: the list failed"
+	expect "$sh" "the commands" "$d/cmds" '$S/Z-self-test
+$S/b-self-test
+$BIN/python $S/crap --self-test
+$S/zz --self-test'
+	"$sh" "$d/scripts/gates-list" --lint >"$d/lint" || fail "$sh: the lint list failed"
+	expect "$sh" "the lint list" "$d/lint" "$d/scripts/crap
+$d/scripts/gates
+$d/quality/plugin.py"
+
+	refused "$sh" GATES-NOT-EXECUTABLE 'chmod -x b-self-test'
+	refused "$sh" GATES-PAST-HEADER 'printf "x=1\n# gates: \$S/late\n" >>gates'
+	refused "$sh" GATES-WRONG-FILE 'printf "#!/bin/sh\n# gates: \$S/x\n" >c-self-test; chmod +x c-self-test'
+	refused "$sh" GATES-TWICE 'printf "#!/bin/sh\n# gates: a\n# gates: b\n" >two'
+	refused "$sh" GATES-EMPTY 'printf "#!/bin/sh\n# gates:   \n" >empty'
+	refused "$sh" SKIP-PAST-HEADER 'printf "x=1\n# noslop: skip late\n" >>gates'
+	refused "$sh" SKIP-NO-REASON 'printf "#!/usr/bin/env python3\n# noslop: skip\n" >bare'
+	refused "$sh" GATES-NONE 'rm b-self-test Z-self-test; printf "#!/bin/sh\n" >crap; printf "#!/bin/sh\n" >zz'
+done
+
+# The floor: the recipe's lines as quality/noslop.mk held them before discovery, written
+# here with make's $(X) as the shell's $X. One spelling differs: the recipe ran
+# `$(S)/leak-check --self-test`, which execs scripts/leak-check-self-test (line 83 of
+# scripts/leak-check), so the floor names that file. scripts/gates stays in the recipe.
+while IFS= read -r want; do
+	grep -qxF "$want" <<<"$("$here/gates-list")" || fail "the floor: no longer found: $want"
+done <<'EOF'
+$BIN/python $S/crap --self-test
+$BIN/python $S/props --self-test
+$BIN/python $S/escapes --self-test
+$BIN/python $S/forward-only --self-test
+$BIN/python $S/mutants --self-test
+$BIN/python $S/diagrams --self-test
+$BIN/python $S/ruff-limits --self-test
+$BIN/python $S/wip-count --self-test
+$BIN/python $S/brake-flip --self-test
+$S/leak-check-self-test
+$S/pre-push-self-test
+$S/whoami-check-self-test
+$S/boundary-self-test
+$S/sweep-self-test
+$S/spec-guard-self-test
+$S/gen-config-self-test
+$S/image-self-test
+$S/land-self-test
+$S/series-self-test
+$S/present-check-self-test
+$BIN/python $S/rad-cob-dagtaak --self-test
+nix develop $ROOT#radicle -c python3 $S/task --self-test
+$S/ruleset-check-self-test
+EOF
+
+[ "$fails" -eq 0 ] || {
+	echo "gates-list-self-test: $fails failed (shells: ${shells[*]})" >&2
+	exit 1
+}
+echo "gates-list-self-test: ok (shells: ${shells[*]})"

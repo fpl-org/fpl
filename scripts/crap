@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# gates: $BIN/python $S/crap --self-test
 """scripts/crap — the CRAP score of every function, and a gate on the worst of them.
 
     scripts/crap [--source fpl] [--coverage .noslop/coverage.json] [--policy quality/crap.toml]

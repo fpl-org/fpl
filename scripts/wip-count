@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# gates: $BIN/python $S/wip-count --self-test
 """scripts/wip-count — how much work waits for review: the commits on open pull requests.
 
     scripts/wip-count             N/50, nog M

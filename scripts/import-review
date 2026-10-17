@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# noslop: skip predates the lint list: ruff finds 30 (16 E501) and would reformat it
 """scripts/import-review — bring a pull request and its review from the forge into Radicle.
 
     scripts/import-review <number>...        those pull requests
