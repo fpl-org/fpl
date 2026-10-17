@@ -122,6 +122,17 @@ STUB_REVIEWS_FILE="$tmp/long" "$BASH" scripts/series stamp "$base0..HEAD" >"$tmp
 verdict "stamp refuses when the owner heads a long answer" "$rc" 1 "owner-spoke"
 STUB_NOTOKEN=1 "$BASH" scripts/series stamp "$base0..HEAD" >"$tmp/out" 2>&1 && rc=0 || rc=$?
 verdict "stamp refuses blind (no token)" "$rc" 1 "forge-token"
+# The owner's latest review decides: one that requests changes asks for the rewrite; an approval
+# or a plain review after it does not. A review row is login, state, id, tab-separated.
+tab="$(printf '\t')"
+STUB_REVIEWS="psjg${tab}APPROVED${tab}31" sr 1 "stamp refuses after the owner's approval" \
+	"review 31, APPROVED" stamp "$base0..HEAD"
+STUB_REVIEWS="psjg${tab}CHANGES_REQUESTED${tab}32
+psjg${tab}APPROVED${tab}33" sr 1 "stamp refuses when his approval follows his request" \
+	"review 33, APPROVED" stamp "$base0..HEAD"
+STUB_REVIEWS="psjg${tab}CHANGES_REQUESTED${tab}34
+psjg${tab}COMMENTED${tab}35" sr 1 "stamp refuses when his plain review follows his request" \
+	"review 35, COMMENTED" stamp "$base0..HEAD"
 same "every forge call names github.com" "$(grep -vc -e '--hostname github.com' "$tmp/gh.log" || true)" 0
 same "every pull request discovery reads all pages" "$(grep -e 'pulls?state=all' "$tmp/gh.log" | grep -vc -e '--paginate' || true)" 0
 differ "the forge was asked" "$(wc -l <"$tmp/gh.log" | tr -d ' ')" 0
@@ -165,6 +176,16 @@ same "no Patch-Id trailer anywhere" "$(git log --format=%B "$base0..HEAD" | grep
 tip1="$(git rev-parse HEAD)"
 STUB_REVIEWS=someone-else sr 0 "stamp again" "$id" stamp "$base0..HEAD"
 same "stamp is idempotent" "$(git rev-parse HEAD)" "$tip1"
+# His latest review requests changes, after an approval of his and another's: the stamp goes on,
+# names the review, and a comment of his does not withdraw the request. The commit it stamps is
+# taken off again: what follows reads the series as it was.
+mk f9 -
+STUB_REVIEWS="psjg${tab}APPROVED${tab}36
+someone-else${tab}APPROVED${tab}37
+PSJG${tab}CHANGES_REQUESTED${tab}38" STUB_COMMENTS=psjg sr 0 "stamp when his latest review requests changes" \
+	"in review 38, his latest" stamp "$base0..HEAD"
+sr 0 "check after the requested stamp" "$id" check "$base0..HEAD"
+git reset -q --hard "$tip1"
 
 # --- the manifest is the landed history, whatever the clone's config and replacement refs say ------
 sr 0 "manifest to compare" "" manifest "$base0..HEAD"
