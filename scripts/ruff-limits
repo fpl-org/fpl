@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# gates: $BIN/python $S/ruff-limits --self-test
 """scripts/ruff-limits — refuse to run ruff on a limits file that would change its line width.
 
     scripts/ruff-limits [FILE]        FILE is quality/ruff-limits.toml unless given

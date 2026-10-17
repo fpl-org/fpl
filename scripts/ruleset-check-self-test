@@ -412,8 +412,8 @@ for f in glob.glob(sys.argv[1] + "/main-*.json"):
     assert not {"id", "node_id", "created_at", "updated_at", "_links", "source"} & d.keys(), f
 PY
 total=$((total + 1))
-awk '/^gates:/ { g = 1; next } /^[^\t]/ { g = 0 } g' "$root/quality/noslop.mk" |
-	grep -qxF "$(printf '\t')\$(S)/ruleset-check-self-test" || fail "the gates recipe does not run this test"
+"$root/scripts/gates-list" | grep -qxF '$S/ruleset-check-self-test' ||
+	fail "scripts/gates-list does not find this test, so make gates does not run it"
 
 echo "ruleset-check self-test: $((total - fails)) of $total checks passed under bash ${BASH_VERSION%%.*}"
 [ "$fails" -eq 0 ]

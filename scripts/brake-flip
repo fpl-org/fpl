@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# gates: $BIN/python $S/brake-flip --self-test
 """scripts/brake-flip — set the brake ruleset to what the count of open work says.
 
     scripts/brake-flip COUNT.json [--dry-run] [--since EPOCH]
