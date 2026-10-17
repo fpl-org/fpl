@@ -1278,6 +1278,7 @@ expect 0 "the whole table, without a terminal" --dry-run 7
 table "a clean dry run"
 says "land: $nrules rules: $nrules ok, 0 NO, 0 not judged" "the count"
 lacks "needs a terminal" "a dry run asks for no terminal"
+lacks "github-fpl-deploy" "the owner's route is for a workflow alone"
 says "would run: git push https://github.com/land-test/fpl.git $H:refs/heads/main" \
 	"the push it would make"
 says "then check that main is the head: git ls-remote https://github.com/land-test/fpl.git refs/heads/main" \
@@ -1300,6 +1301,43 @@ says "--  land/checks             not judged: the rules on main could not be rea
 	"the checks wait on the rules"
 says "--  land/bypass             not judged: the rules on main could not be read" \
 	"so does the bypass"
+
+# A range that touches a workflow is the owner's: the table says so and gives his line.
+at="$HW" HEAD_SHA="$HW"
+forge
+git --git-dir="$REMOTE" update-ref refs/heads/main "$M0"
+expect 1 "a workflow, every other rule holding" --dry-run 7
+table "a workflow range"
+owner="git push git@github-fpl-deploy:land-test/fpl.git $HW:refs/heads/main"
+says "remedy: a workflow lands by the owner path: once every other rule holds (scripts/land --dry-run), the owner runs $owner" \
+	"the remedy is his line"
+says "refused by land/workflows alone, and every other rule holds" "the route is named"
+says "land: $owner" "his line, on a line of its own"
+lacks "would run: git push" "this script's own push is not offered"
+lacks "would approve" "nor an approval"
+called
+lacks " -X " "nothing is written to the forge"
+main_is "$M0" "main stays"
+forge
+reviews "$(review 1 psjg COMMENTED "$HW")"
+expect 1 "a workflow, the approval still to give" --dry-run 7
+says "${HW:0:12} has no approval yet: a code owner gives it on the forge" \
+	"the owner's line waits for the approval"
+says "land: $owner" "his line is still printed"
+lacks "would approve" "this script gives none for a range it does not push"
+forge
+pull open true main false
+expect 1 "a workflow in a draft" --dry-run 7
+says "NO  land/open" "the other refusal is named"
+lacks "alone" "the owner's route is not offered while another rule refuses"
+forge
+landing 1 "a person does not land a workflow range here" 7
+says "refused by land/workflows" "it says why"
+main_is "$M0" "nothing was pushed"
+forge
+GH_TOKEN=t expect 1 "--ci does not land a workflow range" --ci 7
+main_is "$M0" "the App pushes no workflow"
+at="$H" HEAD_SHA="$H"
 
 # --ci: the App's mode. ---------------------------------------------------------------------
 forge
