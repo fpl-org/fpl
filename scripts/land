@@ -162,11 +162,13 @@
 # a lock: whoever can push to main as an admin can do so without it.
 #
 # The dry run is also the by-hand route's rule table (.agents/WORKFLOW.md, "By hand"): one
-# line for each land/ rule above (with --ci, land/ci as well; with
-# --relocate on a head main is no ancestor of, relocate/clean, relocate/trees and
-# relocate/ids), `ok`, `NO` with its remedy, or `--` where an answer the rule rests on is
-# missing; a count; and then the lines a person types, in order: the approval it would give,
-# the push, the retarget of what is stacked on the head and the check that main is the head.
+# line for each land/ rule above (with --ci, land/ci as well; with --relocate on a head main
+# is no ancestor of, relocate/clean, relocate/trees and relocate/ids), `ok`, `NO` with its
+# remedy, or `--` where an answer the rule rests on is missing; a count; and then the lines a
+# person types, in order: the approval it would give, the push, the retarget of what is
+# stacked on the head and the check that main is the head. The table needs land/remote and,
+# with --ci, land/ci to hold: the shell judges those two before judge() runs, and a refusal
+# of either is one line and its remedy, with no table.
 # When land/workflows is the only refusal, the push line is the owner's, printed instead of
 # this script's own.
 #

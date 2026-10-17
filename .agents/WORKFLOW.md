@@ -380,7 +380,9 @@ gh api --hostname github.com repos/<o>/<n>/pulls/<number>/reviews \
 of `--ci` alone (`land/ci`, and the `relocate/` rules of `--relocate`),
 from the forge as it is, with no terminal,
 and writes nothing to the forge (it keeps temporary files and fetches the pull request's head
-into this clone's object store). It prints a line for each rule, `ok`,
+into this clone's object store). Once `land/remote` holds (and with `--ci`, `land/ci`),
+which the shell judges first and which refuse with one line and no table, it prints a line
+for each rule, `ok`,
 `NO` with its remedy, or `--` with the reason when an answer the rule rests on is missing;
 the count; the approval it would give; the exact push; the retarget of what is stacked on the
 head; and the `git ls-remote` that shows `main` is the head afterwards. A rule refused: do
