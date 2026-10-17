@@ -283,7 +283,11 @@ a forge in fixtures and a bare repository on disk.
   `git diff --shortstat <base> <cut>`, and the same from `<cut>` to the head). A new branch
   at that commit becomes the lower pull request, based on `main`; the old one is retargeted
   onto it. No commit changes, so the pull requests stacked above keep their base, and the
-  two land bottom first like any stack.
+  two land bottom first like any stack. One commit over either limit has no such cut: each
+  half that holds it is refused as the whole was. Before the maintainer's approval the
+  presenter tells that commit again as smaller lemmas, which `scripts/present-check` proves
+  add up to the same tree; after it the pull request is frozen (rule 10), and a rewrite is
+  his call.
 - **Never squash a multi-commit PR.** Squashing collapses the atomic commits, and their
   bodies and trailers, into one. (A one-commit PR is the only case where it is harmless.)
 - After a landing, `git fetch github`: `github/main` is the landed head, and the branches of
