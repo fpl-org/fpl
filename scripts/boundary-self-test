@@ -99,7 +99,13 @@ unset FPL_BRANCH_GATE FPL_MAIN_GATE FPL_AGENT_EMAILS FPL_LINT_BRANCH FPL_LINT_CO
 # `git -c`, replace refs, grafts, shallow files...): a hook or worktree sets some of them.
 # shellcheck disable=SC2046 # one variable name per line, no spaces
 unset $(git rev-parse --local-env-vars)
-mkdir -p "$HOME" "$XDG_CONFIG_HOME"
+mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$tmp/nossh"
+# The pushes below run .githooks/pre-push, whose message asks who would push. No real ssh may
+# answer: a key behind Touch ID asks for a tap at every probe. A stand-in that records its call
+# comes first on PATH, and a call to it fails the suite at the end.
+printf '#!/bin/sh\necho "$*" >>"$0.called"\nexit 255\n' >"$tmp/nossh/ssh"
+chmod +x "$tmp/nossh/ssh"
+export PATH="$tmp/nossh:$PATH"
 checker="$root/scripts/boundary"
 nl='
 '
@@ -820,6 +826,11 @@ git add -A
 made "an amend that swaps the side" --amend --no-edit
 push pure "an amend that leaves one side only" agent/claude/stack/r
 
+total=$((total + 1))
+if [ -e "$tmp/nossh/ssh.called" ]; then
+	: >"$tmp/out"
+	fail "no real ssh: the push asked ssh $(head -n 1 "$tmp/nossh/ssh.called")"
+fi
 echo "boundary self-test: $fails failures in $total checks (bash $BASH_VERSION); refused:" \
 	"$pure_refused of $pure pure, $mixed_refused of $mixed mixed"
 [ "$fails" -eq 0 ] && [ "$pure_refused" -eq 0 ] && [ "$mixed_refused" -eq "$mixed" ]

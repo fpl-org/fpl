@@ -85,7 +85,8 @@ git reset -q --hard "$M0"
 # For the rules on the range: MS, a main that holds scripts/series, HS above it with one
 # Series-Id, HN with none, MF a main past MS that carries HS's id; MP a main that adds p,
 # HP above it that removes p and adds it again, the patch of MP; HW a head that touches a
-# workflow, HG one a GPT model assisted, HB eleven commits, HL 601 lines.
+# workflow, HG one a GPT model assisted, HB eleven commits, HL 601 lines; ML a main two
+# commits of 300 lines each past M0, HO a head of 5 lines on M0 that main moved away from.
 mkdir scripts
 printf '#!/bin/sh\necho d1g3st\n' >scripts/series
 chmod +x scripts/series
@@ -135,10 +136,18 @@ git add l
 git commit -q -m "long"
 HL="$(git rev-parse HEAD)"
 git reset -q --hard "$M0"
+seq 300 >m1 && git add m1 && git commit -q -m "main: m1"
+seq 300 >m2 && git add m2 && git commit -q -m "main: m2"
+ML="$(git rev-parse HEAD)"
+git reset -q --hard "$M0"
+seq 5 >o && git add o && git commit -q -m "own: o"
+HO="$(git rev-parse HEAD)"
+git reset -q --hard "$M0"
 git push -q "$REMOTE" "$M0:refs/heads/main" "$H:refs/heads/$BR" "$M1:refs/heads/m1" \
 	"$MC:refs/heads/mc" "$H2:refs/heads/h2" "$HM:refs/heads/hm" "$HS:refs/heads/hs" \
 	"$HN:refs/heads/hn" "$HP:refs/heads/hp" "$HW:refs/heads/hw" "$HG:refs/heads/hg" \
-	"$HB:refs/heads/hb" "$HL:refs/heads/hl" "$MF:refs/heads/mf" "$HGO:refs/heads/hgo"
+	"$HB:refs/heads/hb" "$HL:refs/heads/hl" "$MF:refs/heads/mf" "$HGO:refs/heads/hgo" \
+	"$ML:refs/heads/ml" "$HO:refs/heads/ho"
 
 # The stand-ins: gh serves the forge, git sends the test's GitHub to the disk, open and
 # xdg-open only log.
@@ -1171,11 +1180,16 @@ says "ok  land/series             skipped: main has no scripts/series" "no serie
 says "ok  land/card" "the card is there"
 range_case "$HS" "$MS" 0 "every commit carries Series-Id s-1" "one Series-Id on a main with scripts/series"
 range_case "$HN" "$MS" 1 "NO  land/series" "a commit without a Series-Id"
+says "remedy: the presenter stamps one during the relocation or a re-presentation: scripts/series stamp ${MS:0:12}..HEAD on the branch, which mints the id; the stamp rewrites every commit, so the owner asks for it with changes requested and approves the new head again" \
+	"it names the stamp, on the range's own base, and the owner's new approval"
 range_case "$HS" "$MF" 1 "NO  land/series-fresh" "a Series-Id that is on main already"
 range_case "$HP" "$MP" 1 "NO  land/patch-fresh" "a patch that is on main already"
 range_case "$HW" "$M0" 1 "NO  land/workflows" "a commit that touches .github/workflows"
 range_case "$HB" "$M0" 1 "11 commits, 0 lines: over 10" "eleven commits"
 range_case "$HL" "$M0" 1 "1 commits, 601 lines: over" "601 lines"
+range_case "$HO" "$ML" 1 "1 commits, 5 lines" "a head main moved two commits past its merge-base"
+says "ok  land/size" "it counts the head's own lines, not main's 600 undone"
+lacks "605 lines" "main's lines are not counted"
 range_case "$HG" "$M0" 1 "NO  land/gpt" "a commit a GPT model assisted, no gpt-ok"
 at="$HG" HEAD_SHA="$HG"
 forge
@@ -1429,7 +1443,7 @@ DB="$(git rev-parse HEAD)"
 git switch -q main
 git branch -q -D sibs
 git push -q "$REMOTE" "$SA:refs/heads/sa" "$SB:refs/heads/sb" "$SX:refs/heads/sx" \
-	"$DA:refs/heads/da" "$DB:refs/heads/db"
+	"$DA:refs/heads/da" "$DB:refs/heads/db" "$SC:refs/heads/sc"
 line() { # line <text> <description>: a line of the last output is exactly the text
 	total=$((total + 1))
 	grep -qxF -- "$1" "$tmp/out" && return
@@ -1559,6 +1573,13 @@ GH_TOKEN=t expect 1 "--ci, a conflict and no approval" --ci --relocate "" 7
 called
 lacks "issues/7/comments" "with another refusal, nothing is put to the owner"
 at="$H" HEAD_SHA="$H"
+# Main is SY, SB relocated onto SA (it landed above). SC, the child of SB, holds SB and its
+# own commit: the range judged starts above SB, whose pair main holds, as the relocation
+# does. SB alone holds nothing main lacks.
+range_case "$SC" "$SY" 1 "ok  land/patch-fresh" "a child of a relocated parent, on its own commit"
+says "1 commits, 1 lines" "land/size counts the child's own commit alone"
+range_case "$SB" "$SY" 1 "NO  land/patch-fresh" "a head whose every pair main holds"
+says "main holds every commit of the head, or its pair, already" "it says so"
 
 # The install line in harness/workflows/README.md makes a commit the owner's hooks accept: its
 # message, the -m arguments of its git commit joined as git joins them, passes
