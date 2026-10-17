@@ -1180,6 +1180,8 @@ says "ok  land/series             skipped: main has no scripts/series" "no serie
 says "ok  land/card" "the card is there"
 range_case "$HS" "$MS" 0 "every commit carries Series-Id s-1" "one Series-Id on a main with scripts/series"
 range_case "$HN" "$MS" 1 "NO  land/series" "a commit without a Series-Id"
+says "remedy: the presenter stamps one during the relocation or a re-presentation: scripts/series stamp ${MS:0:12}..HEAD on the branch, which mints the id; the stamp rewrites every commit, so the owner asks for it with changes requested and approves the new head again" \
+	"it names the stamp, on the range's own base, and the owner's new approval"
 range_case "$HS" "$MF" 1 "NO  land/series-fresh" "a Series-Id that is on main already"
 range_case "$HP" "$MP" 1 "NO  land/patch-fresh" "a patch that is on main already"
 range_case "$HW" "$M0" 1 "NO  land/workflows" "a commit that touches .github/workflows"

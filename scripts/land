@@ -904,9 +904,13 @@ def judge_series(v, main, span):
     ids = sorted({x for _, vals in rows for x in vals})
     odd = [c[:12] for c, vals in rows if len(vals) != 1]
     if odd or len(ids) != 1:
+        base = git("rev-parse", "--short=12", span.split("..")[0]).decode().strip()
         v.no("land/series", f"Series-Id {' '.join(ids) or 'none'}; not exactly one on"
              f" {' '.join(odd) or 'every commit'}",
-             "scripts/series names the one series on every commit of the range")
+             "the presenter stamps one during the relocation or a re-presentation:"
+             f" scripts/series stamp {base}..HEAD on the branch, which"
+             " mints the id; the stamp rewrites every commit, so the owner asks for it with"
+             " changes requested and approves the new head again")
         return
     v.ok("land/series", f"every commit carries Series-Id {ids[0]}")
     if any(ids[0] in vals for _, vals in trailers(main, "Series-Id")):
