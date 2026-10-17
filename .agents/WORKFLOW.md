@@ -361,7 +361,7 @@ for c in $(git rev-list --reverse github/main..<head>); do
     --diff-algorithm=myers --indent-heuristic "$c" | git patch-id --verbatim | cut -d' ' -f1)
   m=$({ git cat-file commit "$c" | sed -n '/^$/q; s/^author \(.*\) [0-9]* [-+][0-9]*$/\1/p'
         git cat-file commit "$c" | sed '1,/^$/d'; } | shasum -a 256 | cut -d' ' -f1)
-  echo "$p $m"
+  echo "${p:--} $m"                                      # "-": an empty commit has no patch id
 done | tee manifest | shasum -a 256                      # the digest
 ```
 
