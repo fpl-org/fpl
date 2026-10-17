@@ -1447,7 +1447,7 @@ DB="$(git rev-parse HEAD)"
 git switch -q main
 git branch -q -D sibs
 git push -q "$REMOTE" "$SA:refs/heads/sa" "$SB:refs/heads/sb" "$SX:refs/heads/sx" \
-	"$DA:refs/heads/da" "$DB:refs/heads/db"
+	"$DA:refs/heads/da" "$DB:refs/heads/db" "$SC:refs/heads/sc"
 line() { # line <text> <description>: a line of the last output is exactly the text
 	total=$((total + 1))
 	grep -qxF -- "$1" "$tmp/out" && return
@@ -1577,6 +1577,13 @@ GH_TOKEN=t expect 1 "--ci, a conflict and no approval" --ci --relocate "" 7
 called
 lacks "issues/7/comments" "with another refusal, nothing is put to the owner"
 at="$H" HEAD_SHA="$H"
+# Main is SY, SB relocated onto SA (it landed above). SC, the child of SB, holds SB and its
+# own commit: the range judged starts above SB, whose pair main holds, as the relocation
+# does. SB alone holds nothing main lacks.
+range_case "$SC" "$SY" 1 "ok  land/patch-fresh" "a child of a relocated parent, on its own commit"
+says "1 commits, 1 lines" "land/size counts the child's own commit alone"
+range_case "$SB" "$SY" 1 "NO  land/patch-fresh" "a head whose every pair main holds"
+says "main holds every commit of the head, or its pair, already" "it says so"
 
 # The install line in harness/workflows/README.md makes a commit the owner's hooks accept: its
 # message, the -m arguments of its git commit joined as git joins them, passes
