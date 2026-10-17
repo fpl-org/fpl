@@ -1,0 +1,354 @@
+#!/usr/bin/env bash
+#
+# scripts/present-check — prove that a presented series is the series that was worked.
+#
+#   scripts/present-check [-B base] [-b branch] [--skip-quick] [W] P
+#   scripts/present-check classify [-B base] OLD NEW
+#   scripts/present-check rules [-B base] P
+#
+# The work tip W is what the agents built and checked; the presented tip P is the same change
+# told as a short series a person reads (.agents/WORKFLOW.md). Telling it again may reword,
+# split, reorder and rebase, but not change what the series adds up to, and every lemma must
+# stand on its own. With both refs this proves that, cheapest check first, stopping at the
+# first red:
+#
+#   trees       W and P hold the same tree (git rev-parse <ref>^{tree})
+#   merge-base  both fork from `base` at the same commit
+#   commit-lint scripts/commit-lint over base..P, judged for the branch when P is a local
+#               branch or -b names one (else its Stack: and agent-branch gates are left out)
+#   Series-Id   when scripts/series exists in P's tree, every commit of base..P carries a
+#               Series-Id trailer and the range holds exactly one distinct value
+#   rules       every commit of base..P reads as finished work (below)
+#   each lemma  `make quick` in a detached worktree of the commit and, when it touches
+#               scripts/, .githooks/, harness/ or .github/workflows/, the self-tests that
+#               cover the touched path
+#
+# With one ref there is no W, so the tree, merge-base and range-diff steps are left out; that
+# is what a pull request's CI has. At the end it prints the lemma list (hash, subject, seconds
+# per step) and, with W, `git range-diff W...P`. Seconds come from $SECONDS, which bash 3.2 has.
+#
+#   classify OLD NEW   print how a push changed a pull request, one word: unchanged (the same
+#                      commit), presentation (the same tree), relocation (every commit keeps
+#                      its patch-id, the base moved) or content
+#   rules P            the rules step alone, which builds nothing
+#
+# A presented series reads as work done, not as the history of how it was reviewed. Two rules
+# say so, and each refusal names the commit, the rule and the remedy:
+#
+#   fix-on-series  a commit typed fix that changes only files the merge-base does not hold
+#                  repairs the series itself: it is folded into the lemma it corrects, or told
+#                  as a lemma of its own. A fix is a fix of something main holds.
+#   review-prose   a message that names the review instead of arguing from the code: one of
+#                  the words of review_words, below, whole and in any case. The lines are
+#                  joined first, so a phrase that wraps at the margin is still found; the
+#                  trailer block is left out, so Assisted-By may name any model.
+#
+#   -B base       what the series is on top of (default main; CI passes origin/main)
+#   -b branch     judge the commits for this branch (default: P's name when it is one)
+#   --skip-quick  leave `make quick` out, for a docs-only series; touched paths' self-tests run
+#
+# One temporary worktree serves all lemmas, moved with a forced checkout and `git clean -fdx`
+# that spares only .venv, so nothing a lemma left behind can make the next one pass. The .venv
+# stays because syncing it adds about 25 s a lemma (measured: 77 s for the first lemma, 51 s
+# with it kept) and make resyncs it when quality/uv.lock changes; the running checkout's own
+# is never shared. FPL_PRESENT_QUICK (default `make quick`) and FPL_PRESENT_LINT (default
+# scripts/commit-lint) name the commands; scripts/present-check-self-test stands in a fixture
+# through them. Exit 0: green. 1: a check is red. 2: usage or tooling.
+set -euo pipefail
+export GIT_NO_REPLACE_OBJECTS=1
+unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE
+
+here="$(cd "$(dirname "$0")" && pwd)"
+usage="usage: scripts/present-check [-B base] [-b branch] [--skip-quick] [W] P | classify [-B base] OLD NEW | rules [-B base] P"
+
+die() {
+	printf 'present-check: %s\n' "$*" >&2
+	exit 2
+}
+red() {
+	printf 'present-check: RED: %s\n' "$*" >&2
+	exit 1
+}
+sha() { git rev-parse --verify -q "$1^{commit}" || die "not a commit: $1"; }
+short() { git rev-parse --short "$1"; }
+
+base=main branch="" skip_quick=0 mode=check
+case "${1-}" in classify | rules)
+	mode="$1"
+	shift
+	;;
+esac
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-B | -b)
+		[ -n "${2-}" ] || die "$usage"
+		if [ "$1" = -B ]; then base="$2"; else branch="$2"; fi
+		shift 2
+		;;
+	--skip-quick) skip_quick=1 && shift ;;
+	-*) die "$usage" ;;
+	*) break ;;
+	esac
+done
+git rev-parse --git-dir >/dev/null 2>&1 || die "not inside a git repository"
+git rev-parse -q --verify "$base^{commit}" >/dev/null || die "no such base: $base"
+
+# patch_ids <tip>: the patch-id of each commit of base..tip, oldest first, one per line.
+patch_ids() {
+	local c
+	for c in $(git rev-list --reverse --no-merges "$(git merge-base "$base" "$1")..$1"); do
+		git diff-tree -p "$c" | git patch-id --stable | cut -d' ' -f1
+	done
+}
+
+# The words of review-prose: the tools that read a series and the bookkeeping of their
+# rounds. An extended regex, matched whole (grep -w) and in any case.
+review_words='codex|coderabbit|gpt|chatgpt|openai|found by|fix-forward|p1|p2|review round|reviewer'
+
+# rules <merge-base> <commit>...: print each commit that breaks a rule of a finished series,
+# with its remedy; the exit status is whether there is none.
+rules() {
+	local mb="$1" c f subject own words bad=0 fix='^fix[(!:]'
+	shift
+	for c in "$@"; do
+		subject="$(git log -1 --format=%s "$c")"
+		if [[ $subject =~ $fix ]]; then
+			own=1
+			while IFS= read -r f; do
+				if git cat-file -e "$mb:$f" 2>/dev/null; then own=0 && break; fi
+			done <<EOF
+$(git diff-tree --root --no-commit-id --name-only -r "$c")
+EOF
+			if [ "$own" -eq 1 ]; then
+				printf 'fix-on-series: %s %s\n' "$(short "$c")" "$subject"
+				printf '    it changes only files this series adds: fold it into the lemma it corrects, or type it as the lemma it is\n'
+				bad=1
+			fi
+		fi
+		# The message without its trailer block (git's last paragraph, when git reads trailers
+		# there), its lines joined.
+		words="$(
+			git log -1 --format=%B "$c" | awk -v t="$(git log -1 --format='%(trailers:only)' "$c" | head -c 1)" '
+				{ l[NR] = $0 }
+				END {
+					n = NR
+					while (n > 0 && l[n] == "") n--
+					if (t != "") while (n > 0 && l[n] != "") n--
+					for (i = 1; i <= n; i++) print l[i]
+				}' | tr -s '[:space:]' ' ' | grep -oiwE "$review_words" | tr '[:upper:]' '[:lower:]' |
+				sort -u | tr '\n' ' ' || true
+		)"
+		if [ -n "$words" ]; then
+			printf 'review-prose: %s %s\n' "$(short "$c")" "$subject"
+			printf '    it names %s: argue from the code and its measurements, and credit who read the series in the pull request body\n' "${words% }"
+			bad=1
+		fi
+	done
+	return "$bad"
+}
+
+# check_rules <tip>: the rules step over base..tip.
+check_rules() {
+	local mb out
+	mb="$(git merge-base "$base" "$1")" ||
+		die "$(short "$1") shares no history with $base; pass -B the base it forked from"
+	# shellcheck disable=SC2046 # one word per commit
+	out="$(rules "$mb" $(git rev-list --reverse --no-merges "$base..$1"))" || {
+		printf '%s\n' "$out" >&2
+		red "a commit of $base..$(short "$1") does not read as finished work (above)"
+	}
+	echo "ok    rules (fix-on-series, review-prose)"
+}
+
+if [ "$mode" = rules ]; then
+	[ $# -eq 1 ] || die "$usage"
+	check_rules "$(sha "$1")"
+	exit 0
+fi
+if [ "$mode" = classify ]; then
+	[ $# -eq 2 ] || die "$usage"
+	# One assignment per ref: in `a="$(f)" b="$(g)"` only g's status is seen, so a bad a is lost.
+	old="$(sha "$1")"
+	new="$(sha "$2")"
+	if [ "$old" = "$new" ]; then
+		echo unchanged
+	elif [ "$(git rev-parse "$old^{tree}")" = "$(git rev-parse "$new^{tree}")" ]; then
+		echo presentation
+	elif [ "$(patch_ids "$old")" = "$(patch_ids "$new")" ]; then
+		echo relocation
+	else
+		echo content
+	fi
+	exit 0
+fi
+
+case $# in
+1) w="" p="$(sha "$1")" ;;
+2)
+	w="$(sha "$1")"
+	p="$(sha "$2")"
+	;;
+*) die "$usage" ;;
+esac
+if [ -z "$branch" ]; then
+	full="$(git rev-parse -q --symbolic-full-name "${!#}" 2>/dev/null || true)"
+	case "$full" in refs/heads/*) branch="${full#refs/heads/}" ;; esac
+fi
+
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/present-check.XXXXXX")"
+# cleanup: remove the lemma worktree this run made. `git worktree prune` is repository-wide, so
+# it runs only when removal failed and left a stale entry of ours; a run that made no worktree
+# touches no registration at all.
+cleanup() {
+	if [ -e "$tmp/wt" ]; then
+		git worktree remove --force "$tmp/wt" 2>/dev/null || {
+			rm -rf "$tmp/wt"
+			git worktree prune 2>/dev/null || true
+		}
+	fi
+	rm -rf "$tmp"
+}
+trap cleanup EXIT
+
+printf 'present-check: base %s (%s), presented %s\n' "$(short "$base")" "$base" "$(short "$p")"
+
+if [ -n "$w" ]; then
+	[ "$(git rev-parse "$w^{tree}")" = "$(git rev-parse "$p^{tree}")" ] ||
+		red "trees differ: work $(short "$w") and presented $(short "$p") do not hold the same code; a presentation may only change the story"
+	echo "ok    trees equal ($(git rev-parse --short "$p^{tree}"))"
+	# One assignment each, as for the refs: a failed merge-base would be lost behind the second.
+	mw="$(git merge-base "$base" "$w")" ||
+		die "work $(short "$w") shares no history with $base; pass -B the base the work forked from"
+	mp="$(git merge-base "$base" "$p")" ||
+		die "presented $(short "$p") shares no history with $base; present on the base the work was made on"
+	[ "$mw" = "$mp" ] ||
+		red "merge-base differs: work forks from $(short "$mw"), presented from $(short "$mp"); present on the base the work was made on, then rebase both"
+	echo "ok    merge-base equal ($(short "$mp"))"
+fi
+
+lint_args=()
+[ -z "$branch" ] || lint_args=(-b "$branch")
+lint_out="$tmp/lint"
+"${FPL_PRESENT_LINT:-$here/commit-lint}" ${lint_args[@]+"${lint_args[@]}"} "$base..$p" >"$lint_out" 2>&1 ||
+	{
+		cat "$lint_out" >&2
+		red "commit-lint refuses a commit of $base..$p"
+	}
+echo "ok    commit-lint ($(tail -n 1 "$lint_out"))"
+
+commits="$(git rev-list --reverse --no-merges "$base..$p")"
+[ -n "$commits" ] || die "no commits in $base..$p"
+
+if git cat-file -e "$p:scripts/series" 2>/dev/null; then
+	ids="" c=""
+	for c in $commits; do
+		v="$(git log -1 --format='%(trailers:key=Series-Id,valueonly,unfold)' "$c" | sed '/^$/d')"
+		[ -n "$v" ] || red "commit $(short "$c") has no Series-Id trailer"
+		[ "$(printf '%s\n' "$v" | wc -l)" -eq 1 ] || red "commit $(short "$c") has more than one Series-Id"
+		ids="$ids$v
+"
+	done
+	[ "$(printf '%s' "$ids" | sort -u | wc -l)" -eq 1 ] ||
+		red "the range holds more than one Series-Id: $(printf '%s' "$ids" | sort -u | tr '\n' ' ')"
+	echo "ok    Series-Id ($(printf '%s' "$ids" | sort -u))"
+else
+	echo "skip  Series-Id (no scripts/series in $(short "$p"))"
+fi
+check_rules "$p"
+
+# handles_flag <script>: whether the script handles --self-test in code: a Python argv list, a
+# case arm or a test of the argument. Comment lines and echo or printf lines, where the flag is
+# only named, do not count; a trailing comment after code is not told apart. One awk, not
+# grep -v piped into grep -q, so that pipefail cannot read grep's early exit as a no.
+handles_flag() {
+	awk '
+		/^[[:space:]]*(#|echo|printf)/ { next }
+		/\["--self-test"\]|^[[:space:]]*--self-test\)|[=] --self-test/ { found = 1 }
+		END { exit !found }' "$1"
+}
+
+# selftests <worktree>: the self-tests that cover what the commit at <worktree> touched, one
+# command per line, relative to the worktree, from the mapping the gates lane implies.
+selftests() {
+	local f x
+	for f in $(git -C "$1" diff-tree --root --no-commit-id --name-only -r HEAD); do
+		x="${f#scripts/}"
+		case "$f" in
+		scripts/*/*) ;;
+		scripts/*-self-test) [ -x "$1/$f" ] && echo "$f" ;;
+		scripts/commit-lint | scripts/acommit | scripts/agent-identity) echo scripts/pre-push-self-test ;;
+		scripts/restack) echo scripts/land-self-test ;;
+		scripts/import-pr) echo scripts/mirror-self-test ;;
+		scripts/*)
+			if [ -x "$1/$f-self-test" ]; then
+				echo "$f-self-test"
+			elif [ -x "$1/$f" ] && handles_flag "$1/$f"; then
+				case "$(head -n 1 "$1/$f")" in
+				*python*) echo ".venv/bin/python $f --self-test" ;;
+				*) echo "$f --self-test" ;;
+				esac
+			fi
+			;;
+		.githooks/*) printf '%s\n' scripts/pre-push-self-test scripts/spec-guard-self-test ;;
+		harness/* | .github/workflows/*) echo scripts/present-check-self-test ;;
+		esac
+		: # a failed test above is no failure of the loop (pipefail)
+	done | sort -u | while read -r x; do
+		if [ -x "$1/${x%% *}" ] || [ "${x%% *}" = .venv/bin/python ]; then echo "$x"; fi
+	done
+}
+
+# step <label> <command>: run in the lemma's worktree, print one line, stop on red.
+lemma_wt="$tmp/wt"
+step() {
+	local started=$SECONDS out="$tmp/step"
+	if (cd "$lemma_wt" && bash -c "$2") >"$out" 2>&1; then
+		printf '        %-8s ok   %ss  %s\n' "$1" "$((SECONDS - started))" "$2"
+	else
+		tail -n 40 "$out" >&2
+		red "$1 is red at $cur: $2"
+	fi
+	times="$times $1=$((SECONDS - started))s"
+}
+
+list="" n=0 total_start=$SECONDS
+for c in $commits; do
+	n=$((n + 1))
+	cur="$(git log -1 --format='%h %s' "$c")"
+	times=""
+	printf '== %d. %s\n' "$n" "$cur"
+	if [ "$n" -eq 1 ]; then
+		git worktree add --detach -q "$lemma_wt" "$c"
+	else
+		git -C "$lemma_wt" checkout -q --detach -f "$c"
+		git -C "$lemma_wt" clean -fdxq -e .venv
+	fi
+	if [ "$skip_quick" -eq 0 ]; then
+		step quick "${FPL_PRESENT_QUICK:-make quick}"
+	fi
+	tests="$(selftests "$lemma_wt")"
+	venv=0
+	while IFS= read -r t; do
+		[ -n "$t" ] || continue
+		case "$t" in .venv/bin/python*)
+			[ "$venv" -eq 1 ] || step venv "make venv"
+			venv=1
+			;;
+		esac
+		step selftest "$t"
+	done <<EOF
+$tests
+EOF
+	list="$list$n. $cur [${times# }]
+"
+done
+
+echo
+echo "lemmas of $base..$(short "$p"):"
+printf '%s' "$list"
+if [ -n "$w" ]; then
+	echo
+	echo "range-diff $(short "$w")...$(short "$p"):"
+	git range-diff "$w...$p"
+fi
+printf 'present-check: green, %d commits, %ss\n' "$n" "$((SECONDS - total_start))"

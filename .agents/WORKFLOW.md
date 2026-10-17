@@ -183,15 +183,18 @@ For agent work there are two scripts, one for each side of the review:
 
 ```
 scripts/pr [<branch>]          # the agent's side: file the branch as the machine account,
-                               # on the tail of the queue
+                               # on main (-B <parent> stacks, --draft opens a draft)
 scripts/land [<number>]        # the maintainer's side: check, look, decide, fast-forward main
 scripts/land --dry-run <number>  # every check and the push it would make; changes nothing
 ```
 
 `scripts/pr` refuses unless the token it uses belongs to the machine account of
 `.git/agent-identity` and the branch on the forge is the commit you have; it does not push.
-It files the pull request on the tail of the queue, and refuses a branch that is not built
-on that tail, with the rebase that puts it there; `-B <base>` overrides the choice.
+It files the pull request on `main`. `-B <parent>` stacks it on the branch of an open pull
+request instead, and refuses, with the rebase that fixes it, a branch that is not built on
+that parent or a parent that has no open pull request. It opens a ready pull request unless
+`--draft` says otherwise, so every bot starts at once. The generated body ends with the line
+`landing: fast-forward by the lander after review.`
 
 `scripts/land` lands by **fast-forward**: it pushes the pull request's head to `main`
 without force, `git push <url> <head>:refs/heads/main`, to the URL `land/remote` checked.
@@ -280,7 +283,11 @@ a forge in fixtures and a bare repository on disk.
   `git diff --shortstat <base> <cut>`, and the same from `<cut>` to the head). A new branch
   at that commit becomes the lower pull request, based on `main`; the old one is retargeted
   onto it. No commit changes, so the pull requests stacked above keep their base, and the
-  two land bottom first like any stack.
+  two land bottom first like any stack. One commit over either limit has no such cut: each
+  half that holds it is refused as the whole was. Before the maintainer's approval the
+  presenter tells that commit again as smaller lemmas, which `scripts/present-check` proves
+  add up to the same tree; after it the pull request is frozen (rule 10), and a rewrite is
+  his call.
 - **Never squash a multi-commit PR.** Squashing collapses the atomic commits, and their
   bodies and trailers, into one. (A one-commit PR is the only case where it is harmless.)
 - After a landing, `git fetch github`: `github/main` is the landed head, and the branches of
@@ -296,39 +303,162 @@ git log --grep='^Stack: typed-let$'       # the whole stack, years later, forge 
 because the record belongs on a forge; rule 7 keeps the switch to an in-repo review system
 cheap.
 
-## A public mirror of a pijul channel
+Each of these steps, and each the lander takes, has a route without the automation: [By hand](#by-hand).
 
-Not in use yet: this repository still lives in git. `scripts/mirror` and `scripts/import-pr`
-are ready for the day the code moves to pijul and a public forge becomes a mirror of it
-rather than the home of it. Needs the `pijul` layer (`scripts/layer on pijul`).
+## By hand
 
-The shape is three one-way flows, each piece of state with exactly one home:
+Each step the scripts and workflows take has a route a person can walk with git, `gh` and the
+browser, so the pipeline is never the only way through, and a step that fails can be done by
+hand without guessing what it did. `<o>/<n>` is the repository (`fpl-org/fpl`), `$TOKEN` the
+machine account's token (`gh auth token --user <machine account>`), and every `gh` command
+names `github.com`, as `scripts/land` does.
 
-- **Out.** `scripts/mirror <pijul> <git> [<channel> [<branch>]]` projects a channel onto a
-  branch. It is deterministic — authors, dates and trees all come from the changes — so the
-  same changes give the same commit ids and exporting again is a no-op. Every commit carries
-  `Pijul-Change: <hash>`.
-- **In.** A pull request is fetched without any forge API (`git fetch <forge>
-  pull/<n>/head:refs/pull/<n>/head`) and `scripts/import-pr` records it as one pijul change
-  under the contributor's name, with `Git-Commit:` and `Landed-By:` in its description. The
-  record hooks run on it like on anything else.
-- **Back.** On the next export the contributor's own commit is put on the branch — reused as
-  is when it already has the right parent and tree, otherwise joined by a merge commit in the
-  lander's name. A forge that sees a pull request's commits reach its base branch shows it as
-  merged, so the contributor sees an ordinary merged PR and keeps their commit in history.
+**Open a draft.** Push with the token in the URL and the helper list emptied (`-c credential.helper=`, so no
+helper is handed the token to store), then
+open the pull request as a draft on `main`. Its body opens with the card's headings (What,
+What changes, How checked, Limits, Verdict), which `land/card` wants.
 
-**`main` in pijul only grows.** Landed is frozen. The mirror refuses (exit 3) to export a
-`main` that no longer descends from what it exported before, because that would be a force
-push on a public branch. Stacks live on other channels and go to other branches, which may be
-rewritten — `scripts/mirror -f` — exactly as a pull request branch may be on any forge.
+```
+git -c credential.helper= push "https://x-access-token:$TOKEN@github.com/<o>/<n>.git" HEAD:refs/heads/<branch>
+scripts/leak-check --text card.md        # nothing private in a public body
+GH_TOKEN="$TOKEN" gh pr create --repo github.com/<o>/<n> --draft --base main \
+  --head <branch> --title "<conventional title>" --body-file card.md
+```
 
-What stays two-sided: the review conversation happens where the contributor is, in the pull
-request thread. Summarise it into the change's description when landing so the reasons stay
-here. CI on the forge is a courtesy to the contributor; the gate is the pijul record hooks.
+**Present.** Presenting rewrites the work branch W into the series a reader meets, P, before
+anyone has said anything on the pull request. Keep W under a tag of its own, rewrite, and
+prove two things: the tree is the same, and every commit is green alone. A tag, not a
+branch: `scripts/setup` turns `rebase.updateRefs` on, and a branch pointing into the range
+being rewritten would move with it, leaving the proof to compare P with P.
 
-`scripts/mirror --self-test` runs both scripts against a real pijul and git: determinism,
-append-only exports, a PR on the latest `main` reused as is, a PR on an older `main` merged
-in under the lander's name with the contributor's commit kept, and the refusal to rewrite.
+```
+scripts/series stamp github/main..<branch>              # one Series-Id on every commit of W
+git tag unpresented/<series> <branch>                   # W, kept so anyone can repeat the proof
+# … rewrite <branch> into P: git rebase -i, or reset and recommit …
+git diff --quiet unpresented/<series> <branch>          # exit 0: tree(W) == tree(P)
+git rebase --exec 'make quick' github/main              # green on every commit
+git -c credential.helper= push --force-with-lease=<branch>:<old head> \
+  "https://x-access-token:$TOKEN@github.com/<o>/<n>.git" <branch>:refs/heads/<branch>
+```
+
+`scripts/present-check -B github/main unpresented/<series> <branch>` makes both proofs in one
+run, and the checks its header names besides.
+
+**Manifest.** The manifest of a range is one pair per commit, the `git patch-id --verbatim`
+of its diff and a hash of its author and raw message, and a digest of the lines. `--verbatim`
+because `--stable` gave one id to a diff and its re-indented copy. Two ranges with the same
+manifest are the same review. `scripts/series manifest <range>` prints it and
+`scripts/series digest <range>` the digest alone; by hand, the same definition, with the diff
+options pinned so that no configuration of the caller's changes an id:
+
+```
+for c in $(git rev-list --reverse github/main..<head>); do
+  p=$(git -c core.quotePath=true -c diff.suppressBlankEmpty=false diff-tree -p --root \
+    --no-ext-diff --no-textconv --no-color --no-renames -U3 --src-prefix=a/ --dst-prefix=b/ \
+    --diff-algorithm=myers --indent-heuristic "$c" | git patch-id --verbatim | cut -d' ' -f1)
+  m=$({ git cat-file commit "$c" | sed -n '/^$/q; s/^author \(.*\) [0-9]* [-+][0-9]*$/\1/p'
+        git cat-file commit "$c" | sed '1,/^$/d'; } | shasum -a 256 | cut -d' ' -f1)
+  echo "$p $m"
+done | tee manifest | shasum -a 256                      # the digest
+```
+
+**Ready and approve.** The pull request is ready when the review bots have said what they
+will and their findings are dealt with: `gh pr ready <number> --repo github.com/<o>/<n>`, or
+the button. The maintainer reads the Commits tab commit by commit and approves in the UI:
+Files changed, Review changes, Approve, Submit. That approves the head the page loaded, so
+reload if the branch moved; `land/approved` reads the SHA the approval names. Check it:
+
+```
+gh api --hostname github.com repos/<o>/<n>/pulls/<number>/reviews \
+  --jq '.[] | [.user.login, .state, .commit_id] | @tsv'
+```
+
+**Check.** `scripts/land --dry-run <number>` makes every check the lander makes but those
+of `--ci` alone (`land/ci`, `land/autodelete`, and the `relocate/` rules of `--relocate`),
+from the forge as it is, with no terminal,
+and writes nothing to the forge (it keeps temporary files and fetches the pull request's head
+into this clone's object store). It prints a line for each rule, `ok`,
+`NO` with its remedy, or `--` with the reason when an answer the rule rests on is missing;
+the count; the approval it would give; the exact push; the retarget of what is stacked on the
+head; and the `git ls-remote` that shows `main` is the head afterwards. A rule refused: do
+not land. It needs `gh`: `scripts/layer on github`.
+
+**Land.** After a clean dry run, one of two ways.
+
+- Dispatch the lander: Actions, land, Run workflow on `main` with `pr` set to the number, or
+  `gh workflow run land.yml --repo github.com/<o>/<n> --ref main -f pr=<number>`. It judges
+  the same rules as the fpl-lander App, and two of its own: `land/ci`, that the token is the
+  App's, and `land/autodelete`, that the repository deletes no branch when its pull request
+  merges. It writes the `fpl/series` check run, fast-forwards `main`, retargets what is
+  stacked on the landed branch, and deletes the branch only if it is still at the head that
+  landed. A head `main` is no ancestor of it relocates onto `main` first (`--relocate`): when
+  every commit keeps its patch id and message that lands on the old approval, else the
+  relocation is published as `<head>-relocated` and the code owners are asked to review it.
+- The owner's deploy key, for a range that touches `.github/workflows` (the App's token has
+  no Workflows permission, so `land/workflows` sends it here) and for an emergency. When
+  `land/workflows` is the only refusal, the dry run prints the line:
+
+  ```
+  git push git@github-fpl-deploy:<o>/<n>.git <head>:refs/heads/main
+  ```
+
+  It is a fast-forward and the key asks for a touch. `github-fpl-deploy` is a `Host` of the
+  owner's ssh config, naming his key.
+
+After the owner's push, run what the dry run printed, which the lander does itself: the
+`gh api … -f base=main` retarget of each pull request stacked on the landed branch, before
+that branch is deleted (deleting it first closes them), and `git ls-remote` to see that
+`main` is the head. Delete the branch under a lease at the head that landed, so that a push
+to it since is kept:
+
+```
+git push --force-with-lease=refs/heads/<branch>:<head> <remote> :refs/heads/<branch>
+```
+
+Either way, check that `main` is the head. A landing by hand writes no `fpl/series` receipt:
+that check run is the lander's alone.
+
+**Relocate.** When another pull request landed first, `main` is no longer an ancestor of the
+head and `land/ancestor` refuses; the lander relocates such a head itself (Land, above). By
+hand: before an approval, restack and push (`scripts/restack`). After one, carry the commits
+over without changing them, compare each with its old self, and push under
+`FPL_FORWARD_ONLY_OVERRIDE="relocate: <Series-Id>"`, which `scripts/forward-only` lets
+through only when every commit kept its pair:
+
+```
+old=$(git merge-base github/main <branch>); was=$(git rev-parse <branch>)
+git rebase --onto github/main "$old" <branch>
+git range-diff "$old..$was" github/main..<branch>      # every pair '=': nothing changed
+```
+
+Every pair `=` and the same manifest means the new head is the old review: the owner
+approves it again. A pair `!` is a commit whose diff changed; it needs reading, not carrying.
+
+**Revert a series.** One commit that undoes the contiguous range, then the usual route:
+
+```
+git switch -c agent/<id>/stack/revert-<series> github/main
+git revert -n <first>^..<last>
+scripts/acommit -t revert -s <scope> -m "<what the series did>" -r "series <series>"
+```
+
+A series is the commits that share a Series-Id (`git log --grep='^Series-Id: <id>$'`); one
+that landed before `scripts/series` carries only its `Stack:` trailer
+(`git log --grep='^Stack: <name>$'`). The range must be contiguous on `main`: a commit of
+another series in between is reverted by its own pull request first. The revert takes a
+Series-Id of its own (`scripts/series stamp`).
+
+## The cap
+
+Open work is capped at 50 commits: those of every open pull request that is not a draft,
+each counted once. The owner's review is what is scarce, and a draft does not ask for it yet.
+The nag, `scripts/wip-count`, prints `N/50, nog M`: run it before opening a pull request or
+taking one out of draft. Over the cap the lock follows: the `brake` workflow
+(`harness/workflows/brake.yml`) activates the ruleset `brake: all branches except main`, and
+every push that creates or updates a branch is refused, the machine accounts' included, except
+to main (so landing brings the count down) and to the head of a pull request where the owner
+asks for changes (so his fix can be pushed). Back at the cap or under it, the next run lifts
+the lock. A refused push over the cap is the brake: drain the queue, do not route around it.
 
 ## Bring the review home
 
@@ -361,9 +491,10 @@ request (`scripts/import-review --open`), and serves the patches on 127.0.0.1. T
 reads the patches and nothing else. Its address, token included, is also written to
 `.git/review-serve.pid`, so it can be opened in another browser than the default.
 
-Open pull requests form one queue, first in, first out: each is based on the one filed
-before it, and only the head is based on main. The page is that queue as one surface, head
-first, with the last few merged pull requests above it in grey. On the left is the queue as
+Open pull requests form one queue, ordered by what each is stacked on: a pull request reads
+after the open one whose commits hold its base, even when that one has moved on since;
+those based on main come first, and filing time orders pull requests that do not depend on
+each other. The page is that queue as one surface, head first, with the last few merged pull requests above it in grey. On the left is the queue as
 a tree, main at the top, each pull request with its commits under it; a click on a pull
 request scrolls there, a click on a commit shows that commit alone. On the right are the
 timeline, the files and the commits of the pull request in view. `[` and `]` fold the two
@@ -404,17 +535,12 @@ comment. The first line names the writer and the key that signed it; the last is
 comment with the Radicle id, which is how a second run skips it and how scripts/import-review
 leaves it out. So a conversation can run in both places and each comment keeps one home.
 
-The page also lands, one pull request at a time, but not yet as scripts/land does: it still
-rebase-merges, which gives the commits new SHAs (see Land), so land with scripts/land
-instead. A patch from a pull request at the bottom of its stack has an "approve and merge"
-button: your gh account approves and rebase-merges it, but only while the forge still has the commit you reviewed
-and its checks passed. The merge is then recorded in Radicle, the patches stacked on it
-are replayed onto the new main and pushed as the machine account, and the landed branch is
-deleted. An approved pull request among them is frozen (rule 10): pre-push refuses to move
-it, and the page leaves it and those above it as they are, says so, and finishes the
-landing. In a GitHub stack the forge moves them itself. Your checkout's main is left
-alone. The server listens on 127.0.0.1 only and wants the token in the address it prints,
-so no other page in the browser can write to it, or land.
+The page lands nothing and writes nothing to the forge. At the end of a pull request, with
+every hunk approved, its box links to the pull request: approve it in the GitHub UI, and the
+lander lands it, fast-forward only (see Land). Commits keep their SHAs, so a patch stacked on
+it needs no replay and the page has none; it becomes a root of the queue once its parent has
+landed. The server listens on 127.0.0.1 only and wants the token in the address it prints, so
+no other page in the browser can write to it.
 
 ## The agent's credential
 
@@ -432,13 +558,25 @@ git -c credential.helper="store --file=$PWD/.git/agent-credentials" push origin 
 
 It sits inside `.git/`, so it is per clone and never committed. The token is a fine-grained
 personal access token of the machine account, scoped to this repository alone, with Contents
-and Pull requests read/write and Metadata read — and no Workflows. Rule 8 is then a property
-of the credential rather than of anyone's discipline: the push is refused, not remembered to
-be avoided.
+and Pull requests read/write, and Metadata, Checks and Commit statuses read — and no
+Workflows. Rule 8 is then a property of the credential rather than of anyone's discipline:
+the push is refused, not remembered to be avoided. Checks and Commit statuses are for
+`scripts/pr --ready`, which reads the check runs and commit statuses of the head; a private
+repository refuses both (403) to a token without them.
 
 The maintainer creates it (the account's settings, then approve the request as an owner of
 the organisation) and writes the file. It expires; a push then fails with 403 and a new token
 is made the same way. Agents read it through git and never print it.
+
+Which account a push uses is not always the one meant. One Mac can hold three identities that
+write to GitHub: git's credential helper, the active `gh` account and the ssh key. When the
+owner's admin account is any of them, a push from an agent's worktree goes out under it.
+`scripts/whoami-check` prints all three (username, gh, ssh) and a NAG line with the remedy when
+one is an admin account: push with the machine account token URL
+(`TOKEN=$(gh auth token --user <machine account>)`) or log the admin account out. It always
+exits 0, and `.githooks/pre-push` runs it first as a message, never as a refusal. The hook hands
+it the destination URL, so only the identity that transport uses is judged: a push to an https
+URL that carries its own credentials, as the remedy does, is not nagged.
 
 ## Why this and not a feature branch
 

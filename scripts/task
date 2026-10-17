@@ -1,28 +1,35 @@
 #!/usr/bin/env python3
 """scripts/task — FPL's task graph, kept in the repository as Radicle COBs.
 
-    scripts/task new "<title>" [-d <description>] [-b <id>]...   open a task, optionally blocked
+    scripts/task new "<title>" [-d <description>] [-b <id>]... [-p <id>]   open a task
     scripts/task list [--all]        open tasks; --all includes done and dropped
-    scripts/task ready               tasks nothing is waiting on; exit 1 if a loop is left
+    scripts/task ready               tasks nothing waits on (not lanes); exit 1 if a loop is left
+    scripts/task load [-n] <file>    create the tasks a file lists; a rerun creates nothing
+    scripts/task tree                every task under what it is part of, with what it waits on
     scripts/task show <id>
     scripts/task start|done|drop|reopen <id>
     scripts/task block [-f] <id> <by>  <id> must wait for <by>;  unblock removes it
+    scripts/task part <id> <of>|none <id> is a part of <of> (a lane, a group); one parent
     scripts/task assign <id> <did>|me|nobody
     scripts/task edit <id> [-t <title>] [-d <description>]
 
 Exit: 0 the answer, 1 an answer with a loop in it, 2 the command was refused.
 
-An <id> may be any unambiguous prefix. Tasks live under refs/cobs/<TYPE>/ of the Radicle
-repository, as signed operations: who opened, moved or blocked what is part of the record,
-and it travels with the repository, not with a forge. scripts/rad-cob-dagtaak gives the
-operations their meaning and says who may do what; this file only reads state and writes
-actions through `rad cob`. Needs rad (`scripts/layer on radicle`) and a repository that
+An <id> is the first word of a title ("A6a lander-core" is A6a), or any unambiguous prefix of
+the object id; the first word wins when both would match. Tasks live under refs/cobs/<TYPE>/
+of the Radicle repository, as signed operations: who opened, moved or blocked what is part
+of the record, and it travels with the repository, not with a forge. scripts/rad-cob-dagtaak
+gives the operations their meaning and says who may do what; this file only reads state and
+writes actions through `rad cob`. Needs rad (`scripts/layer on radicle`) and a repository that
 went through `rad init`. `--self-test` runs the whole thing in a throwaway Radicle home.
 """
 
 import argparse
+import functools
 import json
 import os
+import runpy
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -46,7 +53,9 @@ def rad(*args, stdin=None):
     """Run rad with scripts/ on PATH, where it finds the rad-cob-dagtaak helper."""
     env = dict(os.environ, PATH=HERE + os.pathsep + os.environ.get("PATH", ""))
     try:
-        done = subprocess.run(["rad", *args], env=env, input=stdin, capture_output=True, text=True)
+        done = subprocess.run(
+            ["rad", *args], env=env, input=stdin, capture_output=True, text=True, check=False
+        )
     except FileNotFoundError:
         die("rad not found; scripts/layer on radicle")
     if done.returncode != 0:
@@ -68,6 +77,9 @@ class Graph:
                 self.tasks[oid] = state
 
     def resolve(self, prefix):
+        named = [oid for oid, t in self.tasks.items() if label(t).lower() == prefix.lower()]
+        if len(named) == 1:
+            return named[0]
         hits = [oid for oid in self.tasks if oid.startswith(prefix.lower())]
         if len(hits) != 1:
             die(f"'{prefix}' matches {len(hits)} tasks")
@@ -88,10 +100,10 @@ class Graph:
             oid, path = stack.pop()
             for nxt in self.waiting_on(oid):
                 if nxt == dst:
-                    return path + [nxt]
+                    return [*path, nxt]
                 if nxt in self.tasks and nxt not in seen:
                     seen.add(nxt)
-                    stack.append((nxt, path + [nxt]))
+                    stack.append((nxt, [*path, nxt]))
         return None
 
     def cycles(self):
@@ -105,6 +117,7 @@ class Graph:
         with no reason given. So the loop is reported, and splitting one of the tasks is
         the maintainer's call, not the tool's.
         """
+
         def edges(oid):
             # A blocker nobody has replicated yet holds the task up, but it cannot be
             # part of a loop we can see, so it is not walked.
@@ -123,13 +136,21 @@ class Graph:
                     colour[oid] = 2
                     stack.pop()
                 elif colour.get(nxt) == 1:  # back onto the stack: a loop
-                    at = [i for i, (o, _) in enumerate(stack) if o == nxt][0]
+                    at = next(i for i, (o, _) in enumerate(stack) if o == nxt)
                     loop = [o for o, _ in stack[at:]]
                     found.append(loop[loop.index(min(loop)) :] + loop[: loop.index(min(loop))])
                 elif not colour.get(nxt):
                     colour[nxt] = 1
                     stack.append((nxt, edges(nxt)))
         return found
+
+    def parent_chain(self, oid):
+        """`oid` and the parents above it, nearest first; stops at a repeat (a loop)."""
+        chain = []
+        while oid in self.tasks and oid not in chain:
+            chain.append(oid)
+            oid = self.tasks[oid].get("partOf")
+        return chain
 
     def act(self, oid, message, *actions):
         with tempfile.NamedTemporaryFile("w", suffix=".jsonl") as handle:
@@ -162,14 +183,23 @@ class Graph:
             )
             return oid
 
+    def show(self, oid):
+        """The state of `oid` as the reducer reads it now, after what this run wrote."""
+        return json.loads(rad("cob", "show", "--repo", self.rid, "--type", TYPE, "--object", oid))
+
     def must_change(self, oid, field, expected):
         """The reducer skips what is not allowed without an error; say so here."""
-        state = json.loads(rad("cob", "show", "--repo", self.rid, "--type", TYPE, "--object", oid))
-        if state.get(field) != expected:
+        if self.show(oid).get(field) != expected:
             die(
                 f"{oid[:7]}: not applied. Only the author, or the assignee for state and "
                 f"blockers, may do that (scripts/rad-cob-dagtaak)"
             )
+
+
+def label(task):
+    """The first word of the title, without a trailing colon: how a task is named in prose."""
+    words = task.get("title", "").split()
+    return words[0].rstrip(":") if words else ""
 
 
 def line(graph, oid):
@@ -180,13 +210,321 @@ def line(graph, oid):
     return f"{oid[:7]}  {task['state']:<7}  {task['title']}{who}{tail}"
 
 
-def main(argv):
-    parser = argparse.ArgumentParser(prog="scripts/task", description=__doc__.split("\n\n")[0])
-    sub = parser.add_subparsers(dest="cmd", required=True)
+def read_rows(path):
+    """The rows of a unit file as (label, part, blockers, title, brief), each on its own."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+    except OSError as err:
+        die(f"{path}: {err.strerror}")
+    units = []
+    for n, raw in enumerate(lines, 1):
+        if not raw.strip() or raw.startswith("#"):
+            continue
+        cols = raw.split("\t")
+        if len(cols) != 5 or "" in (cols[0], cols[3], cols[4]):
+            die(f"{path}:{n}: want label, partOf, blockedBy, name, brief, tab-separated")
+        label_, part, blockers, name, brief = cols
+        part = None if part in ("", "-") else part
+        units.append(
+            (label_, part, [b for b in blockers.split(",") if b], f"{label_} {name}", brief)
+        )
+    return units
+
+
+def read_units(path):
+    """The rows of a unit file: (label, part, blockers, title, brief), checked against each other.
+
+    Five tab-separated columns; blank lines and lines starting with '#' are skipped. The title
+    is '<label> <name>', so a label is one word that does not end in ':', or the title would
+    read back as another label. Every label a row names as parent or blocker must be a row,
+    spelled as that row spells it. Two labels that differ only in case are one label twice,
+    since `resolve` and `load` find a task by its label whatever the case.
+    """
+    units = read_rows(path)
+    names = [u[0] for u in units]
+    if len({n.lower() for n in names}) != len(names):
+        die(f"{path}: a label is listed twice (labels compare without case)")
+    for unit in units:
+        check_unit(path, names, unit)
+    return units
+
+
+def check_unit(path, names, unit):
+    """One row of a unit file: its label reads back from its title, the reducer would open
+    it, and every label it names is one of `names`."""
+    label_, part, blockers, title, brief = unit
+    if label({"title": title}) != label_:
+        die(f"{path}: '{label_}': a label is one word not ending in ':', as a title's is read")
+    if not reducer()["apply"]({}, {"type": "open", "title": title, "description": brief}, None):
+        die(
+            f"{path}: {label_}: the reducer would not open it; a title takes at most "
+            f"{reducer()['MAX_TITLE']} characters, a brief {reducer()['MAX_DESCRIPTION']}"
+        )
+    for ref in [*([part] if part else []), *blockers]:
+        if ref not in names:
+            die(f"{path}: {label_} names {ref}, which is not a row")
+
+
+@functools.cache
+def reducer():
+    """scripts/rad-cob-dagtaak's globals: its own `apply` and limits decide what a load may
+    write, so they are written down once. runpy compiles it in memory, leaving no bytecode."""
+    return runpy.run_path(os.path.join(HERE, "rad-cob-dagtaak"), run_name="rad-cob-dagtaak")
+
+
+def path(edges, src, dst):
+    """The nodes from `src` to `dst` along `edges` (node -> the nodes it points at), both
+    ends included, or None; `[src]` when they are the same node."""
+    seen, stack = {src}, [[src]]
+    while stack:
+        trail = stack.pop()
+        if trail[-1] == dst:
+            return trail
+        for nxt in edges.get(trail[-1], ()):
+            if nxt not in seen:
+                seen.add(nxt)
+                stack.append([*trail, nxt])
+    return None
+
+
+def refuse_loops(graph, units, ids, plan):
+    """Refuse a load whose new links would close a loop, of blockers or of parents.
+
+    The graph is the store's links with the planned ones laid over it: a parent the file
+    gives replaces the task's old one, blockers add up. A loop through an old link alone was
+    recorded on purpose (`block --force`) and is not this load's to judge, so only a new link
+    `u -> v` is checked, by looking for a way back from `v` to `u`. A row that is its own
+    parent or blocker is the loop of one. `block` stops before it closes a loop and `part`
+    refuses to; this keeps `load` from writing what those would not.
+    """
+    node = {u[0]: ids.get(u[0].lower(), "new " + u[0]) for u in units}
+    names = {oid: label(t) or oid[:7] for oid, t in graph.tasks.items()}
+    names.update({v: k for k, v in node.items()})
+    waits = {oid: list(t.get("blockedBy", [])) for oid, t in graph.tasks.items()}
+    parent = {oid: [t["partOf"]] if t.get("partOf") else [] for oid, t in graph.tasks.items()}
+    new = []
+    for label_, part, todo, reparent in plan:
+        for b in todo:
+            waits.setdefault(node[label_], []).append(node[b])
+            new.append(("waits on", waits, node[label_], node[b]))
+        if reparent:
+            parent[node[label_]] = [node[part]]
+            new.append(("is part of", parent, node[label_], node[part]))
+    for kind, edges, u, v in new:
+        back = path(edges, v, u)
+        if back:
+            loop = " -> ".join(names.get(n, n[:7]) for n in [u, *back])
+            die(f"{loop}: each {kind} the next; a load closes no loop. Nothing written")
+
+
+def leak_gate(units):
+    """Every title and brief through scripts/leak-check --text, before anything is written.
+
+    A task is signed and replicated, and a COB cannot be taken back out of a peer's store,
+    so a refusal here names the unit and nothing has been written yet. For the same reason
+    the check always blocks: FPL_LEAK_GATE=warn or off, meant for text that can still be
+    amended, does not reach it. What leak-check says while passing -- that it could not
+    scan, say -- is passed on to stderr, once per distinct message.
+    """
+    said = []
+    for label_, _, _, title, brief in units:
+        with tempfile.NamedTemporaryFile("w", suffix=".txt") as handle:
+            handle.write(f"{title}\n\n{brief}\n")
+            handle.flush()
+            done = subprocess.run(
+                [os.path.join(HERE, "leak-check"), "--text", handle.name],
+                env=dict(os.environ, FPL_LEAK_GATE="block"),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        message = done.stderr.strip()
+        if done.returncode != 0:
+            die(f"{label_}: leak-check refused its title or brief; nothing written\n{message}")
+        if message and message not in said:
+            said.append(message)
+            print(message, file=sys.stderr)
+
+
+def load(graph, path, dry):
+    """Create the tasks of a unit file that do not exist yet, then the links between them.
+
+    Two passes, so the file may list a blocker after what it blocks. A unit counts as
+    existing when a task's first word is its label, in any case, as `resolve` reads one; so a
+    second run creates nothing and adds only a link that is missing. Every refusal that can
+    be made before a write is made before the first one.
+    """
+    units = read_units(path)
+    ids = store_ids(graph, units)
+    plan = links(graph, units, ids)
+    refuse_loops(graph, units, ids, plan)
+    leak_gate(units)  # the slow check last: one leak-check per unit
+    created = create(graph, units, ids, dry)
+    linked = sum(link(graph, ids, step, dry) for step in plan)
+    print(f"task: {created} created, {linked} links{' (dry run, nothing written)' if dry else ''}")
+
+
+def store_ids(graph, units):
+    """The store's tasks by folded label. A label two tasks share is refused when a unit
+    uses it, before any write: neither could be told from the other."""
+    named = {}
+    for oid, task in graph.tasks.items():
+        named.setdefault(label(task).lower(), []).append(oid)
+    for label_, *_ in units:
+        if len(named.get(label_.lower(), [])) > 1:
+            die(f"{label_}: {len(named[label_.lower()])} tasks are named so; rename one first")
+    return {key: oids[0] for key, oids in named.items()}
+
+
+def create(graph, units, ids, dry):
+    """Open every unit that is no task yet and add it to `ids`; the number opened."""
+    created = 0
+    for label_, _, _, title, brief in units:
+        if label_.lower() in ids:
+            continue
+        print(f"{'would create' if dry else 'create'}  {title}")
+        created += 1
+        if dry:
+            continue
+        oid = graph.act(
+            None, f"open: {title}", {"type": "open", "title": title, "description": brief}
+        )
+        if not graph.show(oid).get("title"):
+            die(
+                f"{label_}: {oid[:7]} was written but the reducer did not open it; nothing after it"
+            )
+        ids[label_.lower()] = oid
+    return created
+
+
+def link(graph, ids, step, dry):
+    """Write one unit's missing links, from `links`, and read them back; the number of links.
+
+    `rad cob update` succeeds whether the reducer applies an action or skips it, so the
+    task is read again and the first link that did not take stops the load.
+    """
+    label_, part, todo, reparent = step
+    verb = "would link" if dry else "link"
+    for b in todo:
+        print(f"{verb}  {label_} <- {b}")
+    if reparent:
+        print(f"{verb}  {label_} part of {part}")
+    if dry or not (todo or reparent):
+        return len(todo) + reparent
+    actions = [{"type": "block", "by": ids[b.lower()]} for b in todo]
+    actions += [{"type": "part", "of": ids[part.lower()]}] if reparent else []
+    state = graph.show(graph.act(ids[label_.lower()], f"link {label_}", *actions))
+    missing = [f"<- {b}" for b in todo if ids[b.lower()] not in state.get("blockedBy", [])]
+    if reparent and state.get("partOf") != ids[part.lower()]:
+        missing.append(f"part of {part}")
+    if missing:
+        die(
+            f"{label_}: rad took {', '.join(missing)} but the reducer did not apply it; "
+            "the units before it are written, and a rerun adds only what is missing"
+        )
+    return len(todo) + reparent
+
+
+def links(graph, units, ids):
+    """(label, part, blockers, reparent) for every unit: the links `load` has to add, as
+    labels, and whether its parent changes. Before any write, it refuses what the reducer
+    would skip without a word while `rad cob update` succeeds: a link to a task this
+    identity may not link (only the author sets a parent; the author or the assignee a
+    blocker), and more blockers on one task than the reducer keeps.
+    """
+    names = {oid: label(t).lower() for oid, t in graph.tasks.items()}
+    me, plan = None, []
+    for label_, part, blockers, _, _ in units:
+        old = graph.tasks.get(ids.get(label_.lower()), {})
+        held = {names.get(b) for b in old.get("blockedBy", [])}
+        todo = [b for b in blockers if b.lower() not in held]
+        reparent = part is not None and names.get(old.get("partOf")) != part.lower()
+        count = len(old.get("blockedBy", [])) + len(todo)
+        if count > reducer()["MAX_BLOCKERS"]:
+            die(f"{label_}: {count} blockers; the reducer keeps {reducer()['MAX_BLOCKERS']}")
+        if old and (todo or reparent):
+            me = me or rad("self", "--did").strip()
+            if me != old.get("author") and (reparent or me != old.get("assignee")):
+                die(
+                    f"{label_}: its task is not yours to link (author {old.get('author')}); "
+                    "nothing written"
+                )
+        plan.append((label_, part, todo, reparent))
+    return plan
+
+
+def tree(graph):
+    """Every task under what it is part of; each open leaf says `ready` or what it waits on.
+
+    A label names a blocker where one is known, an object id where not. Two things make the
+    exit code 1, the way a blocker loop does for `ready`, each with a comment after the
+    tree. Tasks whose parents loop back on themselves cannot be reached from a root: they
+    are listed. A parent this clone has not received (partial replication, a peer's
+    operation) is drawn as a root marked `?`, with its parts under it, rather than letting
+    them pass for roots that are part of nothing.
+    """
+    kids = {}
+    for oid, task in graph.tasks.items():
+        # Filed under the parent as recorded: a task that is its own part stays under
+        # itself, out of reach of every root, and so is lost.
+        kids.setdefault(task.get("partOf"), []).append(oid)
+    for group in kids.values():
+        group.sort(key=lambda o: (graph.tasks[o]["title"], o))
+    absent = sorted(p for p in kids if p is not None and p not in graph.tasks)
+    shown = set()
+    for root in kids.get(None, []) + absent:
+        draw(graph, kids, root, "", shown)
+    lost = sorted(o[:7] for o in graph.tasks if o not in shown)
+    for note, ids in (
+        ("not in this clone, parts shown under it", [p[:7] for p in absent]),
+        ("part of each other, not shown above", lost),
+    ):
+        if ids:
+            print(f"# {note}: {' '.join(ids)}")
+    return 1 if absent or lost else 0
+
+
+def draw(graph, kids, oid, indent, shown):
+    """Print `oid` at `indent` and its parts below it, adding each to `shown`."""
+    shown.add(oid)
+    task = graph.tasks.get(oid)
+    if task is None:
+        print(f"{indent}{oid[:7]}  {'?':<7}  (not in this clone)")
+    else:
+        leaf = task["state"] in OPEN_STATES and oid not in kids
+        mark = waits(graph, oid) if leaf else ""
+        print(f"{indent}{oid[:7]}  {task['state']:<7}  {task['title']}{mark}")
+    for child in kids.get(oid, []):
+        draw(graph, kids, child, indent + "    ", shown)
+
+
+def waits(graph, oid):
+    """What an open leaf of the tree shows: `  ready`, or `  <- ` and what it waits on."""
+
+    def name(b):
+        return label(graph.tasks[b]) if b in graph.tasks else b[:7]
+
+    waiting = sorted(graph.waiting_on(oid), key=name)
+    return f"  <- {' '.join(name(b) for b in waiting)}" if waiting else "  ready"
+
+
+def parser():
+    """The command line, as the module's docstring gives it."""
+    top = argparse.ArgumentParser(prog="scripts/task", description=__doc__.split("\n\n")[0])
+    sub = top.add_subparsers(dest="cmd", required=True)
     new = sub.add_parser("new")
     new.add_argument("title")
     new.add_argument("-d", "--description", default="")
     new.add_argument("-b", "--blocked-by", action="append", default=[])
+    new.add_argument("-p", "--part-of")
+    sub.add_parser("tree")
+    loading = sub.add_parser("load")
+    loading.add_argument("file")
+    loading.add_argument("-n", "--dry-run", action="store_true")
+    part = sub.add_parser("part")
+    part.add_argument("id")
+    part.add_argument("of", help="a task, or 'none' to clear")
     sub.add_parser("list").add_argument("--all", action="store_true")
     sub.add_parser("ready")
     sub.add_parser("show").add_argument("id")
@@ -205,97 +543,173 @@ def main(argv):
     edit.add_argument("id")
     edit.add_argument("-t", "--title")
     edit.add_argument("-d", "--description")
-    args = parser.parse_args(argv)
-    graph = Graph()
+    return top
 
-    if args.cmd == "new":
-        blockers = [graph.resolve(b) for b in args.blocked_by]
-        actions = [{"type": "open", "title": args.title, "description": args.description}]
-        actions += [{"type": "block", "by": b} for b in blockers]
-        print(graph.act(None, f"open: {args.title}", *actions)[:7])
-    elif args.cmd in ("list", "ready"):
-        for oid in sorted(graph.tasks, key=lambda o: (graph.tasks[o].get("opened", 0), o)):
-            state = graph.tasks[oid]["state"]
-            if args.cmd == "ready" and (state not in OPEN_STATES or graph.waiting_on(oid)):
-                continue
-            if args.cmd == "list" and not args.all and state not in OPEN_STATES:
-                continue
-            print(line(graph, oid))
+
+def opening(graph, args):
+    blockers = [graph.resolve(b) for b in args.blocked_by]
+    actions = [{"type": "open", "title": args.title, "description": args.description}]
+    actions += [{"type": "block", "by": b} for b in blockers]
+    if args.part_of:
+        actions.append({"type": "part", "of": graph.resolve(args.part_of)})
+    print(graph.act(None, f"open: {args.title}", *actions)[:7])
+
+
+def listing(graph, args):
+    """`list` and `ready`: one line per task, oldest first.
+
+    `ready` leaves out a task that has an open part: a lane or group is never what is
+    picked up while its parts are. Once every part is done or dropped, closing it is the
+    work left, and it shows. A closed part, of whatever author, hides nothing.
+    """
+    parents = {t.get("partOf") for t in graph.tasks.values() if t["state"] in OPEN_STATES}
+    for oid in sorted(graph.tasks, key=lambda o: (graph.tasks[o].get("opened", 0), o)):
+        state = graph.tasks[oid]["state"]
         if args.cmd == "ready":
-            # On stdout, as a comment, and with a non-zero exit. Not stderr: an agent's
-            # harness may drop that stream, or show it only when a command fails, and
-            # this is the one thing that must not go unseen. `#` is the usual skip
-            # marker, so `grep -v '^#'` leaves a list of tasks. The exit code answers
-            # rather than complains, the way `git diff --exit-code` does; `|| true`
-            # where the answer does not matter.
-            loops = graph.cycles()
-            for loop in loops:
-                ids = " -> ".join(o[:7] for o in loop + loop[:1])
-                print(f"# waiting on each other, nothing here can start: {ids}")
-            if loops:
-                return 1
-    elif args.cmd == "show":
-        oid = graph.resolve(args.id)
-        print(json.dumps({"id": oid, **graph.tasks[oid]}, indent=2))
-    elif args.cmd in VERBS:
-        oid = graph.resolve(args.id)
-        graph.act(oid, f"{args.cmd}", {"type": "state", "state": VERBS[args.cmd]})
-        graph.must_change(oid, "state", VERBS[args.cmd])
-    elif args.cmd in ("block", "unblock"):
-        oid, by = graph.resolve(args.id), graph.resolve(args.by)
-        if oid == by:
-            die("a task cannot block itself")
-        # Closing a loop is usually a sign that one of the two wants splitting into the
-        # part the other needs. Usually, not always -- so this is a stop, not a refusal.
-        back = None if args.cmd == "unblock" or args.force else graph.path_to(by, oid)
-        if back:
-            chain = " -> ".join(o[:7] for o in [oid] + back)
-            die(
-                f"that makes a loop: {chain}\n"
-                "     nothing in it would be ready. See whether one of them splits into\n"
-                "     the part the other needs; to record the loop anyway, block --force."
-            )
-        graph.act(oid, f"{args.cmd} {by[:7]}", {"type": args.cmd, "by": by})
-    elif args.cmd == "assign":
-        oid = graph.resolve(args.id)
-        to = {"me": rad("self", "--did").strip(), "nobody": None}.get(args.to, args.to)
-        graph.act(oid, f"assign {args.to}", {"type": "assign", "to": to})
-        graph.must_change(oid, "assignee", to)
-    elif args.cmd == "edit":
-        oid = graph.resolve(args.id)
-        action = {"type": "edit"}
-        if args.title is not None:
-            action["title"] = args.title
-        if args.description is not None:
-            action["description"] = args.description
-        if len(action) == 1:
-            die("nothing to edit: give -t and/or -d")
-        graph.act(oid, "edit", action)
+            keep = state in OPEN_STATES and not graph.waiting_on(oid) and oid not in parents
+        else:
+            keep = args.all or state in OPEN_STATES
+        if keep:
+            print(line(graph, oid))
+    return report_loops(graph) if args.cmd == "ready" else 0
 
 
-def self_test():
-    """End to end against a real rad, in a throwaway home and repository."""
-    me = os.path.abspath(__file__)
-    with tempfile.TemporaryDirectory() as tmp:
-        env = dict(
-            os.environ,
-            RAD_HOME=f"{tmp}/home",
-            RAD_PASSPHRASE="self-test",
-            GIT_CONFIG_GLOBAL="/dev/null",
+def report_loops(graph):
+    """Each blocker loop as a comment line on stdout; 1 if there is one.
+
+    On stdout, and with a non-zero exit. Not stderr: an agent's harness may drop that
+    stream, or show it only when a command fails, and this is the one thing that must not
+    go unseen. `#` is the usual skip marker, so `grep -v '^#'` leaves a list of tasks. The
+    exit code answers rather than complains, the way `git diff --exit-code` does; `|| true`
+    where the answer does not matter.
+    """
+    loops = graph.cycles()
+    for loop in loops:
+        ids = " -> ".join(o[:7] for o in [*loop, loop[0]])
+        print(f"# waiting on each other, nothing here can start: {ids}")
+    return 1 if loops else 0
+
+
+def parting(graph, args):
+    oid = graph.resolve(args.id)
+    of = None if args.of == "none" else graph.resolve(args.of)
+    if of and oid in graph.parent_chain(of):
+        die("that makes a loop: a task cannot be part of itself or of one of its own parts")
+    graph.act(oid, f"part {args.of}", {"type": "part", "of": of})
+    graph.must_change(oid, "partOf", of)
+
+
+def showing(graph, args):
+    oid = graph.resolve(args.id)
+    print(json.dumps({"id": oid, **graph.tasks[oid]}, indent=2))
+
+
+def moving(graph, args):
+    oid = graph.resolve(args.id)
+    graph.act(oid, f"{args.cmd}", {"type": "state", "state": VERBS[args.cmd]})
+    graph.must_change(oid, "state", VERBS[args.cmd])
+
+
+def blocking(graph, args):
+    oid, by = graph.resolve(args.id), graph.resolve(args.by)
+    if oid == by:
+        die("a task cannot block itself")
+    # Closing a loop is usually a sign that one of the two wants splitting into the
+    # part the other needs. Usually, not always -- so this is a stop, not a refusal.
+    back = None if args.cmd == "unblock" or args.force else graph.path_to(by, oid)
+    if back:
+        chain = " -> ".join(o[:7] for o in [oid, *back])
+        die(
+            f"that makes a loop: {chain}\n"
+            "     nothing in it would be ready. See whether one of them splits into\n"
+            "     the part the other needs; to record the loop anyway, block --force."
         )
-        repo = f"{tmp}/repo"
-        os.makedirs(repo)
+    graph.act(oid, f"{args.cmd} {by[:7]}", {"type": args.cmd, "by": by})
 
-        def sh(*cmd, ok=True):
-            done = subprocess.run(cmd, cwd=repo, env=env, capture_output=True, text=True)
-            if ok and done.returncode != 0:
-                sys.exit(f"self-test: {' '.join(cmd)}\n{done.stdout}{done.stderr}")
-            return done
 
-        sh("rad", "auth", "--alias", "selftest")
-        sh("git", "init", "-q", "-b", "main")
-        sh(
-            "git",
+def assigning(graph, args):
+    oid = graph.resolve(args.id)
+    to = {"me": rad("self", "--did").strip(), "nobody": None}.get(args.to, args.to)
+    graph.act(oid, f"assign {args.to}", {"type": "assign", "to": to})
+    graph.must_change(oid, "assignee", to)
+
+
+def editing(graph, args):
+    oid = graph.resolve(args.id)
+    action = {"type": "edit"}
+    if args.title is not None:
+        action["title"] = args.title
+    if args.description is not None:
+        action["description"] = args.description
+    if len(action) == 1:
+        die("nothing to edit: give -t and/or -d")
+    graph.act(oid, "edit", action)
+
+
+def loading(graph, args):
+    load(graph, args.file, args.dry_run)
+
+
+def drawing(graph, _args):
+    return tree(graph)
+
+
+# Each command, by name: it gets the graph and the parsed arguments, and returns the exit
+# code, or None for 0.
+COMMANDS = {
+    "new": opening,
+    "list": listing,
+    "ready": listing,
+    "load": loading,
+    "tree": drawing,
+    "part": parting,
+    "show": showing,
+    **dict.fromkeys(VERBS, moving),
+    "block": blocking,
+    "unblock": blocking,
+    "assign": assigning,
+    "edit": editing,
+}
+
+
+def main(argv):
+    args = parser().parse_args(argv)
+    return COMMANDS[args.cmd](Graph(), args) or 0
+
+
+def without_git_location(environ):
+    """`environ` less every GIT_* variable, so git finds a repository by its working
+    directory or -C alone. Under `git rebase -x`, a hook or an editor, git hands
+    GIT_DIR (and its kin: `git rev-parse --local-env-vars`) down to what it runs; a
+    child's `git init` then re-initialises THAT repository whatever its cwd, and with
+    GIT_DIR set but no GIT_WORK_TREE it writes core.bare=true into it. Dropping the
+    whole GIT_ prefix is a superset of git's own list and needs no git to compute.
+    """
+    return {k: v for k, v in environ.items() if not k.startswith("GIT_")}
+
+
+def tree_bytes(top):
+    """Every file under `top` with its contents: a repository's whole state, to compare."""
+    seen = {}
+    for root, _, files in os.walk(top):
+        for name in files:
+            path = os.path.join(root, name)
+            with open(path, "rb") as handle:
+                seen[os.path.relpath(path, top)] = handle.read()
+    return seen
+
+
+def decoy(tmp):
+    """A repository at `tmp`/decoy with a linked worktree; the GIT_DIR of that worktree.
+
+    It is made with every GIT_* variable dropped, so it lands where it is told to.
+    """
+    clean = dict(without_git_location(os.environ), GIT_CONFIG_GLOBAL="/dev/null")
+    for cmd in (
+        ["init", "-q", f"{tmp}/decoy"],
+        [
+            "-C",
+            f"{tmp}/decoy",
             "-c",
             "user.name=t",
             "-c",
@@ -304,89 +718,331 @@ def self_test():
             "-q",
             "--allow-empty",
             "-m",
-            "init",
-        )
-        sh(
-            "rad",
-            "init",
-            "--name",
-            "selftest",
-            "--description",
-            "x",
-            "--default-branch",
-            "main",
-            "--private",
-            "--no-confirm",
-        )
-        checks = []
+            "decoy",
+        ],
+        ["-C", f"{tmp}/decoy", "worktree", "add", "-q", "-b", "w", f"{tmp}/decoy-w"],
+    ):
+        subprocess.run(["git", *cmd], env=clean, check=True, capture_output=True)
+    return f"{tmp}/decoy/.git/worktrees/decoy-w"
 
-        def task(*a, ok=True):
-            return sh(sys.executable, me, *a, ok=ok)
 
-        def check(name, ok):
-            checks.append((name, bool(ok)))
+class Fixture:
+    """A throwaway Radicle home and repository under `tmp`, and the way the self-test runs
+    anything there: with the environment built here, never the caller's."""
 
-        lexer = task("new", "lexer: integer literals").stdout.strip()
-        parser = task("new", "parser: integer expressions", "-b", lexer).stdout.strip()
-        check("ids are 7 characters", len(lexer) == 7 and len(parser) == 7)
-        ready = task("ready").stdout
-        check("blocked task is not ready", lexer in ready and parser not in ready)
-        check("list shows the blocker", f"<- {lexer}" in task("list").stdout)
-        task("start", lexer)
-        check("start", "doing" in task("list").stdout)
-        task("done", lexer)
-        ready = task("ready").stdout
-        check("done unblocks", parser in ready and lexer not in ready)
-        check(
-            "list hides done, --all shows it",
-            lexer not in task("list").stdout and lexer in task("list", "--all").stdout,
+    def __init__(self, tmp):
+        self.tmp, self.repo, self.checks = tmp, f"{tmp}/repo", []
+        self.env = dict(
+            without_git_location(os.environ),
+            RAD_HOME=f"{tmp}/home",
+            RAD_PASSPHRASE="self-test",
+            GIT_CONFIG_GLOBAL="/dev/null",
         )
-        task("assign", parser, "me")
-        check(
-            "assign me", json.loads(task("show", parser).stdout)["assignee"].startswith("did:key:")
-        )
-        task("edit", parser, "-t", "parser: expressions")
-        check("edit", "parser: expressions" in task("list").stdout)
-        check("self-block refused", task("block", parser, parser, ok=False).returncode == 2)
+        os.makedirs(self.repo)
 
-        # A loop is allowed to be recorded; what it may not do is make `ready` go quiet.
-        left = task("new", "span: pick the representation").stdout.strip()
-        right = task("new", "grammar: emit spans").stdout.strip()
-        task("block", left, right)
-        refused = task("block", right, left, ok=False)
-        check("a loop is refused by default, with the refusal code", refused.returncode == 2)
-        check("and the message names the chain and the way out", "makes a loop" in refused.stderr and "--force" in refused.stderr)
-        task("block", right, left, "--force")
-        done = task("ready", ok=False)
-        check("a loop keeps both out of the list", f"\n{left}" not in done.stdout and f"\n{right}" not in done.stdout)
-        check("and ready exits 1, the answer-with-bad-news code", done.returncode == 1)
-        check(
-            "and says so on stdout, naming them",
-            "waiting on each other" in done.stdout and left in done.stdout and right in done.stdout,
+    def sh(self, *cmd, ok=True, extra=None):
+        done = subprocess.run(
+            cmd,
+            cwd=self.repo,
+            env={**self.env, **(extra or {})},
+            capture_output=True,
+            text=True,
+            check=False,
         )
-        check("the notice is a comment, so a filter leaves tasks only",
-              all(not l.startswith("#") for l in done.stdout.splitlines() if l and "waiting" not in l))
-        task("drop", left)
-        freed = task("ready")
-        check("dropping one ends the loop", right in freed.stdout and freed.returncode == 0)
-        check("unknown id refused", task("done", "ffffffff", ok=False).returncode != 0)
-        log = sh(
-            "rad",
-            "cob",
-            "log",
-            "--repo",
-            sh("rad", ".").stdout.strip(),
-            "--type",
-            TYPE,
-            "--object",
-            json.loads(task("show", lexer).stdout)["id"],
-        ).stdout
-        check("every operation is a signed-off commit with an author", log.count("author") >= 3)
+        if ok and done.returncode != 0:
+            sys.exit(f"self-test: {' '.join(cmd)}\n{done.stdout}{done.stderr}")
+        return done
 
-    failed = [name for name, ok in checks if not ok]
+    def task(self, *args, ok=True, extra=None):
+        return self.sh(sys.executable, os.path.abspath(__file__), *args, ok=ok, extra=extra)
+
+    def out(self, *args):
+        """What a task command that must succeed prints."""
+        return self.task(*args).stdout
+
+    def check(self, name, ok):
+        self.checks.append((name, bool(ok)))
+
+    def file(self, name, text):
+        path = f"{self.tmp}/{name}"
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return path
+
+    def raw(self, oid, action):
+        """Write `action` on task `oid` with rad itself, past scripts/task's own checks, as
+        a peer could; rad finds the reducer on PATH."""
+        self.sh(
+            *("rad", "cob", "update", "--repo", self.sh("rad", ".").stdout.strip()),
+            *("--type", TYPE, "--object", oid, "--message", "raw"),
+            self.file("raw.jsonl", json.dumps(action) + "\n"),
+            extra={"PATH": HERE + os.pathsep + self.env.get("PATH", "")},
+        )
+
+    def init(self, untouched):
+        """rad auth, a git repository with one commit, rad init. `untouched` is asked
+        between git and rad, so a fixture whose git went astray stops before rad does."""
+        self.sh("rad", "auth", "--alias", "selftest")
+        self.sh("git", "-C", self.repo, "init", "-q", "-b", "main")
+        identity = ["-c", "user.name=t", "-c", "user.email=t@t"]
+        self.sh("git", "-C", self.repo, *identity, "commit", "-q", "--allow-empty", "-m", "init")
+        if not untouched():
+            sys.exit("self-test: the fixture's git reached the repository GIT_DIR names")
+        self.sh(
+            *("rad", "init", "--name", "selftest", "--description", "x"),
+            *("--default-branch", "main", "--private", "--no-confirm"),
+        )
+
+
+def basics(f):
+    """new, ready, list, the state verbs, assign and edit. Returns the two tasks' ids."""
+    lexer = f.out("new", "lexer: integer literals").strip()
+    parser = f.out("new", "parser: integer expressions", "-b", lexer).strip()
+    f.check("ids are 7 characters", len(lexer) == 7 and len(parser) == 7)
+    ready = f.out("ready")
+    f.check("blocked task is not ready", lexer in ready and parser not in ready)
+    f.check("list shows the blocker", f"<- {lexer}" in f.out("list"))
+    f.task("start", lexer)
+    f.check("start", "doing" in f.out("list"))
+    f.task("done", lexer)
+    ready = f.out("ready")
+    f.check("done unblocks", parser in ready and lexer not in ready)
+    f.check(
+        "list hides done, --all shows it",
+        lexer not in f.out("list") and lexer in f.out("list", "--all"),
+    )
+    f.task("assign", parser, "me")
+    f.check("assign me", json.loads(f.out("show", parser))["assignee"].startswith("did:key:"))
+    f.task("edit", parser, "-t", "parser: expressions")
+    f.check("edit", "parser: expressions" in f.out("list"))
+    f.check("self-block refused", f.task("block", parser, parser, ok=False).returncode == 2)
+    return lexer, parser
+
+
+def lanes(f, lexer, parser):
+    """part, -p, labels, and the tree, a part-of loop that arrives from a peer included."""
+    lane = f.out("new", "lane-X the lane").strip()
+    unit = f.out("new", "X1 a unit", "-p", lane).strip()
+    f.task("part", lexer, lane)
+    lane_id = json.loads(f.out("show", lane))["id"]
+    f.check("part and -p are stored", json.loads(f.out("show", "X1"))["partOf"] == lane_id)
+    f.check("a label names a task", f.task("show", "lane-X").returncode == 0)
+    shown = f.out("tree").splitlines()
+    f.check(
+        "tree nests a part under its lane",
+        any(row.startswith(lane) for row in shown)
+        and any(row.startswith("    " + unit) for row in shown),
+    )
+    f.check("tree says ready", any("X1 a unit  ready" in row for row in shown))
+    f.check("part loop refused", f.task("part", lane, "X1", ok=False).returncode == 2)
+    f.task("part", lexer, "none")
+    f.task("block", unit, parser)
+    f.check(
+        "tree names a blocker by its label",
+        any(row.endswith("<- parser") for row in f.out("tree").splitlines()),
+    )
+    # A task that is its own part, as a peer may send it: the reducer cannot see the loop,
+    # so tree has to report it rather than draw a root.
+    f.raw(lane_id, {"type": "part", "of": lane_id})
+    looped = f.task("tree", ok=False)
+    f.check(
+        "a task its own part is reported, not drawn as a root",
+        looped.returncode == 1
+        and lane in looped.stdout.splitlines()[-1]
+        and not looped.stdout.startswith(lane),
+    )
+    # A parent this clone does not have: its parts are drawn under it, not as roots.
+    f.raw(lane_id, {"type": "part", "of": "f" * 40})
+    orphan = f.task("tree", ok=False)
+    f.check(
+        "a part of a task this clone lacks is drawn under it, not as a root",
+        orphan.returncode == 1
+        and "fffffff  ?" in orphan.stdout
+        and f"\n    {lane}" in orphan.stdout
+        and "not in this clone, parts shown under it: fffffff" in orphan.stdout,
+    )
+    f.task("part", lane, "none")
+    f.check("a lane is not ready", lane not in f.out("ready"))
+    f.task("drop", unit)
+    f.check("a lane whose parts are all closed is ready", lane in f.out("ready"))
+
+
+def loading_units(f):
+    """load: a file of units, twice over, in another case, and next to tasks made by hand."""
+    units = f.file(
+        "units.tsv",
+        "# a comment\n"
+        "L9\t-\t\tlane\tThe lane.\n"
+        "L2\tL9\tL1\tsecond\tListed before what it waits on.\n"
+        "L1\tL9\t\tfirst\tThe first.\n",
+    )
+    dry = f.out("load", "-n", units)
+    f.check("load -n writes nothing", "3 created, 3 links" in dry and "  L9" not in f.out("list"))
+    f.check("load creates the units and links them", "3 created, 3 links" in f.out("load", units))
+    drawn = f.out("tree")
+    f.check("loaded tree nests and orders", "    " in drawn and "L2 second  <- L1" in drawn)
+    f.check("a second load creates nothing", "0 created, 0 links" in f.out("load", units))
+    with open(units, "a", encoding="utf-8") as handle:
+        handle.write("L3\tL9\tL2\tthird\tOpened by hand first.\n")
+    f.task("new", "L3 third")
+    f.check(
+        "a load links a task its own identity opened, and checks it took",
+        "0 created, 2 links" in f.out("load", units) and "L3 third  <- L2" in f.out("tree"),
+    )
+    folded = f.file("folded.tsv", "l9\t-\t\tlane\tThe lane.\nl1\tl9\t\tfirst\tThe first.\n")
+    f.check(
+        "a label in another case is the same unit", "0 created, 0 links" in f.out("load", folded)
+    )
+    for name, rows, says in (
+        (
+            "a blocker that closes a loop through the store",
+            "L9\t-\t\tlane\tx\nL3\tL9\t\tthird\tx\nL1\tL9\tL3\tfirst\tx\n",
+            "L1 -> L3 -> L2 -> L1: each waits on",
+        ),
+        (
+            "a parent that closes a loop through the store",
+            "L9\tL1\t\tlane\tx\nL1\t-\t\tfirst\tx\n",
+            "L9 -> L1 -> L9: each is part of",
+        ),
+    ):
+        refused = f.task("load", f.file("closing.tsv", rows), ok=False)
+        f.check(
+            f"{name} is refused before a write",
+            refused.returncode == 2
+            and says in refused.stderr
+            and json.loads(f.out("show", "L1"))["blockedBy"] == []
+            and json.loads(f.out("show", "L9"))["partOf"] is None,
+        )
+    f.task("new", "l1 a second task of that name")
+    shared = f.task(
+        "load", f.file("shared.tsv", "L1\t-\t\tfirst\tx\nQ4\t-\tL1\tfour\tx\n"), ok=False
+    )
+    f.check(
+        "a label two tasks share is refused before a write",
+        shared.returncode == 2
+        and "2 tasks are named" in shared.stderr
+        and "  Q4" not in f.out("list"),
+    )
+    redo = f.out("load", "-n", os.path.join(HERE, os.pardir, ".agents", "tasks", "redo.tsv"))
+    f.check(
+        "the repository's own units file passes every check of load",
+        "(dry run, nothing written)" in redo and "  A5" not in f.out("list"),
+    )
+
+
+def refusals(f):
+    """Files load refuses before its first write: each says why and leaves no task."""
+    f.check(
+        "a missing file is refused", f.task("load", f"{f.tmp}/absent", ok=False).returncode == 2
+    )
+    for name, rows, says in (
+        ("two labels that differ in case only", "Q3\t-\t\tone\tx\nq3\t-\t\ttwo\tx\n", "twice"),
+        (
+            "more blockers than the reducer keeps",
+            "".join(f"Z{n}\t-\t\tz\tx\n" for n in range(65))
+            + f"Q1\t-\t{','.join(f'Z{n}' for n in range(65))}\tone\tx\n",
+            "Q1: 65 blockers",
+        ),
+        ("a label of two words", "Q 1\t-\t\tone\tx\n", "'Q 1': a label is one word"),
+        ("a label ending in a colon", "Q1:\t-\t\tone\tx\n", "'Q1:': a label is one word"),
+        ("a title over the reducer's limit", f"Q1\t-\t\t{'n' * 200}\tx\n", "Q1: the reducer"),
+        ("a brief over the reducer's limit", f"Q1\t-\t\tone\t{'b' * 10_001}\n", "Q1: the reducer"),
+        ("a blocker loop", "Q1\t-\tQ2\tone\tx\nQ2\t-\tQ1\ttwo\tx\n", "Q1 -> Q2 -> Q1"),
+        ("a row its own parent", "Q1\tQ1\t\tone\tx\n", "Q1 -> Q1"),
+        ("a parent loop", "Q1\tQ2\t\tone\tx\nQ2\tQ1\t\ttwo\tx\n", "Q1 -> Q2 -> Q1"),
+    ):
+        refused = f.task("load", f.file("bad.tsv", rows), ok=False)
+        f.check(
+            f"{name} in a file is refused before a write",
+            refused.returncode == 2 and says in refused.stderr and "  Q" not in f.out("list"),
+        )
+    if not shutil.which("gitleaks"):
+        print("task: self-test: no gitleaks on PATH, leak refusal not exercised", file=sys.stderr)
+        return
+    f.file("repo/.git/leak-patterns", "zztermzz\n")
+    bad = f.file("bad.tsv", "Q1\t-\t\tname\tmentions zztermzz\n")
+    leaked = f.task("load", bad, ok=False)
+    f.check(
+        "a private term stops the load before a write",
+        leaked.returncode == 2 and "Q1" in leaked.stderr and "  Q1" not in f.out("list"),
+    )
+    warned = f.task("load", bad, ok=False, extra={"FPL_LEAK_GATE": "warn"})
+    f.check(
+        "and FPL_LEAK_GATE=warn does not let it through",
+        warned.returncode == 2 and "  Q1" not in f.out("list"),
+    )
+
+
+def loops(f):
+    """A loop may be recorded; what it may not do is make `ready` go quiet."""
+    left = f.out("new", "span: pick the representation").strip()
+    right = f.out("new", "grammar: emit spans").strip()
+    f.task("block", left, right)
+    refused = f.task("block", right, left, ok=False)
+    f.check("a loop is refused by default, with the refusal code", refused.returncode == 2)
+    f.check(
+        "and the message names the chain and the way out",
+        "makes a loop" in refused.stderr and "--force" in refused.stderr,
+    )
+    f.task("block", right, left, "--force")
+    done = f.task("ready", ok=False)
+    f.check(
+        "a loop keeps both out of the list",
+        f"\n{left}" not in done.stdout and f"\n{right}" not in done.stdout,
+    )
+    f.check("and ready exits 1, the answer-with-bad-news code", done.returncode == 1)
+    f.check(
+        "and says so on stdout, naming them",
+        "waiting on each other" in done.stdout and left in done.stdout and right in done.stdout,
+    )
+    f.check(
+        "the notice is a comment, so a filter leaves tasks only",
+        all(
+            not row.startswith("#")
+            for row in done.stdout.splitlines()
+            if row and "waiting" not in row
+        ),
+    )
+    f.task("drop", left)
+    freed = f.task("ready")
+    f.check("dropping one ends the loop", right in freed.stdout and freed.returncode == 0)
+    f.check("unknown id refused", f.task("done", "ffffffff", ok=False).returncode != 0)
+
+
+def self_test():
+    """End to end against a real rad, in a throwaway home and repository.
+
+    It runs with GIT_DIR pointing at a linked worktree of a decoy repository, as
+    `git rebase -x` in a worktree hands the caller's down, and checks at the end that
+    the decoy did not change by a byte. That is the shape that bit: a `git init` under
+    such a GIT_DIR writes core.bare=true into the shared config of every worktree.
+    """
+    inherited = os.environ.get("GIT_DIR")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["GIT_DIR"] = decoy(tmp)
+        before = tree_bytes(f"{tmp}/decoy/.git")
+        f = Fixture(tmp)
+        f.init(lambda: tree_bytes(f"{tmp}/decoy/.git") == before)
+        lexer, parser = basics(f)
+        lanes(f, lexer, parser)
+        loading_units(f)
+        refusals(f)
+        loops(f)
+        oid = json.loads(f.out("show", lexer))["id"]
+        rid = f.sh("rad", ".").stdout.strip()
+        log = f.sh("rad", "cob", "log", "--repo", rid, "--type", TYPE, "--object", oid).stdout
+        f.check("every operation is a signed-off commit with an author", log.count("author") >= 3)
+        f.check(
+            "an inherited GIT_DIR's repository is left as it was",
+            tree_bytes(f"{tmp}/decoy/.git") == before,
+        )
+    os.environ.pop("GIT_DIR")
+    if inherited is not None:
+        os.environ["GIT_DIR"] = inherited
+    failed = [name for name, ok in f.checks if not ok]
     for name in failed:
         print(f"FAIL {name}", file=sys.stderr)
-    print(f"task: self-test {'ok' if not failed else 'FAILED'} ({len(checks)} checks)")
+    print(f"task: self-test {'ok' if not failed else 'FAILED'} ({len(f.checks)} checks)")
     sys.exit(1 if failed else 0)
 
 

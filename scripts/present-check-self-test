@@ -1,0 +1,365 @@
+#!/usr/bin/env bash
+#
+# scripts/present-check-self-test — proof that scripts/present-check refuses each thing it is
+# there to refuse, passes what it should, and that the draft Action under harness/workflows
+# keeps the properties its header promises. Run by `make gates`.
+#
+# The fixture is a small repository in a temp directory, git's global and system config pointed
+# away from the maintainer's. FPL_PRESENT_QUICK and FPL_PRESENT_LINT stand in for make quick
+# (it logs the commit it ran on, and fails where a file `red` exists, so "never built" is read
+# from the log) and for commit-lint (it logs its arguments, and fails where `lint-fail` exists).
+# Where a /bin/bash other than the running bash exists (3.2 on a Mac), the run is made again
+# with it first on PATH.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+pc="$root/scripts/present-check"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/present-check-self-test.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+: >"$tmp/gitconfig"
+export GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home" \
+	GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t \
+	GIT_COMMITTER_EMAIL=t@example.invalid
+unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_CONFIG_COUNT
+mkdir -p "$HOME"
+
+export LOG="$tmp/quick.log" LINTLOG="$tmp/lint.log" TESTLOG="$tmp/test.log" FLAG="$tmp/flag"
+export LEFT="$tmp/left.log"
+export FPL_PRESENT_QUICK='git rev-parse --short HEAD >>"$LOG"; test ! -e leftover || echo x >>"$LEFT"; touch leftover; test ! -e red'
+printf '%s\n' '#!/bin/sh' 'echo "$*" >>"$LINTLOG"' '[ ! -e "$FLAG/lint-fail" ] || exit 1' \
+	'echo "commit-lint: 0 of 1 commits failed"' >"$tmp/lint"
+chmod +x "$tmp/lint"
+export FPL_PRESENT_LINT="$tmp/lint"
+
+repo="$tmp/repo"
+git init -q -b main "$repo"
+cd "$repo"
+mkdir -p "$FLAG"
+total=0 fails=0
+
+commit() {
+	if [ -n "${2-}" ]; then git commit -q -m "$1" -m "$2"; else git commit -q -m "$1"; fi
+}
+add() { # add <path> [<mode>]: a file whose content is its path and the branch
+	mkdir -p "$(dirname "$1")"
+	echo "$1 $(git branch --show-current)" >"$1"
+	[ -z "${2-}" ] || chmod "$2" "$1"
+	git add "$1"
+}
+echo base >base
+git add base
+commit base
+git tag base
+
+fail() { # fail <message>: count it and say it
+	fails=$((fails + 1))
+	printf 'self-test: %s\n' "$*" >&2
+}
+# run <name> <exit> <must-say>... -- <args>: present-check with args; assert exit and text.
+run() {
+	local name="$1" want="$2" out code=0 text needs=()
+	shift 2
+	while [ "$1" != -- ]; do needs+=("$1") && shift; done
+	shift
+	: >"$LOG" && : >"$LINTLOG" && : >"$LEFT"
+	out="$("$pc" "$@" 2>&1)" || code=$?
+	total=$((total + 1))
+	if [ "$code" -ne "$want" ]; then
+		fail "$name: exit $code, wanted $want"$'\n'"$out"
+		return 0
+	fi
+	for text in ${needs[@]+"${needs[@]}"}; do
+		printf '%s\n' "$out" | grep -qF -- "$text" || fail "$name: output lacks \"$text\""$'\n'"$out"
+	done
+}
+check() { # check <name> <condition command...>: a fact about the logs
+	local name="$1"
+	shift
+	total=$((total + 1))
+	"$@" || fail "$name"
+}
+lines() { [ "$(wc -l <"$1" | tr -d ' ')" -eq "$2" ]; }
+
+# The work: three commits on main. The presentation: the same tree in two, reworded.
+git checkout -q -b work main
+add f1 && commit "feat(x): one"
+add f2 && commit "feat(x): two"
+add f3 && commit "feat(x): three"
+git checkout -q -b pres main
+git checkout -q work -- f1 f2
+commit "feat(x): one and two"
+git checkout -q work -- f3
+commit "feat(x): three, told last"
+run presentation 0 "trees equal" "merge-base equal" "ok    commit-lint" "skip  Series-Id" \
+	"lemmas of main" "1. " "2. " "quick=" "range-diff" "told last" "green, 2 commits" -- work pres
+check "presentation: quick ran once per presented commit" lines "$LOG" 2
+check "presentation: the second lemma did not see the first one's leftovers" test ! -s "$LEFT"
+check "presentation: commit-lint named the branch" grep -q -- '-b pres main..' "$LINTLOG"
+run "empty -B" 2 "usage" -- -B "" pres
+run "empty -b" 2 "usage" -- -b "" pres
+run "one ref" 0 "green, 2 commits" -- pres
+run "a sha is no branch" 0 -- "$(git rev-parse pres)"
+check "a sha: commit-lint got no -b" grep -vq -- '-b ' "$LINTLOG"
+
+git checkout -q -b extra pres
+add f4 && commit "feat(x): four"
+run "trees differ" 1 "trees differ" -- work extra
+check "trees differ: no lemma was built" lines "$LOG" 0
+# A ref that is no commit stops the run, whichever of the two it is: a bad W must not leave
+# the run judging P alone, with the tree and merge-base checks out.
+run "no such W" 2 "not a commit: nosuch" -- nosuch pres
+check "no such W: nothing was built" lines "$LOG" 0
+run "no such P" 2 "not a commit: nosuch" -- work nosuch
+# A work tip with no history in common with the base has no merge-base to compare: the run
+# stops and says so, before any lemma is built.
+alien="$(git commit-tree -m "feat(x): elsewhere" "pres^{tree}")"
+run "no common history" 2 "shares no history with main" -- "$alien" pres
+check "no common history: nothing was built" lines "$LOG" 0
+
+# A run leaves the registration of other worktrees alone: one whose directory is away (an
+# unmounted disk) is not pruned, whether the run built lemmas or died on a usage error.
+git worktree add -q --detach "$tmp/away" main
+mv "$tmp/away" "$tmp/away.moved"
+run "away worktree, green run" 0 "green, 2 commits" -- pres
+run "away worktree, usage error" 2 "not a commit" -- nosuch pres
+check "away worktree: still registered" test -d "$(git rev-parse --git-common-dir)/worktrees/away"
+mv "$tmp/away.moved" "$tmp/away"
+git worktree remove --force "$tmp/away"
+
+# Merge-base differs, trees equal: main moves by an empty commit; the series is told again on it.
+git checkout -q -b main2 main
+git commit -q --allow-empty -m "chore(x): move main"
+git checkout -q -b moved main2
+git checkout -q work -- f1 f2 f3
+commit "feat(x): everything"
+run "merge-base" 1 "merge-base differs" -- -B main2 work moved
+
+# Red in the middle: the third commit is never built.
+git checkout -q -b redmid main
+add g1 && commit "feat(y): one"
+add red && commit "feat(y): breaks"
+add g3 && commit "feat(y): after"
+run "red middle" 1 "quick is red" "breaks" -- redmid
+check "red middle: first two built, third never" lines "$LOG" 2
+run "skip-quick" 0 "green, 3 commits" -- --skip-quick redmid
+check "skip-quick: nothing built" lines "$LOG" 0
+
+touch "$FLAG/lint-fail"
+run "lint red" 1 "commit-lint refuses" -- pres
+check "lint red: nothing built" lines "$LOG" 0
+rm "$FLAG/lint-fail"
+
+# Series-Id: judged only where scripts/series exists in P's tree.
+mk_series() { # mk_series <branch> <series?> <id-or-empty>...: one commit per id given
+	local b="$1" series="$2"
+	shift 2
+	git checkout -q -b "$b" main
+	[ "$series" != yes ] || { add scripts/series 755 && commit "feat(scripts): series" "Series-Id: $1"; }
+	local n=0 id
+	for id in "$@"; do
+		n=$((n + 1))
+		add "s$n"
+		if [ -n "$id" ]; then commit "feat(z): lemma $n" "Series-Id: $id"; else commit "feat(z): lemma $n"; fi
+	done
+}
+mk_series sid1b yes s1 s1
+mk_series sid2 yes s1 s2
+mk_series sid3 yes s1 ""
+mk_series sid4 no s1 s2
+git checkout -q sid1b
+run "one Series-Id" 0 "Series-Id (s1)" -- sid1b
+run "two Series-Ids" 1 "more than one Series-Id" -- sid2
+run "a lemma without Series-Id" 1 "has no Series-Id" -- sid3
+run "no scripts/series: not judged" 0 "skip  Series-Id" -- sid4
+
+# A finished series: no fix of the series' own files, and no message about the review.
+git checkout -q -b fixself main
+add h1 && commit "feat(w): add h1"
+echo more >>h1 && git add h1 && commit "fix(w): mend h1"
+run "a fix of the series itself" 1 "fix-on-series" "mend h1" "fold it into" -- fixself
+check "a fix of the series itself: nothing was built" lines "$LOG" 0
+run "rules alone" 1 "fix-on-series" -- rules fixself
+git checkout -q -b fixmain main
+echo mended >>base && add h2 && git add base && commit "fix(w): mend base, add h2"
+add h3 && commit "feat(w): add h3"
+run "a fix of main" 0 "ok    rules" "green, 2 commits" -- fixmain
+git checkout -q -b prose main
+add k1 && commit "feat(w): one" "As the CodeRabbit bot said, this holds."
+add k2 && commit "feat(w): two" "Plain words: codexes, gpt4, reviewers and P10 are no names."
+add k3 && commit "feat(w): three" "$(printf 'A phrase wrapped at the margin is found\nby the words, not the lines.')"
+add k4 && commit "feat(w): ask the reviewer"
+add k5 && commit "feat(w): five" "$(printf 'Trailers are authorship.\n\nAssisted-By: gpt-6-1\nSession-Id: s')"
+run "review prose" 1 "review-prose" "one" "three" "ask the reviewer" "coderabbit" -- prose
+check "review prose: three refused; the plain words and the trailers pass" \
+	test "$("$pc" rules prose 2>&1 | grep -c 'review-prose')" -eq 3
+run "rules, green" 0 "ok    rules" -- rules fixmain
+
+# Self-tests of touched paths run; those of untouched paths do not.
+git checkout -q -b touched main
+add scripts/foo 755 && add scripts/foo-self-test 755
+printf '#!/bin/sh\necho foo >>"$TESTLOG"\n' >scripts/foo-self-test
+printf '#!/bin/sh\ncase "$1" in\n--self-test) echo bar >>"$TESTLOG" ;;\nesac\n' >scripts/bar
+printf '#!/bin/sh\n# baz --self-test is only named here\nexit 1\n' >scripts/baz
+# The flag in the shapes that handle it, and in the shapes that only quote it: a comment that
+# would match the pattern, and an echo of it.
+printf '#!/bin/sh\ncase "$1" in\n\t--self-test) echo qux >>"$TESTLOG" ;;\nesac\n' >scripts/qux
+printf '#!/bin/sh\n# ["--self-test"] is a comment\necho %s\nexit 1\n' "'[\"--self-test\"]'" >scripts/quux
+chmod +x scripts/bar scripts/baz scripts/qux scripts/quux
+git add scripts && commit "feat(scripts): foo, bar, baz, qux and quux"
+add docs/readme && commit "docs(x): words"
+: >"$TESTLOG"
+run "self-tests" 0 "selftest ok" "scripts/foo-self-test" -- --skip-quick touched
+check "self-tests: foo, bar and qux ran once each; baz, quux and the docs commit none" lines "$TESTLOG" 3
+printf '#!/bin/sh\nexit 1\n' >scripts/foo-self-test
+git add scripts && commit "test(scripts): break foo"
+run "self-test red" 1 "selftest is red" -- --skip-quick touched
+
+# A workflow, drafted under harness/ or installed under .github/workflows, runs the audit.
+git checkout -q -b workflows main
+add scripts/present-check-self-test 755
+printf '#!/bin/sh\necho audit >>"$TESTLOG"\n' >scripts/present-check-self-test
+git add scripts && commit "test(scripts): the audit"
+add .github/workflows/series.yml && commit "ci(workflow): installed"
+add harness/workflows/series.yml && commit "ci(workflow): drafted"
+: >"$TESTLOG"
+run "workflows" 0 "green, 3 commits" -- --skip-quick workflows
+check "workflows: the audit ran for the test, the installed and the draft workflow" lines "$TESTLOG" 3
+
+# classify: one word for how a push changed a pull request.
+check "classify unchanged" test "$("$pc" classify work work)" = unchanged
+check "classify presentation" test "$("$pc" classify work pres)" = presentation
+git checkout -q -b main3 main
+add m && commit "chore(x): main grows"
+git checkout -q -b reloc main3
+for f in f1 f2 f3; do git checkout -q work -- "$f"; commit "feat(x): $f"; done
+check "classify relocation" test "$("$pc" classify -B main3 work reloc)" = relocation
+check "classify content" test "$("$pc" classify work extra)" = content
+# A ref that is no commit is no "content": either side stops the run.
+run "classify, no such OLD" 2 "not a commit: nosuch" -- classify nosuch work
+run "classify, no such NEW" 2 "not a commit: nosuch" -- classify work nosuch
+
+# The draft Actions: the properties their headers promise, read from the files themselves.
+# The drafts sit under harness/workflows; once the owner has installed them, under
+# .github/workflows.
+yml="$root/harness/workflows/series.yml"
+[ -f "$yml" ] || yml="$root/.github/workflows/series.yml"
+relay="$root/harness/workflows/series-relay.yml"
+[ -f "$relay" ] || relay="$root/.github/workflows/series-relay.yml"
+wfdir="$root/.github/workflows"
+# lacks <body> <needle>...: say each needle the workflow text does not hold; fail if any.
+lacks() {
+	local body="$1" needle bad=0
+	shift
+	for needle in "$@"; do
+		grep -qF -- "$needle" "$body" || { echo "lacks: $needle" && bad=1; }
+	done
+	return "$bad"
+}
+# audit_common <file> <body>: what every draft keeps: pinned actions, no secrets, a timeout on
+# each job, and job ids no other installed workflow has (a required check is named by its job).
+audit_common() {
+	local bad=0 other
+	if grep -E 'uses:' "$2" | grep -vE '@[0-9a-f]{40}([[:space:]]|$)'; then bad=1; fi
+	if grep -E 'secrets[.]' "$2"; then bad=1; fi
+	awk '
+		/^jobs:/ { injobs = 1; next }
+		injobs && /^  [a-z][a-z0-9_-]*:/ { job = $1; jobs[job] = 1 }
+		/timeout-minutes:/ { timed[job] = 1 }
+		END { for (j in jobs) if (!timed[j]) print "no timeout-minutes: " j }' "$2" | { ! grep .; } || bad=1
+	# Judged by name, not by identity: a mutated copy is another file than the installed
+	# workflow but stands for it, and must not be refused for sharing every id with it.
+	for other in "$wfdir"/*.yml; do
+		[ -f "$other" ] && [ "$(basename "$other")" != "$(basename "$1")" ] || continue
+		ids <"$other"
+	done | sort -u >"$tmp/audit.others"
+	ids <"$2" | sort -u | comm -12 - "$tmp/audit.others" | sed 's/^/shared job id: /' | { ! grep .; } || bad=1
+	return "$bad"
+}
+audit() { # audit <file>: print each broken promise of series.yml; the exit status is whether there is none
+	local body="$tmp/audit.body" bad=0
+	grep -vE '^[[:space:]]*#' "$1" >"$body"
+	audit_common "$1" "$body" || bad=1
+	lacks "$body" 'set -eu' 'synchronize' 'reopened' 'edited' 'persist-credentials: false' \
+		"needs.lemmas.result != 'cancelled'" || bad=1
+	# A skipped job reports success, and a review event would skip them all under the names of
+	# checks a push judged: no review trigger and no actions: write here, and no job `if` that
+	# reads the event: the check job runs on every pull_request event, and only the comment job
+	# tells a base edit from a text edit.
+	if grep -E 'pull_request_review|actions: write|github[.]event_name' "$body"; then bad=1; fi
+	if job lemmas <"$body" | cond | grep -E 'action|changes'; then bad=1; fi
+	job comment <"$body" | cond | grep -qF 'changes.base != null' || { echo "comment: posts on text edits" && bad=1; }
+	job comment <"$body" | cond | grep -qF 'head.repo.full_name == github.repository' || { echo "comment: posts for a fork" && bad=1; }
+	return "$bad"
+}
+audit_relay() { # audit_relay <file>: print each broken promise of series-relay.yml
+	local body="$tmp/audit.body" bad=0
+	grep -vE '^[[:space:]]*#' "$1" >"$body"
+	audit_common "$1" "$body" || bad=1
+	lacks "$body" 'pull_request_review:' 'actions: write' 'land.yml' 'head.repo.full_name' \
+		"github.event.review.state == 'approved'" "github.event.review.user.login == 'psjg'" || bad=1
+	job relay <"$body" | grep -qF '[ "$HEAD_REPO" = "$REPO" ] ||' || { echo "relay: no fork refusal" && bad=1; }
+	return "$bad"
+}
+ids() { # ids: the job ids of the workflow on stdin, one per line
+	awk '/^jobs:/ { injobs = 1; next } injobs && /^  [a-z][a-z0-9_-]*:/ { sub(":.*", "", $1); print $1 }'
+}
+job() { # job <id>: the lines of one job of the workflow on stdin
+	awk -v j="$1:" '/^jobs:/ { injobs = 1; next } injobs && /^  [a-z][a-z0-9_-]*:/ { cur = $1 } injobs && cur == j'
+}
+cond() { # cond: the `if:` of the job on stdin, with its continuation lines
+	awk '/^    if:/ { on = 1; print; next } on && /^    [a-z-]+:/ { on = 0 } on'
+}
+check "series.yml keeps its promises" audit "$yml"
+check "series-relay.yml keeps its promises" audit_relay "$relay"
+refuses() { ! "$@"; }
+# The state after the owner installs the drafts: .github/workflows holds series.yml,
+# series-relay.yml and noslop.yml, with its job `check`. A mutated copy then has every id of
+# the installed file, so a refusal proves nothing unless the unmodified copy is accepted beside
+# it first.
+mkdir -p "$tmp/inst" "$tmp/mut"
+cp "$yml" "$tmp/inst/series.yml"
+cp "$relay" "$tmp/inst/series-relay.yml"
+printf 'jobs:\n  check:\n    runs-on: ubuntu-latest\n' >"$tmp/inst/noslop.yml"
+wfdir="$tmp/inst"
+cp "$yml" "$tmp/mut/series.yml"
+check "an unmodified series.yml is accepted beside the installed workflows" audit "$tmp/mut/series.yml"
+cp "$relay" "$tmp/mut/series-relay.yml"
+check "an unmodified series-relay.yml is accepted beside the installed workflows" audit_relay "$tmp/mut/series-relay.yml"
+# mutate <audit> <file> <sed script>...: each script applied to the draft must be refused.
+mutate() {
+	local fn="$1" src="$2" broken
+	shift 2
+	for broken in "$@"; do
+		sed -e "$broken" "$src" >"$tmp/mut/$(basename "$src")"
+		check "$fn refuses: $broken" refuses "$fn" "$tmp/mut/$(basename "$src")" >/dev/null
+	done
+}
+mutate audit "$yml" 's/timeout-minutes/timeout-hours/' 's/\(uses: [^@]*\)@[0-9a-f]\{40\}/\1@v4/' \
+	's/github[.]token/secrets.TOKEN/' \
+	's/persist-credentials: false/persist-credentials: true/' 's/set -eu$/set -u/' \
+	"/^  lemmas:\$/a\\
+    if: github.event.action != 'edited'" \
+	"/github.event.action != 'edited' || github.event.changes.base != null/d" \
+	's/^    types: \[opened/  pull_request_review:\
+    types: [submitted]\
+  pull_request:\
+&/' \
+	's/head.repo.full_name == github.repository/head.repo.full_name != github.repository/' \
+	's/^permissions:$/&\
+  actions: write/'
+mutate audit_relay "$relay" 's/timeout-minutes/timeout-hours/' 's/github[.]token/secrets.TOKEN/' \
+	's/actions: write/actions: read/' 's/pull_request_review:/pull_request:/' \
+	"s/ && github.event.review.state == 'approved'//" "s/ && github.event.review.user.login == 'psjg'//" \
+	'/\[ "$HEAD_REPO" = "$REPO" \] ||/d' 's/^  relay:/  check:/'
+sed -e 's/^  lemmas:/  check:/' -e 's/needs[.]lemmas/needs.check/' -e 's/needs: lemmas/needs: check/' "$yml" >"$tmp/mut/series.yml"
+out="$(audit "$tmp/mut/series.yml" || :)" # not a process substitution: it could outlive $tmp
+check "the audit names a job id noslop.yml also has" grep -qx 'shared job id: check' <<<"$out"
+
+echo "present-check self-test: $fails of $total checks failed (bash $BASH_VERSION)"
+if [ -z "${PRESENT_CHECK_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ] && ! [ /bin/bash -ef "$BASH" ]; then
+	mkdir -p "$tmp/shim"
+	ln -s /bin/bash "$tmp/shim/bash"
+	PATH="$tmp/shim:$PATH" PRESENT_CHECK_SELF_TEST_SHIM=1 /bin/bash "$root/scripts/present-check-self-test" ||
+		fails=$((fails + 1))
+fi
+[ "$fails" -eq 0 ]

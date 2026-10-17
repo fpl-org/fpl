@@ -25,6 +25,7 @@ State of a task:
     title, description   text
     state                todo | doing | done | dropped
     blockedBy            ids of tasks that must be done (or dropped) first
+    partOf               id of the task this one is a part of (a lane, a group), or null
     assignee             DID of whoever works on it, or null
     author               DID that opened it
     opened, updated      timestamps of the first and of the last applied operation
@@ -38,6 +39,7 @@ Actions (the JSONL lines given to `rad cob create|update`):
     {"type": "state",   "state": todo|doing|done|dropped}       author, assignee
     {"type": "block",   "by": <task id>}                        author, assignee
     {"type": "unblock", "by": <task id>}                        author, assignee
+    {"type": "part",    "of": <task id> | null}                 author
 
 Who may act is decided here, because an external COB has no other authorisation: the
 author may do anything, the assignee may move the task and its blockers, anybody else is
@@ -63,9 +65,95 @@ def did(value):
 
 def text(value, limit):
     """`value` as an accepted string, or None."""
-    if isinstance(value, str) and 0 < len(value.strip()) and len(value) <= limit:
+    if isinstance(value, str) and len(value.strip()) > 0 and len(value) <= limit:
         return value.strip()
     return None
+
+
+def opened(task, action, actor):
+    """`open`: only as the first thing that ever happens to the object."""
+    title = text(action.get("title"), MAX_TITLE)
+    description = action.get("description", "")
+    if task or title is None:
+        return False
+    if not isinstance(description, str) or len(description) > MAX_DESCRIPTION:
+        return False
+    task.update(
+        title=title,
+        description=description,
+        state="todo",
+        blockedBy=[],
+        partOf=None,
+        assignee=None,
+        author=actor,
+    )
+    return True
+
+
+def edited(task, action):
+    title = text(action.get("title"), MAX_TITLE)
+    description = action.get("description")
+    if title is not None:
+        task["title"] = title
+    if isinstance(description, str) and len(description) <= MAX_DESCRIPTION:
+        task["description"] = description
+        return True
+    return title is not None
+
+
+def assigned(task, action):
+    to = action.get("to")
+    if to is not None and did(to) is None:
+        return False
+    task["assignee"] = did(to)
+    return True
+
+
+def moved(task, action):
+    if action.get("state") not in STATES:
+        return False
+    task["state"] = action["state"]
+    return True
+
+
+def parted(task, action):
+    """One parent, set or cleared. The reducer sees one task at a time, so it cannot tell
+    a part-of loop from a tree; scripts/task refuses to close one and `tree` reports one
+    that arrives anyway, as `ready` does for blockers."""
+    of = action.get("of")
+    if of is not None and not (isinstance(of, str) and OID.match(of)):
+        return False
+    task["partOf"] = of
+    return True
+
+
+def blocked(task, action):
+    by = action.get("by")
+    held = task["blockedBy"]
+    if not (isinstance(by, str) and OID.match(by)) or by in held or len(held) >= MAX_BLOCKERS:
+        return False
+    task["blockedBy"] = sorted([*held, by])
+    return True
+
+
+def unblocked(task, action):
+    by = action.get("by")
+    if not (isinstance(by, str) and OID.match(by)) or by not in task["blockedBy"]:
+        return False
+    task["blockedBy"].remove(by)
+    return True
+
+
+# What each action does, and who may do it: "author" alone, or "worker", the author or
+# the assignee. `open` is not here: it is the one action that needs no task yet.
+ACTIONS = {
+    "edit": (edited, "author"),
+    "assign": (assigned, "author"),
+    "part": (parted, "author"),
+    "state": (moved, "worker"),
+    "block": (blocked, "worker"),
+    "unblock": (unblocked, "worker"),
+}
 
 
 def apply(task, action, actor):
@@ -73,67 +161,16 @@ def apply(task, action, actor):
     if not isinstance(action, dict):
         return False
     kind = action.get("type")
-
     if kind == "open":
-        title = text(action.get("title"), MAX_TITLE)
-        if task or title is None:  # only as the first thing that ever happens
-            return False
-        description = action.get("description", "")
-        if not isinstance(description, str) or len(description) > MAX_DESCRIPTION:
-            return False
-        task.update(
-            title=title,
-            description=description,
-            state="todo",
-            blockedBy=[],
-            assignee=None,
-            author=actor,
-        )
-        return True
-
-    if not task:  # nothing else makes sense before `open`
+        return opened(task, action, actor)
+    if not task or not isinstance(kind, str) or kind not in ACTIONS:  # nothing before `open`
         return False
+    change, who = ACTIONS[kind]
     is_author = actor == task["author"]
     is_worker = is_author or (actor is not None and actor == task["assignee"])
-
-    if kind == "edit" and is_author:
-        changed = False
-        title = text(action.get("title"), MAX_TITLE)
-        if title is not None:
-            task["title"], changed = title, True
-        description = action.get("description")
-        if isinstance(description, str) and len(description) <= MAX_DESCRIPTION:
-            task["description"], changed = description, True
-        return changed
-
-    if kind == "assign" and is_author:
-        to = action.get("to")
-        if to is None or did(to) is not None:
-            task["assignee"] = did(to)
-            return True
+    if not (is_author if who == "author" else is_worker):
         return False
-
-    if kind == "state" and is_worker:
-        if action.get("state") in STATES:
-            task["state"] = action["state"]
-            return True
-        return False
-
-    if kind in ("block", "unblock") and is_worker:
-        by = action.get("by")
-        if not (isinstance(by, str) and OID.match(by)):
-            return False
-        if kind == "block":
-            if by in task["blockedBy"] or len(task["blockedBy"]) >= MAX_BLOCKERS:
-                return False
-            task["blockedBy"] = sorted(task["blockedBy"] + [by])
-            return True
-        if by in task["blockedBy"]:
-            task["blockedBy"].remove(by)
-            return True
-        return False
-
-    return False
+    return change(task, action)
 
 
 def reduce(request):
@@ -150,7 +187,7 @@ def reduce(request):
         for action in actions:
             try:
                 ok = apply(task, action, actor)
-            except Exception:  # a bug here must not make the object unreadable
+            except Exception:  # noqa: BLE001 -- a raise would make the object unreadable
                 ok = False
             applied += ok
             ignored += not ok
@@ -162,7 +199,7 @@ def reduce(request):
         elif ignored:
             task = {"ignored": ignored}
         return task
-    except Exception:
+    except Exception:  # noqa: BLE001 -- a raise would make the object unreadable for all
         value = request.get("value") if isinstance(request, dict) else None
         return value if isinstance(value, dict) else {}
 
@@ -222,6 +259,12 @@ def self_test():
     check("assignee cannot edit or assign", state["title"] == "lexer")
     op(alice, {"type": "block", "by": a}, {"type": "block", "by": "zz"}, {"type": "block"})
     check("bad or repeated blockers ignored", state["blockedBy"] == [a])
+    op(bob, {"type": "part", "of": a})
+    check("only the author sets partOf", state.get("partOf") is None)
+    op(alice, {"type": "part", "of": a}, {"type": "part", "of": "zz"}, {"type": "part", "of": 3})
+    check("author sets partOf; bad parents ignored", state["partOf"] == a)
+    op(alice, {"type": "part", "of": None})
+    check("partOf clears", state["partOf"] is None)
     op(alice, {"type": "unblock", "by": a}, {"type": "state", "state": "finished"})
     check("unblock, bad state ignored", state["blockedBy"] == [] and state["state"] == "doing")
     before = dict(state)

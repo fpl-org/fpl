@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+#
+# scripts/whoami-check-self-test — proof that scripts/whoami-check reports the three
+# identities, nags when an admin account is among them and only then, never prints the
+# credential's password, and always exits 0. Run by `make gates`.
+#
+# The three probes are stand-ins first on PATH: a git whose `credential fill` answers from
+# $PUSH (and always adds a password line, which must never reach the output), a gh whose
+# `auth status` answers from $GH, an ssh that greets $SSH. An empty value makes that probe
+# fail. Where /bin/bash is not the bash running this (a Mac: 3.2), the run is made twice.
+
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/whoami-check-self-test.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+mkdir "$tmp/bin"
+
+# The stand-ins expand $PUSH, $GH and $SSH when they run, not when they are written.
+# shellcheck disable=SC2016
+{
+	printf '#!/bin/sh\n[ -n "$PUSH" ] || exit 1\ncat >\"$0.in\"\n[ \"$HANG\" != git ] || exec sleep 30\nprintf "protocol=https\\nhost=github.com\\nusername=%%s\\npassword=SECRET-PW\\n" "$PUSH"\n' >"$tmp/bin/git"
+	printf '#!/bin/sh\necho "$*" >>"$0.log"\n[ -n "$GH" ] || exit 1\nprintf "github.com\\n  \\342\\234\\223 Logged in to github.com account other (keyring)\\n  - Active account: false\\n\\n  \\342\\234\\223 Logged in to github.com account %%s (keyring)\\n  - Active account: true\\n" "$GH"\n' >"$tmp/bin/gh"
+	printf '#!/bin/sh\necho "$*" >>"$0.log"\n[ "$HANG" != ssh ] || exec sleep 30\n[ -n "$SSH" ] || exit 255\nprintf "Hi %%s! You have successfully authenticated, but GitHub does not provide shell access.\\n" "$SSH"\nexit 1\n' >"$tmp/bin/ssh"
+	# timeout is not on a stock Mac; the script must work with or without it.
+	printf '#!/bin/sh\nshift\nexec "$@"\n' >"$tmp/bin/timeout"
+}
+chmod +x "$tmp/bin/"*
+
+fails=0
+# expect <bash> <name> <PUSH> <GH> <SSH> <nag: yes|no> <a line the output must have, after 'whoami-check: ', or ''> [URL]
+expect() {
+	local sh="$1" name="$2" out rc=0
+	out="$(PATH="$tmp/bin:$PATH" PUSH="$3" GH="$4" SSH="$5" "$sh" "$root/scripts/whoami-check" ${8:+"$8"} 2>&1)" || rc=$?
+	case "$out" in *TOKEN-IN-URL*) echo "FAIL $name ($sh): the URL was printed"; fails=$((fails + 1)) ;; esac
+	if [ "$rc" -ne 0 ]; then echo "FAIL $name ($sh): exit $rc"; fails=$((fails + 1)); fi
+	case "$out" in *SECRET-PW*) echo "FAIL $name ($sh): the password was printed"; fails=$((fails + 1)) ;; esac
+	if [ "$6" = yes ]; then
+		case "$out" in *"NAG:"*"psjg-claude"*) : ;; *) echo "FAIL $name ($sh): no NAG"; fails=$((fails + 1)) ;; esac
+	else
+		case "$out" in *NAG*) echo "FAIL $name ($sh): NAG without an admin account"; fails=$((fails + 1)) ;; esac
+	fi
+	if [ -n "$7" ]; then
+		# A whole line, not a substring: "ssh:      psjg" is also a prefix of "ssh:      psjg-claude".
+		printf '%s\n' "$out" | grep -qxF "whoami-check: $7" || { echo "FAIL $name ($sh): no line '$7'"; fails=$((fails + 1)); }
+	fi
+}
+
+run() {
+	local sh="$1"
+	expect "$sh" all-admin psjg psjg psjg yes "username=psjg"
+	expect "$sh" all-machine psjg-claude psjg-claude psjg-claude no "username=psjg-claude"
+	expect "$sh" only-push psjg psjg-claude psjg-claude yes ""
+	expect "$sh" only-gh psjg-claude psjg psjg-claude yes "gh:       psjg"
+	expect "$sh" only-ssh psjg-claude psjg-claude psjg yes "ssh:      psjg"
+	expect "$sh" all-fail "" "" "" no "ssh:      unknown"
+	expect "$sh" mixed-fail psjg-claude "" "" no "username=psjg-claude"
+	# Given the destination URL, only the identity its transport uses is judged.
+	expect "$sh" url-https-admin-helper psjg psjg-claude psjg-claude yes "this push goes by https" "https://github.com/o/r.git"
+	expect "$sh" url-https-machine-helper psjg-claude psjg psjg no "this push goes by https" "https://github.com/o/r.git"
+	expect "$sh" url-ssh-machine-key psjg psjg psjg-claude no "this push goes by ssh" "git@github.com:o/r.git"
+	expect "$sh" url-ssh-admin-key psjg-claude psjg-claude psjg yes "this push goes by ssh" "ssh://git@github.com/o/r.git"
+	expect "$sh" url-token psjg psjg psjg no "this push goes by https with credentials in the URL" "https://x-access-token:TOKEN-IN-URL@github.com/o/r.git"
+	expect "$sh" url-https-bare-user psjg psjg-claude psjg-claude yes "this push goes by https" "https://psjg@github.com/o/r.git"
+	expect "$sh" url-other psjg psjg-claude psjg-claude yes "username=psjg" "rad://zabc/o/r"
+	# The ssh probe is never interactive and is not run for a destination that does not use ssh.
+	local log="$tmp/bin/ssh.log" out
+	rm -f "$log"
+	expect "$sh" ssh-probe-run psjg psjg-claude psjg-claude yes "ssh:      psjg-claude"
+	case "$(cat "$log" 2>/dev/null)" in
+	*BatchMode=yes*ConnectTimeout=5*) : ;;
+	*) echo "FAIL ssh-probe-flags ($sh): not BatchMode=yes with ConnectTimeout=5"; fails=$((fails + 1)) ;;
+	esac
+	rm -f "$log"
+	expect "$sh" ssh-probe-skipped psjg-claude psjg psjg no "ssh:      not used by this push" "https://github.com/o/r.git"
+	if [ -e "$log" ]; then echo "FAIL ssh-probe-skipped ($sh): ssh ran for an https destination"; fails=$((fails + 1)); fi
+	# The probes ask about the URL's own host, user and port: an ssh_config alias is what ssh is
+	# handed, so the key ssh_config picks for it is the key judged.
+	probed() { # probed <name> <url> <pattern ssh's argument line must match>
+		rm -f "$log"
+		expect "$sh" "$1" psjg-claude psjg-claude psjg-claude no "" "$2"
+		case "$(cat "$log" 2>/dev/null)" in
+		$3) : ;;
+		*) echo "FAIL $1 ($sh): ssh was asked '$(cat "$log" 2>/dev/null)', want $3"; fails=$((fails + 1)) ;;
+		esac
+	}
+	probed ssh-alias "git@github.com-work:o/r.git" "*-T -- git@github.com-work"
+	probed ssh-alias-no-user "github.com-work:o/r.git" "*-T -- github.com-work"
+	probed ssh-url-port "ssh://git@github.com:2222/o/r.git" "*-p 2222 -T -- git@github.com"
+	probed ssh-url-other-host "ssh://deploy@git.example.org/o/r.git" "*-T -- deploy@git.example.org"
+	# An option-looking host never reaches ssh as an option; the default is asked instead.
+	probed ssh-option-host "ssh://-oProxyCommand=x/o/r" "*-T -- git@github.com"
+	case "$(cat "$log")" in *ProxyCommand*) echo "FAIL ssh-option-host ($sh): an option reached ssh"; fails=$((fails + 1)) ;; esac
+	# The helper is asked about the URL's host; a user@ in the URL names the account without it.
+	rm -f "$tmp/bin/git.in"
+	expect "$sh" helper-host psjg psjg-claude psjg-claude yes "username=psjg" "https://ghe.example.com/o/r.git"
+	case "$(cat "$tmp/bin/git.in" 2>/dev/null)" in *host=ghe.example.com*) : ;; *) echo "FAIL helper-host ($sh): the helper was not asked about the URL's host"; fails=$((fails + 1)) ;; esac
+	rm -f "$tmp/bin/git.in"
+	expect "$sh" url-user-names-account psjg-claude psjg-claude psjg-claude yes "username=psjg" "https://psjg@github.com/o/r.git"
+	if [ -e "$tmp/bin/git.in" ]; then echo "FAIL url-user-names-account ($sh): the helper was asked"; fails=$((fails + 1)); fi
+	# A probe is run only for a destination whose identity it decides: gh for none, the helper
+	# for https alone, ssh for ssh alone.
+	rm -f "$tmp/bin/gh.log" "$tmp/bin/git.in" "$log"
+	expect "$sh" gh-never-asked-with-url psjg psjg psjg yes "gh:       not used by this push" "https://github.com/o/r.git"
+	rm -f "$tmp/bin/git.in"
+	expect "$sh" helper-not-asked-for-ssh psjg psjg psjg yes "username=not used by this push" "git@github.com:o/r.git"
+	if [ -e "$tmp/bin/gh.log" ]; then echo "FAIL gh-never-asked-with-url ($sh): gh ran for a destination"; fails=$((fails + 1)); fi
+	if [ -e "$tmp/bin/git.in" ]; then echo "FAIL helper-not-asked-for-ssh ($sh): the helper ran for an ssh destination"; fails=$((fails + 1)); fi
+	# git's own askpass is never asked: GIT_TERMINAL_PROMPT=0 stops the terminal prompt, not a
+	# GIT_ASKPASS, core.askPass or SSH_ASKPASS helper, which git tries first. Real git, with no
+	# config but the test's own, so no helper answers and git would prompt; the askpass stand-in
+	# answers psjg and leaves a mark. The probe must come back unknown and leave no mark.
+	local ask="$tmp/askpass" via set
+	printf '#!/bin/sh\n: >>"$0.asked"\necho psjg\n' >"$ask" && chmod +x "$ask"
+	for via in GIT_ASKPASS SSH_ASKPASS core.askPass; do
+		rm -f "$ask.asked" && : >"$tmp/gitconfig" && set=()
+		case "$via" in
+		core.askPass) printf '[core]\n\taskPass = %s\n' "$ask" >"$tmp/gitconfig" ;;
+		*) set=("$via=$ask") ;;
+		esac
+		out="$(env -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT -u GIT_ASKPASS -u SSH_ASKPASS \
+			HOME="$tmp" XDG_CONFIG_HOME="$tmp" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$tmp/gitconfig" \
+			${set[@]+"${set[@]}"} "$sh" "$root/scripts/whoami-check" https://askpass.invalid/o/r.git 2>&1)"
+		if [ -e "$ask.asked" ]; then echo "FAIL askpass-$via ($sh): git's askpass was asked"; fails=$((fails + 1)); fi
+		printf '%s\n' "$out" | grep -qxF "whoami-check: username=unknown" || { echo "FAIL askpass-$via ($sh): the probe did not come back unknown"; fails=$((fails + 1)); }
+	done
+	# The admin list is configurable.
+	out="$(PATH="$tmp/bin:$PATH" PUSH=bob GH=bob SSH=bob FPL_ADMIN_ACCOUNTS="bob" "$sh" "$root/scripts/whoami-check" 2>&1)"
+	case "$out" in *NAG*) : ;; *) echo "FAIL admins-env ($sh): no NAG"; fails=$((fails + 1)) ;; esac
+	# A glob in the admin list is a name, not a pathname pattern: with a file "bob" in the working
+	# directory, "*" must not become "bob" and nag a non-admin.
+	mkdir "$tmp/glob" && : >"$tmp/glob/bob"
+	out="$(cd "$tmp/glob" && PATH="$tmp/bin:$PATH" PUSH=bob GH=bob SSH=bob FPL_ADMIN_ACCOUNTS="*" "$sh" "$root/scripts/whoami-check" 2>&1)"
+	case "$out" in *NAG*) echo "FAIL admins-glob ($sh): '*' expanded against the working directory"; fails=$((fails + 1)) ;; esac
+	rm -rf "$tmp/glob"
+	# A stock Mac has no timeout. Every probe still has a deadline there (perl's alarm), and
+	# where there is neither the probes run without one. The PATH holds only the commands the
+	# script and the stand-ins need, so an installed timeout cannot answer for the absent one.
+	local iso="$tmp/iso" c t0
+	for variant in perl bare; do
+		rm -rf "$iso" && mkdir "$iso"
+		cp "$tmp/bin/git" "$tmp/bin/gh" "$tmp/bin/ssh" "$iso/"
+		for c in sh sed awk head cat sleep env; do ln -s "$(command -v "$c")" "$iso/$c"; done
+		[ "$variant" = bare ] || ln -s "$(command -v perl)" "$iso/perl"
+		if PATH="$iso" command -v timeout >/dev/null 2>&1; then echo "FAIL no-timeout-$variant ($sh): the isolated PATH has timeout"; fails=$((fails + 1)); fi
+		out="$(PATH="$iso" PUSH=psjg GH=psjg SSH=psjg "$sh" "$root/scripts/whoami-check" 2>&1)"
+		printf '%s\n' "$out" | grep -qxF "whoami-check: ssh:      psjg" || { echo "FAIL no-timeout-$variant ($sh): no ssh line"; fails=$((fails + 1)); }
+		# A probe that hangs is cut off at the deadline (with perl), and never costs more than that.
+		if [ "$variant" = perl ]; then
+			t0=$SECONDS
+			out="$(PATH="$iso" HANG=ssh FPL_WHOAMI_DEADLINE=1 PUSH=psjg GH=psjg SSH=psjg "$sh" "$root/scripts/whoami-check" 2>&1)"
+			if [ $((SECONDS - t0)) -gt 6 ]; then echo "FAIL hang-perl ($sh): took $((SECONDS - t0))s with a 1s deadline"; fails=$((fails + 1)); fi
+			printf '%s\n' "$out" | grep -qxF "whoami-check: ssh:      unknown" || { echo "FAIL hang-perl ($sh): a hung ssh was not 'unknown'"; fails=$((fails + 1)); }
+			t0=$SECONDS
+			out="$(PATH="$iso" HANG=git FPL_WHOAMI_DEADLINE=1 PUSH=psjg GH=psjg SSH=psjg "$sh" "$root/scripts/whoami-check" https://github.com/o/r.git 2>&1)"
+			if [ $((SECONDS - t0)) -gt 6 ]; then echo "FAIL hang-helper ($sh): took $((SECONDS - t0))s with a 1s deadline"; fails=$((fails + 1)); fi
+			printf '%s\n' "$out" | grep -qxF "whoami-check: username=unknown" || { echo "FAIL hang-helper ($sh): a hung helper was not 'unknown'"; fails=$((fails + 1)); }
+		fi
+	done
+	rm -rf "$iso"
+}
+
+# The hook runs it as a message: before the gates, and its failure cannot refuse a push.
+hook="$root/.githooks/pre-push"
+if ! grep -q 'scripts/whoami-check" "${2:-}" >&2 || :$' "$hook"; then
+	echo "FAIL hook: .githooks/pre-push does not run scripts/whoami-check as a message"
+	fails=$((fails + 1))
+fi
+# Anchored on the calls, not the comments that name the scripts: the first call of each.
+if [ "$(grep -n '^[^#]*"\$top/scripts/whoami-check"' "$hook" | head -n 1 | cut -d: -f1)" -gt \
+	"$(grep -n '^[^#]*"\$top/scripts/leak-check"' "$hook" | head -n 1 | cut -d: -f1)" ]; then
+	echo "FAIL hook: whoami-check runs after the gates"
+	fails=$((fails + 1))
+fi
+
+run "$(command -v bash)"
+if [ -x /bin/bash ] && [ "$(/bin/bash -c 'echo $BASH_VERSION')" != "$BASH_VERSION" ]; then
+	run /bin/bash
+fi
+
+if [ "$fails" -ne 0 ]; then echo "whoami-check-self-test: $fails failure(s)"; exit 1; fi
+echo "whoami-check-self-test: ok"

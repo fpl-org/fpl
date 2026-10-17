@@ -138,6 +138,74 @@ Update deliberately, as its own commit: `nix flake update`, then `make check` in
   profile, so in the default shell `command -v gh` prints `/run/current-system/sw/bin/gh`. A
   dev shell prepends to `PATH`; it does not hide what the machine already has.
 
+## The same shell as an OCI image
+
+For a runner or a sandbox that has a container runtime and no Nix, `flake.nix` also builds the
+dev shell as an image: `packages.<system>.oci`, for `x86_64-linux` and `aarch64-linux` only,
+since `dockerTools` builds nothing for macOS. Its contents are the tools of the table above
+(`basePackages`, one list shared with the shell, so the two cannot drift), plus `gh`, which the
+shell leaves to a layer, a C compiler (`mkShell` brings one, and `uv` needs it where a wheel
+is missing: `crosshair-tool` on `aarch64-linux`), and the loader that PyPI wheels expect at
+`/lib` and `/lib64`, which a Nix-only root lacks (`ruff` from `uv sync` fails with "No such
+file or directory" without it). It carries no credentials: pass them as the run's environment.
+
+```
+make image                       # nix build .#packages.<linux system>.oci -> ./result-oci
+docker load < result-oci
+make image-quick                 # make quick in the image, on this checkout
+```
+
+On Linux `make image` is `nix build .#oci`. On a Mac it builds the Linux system of the same
+architecture, which needs a Linux builder; `make image HOST_SYSTEM=x86_64-linux` picks the
+other one.
+
+`make image-quick` mounts the checkout at `/work` and runs `make quick` in the image; the
+Makefile holds its `docker run` line, and two of its flags matter. It runs the container as
+yourself: as root `make quick` has one test fail, `test_a_path_refused` on an unwritable path,
+since root can write there. `HOME` is `/tmp` so that any uid has a home for the `uv` and `git`
+caches. And it lays a tmpfs over `/work/.venv`, so the container syncs a venv of its own and
+never sees the host's. The lanes take `.venv/bin/.synced` as proof that the venv is current,
+and a venv synced on a Mac holds the Mac's Python and binaries: with the bare mount, `make
+quick` stops at its first step (`/work/.venv/bin/python: No such file or directory`). The
+same mask keeps the container's Linux venv out of the host's checkout. Docker mounts a tmpfs
+root-owned and noexec, hence `exec,mode=1777`; the venv lives in memory and is synced anew
+on every run. Where the checkout has no `.venv`, Docker creates the empty mount point there:
+on a Mac it is yours; under a rootful Linux daemon it is presumably root's (not measured),
+and `rmdir .venv` clears it before a host-side `make`.
+
+**Limit: the image runs `make quick`, not `make check` or `make gates`.** It carries no Nix,
+and both of those lanes begin with `config-fresh`, which stops loudly when `nix` is not on
+`PATH` (the generated config files cannot be compared with `lib.limits` without it). That is
+the lane's own rule, not an image fault; a runner that needs the full gates takes the dev
+shell.
+
+**Measured (2026-10-14 unless dated, `aarch64-linux`).**
+
+- **Where it was built.** In a `nixos/nix` container (Nix 2.35.3, Linux aarch64) under
+  OrbStack on the maintainer's Mac, with `--option sandbox false` and the flake copied in as
+  a plain directory. `nix build .#packages.aarch64-linux.oci` succeeded there. The Gentoo
+  box was tried first as a remote builder and did not answer: SSH to it timed out on its LAN
+  and Tailscale addresses. `x86_64-linux` evaluates (`scripts/image-self-test`) and has not
+  been built: nothing here builds for it.
+- **Build time.** 1 min 18 s for the first image, with the `nixpkgs` substitutes fetched and
+  no compiler in it; 6 min 37 s once the compiler was added; 5 min 15 s and 3 min 38 s for
+  the two rebuilds after a change to the loader links and to `HOME`. Most of that is
+  `buildLayeredImage` writing the compressed tarball (100 layers), not compiling anything.
+- **Size.** The tarball is 502 MiB (526,569,252 bytes); the root filesystem is 1.6 GB by
+  `du`; `docker images` reports 3.3 GB. Largest paths: `pyright` 262 MB, `gcc` 250 MB,
+  `python` 137 MB, `nodejs-slim` 85 MB, `uv` 62 MB, `perl` 61 MB. `docker load` took 1 min
+  9 s (2 min 46 s on the first load).
+- **`make quick` inside it.** `docker load`, then `make quick` in the container as the
+  caller on a clean copy of the tree (no `.venv`; that run had no tmpfs, which on such a
+  tree changes only where the venv lands): `uv sync` fetched and built the pinned tools,
+  `ruff check` and `ruff format --check` passed, `pytest` passed 856 tests in 2 min 32 s,
+  2 min 47 s for the whole run. An earlier run of the same took 5 min 34 s. As root the
+  same run stopped on the one test named above, after 784 passed.
+- **With the host's `.venv` in the checkout** (2026-10-15). `make image-quick` on a copy of
+  the tree holding a `.venv` synced on the Mac: `pytest` passed 856 tests in 52 s, 1 min 19 s
+  for the whole run, and the host's `.venv` was left as it was (its `ruff` still a Mach-O
+  binary). The same run without the tmpfs stops at once, at `/work/.venv/bin/python`.
+
 ## Known trap: interactive `nix develop` on a Mac
 
 direnv (above) is the recommended route into the shell — the trap below is what happens

@@ -53,7 +53,7 @@ COMMIT_STACK_RE='[a-z0-9][a-z0-9._-]*'
 # the id was minted at (scripts/series mint): the identity of a series of commits, which stays
 # the same when the series is rebased, reordered or moved.
 COMMIT_SERIES_RE='[a-z0-9][a-z0-9._-]*-[0-9a-f]{7}'
-COMMIT_TRAILER_ORDER="Refs Stack Series-Id BREAKING-CHANGE Advisor Assisted-By Reasoning-Effort Session-Id Co-Authored-By"
+COMMIT_TRAILER_ORDER="Refs Stack Series-Id BREAKING-CHANGE Advisor Assisted-By Reasoning-Effort Session-Id Co-Authored-By Presented-By"
 COMMIT_TRAILER_KEYS="$COMMIT_TRAILER_ORDER Human-Only"
 
 # commit_types_re: the types as an extended-regex alternation, feat|fix|...

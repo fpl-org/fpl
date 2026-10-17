@@ -190,6 +190,7 @@ key, so landed history is not refused for case alone; a type or scope in the wro
   | `Reasoning-Effort` | that model's reasoning-effort setting | `Reasoning-Effort: low` |
   | `Session-Id` | the agent session id, for forensics | `Session-Id: d94ffb13-…` |
   | `Co-Authored-By` | co-author, GitHub-parseable form (repeatable) | `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>` |
+  | `Presented-By` | the model and session that presented the commit: rewrote it into the series a reviewer reads | `Presented-By: claude-opus-5-5 d94ffb13-…` |
 
 ### Series-Id
 
@@ -201,7 +202,8 @@ holds the tooling: `mint` the id, `stamp` it onto a range (refused once the main
 reviewed or commented on the pull request of the branch, or of any branch the rebase moves with
 it), `check` that a range carries exactly one,
 `manifest` a range as JSON, `digest` to print the manifest's digest alone (the receipt
-the lander writes as the `fpl/series` check run).
+the lander writes as the `fpl/series` check run), `range` to find a series on main, `revert` a
+whole series at once.
 
 There is no `Patch-Id:` trailer, on purpose: a patch id stored in a message goes stale as soon
 as a move shifts the context lines, and a stale identity is a false one. The manifest computes

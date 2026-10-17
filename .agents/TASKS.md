@@ -7,13 +7,18 @@ file in the tree. A file in the tree would need a pull request for every change 
 COB is a graph of signed operations under `refs/cobs/<type>/<id>`: it travels with the
 repository, and who opened, moved or blocked a task is part of the record, per actor key.
 
-**Status: empty.** The repository has been through `rad init`, so the store exists and the
-maintainer's key is the one that signs. No task has been written to it. Needs `rad`:
-`scripts/layer on radicle`.
+**Status: one clone holds tasks.** The repository has been through `rad init`, so the store
+exists and the maintainer's key is the one that signs. The maintainer's clone holds the units of
+the harness redo (29 tasks, loaded from `.agents/tasks/redo.tsv`, below); the Radicle node is
+not running and nothing has been pushed to the `rad` remote, so no other clone has them. Needs
+`rad`: `scripts/layer on radicle`.
 
 ```
 scripts/task new "parser: integer expressions" -b <id>    # -b: blocked by; repeatable
 scripts/task ready                                       # what can be picked up now; 1 on a loop
+scripts/task tree                                        # every task under its lane, ready or waiting
+scripts/task new "…" -p <lane>                           # -p: part of; also: task part <id> <of>|none
+scripts/task load [-n] <file>                            # create the tasks a unit file lists
 scripts/task list [--all]
 scripts/task start|done|drop|reopen <id>
 scripts/task block|unblock <id> <by>                     # block -f records a loop anyway
@@ -22,9 +27,41 @@ scripts/task edit <id> [-t <title>] [-d <description>]
 scripts/task show <id>                                   # the full state, as JSON
 ```
 
-An `<id>` is any unambiguous prefix. A task is `todo`, `doing`, `done` or `dropped`. It is
+An `<id>` is the first word of a title (`A6a` for "A6a lander-core"; this wins when it and an
+object id prefix would both match) or any unambiguous prefix of the object id. A task is `todo`, `doing`, `done` or `dropped`. It is
 *ready* when it is open and every task in its `blockedBy` is done or dropped; a blocker this
 clone does not know counts as open.
+
+## Lanes and the units file
+
+A task may be *part of* one other task: a lane or a group. It is a place in a tree and holds
+nothing up, unlike `blockedBy`. `task tree` prints every task under its parent; an open leaf
+says `ready` or `<-` the labels of what it waits on, so one command shows both shapes. A lane
+is left out of `ready` while it has an open part, since its parts are what is picked up; once
+every part is done or dropped, closing it is the work left, and it is listed. A `part` that would close a
+loop is refused; one that arrives anyway is listed after the tree, with exit 1, as `ready`
+does for blockers. A parent this clone has not received is drawn as a root marked `?` with
+its parts under it, also with exit 1. `partOf` was added to the reducer when the store was still empty: operations
+written before it replay unchanged.
+
+`task load FILE` creates the tasks of a units file, five tab-separated columns (label, partOf,
+blockedBy, name, brief; the title is `<label> <name>`). `.agents/tasks/redo.tsv` is the
+harness redo's DAG: ids and short English briefs, no owner steps. A tasks store is not part of
+a clone, so the file is how a reviewer sees what was loaded, in a diff. The loader:
+
+- refuses, naming the unit and before the first write, whatever it could not take back
+  afterwards: a task is signed and replicated, and a COB cannot be taken back out of a peer's
+  store. That is a label that is not one word or ends in `:`, two labels that differ only in
+  case, a reference to a label the file lacks, a row the reducer would not open (title over
+  200, brief over 10 000 characters), a label two tasks of the store share, a link to a task
+  this identity may not link, more than 64 blockers on a task, a new link that closes a loop
+  of blockers or parents with the store's own, and a title or brief that
+  `scripts/leak-check --text` flags (always in block mode, whatever `FPL_LEAK_GATE` says);
+- reads back every task it opens and every link it writes, and stops at the first one the
+  reducer did not apply;
+- is idempotent: a unit whose label already is the first word of a task, in any case, is not
+  created again;
+- takes `-n` to say what it would create and link, writing nothing.
 
 ## Loops
 
