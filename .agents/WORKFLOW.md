@@ -433,7 +433,12 @@ through only when every commit kept its pair:
 old=$(git merge-base github/main <branch>); was=$(git rev-parse <branch>)
 git rebase --onto github/main "$old" <branch>
 git range-diff "$old..$was" github/main..<branch>      # every pair '=': nothing changed
+FPL_FORWARD_ONLY_OVERRIDE="relocate: <Series-Id>" \
+  git push --force-with-lease=refs/heads/<branch>:"$was" github <branch>:refs/heads/<branch>
 ```
+
+The push names the remote, not a URL: the override checks the new head against
+`refs/remotes/<remote>/main`, which a URL has none of.
 
 Every pair `=` and the same manifest means the new head is the old review: the owner
 approves it again. A pair `!` is a commit whose diff changed; it needs reading, not carrying.
