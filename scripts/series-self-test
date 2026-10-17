@@ -133,6 +133,11 @@ STUB_PR_B=9 STUB_REVIEWS_9=psjg "$BASH" scripts/series stamp "$base0..HEAD" >"$t
 verdict "stamp refuses when the owner is on a boundary branch's pull request" "$rc" 1 "owner-spoke"
 same "the refused stamp left the tip alone" "$(git rev-parse HEAD)" "$tip0"
 same "the refused stamp left the boundary alone" "$(git rev-parse agent/claude/stack/demo-1)" "$(git rev-parse HEAD~1)"
+# Checked out in another worktree, the boundary branch would stay behind on the unstamped commit.
+git worktree add -q "$tmp/wt" agent/claude/stack/demo-1
+sr 1 "stamp refuses a boundary branch checked out in another worktree" "checked-out" stamp "$base0..HEAD"
+same "the refused stamp left the tip alone (worktree)" "$(git rev-parse HEAD)" "$tip0"
+git worktree remove "$tmp/wt"
 git switch -q main
 sr 1 "stamp refuses main" "branch" stamp "$base0..HEAD"
 git switch -q agent/claude/stack/demo

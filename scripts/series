@@ -17,7 +17,8 @@
 #                                   --exec, reusing the id the range already carries, else
 #                                   [id], else a fresh mint. The rebase runs with --update-refs,
 #                                   so every local branch pointing into the range moves with it.
-#                                   Refused on main, on a dirty tree, and once the maintainer has
+#                                   Refused on main, on a dirty tree, when such a branch is
+#                                   checked out in another worktree, and once the maintainer has
 #                                   reviewed, approved or commented on the pull request of the
 #                                   branch or of any branch that would move (a rewrite after that
 #                                   is a question to him, not a tool's call).
@@ -171,11 +172,16 @@ cmd_stamp() { # stamp <base>..HEAD [id]
 	list="$(revs "$range")"
 	# The rebase below runs with --update-refs: every other local branch pointing into the range
 	# moves too, and its pull request has the same claim on the maintainer's word as this one's.
-	while read -r sha name; do
+	# Except a branch checked out in another worktree: --update-refs leaves that one on the old,
+	# unstamped commit, and the stack falls apart. It is refused before anything moves.
+	while read -r sha name wt; do
 		name="${name#refs/heads/}"
 		[ "$name" != "$branch" ] || continue
-		case $'\n'"$list"$'\n' in *$'\n'"$sha"$'\n'*) forge_silent "$name" ;; esac
-	done < <(git for-each-ref --format='%(objectname) %(refname)' refs/heads)
+		case $'\n'"$list"$'\n' in *$'\n'"$sha"$'\n'*)
+			[ -z "$wt" ] || die checked-out "$name points into the range and is checked out in $wt, where the rebase would leave it behind" "switch that worktree off $name, then stamp again"
+			forge_silent "$name" ;;
+		esac
+	done < <(git for-each-ref --format='%(objectname) %(refname) %(worktreepath)' refs/heads)
 	ids="$(for c in $list; do ids_of "$c"; done | sort -u)"
 	n="$(printf '%s' "$ids" | grep -c . || true)"
 	[ "$n" -le 1 ] || die series-mixed "the range carries $n different Series-Ids" "a series has one id; fix the stray commit"
