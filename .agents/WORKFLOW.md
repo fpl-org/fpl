@@ -313,8 +313,8 @@ Each of these steps, and each the lander takes, has a route without the automati
 Each step the scripts and workflows take has a route a person can walk with git, `gh` and the
 browser, so the pipeline is never the only way through, and a step that fails can be done by
 hand without guessing what it did. `<o>/<n>` is the repository (`fpl-org/fpl`), `$TOKEN` the
-machine account's token (`gh auth token --user <machine account>`), and every `gh` command
-names `github.com`, as `scripts/land` does.
+machine account's token (`gh auth token --hostname github.com --user <machine account>`), and
+every `gh` command names `github.com`, as `scripts/land` does.
 
 **Open a draft.** Push with the token in the URL and the helper list emptied (`-c credential.helper=`, so no
 helper is handed the token to store), then
@@ -577,7 +577,8 @@ write to GitHub: git's credential helper, the active `gh` account and the ssh ke
 owner's admin account is any of them, a push from an agent's worktree goes out under it.
 `scripts/whoami-check` prints all three (username, gh, ssh) and a NAG line with the remedy when
 one is an admin account: push with the machine account token URL
-(`TOKEN=$(gh auth token --user <machine account>)`) or log the admin account out. It always
+(`TOKEN=$(gh auth token --hostname github.com --user <machine account>)`) or log the admin
+account out. It always
 exits 0, and `.githooks/pre-push` runs it first as a message, never as a refusal. The hook hands
 it the destination URL, so only the identity that transport uses is judged: a push to an https
 URL that carries its own credentials, as the remedy does, is not nagged.
