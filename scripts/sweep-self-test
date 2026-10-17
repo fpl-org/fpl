@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 #
 # scripts/sweep-self-test — proof that scripts/sweep reads a repository without touching it
-# (every file checksums the same after a dry run) and proposes only what is finished. The
-# fixture has merged, rebase-merged, unmerged, dirty and detached worktrees, branches without
-# one, an open pull request, the do-not-touch names and a stash. Run by `make gates`.
+# (every file checksums the same after a dry run), proposes only what is finished, and removes
+# it only when the owner says yes, with what it held saved first: a tag, and the dirty files
+# (tracked, staged, untracked) as a patch that gives the worktree back. The fixture has merged,
+# rebase-merged, unmerged, dirty and detached worktrees, branches without one, an open pull
+# request, the do-not-touch names and a stash. Run by `make gates`.
 #
 # It runs in a throwaway repository, with Git's config and HOME pointed away from the
 # maintainer's, and a stub gh that logs its calls: nothing reaches the network. The suite runs
@@ -56,7 +58,7 @@ trap 'rm -rf "$tmp"' EXIT
 export GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home" \
 	XDG_CONFIG_HOME="$tmp/xdg" GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid \
 	GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid TMPDIR="$tmp/scratch"
-unset SWEEP_FORGE SWEEP_FRESH_MIN SWEEP_BASE SWEEP_REPO SWEEP_GH_USER
+unset SWEEP_OWNER_YES SWEEP_FORGE SWEEP_FRESH_MIN SWEEP_BASE SWEEP_REPO SWEEP_GH_USER
 # shellcheck disable=SC2046 # one variable name per line, no spaces
 unset $(git rev-parse --local-env-vars)
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$TMPDIR" "$tmp/stub"
@@ -137,6 +139,12 @@ g worktree add -q --detach "$tmp/tmpwt" main
 commit_in "$tmp/tmpwt" w.txt w "work"
 g branch -f agent/claude/stack/wip "$(git -C "$tmp/tmpwt" rev-parse HEAD)"
 g worktree remove --force "$tmp/tmpwt"
+# a branch whose patch differs from one on main only in whitespace: git cherry calls it in main
+g worktree add -q --detach "$tmp/tmpwt" main
+commit_in "$tmp/tmpwt" s.txt 'word word' "spaced work"
+g branch agent/claude/stack/spaced "$(git -C "$tmp/tmpwt" rev-parse HEAD)"
+g worktree remove --force "$tmp/tmpwt"
+commit_in "$repo" s.txt 'wordword' "unspaced work"
 printf 'stashed\n' >>"$repo/f.txt"
 g stash -q
 printf 'agent/claude/stack/openpr\tOPEN\nagent/claude/stack/onforge\tCLOSED\nagent/claude/stack/onforge\tMERGED\nagent/claude/stack/merged\tMERGED\n' >"$tmp/prs.tsv"
@@ -165,6 +173,7 @@ check "the header names the columns" '[ "$(head -n1 "$tmp/out")" = "kind${tab}na
 check "merged: an ancestor of main, archive" '[ "$(col worktrees/merged 4)/$(col worktrees/merged 5)/$(action worktrees/merged)" = yes/0/archive ]'
 check "rebased: not an ancestor, nothing new by patch, archive" '[ "$(col worktrees/rebased 4)/$(col worktrees/rebased 5)/$(action worktrees/rebased)" = no/0/archive ]'
 check "unmerged: one new commit, review" '[ "$(col worktrees/unmerged 5)/$(action worktrees/unmerged)" = 1/review ]'
+check "a patch that differs from main's only in whitespace is new" '[ "$(col agent/claude/stack/spaced 5)/$(action agent/claude/stack/spaced)" = 1/review ]'
 check "dirty counts tracked, staged and untracked files" '[ "$(col worktrees/dirty 6)/$(action worktrees/dirty)" = 3/archive ]'
 check "a detached worktree has no branch and is archive" '[ "$(col worktrees/detached 3)/$(col worktrees/detached 8)/$(action worktrees/detached)" = -/agent/archive ]'
 check "the pull request of a branch is its open one, then its merged one" '[ "$(col worktrees/openpr 7)/$(col agent/claude/stack/onforge 7)/$(col worktrees/merged 7)/$(col worktrees/unmerged 7)" = OPEN/MERGED/MERGED/- ]'
@@ -181,11 +190,81 @@ check "the token is never printed" '! grep -q stub-token "$tmp/out" "$tmp/err"'
 SWEEP_FORGE=0 sw
 check "SWEEP_FORGE=0 asks nothing and leaves pr as ?" '[ ! -s "$tmp/gh.log" ] && [ "$(col worktrees/merged 7)" = "?" ]'
 
-# --- the checkout that runs sweep ------------------------------------------------------------
+# --- apply: refused ---------------------------------------------------------------------------
+before="$(fingerprint)"
+sw --apply
+check "--apply without SWEEP_OWNER_YES exits 2" '[ "$rc" -eq 2 ]'
+check "--apply without SWEEP_OWNER_YES changes nothing" '[ "$(fingerprint)" = "$before" ]'
+SWEEP_FORGE=0 SWEEP_OWNER_YES=1 sw --apply
+check "--apply without the forge's answer is refused, nothing changed" '[ "$rc" -eq 1 ] && grep -q "needs the forge" "$tmp/err" && [ "$(fingerprint)" = "$before" ]'
+mv "$tmp/prs.tsv" "$tmp/prs.full"
+awk 'BEGIN { for (i = 0; i < 10000; i++) print "other/" i "\tCLOSED" }' >"$tmp/prs.tsv"
+sw
+check "a pull request list as long as the limit may be cut short: pr is ?" '[ "$(col worktrees/openpr 7)" = "?" ] && grep -q "forge no full answer" "$tmp/out"'
+mv "$tmp/prs.full" "$tmp/prs.tsv"
+SWEEP_OWNER_YES=1 sw --apply nosuch
+check "a name that picks no archive row is said, nothing changed" 'grep -q "^apply${tab}nosuch${tab}skipped: no archive row" "$tmp/out" && [ "$(fingerprint)" = "$before" ]'
+g branch agent/claude/attempt/merged main # a second archive row whose last component is merged
+before="$(fingerprint)"
+SWEEP_OWNER_YES=1 sw --apply merged
+check "a short name that picks two archive rows is said, nothing changed" 'grep -q "^apply${tab}merged${tab}skipped: picks .*merged .*merged; give the full name" "$tmp/out" && [ "$(fingerprint)" = "$before" ]'
+g branch -D agent/claude/attempt/merged >/dev/null
+
+# --- apply: an empty name, the checkout that runs sweep ------------------------------------------
+before="$(fingerprint)"
+SWEEP_OWNER_YES=1 sw --apply ""
+check "an empty name selects nothing: refused, nothing changed" '[ "$rc" -eq 1 ] && grep -q "empty name" "$tmp/err" && [ "$(fingerprint)" = "$before" ]'
 at="$repo/worktrees/rebased"
 sw
 check "run from a linked worktree, that worktree is keep, the others as before" '[ "$(action worktrees/rebased)/$(action worktrees/merged)" = keep/archive ] && grep -q "sweep runs here" "$tmp/out"'
+SWEEP_OWNER_YES=1 sw --apply rebased
+check "--apply from a linked worktree is refused, nothing changed" '[ "$rc" -eq 1 ] && grep -q "apply/root" "$tmp/err" && [ "$(fingerprint)" = "$before" ]'
 unset at
+
+# --- apply: one named row, a patch in the way ------------------------------------------------
+mkdir -p "$repo/harness/sweep-archive"
+printf 'in the way\n' >"$repo/harness/sweep-archive/dirty.patch"
+SWEEP_OWNER_YES=1 sw --apply dirty
+check "a patch already there fails the row and exits 1" '[ "$rc" -eq 1 ] && grep -q "dirty.patch or .*dirty.index.patch exists" "$tmp/out"'
+check "...and the worktree, its branch and the old patch stay" '[ -d "$repo/worktrees/dirty" ] && g rev-parse -q --verify refs/heads/agent/claude/stack/dirty >/dev/null && [ "$(cat "$repo/harness/sweep-archive/dirty.patch")" = "in the way" ]'
+rm -r "$repo/harness"
+SWEEP_OWNER_YES=1 sw --apply merged
+check "a named row alone is removed" '[ "$rc" -eq 0 ] && [ ! -d "$repo/worktrees/merged" ] && [ -d "$repo/worktrees/rebased" ]'
+check "...its branch is deleted and its tag kept at its head" '! g rev-parse -q --verify refs/heads/agent/claude/stack/merged >/dev/null && g rev-parse -q --verify refs/tags/archive/agent/claude/stack/merged >/dev/null'
+
+# --- apply: all -------------------------------------------------------------------------------
+main_before="$(g rev-parse main)"
+# config a patch must survive: colour even into a file, no a/ b/ prefixes
+git config --global color.diff always
+git config --global diff.noprefix true
+umask 022
+SWEEP_OWNER_YES=1 sw --apply
+check "--apply exits 0" '[ "$rc" -eq 0 ]'
+check "the archive and its patches are private under umask 022" 'ls -ld "$repo/harness" "$repo/harness/sweep-archive" | grep -c "^drwx------" | grep -qx 2 && ls -l "$repo/harness/sweep-archive/dirty.patch" | grep -q "^-rw-------"'
+for n in rebased dirty detached; do
+	check "$n: removed" '[ ! -d "$repo/worktrees/'"$n"'" ]'
+done
+check "the rebased branch is tagged at its head, then deleted" '! g rev-parse -q --verify refs/heads/agent/claude/stack/rebased >/dev/null && g rev-parse -q --verify refs/tags/archive/agent/claude/stack/rebased >/dev/null'
+check "a detached worktree is tagged archive/worktree/<name>" 'g rev-parse -q --verify refs/tags/archive/worktree/detached >/dev/null'
+check "a branch without a worktree is tagged, then deleted" '! g rev-parse -q --verify refs/heads/agent/claude/stack/gone >/dev/null && g rev-parse -q --verify refs/tags/archive/agent/claude/stack/gone >/dev/null'
+check "the dirty patch holds the tracked, staged and untracked files" 'p="$repo/harness/sweep-archive/dirty.patch"; [ -s "$p" ] && grep -q "^+edited" "$p" && grep -q "^+untracked" "$p" && grep -q "^+staged" "$p"'
+git clone -q "$repo" "$tmp/v"
+git -C "$tmp/v" checkout -q archive/agent/claude/stack/dirty
+git -C "$tmp/v" apply "$repo/harness/sweep-archive/dirty.patch"
+check "the patch over the tagged commit gives back the files" '[ "$(cat "$tmp/v/f.txt")" = "$(printf "base\nedited")" ] && [ "$(cat "$tmp/v/new-untracked.txt")" = untracked ] && [ "$(cat "$tmp/v/new-staged.txt")" = staged ]'
+check "the do-not-touch rows stay, worktrees and branches" '[ -d "$repo/worktrees/readme" ] && [ -d "$repo/worktrees/a" ] && [ -d "$repo/worktrees/fon-bounds" ] && [ -d "$repo/.claude/worktrees/app1" ] && g rev-parse -q --verify refs/heads/agent/cursor/stack/cursor-harness >/dev/null && g rev-parse -q --verify refs/heads/stack/readme >/dev/null && g rev-parse -q --verify refs/heads/fpl_a >/dev/null'
+check "the review and keep rows stay" '[ -d "$repo/worktrees/unmerged" ] && [ -d "$repo/worktrees/openpr" ] && g rev-parse -q --verify refs/heads/agent/claude/stack/wip >/dev/null && g rev-parse -q --verify refs/heads/agent/codex/stack/codex >/dev/null'
+check "main did not move, the stash is still there" '[ "$(g rev-parse main)" = "$main_before" ] && [ "$(g stash list | wc -l | tr -d " ")" = 1 ]'
+check "the symbolic ref still points to main" '[ "$(g symbolic-ref -q refs/heads/agent/claude/stack/alias)" = refs/heads/main ]'
+sw
+check "after the sweep nothing is left to archive" '! grep -q "${tab}archive${tab}" "$tmp/out"'
+# names no tag can carry: below a tag of the same path, and with a space
+g branch agent/claude/stack/dfx main
+SWEEP_OWNER_YES=1 sw --apply agent/claude/stack/dfx
+g branch agent/claude/stack/dfx/tip main
+g worktree add -q --detach "$repo/worktrees/my work" main
+SWEEP_OWNER_YES=1 sw --apply agent/claude/stack/dfx/tip "my work"
+check "a branch below an archived one and a name with a space are tagged by their commit id" '[ "$rc" -eq 0 ] && [ ! -d "$repo/worktrees/my work" ] && ! g rev-parse -q --verify refs/heads/agent/claude/stack/dfx/tip >/dev/null && [ "$(g rev-parse refs/tags/archive/sha/"$main_before")" = "$main_before" ] && [ "$(grep -c "removed; tag archive/sha/" "$tmp/out")" = 2 ]'
 
 # --- fresh ------------------------------------------------------------------------------------
 g worktree add -q "$repo/worktrees/young" -b agent/claude/stack/young main
@@ -211,12 +290,164 @@ touch -t 202001010000 "$repo/worktrees/staged/f.txt"
 git -C "$repo/worktrees/staged" update-index --chmod=+x f.txt
 sw
 check "a deleted file and a staged change count as recent work" '[ "$(action worktrees/deleted)/$(action worktrees/staged)" = review/review ]'
-# --- a repository inside a worktree -----------------------------------------------------------
-g worktree add -q "$repo/worktrees/embedded" -b agent/claude/stack/embedded main
-printf 'x\n' >"$repo/worktrees/embedded/loose.txt"
+# a chmod moves only the change time; touch -t sets the modification time back as well
+g worktree add -q "$repo/worktrees/chmodded" -b agent/claude/stack/chmodded main
+chmod +x "$repo/worktrees/chmodded/f.txt"
+gd="$(git -C "$repo/worktrees/chmodded" rev-parse --absolute-git-dir)"
+touch -t 202001010000 "$repo/worktrees/chmodded/f.txt" "$gd/HEAD" "$gd/index"
+sw
+check "a file whose mode changed a moment ago counts as recent work" '[ "$(action worktrees/chmodded)" = review ]'
+# a clean worktree goes without --force, ignored files with it
+printf 'ignored.log\n' >"$repo/.git/info/exclude"
+printf 'x\n' >"$repo/worktrees/old/ignored.log"
+SWEEP_OWNER_YES=1 sw --apply old
+check "a clean worktree holding an ignored file is removed, no patch made" '[ "$rc" -eq 0 ] && [ ! -d "$repo/worktrees/old" ] && [ ! -e "$repo/harness/sweep-archive/old.patch" ]'
+
+# --- apply: another session moves in between the table and the removal ---------------------------
+# A git that runs $SWEEP_RACE once, just before the git command $SWEEP_RACE_AT (default tag, made
+# after the checks of a row; stash, run once by the footer, comes after the table).
+mkdir -p "$tmp/race"
+cat >"$tmp/race/git" <<EOF
+#!/bin/sh
+if [ "\$1" = "\${SWEEP_RACE_AT:-tag}" ] && [ -n "\${SWEEP_RACE:-}" ] && [ ! -e "$tmp/raced" ]; then : >"$tmp/raced"; sh -c "\$SWEEP_RACE"; fi
+exec "$(command -v git)" "\$@"
+EOF
+chmod +x "$tmp/race/git"
+g branch agent/claude/stack/racebr main
+g worktree add -q "$repo/worktrees/racewt" -b agent/claude/stack/racewt main
+touch -t 202001010000 "$(git -C "$repo/worktrees/racewt" rev-parse --absolute-git-dir)/HEAD"
+rm -f "$tmp/raced"
+export SWEEP_RACE="git -C '$repo' update-ref refs/heads/agent/claude/stack/racebr \$(git -C '$repo' commit-tree -p agent/claude/stack/racebr -m race 'main^{tree}')"
+PATH="$tmp/race:$PATH" SWEEP_OWNER_YES=1 sw --apply racebr
+check "a branch without a worktree that moved meanwhile is not deleted" '[ "$rc" -eq 1 ] && grep -q "branch delete" "$tmp/out" && [ "$(g rev-list --count main..agent/claude/stack/racebr)" = 1 ]'
+rm -f "$tmp/raced"
+export SWEEP_RACE="printf 'late\n' >'$repo/worktrees/racewt/late.txt'"
+PATH="$tmp/race:$PATH" SWEEP_OWNER_YES=1 sw --apply racewt
+check "a clean worktree dirtied meanwhile is left with its file" '[ "$rc" -eq 1 ] && [ "$(cat "$repo/worktrees/racewt/late.txt")" = late ] && g rev-parse -q --verify refs/heads/agent/claude/stack/racewt >/dev/null'
+# Another run writes the patch between the test that it is absent and the write: a mkdir that
+# makes it first. The write must not replace it, and the worktree must stay.
+g worktree add -q "$repo/worktrees/clobber" -b agent/claude/stack/clobber main
+printf 'mine\n' >"$repo/worktrees/clobber/c.txt"
+mkdir -p "$tmp/racemk"
+cat >"$tmp/racemk/mkdir" <<EOF
+#!/bin/sh
+"$(command -v mkdir)" "\$@" && printf 'theirs\n' >"$repo/harness/sweep-archive/clobber.patch"
+EOF
+chmod +x "$tmp/racemk/mkdir"
+PATH="$tmp/racemk:$PATH" SWEEP_FRESH_MIN=0 SWEEP_OWNER_YES=1 sw --apply clobber
+check "a patch another run wrote meanwhile is not overwritten, and the worktree stays" '[ "$rc" -eq 1 ] && grep -q "could not create" "$tmp/out" && [ "$(cat "$repo/harness/sweep-archive/clobber.patch")" = theirs ] && [ "$(cat "$repo/worktrees/clobber/c.txt")" = mine ]'
+g worktree remove --force "$repo/worktrees/clobber" && g branch -q -D agent/claude/stack/clobber && rm "$repo/harness/sweep-archive/clobber.patch"
+unset SWEEP_RACE
+
+# --- apply: what a removal must not take with it -------------------------------------------------
+# The race commands run inside the git sweep calls: keep them off any repository its environment names.
+ng="env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git"
+g branch agent/claude/stack/symbr main
+rm -f "$tmp/raced"
+SWEEP_RACE_AT=stash SWEEP_RACE="$ng -C '$repo' symbolic-ref refs/heads/agent/claude/stack/symbr refs/heads/main" \
+	PATH="$tmp/race:$PATH" SWEEP_FRESH_MIN=0 SWEEP_OWNER_YES=1 sw --apply symbr
+check "a branch that became a symbolic ref is not deleted, nor its target" '[ "$rc" -eq 1 ] && grep -q "symbolic ref now" "$tmp/out" && [ "$(g rev-parse main)" = "$main_before" ] && [ "$(g symbolic-ref -q refs/heads/agent/claude/stack/symbr)" = refs/heads/main ]'
+g branch agent/claude/stack/symtag main
+rm -f "$tmp/raced"
+SWEEP_RACE="$ng -C '$repo' symbolic-ref refs/heads/agent/claude/stack/symtag refs/heads/main" \
+	PATH="$tmp/race:$PATH" SWEEP_FRESH_MIN=0 SWEEP_OWNER_YES=1 sw --apply symtag
+check "a branch that became a symbolic ref while being tagged does not take main with it" '[ "$(g rev-parse -q --verify refs/heads/main)" = "$main_before" ] && g rev-parse -q --verify refs/tags/archive/agent/claude/stack/symtag >/dev/null'
+g worktree add -q --detach "$repo/worktrees/movewt" main
+rm -f "$tmp/raced"
+SWEEP_RACE="$ng -C '$repo/worktrees/movewt' commit -q --allow-empty -m moved" \
+	PATH="$tmp/race:$PATH" SWEEP_FRESH_MIN=0 SWEEP_OWNER_YES=1 sw --apply movewt
+check "a detached worktree that moved on while being tagged is left, not removed with its new commit" '[ "$rc" -eq 1 ] && grep -q "head moved while being saved" "$tmp/out" && [ "$(git -C "$repo/worktrees/movewt" log -1 --format=%s)" = moved ]'
+g worktree add -q "$repo/worktrees/stagedgone" -b agent/claude/stack/stagedgone main
+printf 'only-staged\n' >"$repo/worktrees/stagedgone/ghost.txt"
+printf 'staged-edit\n' >"$repo/worktrees/stagedgone/f.txt"
+git -C "$repo/worktrees/stagedgone" add ghost.txt f.txt
+rm "$repo/worktrees/stagedgone/ghost.txt"
+printf 'base\n' >"$repo/worktrees/stagedgone/f.txt" # the files hold nothing the index does not
+SWEEP_FRESH_MIN=0 SWEEP_OWNER_YES=1 sw --apply stagedgone
+check "staged content the files no longer hold is saved in a second patch before the removal" '[ "$rc" -eq 0 ] && [ ! -d "$repo/worktrees/stagedgone" ] && grep -q "^+only-staged" "$repo/harness/sweep-archive/stagedgone.index.patch" && grep -q "^+staged-edit" "$repo/harness/sweep-archive/stagedgone.index.patch" && grep -q "staged in harness/sweep-archive/stagedgone.index.patch" "$tmp/out"'
+check "...and no patch of the files, which hold nothing, is made or named" '[ ! -e "$repo/harness/sweep-archive/stagedgone.patch" ] && ! grep -q "dirty files in" "$tmp/out"'
+# restore <name>: in the clone, its tag, then its files patch, then its index patch (--cached)
+restore() {
+	local p="$repo/harness/sweep-archive/$1"
+	git -C "$tmp/v" fetch -q "$repo" "refs/tags/*:refs/tags/*"
+	git -C "$tmp/v" clean -qfd
+	git -C "$tmp/v" checkout -q -f "archive/agent/claude/stack/$1"
+	[ ! -e "$p.patch" ] || git -C "$tmp/v" apply "$p.patch"
+	git -C "$tmp/v" apply --cached "$p.index.patch"
+}
+restore stagedgone
+check "...and that patch, applied with --cached, gives the staged state back" '[ "$(git -C "$tmp/v" show :ghost.txt)" = only-staged ] && [ "$(git -C "$tmp/v" show :f.txt)" = staged-edit ]'
+g worktree add -q "$repo/worktrees/partial" -b agent/claude/stack/partial main
+printf 'staged\n' >"$repo/worktrees/partial/part.txt"
+git -C "$repo/worktrees/partial" add part.txt
+printf 'on disk\n' >"$repo/worktrees/partial/part.txt"
+SWEEP_FRESH_MIN=0 SWEEP_OWNER_YES=1 sw --apply partial
+restore partial
+check "a file staged as one text and changed to another gets both back" '[ "$(git -C "$tmp/v" show :part.txt)" = staged ] && [ "$(cat "$tmp/v/part.txt")" = "on disk" ]'
+g worktree add -q "$repo/worktrees/symdirty" -b agent/claude/stack/symdirty main
+printf 'x\n' >"$repo/worktrees/symdirty/loose.txt"
+mkdir "$tmp/outside"
+mv "$repo/harness" "$repo/harness.real"
+ln -s "$tmp/outside" "$repo/harness"
+SWEEP_FRESH_MIN=0 SWEEP_OWNER_YES=1 sw --apply symdirty
+check "a patch is never written through a symlink: the row fails, nothing is removed" '[ "$rc" -eq 1 ] && grep -q "symlink" "$tmp/out" && [ -z "$(ls -A "$tmp/outside")" ] && [ -d "$repo/worktrees/symdirty" ] && g rev-parse -q --verify refs/heads/agent/claude/stack/symdirty >/dev/null'
+rm "$repo/harness"
+mv "$repo/harness.real" "$repo/harness"
+g branch agent/claude/stack/occupied main
+rm -f "$tmp/raced"
+SWEEP_RACE="$ng -C '$repo' worktree add -q '$repo/worktrees/occupy' agent/claude/stack/occupied" \
+	PATH="$tmp/race:$PATH" SWEEP_FRESH_MIN=0 SWEEP_OWNER_YES=1 sw --apply occupied
+check "a branch checked out meanwhile is not deleted; its worktree's head resolves" '[ "$rc" -eq 1 ] && grep -q "checked out meanwhile" "$tmp/out" && git -C "$repo/worktrees/occupy" rev-parse -q --verify HEAD >/dev/null'
+g branch agent/claude/stack/rebasing main
+gd="$(git -C "$repo/worktrees/unmerged" rev-parse --absolute-git-dir)" # a rebase there detaches its head
+rm -f "$tmp/raced"
+SWEEP_RACE="mkdir '$gd/rebase-merge' && echo refs/heads/agent/claude/stack/rebasing >'$gd/rebase-merge/head-name'" \
+	PATH="$tmp/race:$PATH" SWEEP_FRESH_MIN=0 SWEEP_OWNER_YES=1 sw --apply rebasing
+check "a branch a worktree rebases is not deleted" '[ "$rc" -eq 1 ] && grep -q "checked out meanwhile" "$tmp/out" && g rev-parse -q --verify refs/heads/agent/claude/stack/rebasing >/dev/null'
+rm -rf "$gd/rebase-merge"
+for n in embedded embedlate; do
+	g worktree add -q "$repo/worktrees/$n" -b "agent/claude/stack/$n" main
+	printf 'x\n' >"$repo/worktrees/$n/loose.txt"
+done
 git init -q "$repo/worktrees/embedded/inner"
 SWEEP_FRESH_MIN=0 sw
 check "a worktree holding an untracked repository is review" '[ "$(action worktrees/embedded)" = review ] && col worktrees/embedded 10 | grep -q "holds a repository at inner"'
+rm -f "$tmp/raced"
+SWEEP_RACE_AT=stash SWEEP_RACE="$ng init -q '$repo/worktrees/embedlate/inner' && $ng -C '$repo/worktrees/embedlate/inner' commit -q --allow-empty -m inner" \
+	PATH="$tmp/race:$PATH" SWEEP_FRESH_MIN=0 SWEEP_OWNER_YES=1 sw --apply embedlate
+check "a repository made after the table is not flattened into a patch and removed" '[ "$rc" -eq 1 ] && grep -q "holds a repository" "$tmp/out" && git -C "$repo/worktrees/embedlate/inner" rev-parse -q --verify HEAD >/dev/null && [ ! -e "$repo/harness/sweep-archive/embedlate.patch" ] && g rev-parse -q --verify refs/heads/agent/claude/stack/embedlate >/dev/null'
+# a merge in progress, an unmerged path, a submodule: none of them is in a patch
+g worktree add -q --detach "$tmp/ow" main
+commit_in "$tmp/ow" o.txt o "other work"
+g branch other "$(git -C "$tmp/ow" rev-parse HEAD)"
+for n in merging conflicted latemerge latebisect; do g worktree add -q "$repo/worktrees/$n" -b "agent/claude/stack/$n" main; done
+$ng -C "$repo/worktrees/merging" merge -q --no-commit --no-ff other >/dev/null 2>&1
+blob="$(g rev-parse main:f.txt)"
+git -C "$repo/worktrees/conflicted" update-index --force-remove f.txt
+printf '100644 %s 2\tf.txt\n100644 %s 3\tf.txt\n' "$blob" "$blob" | git -C "$repo/worktrees/conflicted" update-index --index-info
+idx="$tmp/sm-index"
+GIT_INDEX_FILE="$idx" g read-tree main
+GIT_INDEX_FILE="$idx" g update-index --add --cacheinfo "160000,$(g rev-parse main),sm"
+g branch smbase "$(g commit-tree -p main -m submodule "$(GIT_INDEX_FILE="$idx" g write-tree)")"
+g worktree add -q "$repo/worktrees/subm" -b agent/claude/stack/subm smbase
+SWEEP_FRESH_MIN=0 sw
+check "a merge in progress and an unmerged path are review" '[ "$(action worktrees/merging)/$(col worktrees/merging 10)" = "review/holds a merge in progress; 1 dirty" ] && [ "$(action worktrees/conflicted)" = review ] && col worktrees/conflicted 10 | grep -q "holds an unmerged path"'
+SWEEP_BASE=smbase SWEEP_FRESH_MIN=0 sw
+check "a worktree with a submodule is review" '[ "$(action worktrees/subm)/$(col worktrees/subm 10)" = "review/holds a submodule" ]'
+g worktree add -q "$repo/worktrees/intended" -b agent/claude/stack/intended main
+printf 'n\n' >"$repo/worktrees/intended/n.txt"
+git -C "$repo/worktrees/intended" add -N n.txt
+SWEEP_FRESH_MIN=0 sw
+check "a worktree with an intent-to-add entry is review" '[ "$(action worktrees/intended)" = review ] && col worktrees/intended 10 | grep -q "holds an intent-to-add entry"'
+rm -f "$tmp/raced"
+SWEEP_RACE_AT=stash SWEEP_RACE="$ng -C '$repo/worktrees/latemerge' merge -q --no-commit --no-ff other >/dev/null 2>&1" \
+	PATH="$tmp/race:$PATH" SWEEP_FRESH_MIN=0 SWEEP_OWNER_YES=1 sw --apply latemerge
+check "a merge begun after the table fails the row before anything is made" '[ "$rc" -eq 1 ] && grep -q "holds a merge in progress, which" "$tmp/out" && git -C "$repo/worktrees/latemerge" rev-parse -q --verify MERGE_HEAD >/dev/null && ! g rev-parse -q --verify refs/tags/archive/agent/claude/stack/latemerge >/dev/null'
+rm -f "$tmp/raced"
+SWEEP_RACE="$ng -C '$repo/worktrees/latebisect' bisect start" \
+	PATH="$tmp/race:$PATH" SWEEP_FRESH_MIN=0 SWEEP_OWNER_YES=1 sw --apply latebisect
+check "a bisect begun while being saved keeps the worktree" '[ "$rc" -eq 1 ] && grep -q "holds a bisect in progress now" "$tmp/out" && [ -d "$repo/worktrees/latebisect" ]'
+unset SWEEP_RACE
 
 # --- a merge commit is not a patch ---------------------------------------------------------------
 # A branch whose only commit by patch is in the base, plus a merge with a change of its own, is
@@ -233,6 +464,13 @@ g branch agent/claude/stack/mergey "$(git -C "$tmp/mw1" commit-tree -p HEAD -p m
 g branch agent/claude/stack/plainside "$(git -C "$tmp/mw1" rev-parse HEAD)"
 SWEEP_BASE=basebr SWEEP_FRESH_MIN=0 sw
 check "a branch whose merge commit is not in the base is review, its patch-equal twin without the merge is archive" '[ "$(col agent/claude/stack/mergey 5)/$(action agent/claude/stack/mergey)/$(col agent/claude/stack/plainside 5)/$(action agent/claude/stack/plainside)" = 1/review/0/archive ]'
+SWEEP_BASE=agent/claude/stack/plainside SWEEP_FRESH_MIN=0 sw
+check "the branch named as the base is keep, not an archive row of itself" '[ "$(action agent/claude/stack/plainside)/$(col agent/claude/stack/plainside 10)" = "keep/the base" ]'
+g worktree add -q --detach "$tmp/elsewhere" main
+g worktree add -q --detach "$HOME/.cursor/worktrees/fpl/c1" main
+SWEEP_FRESH_MIN=0 sw
+real="$(cd "$tmp" && pwd -P)" # git lists a worktree by its real path
+check "a detached worktree outside worktrees/ is PSJ's and review, one under .cursor Cursor's and keep" '[ "$(col "$real/elsewhere" 8)/$(action "$real/elsewhere")/$(col "$real/home/.cursor/worktrees/fpl/c1" 8)/$(action "$real/home/.cursor/worktrees/fpl/c1")" = PSJ/review/Cursor/keep ]'
 
 if [ "$fails" -eq 0 ]; then
 	echo "sweep self-test: $total checks passed (bash ${BASH_VERSION%%(*})"

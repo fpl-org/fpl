@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
-# scripts/sweep — an inventory of the worktrees and local branches, and what it proposes for
-# each: keep, review, or archive what is finished. It reads; it changes nothing.
+# scripts/sweep — an inventory of the worktrees and local branches, and the one clean-up it
+# proposes: remove what is finished, after saving what it held.
 #
-#   scripts/sweep [--dry-run]            the table (the default, and the only mode)
+#   scripts/sweep [--dry-run]            the table, nothing changed (the default)
+#   scripts/sweep --apply [name ...]     remove the rows proposed "archive" (all, or those named)
 #   scripts/sweep --self-test            scripts/sweep-self-test
 #
 # One tab-separated row per linked worktree (the root checkout is where this runs, not a row)
@@ -13,27 +14,56 @@
 #   name    the worktree's path from the root checkout, or the branch
 #   branch  the branch checked out there, or '-' (detached)
 #   merged  yes when the head is an ancestor of the base (git merge-base --is-ancestor)
-#   new     commits of the head the base lacks by patch (git cherry, the '+' lines): a
-#           rebase-merged pull request is not an ancestor of main but has new = 0; plus its
-#           merge commits the base lacks, which cherry skips and a patch cannot show to be in it
+#   new     commits of the head the base lacks by patch: a rebase-merged pull request is not an
+#           ancestor of main but has new = 0; plus its merge commits the base lacks, which a patch
+#           cannot show to be in it. Patches are compared byte for byte (git patch-id
+#           --verbatim), not as git cherry does: cherry drops whitespace, so 'word word' on the
+#           head and 'wordword' in the base would read as one patch and the head's as in the base
 #   dirty   files `git status --porcelain -uall` lists: modified, staged, untracked; not ignored
 #           ones; '-' for a branch row
 #   pr      OPEN, MERGED or CLOSED for the branch (one read-only forge call for all rows, with
 #           the machine account's token; OPEN beats MERGED beats CLOSED), '-' for none, '?'
-#           when the forge was not asked or did not answer
-#   owner   agent: agent/claude/* and detached worktrees; Cursor: agent/cursor/*; app-session:
-#           under .claude/worktrees, or claude/*; PSJ: the rest, agent/codex/* too (he runs it)
+#           when the forge was not asked or did not answer in full
+#   owner   agent: agent/claude/*, and detached worktrees under worktrees/; Cursor: agent/cursor/*,
+#           or under a .cursor directory; app-session: under .claude/worktrees, or claude/*; PSJ:
+#           the rest, agent/codex/* (he runs it) and a detached worktree elsewhere too
 #   action  by the first rule that fits:
-#             keep     on the do-not-touch list (below), Cursor's or an app session's, or its
-#                      pull request is open
+#             keep     on the do-not-touch list (below), the base branch itself, Cursor's or an
+#                      app session's, or its pull request is open
 #             review   locked, its directory gone, PSJ's, touched in the last SWEEP_FRESH_MIN
 #                      minutes (default 60: a run may use it), or new > 0: a person decides
 #             archive  merged, or new = 0: everything it committed is in the base; but review
-#                      when the branch is a symbolic ref (deleting it deletes its target) or
-#                      the worktree holds an untracked repository (a patch cannot keep one)
+#                      when the branch is a symbolic ref (deleting it deletes its target), or
+#                      the worktree holds what a patch cannot keep (unkept(), below): an
+#                      untracked repository, a submodule, an unmerged path, an intent-to-add
+#                      entry, or a merge, rebase, cherry-pick, revert or bisect in progress
 #   note    the reason, in words
 #
-# The checkout sweep runs in is keep, whatever the rules say: it is never a candidate.
+# --apply is the only way anything changes, and only with SWEEP_OWNER_YES=1: the owner's yes.
+# It runs only in the main checkout, whose .gitignore keeps the archive out of a commit.
+# It acts on the archive rows of the table it prints, never on the do-not-touch list (checked
+# again at the moment of removal), and not at all without the forge's full answer (pr is ?),
+# since an open pull request is what keeps a branch. Each row goes in the order that loses
+# nothing:
+#   1. the dirty files, untracked ones too, as harness/sweep-archive/<name>.patch (git-ignored,
+#      private: mode 600; refused when it exists or the way to it holds a symlink), made in a
+#      scratch index so the worktree's own stays as it was, and with git diff options that no
+#      config can turn into something git apply refuses; and what is staged, as
+#      <name>.index.patch, because the files may no longer hold it: a staged file deleted since
+#      is in the index only. On the tag, `git apply <name>.patch` gives the files back, then
+#      `git apply --cached <name>.index.patch` the index
+#   2. a tag on the head: archive/<branch>, or archive/worktree/<name> when detached; when that
+#      name is taken by another commit or no valid tag, archive/sha/<sha>
+#   3. git worktree remove (--force only when a patch was made and the files still match it),
+#      then the branch is deleted only if it is still at the head tagged: the tag keeps the
+#      commits reachable
+# A head that moved since the table was made is skipped; what is dirty is read again at the
+# moment of removal, and a worktree that changed after its patch was made is left, as is one
+# that holds what a patch cannot keep by then. A branch that became a symbolic ref, or that a
+# worktree checks out, rebases or bisects at the moment of deletion, stays. The one running
+# sweep is never a candidate. Ignored files (.venv) go with the directory. A name picks a row
+# by its name, its branch or its last path component; a name that picks no archive row is
+# said and skipped.
 #
 # The base is the local `main` (SWEEP_BASE): a lagging main only makes rows look less merged,
 # the safe direction. Nothing is fetched or pruned. SWEEP_FORGE=0 skips the forge; SWEEP_REPO
@@ -50,11 +80,27 @@ die() {
 	exit 1
 }
 
+mode=dry names=""
 case "${1:-}" in
-"" | --dry-run) [ $# -le 1 ] || die "usage: scripts/sweep [--dry-run]" ;;
+"" | --dry-run) [ $# -le 1 ] || die "usage: scripts/sweep [--dry-run | --apply [name ...]]" ;;
+--apply)
+	mode=apply
+	shift
+	for n in "$@"; do
+		[ -n "$n" ] || die "an empty name selects nothing: give names, or none for all"
+		names="${names:+$names
+}$n"
+	done
+	;;
 --self-test) exec "$here/sweep-self-test" ;;
-*) die "usage: scripts/sweep [--dry-run]" ;;
+*) die "usage: scripts/sweep [--dry-run | --apply [name ...]]" ;;
 esac
+
+if [ "$mode" = apply ] && [ "${SWEEP_OWNER_YES:-}" != 1 ]; then
+	printf 'sweep: --apply removes worktrees and branches; it runs only when the owner says yes.\n' >&2
+	printf 'sweep: nothing was changed. Look at the table (scripts/sweep), then SWEEP_OWNER_YES=1 scripts/sweep --apply\n' >&2
+	exit 2
+fi
 
 # A read changes nothing: status must not refresh an index.
 export GIT_OPTIONAL_LOCKS=0
@@ -63,13 +109,46 @@ fresh="${SWEEP_FRESH_MIN:-60}"
 case "$fresh" in "" | *[!0-9]*) die "SWEEP_FRESH_MIN is minutes, a number: '$fresh'" ;; esac
 fresh=$((10#$fresh)) # 08 is a number of minutes, not a bad octal one
 git rev-parse --verify -q "$base^{commit}" >/dev/null || die "no base '$base'"
+# A branch compared with itself is merged, so the base would be an archive row of its own.
+base_ref="$(git rev-parse --symbolic-full-name "$base" 2>/dev/null || true)"
 root="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
 self="$(git rev-parse --show-toplevel)"
 [ -d "$root" ] || die "cannot find the root checkout"
+# [apply/root] --apply writes the archive into the main checkout, whose .gitignore is what keeps
+# it out of a commit; from a linked worktree on newer code that checkout may not name it yet.
+if [ "$mode" = apply ] &&
+	[ "$(git rev-parse --absolute-git-dir)" != "$(git rev-parse --path-format=absolute --git-common-dir)" ]; then
+	die "[apply/root] --apply runs only in the main checkout ($root), not in a linked worktree;" \
+		"nothing was changed. Remedy: run scripts/sweep --apply from the main checkout"
+fi
 tab="$(printf '\t')"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/sweep.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 git_in() { git -C "$1" "${@:2}"; }
+# unkept <worktree>: what of it a patch over HEAD cannot keep, in words, or nothing. A submodule's
+# own changes are in its repository, not in the diff; an unmerged path has no one staged text, and
+# git diff prints "* Unmerged path" for it; the state of a merge, rebase, cherry-pick, revert or
+# bisect lives in the worktree's git directory, which the removal deletes. An intent-to-add entry
+# (git add -N) is in no cached diff, and the patch of the files gives it back as untracked.
+unkept() {
+	local gd s st nl='
+'
+	gd="$(git_in "$1" rev-parse --absolute-git-dir)" || { echo "a git directory it cannot read"; return; }
+	for s in MERGE_HEAD rebase-merge rebase-apply CHERRY_PICK_HEAD REVERT_HEAD sequencer BISECT_START; do
+		[ -e "$gd/$s" ] || continue
+		case "$s" in
+		MERGE_HEAD) s=merge ;; rebase-*) s=rebase ;; CHERRY_PICK_HEAD) s=cherry-pick ;;
+		REVERT_HEAD) s=revert ;; sequencer) s="cherry-pick or revert" ;; *) s=bisect ;;
+		esac
+		echo "a $s in progress"
+		return
+	done
+	# read whole before it is searched: a grep -q that quits early would kill the git still writing
+	st="$(git_in "$1" status --porcelain -uno)" || { echo "a status it cannot read"; return; }
+	case "$nl$st" in *"$nl A "*) echo "an intent-to-add entry"; return ;; esac
+	git_in "$1" ls-files -s | awk '$1 == "160000" { m = "a submodule" } $3 != 0 && !m { m = "an unmerged path" }
+		END { if (m) print m }' || echo "an index it cannot read"
+}
 
 # protected <path-from-root or ""> <branch or ""> — the do-not-touch list.
 protected() {
@@ -87,12 +166,16 @@ protected() {
 
 # owner_of <path-from-root or ""> <branch or "">
 owner_of() {
-	case "$1" in .claude/worktrees/*) echo app-session; return ;; esac
+	case "$1" in
+	.claude/worktrees/*) echo app-session; return ;;
+	.cursor/* | */.cursor/*) echo Cursor; return ;;
+	esac
 	case "$2" in
 	agent/cursor/*) echo Cursor ;;
 	claude/*) echo app-session ;;
 	agent/claude/*) echo agent ;;
-	"") if [ -n "$1" ]; then echo agent; else echo PSJ; fi ;;
+	# agents make their worktrees under worktrees/; a detached one elsewhere is not known to be theirs
+	"") case "$1" in worktrees/*) echo agent ;; *) echo PSJ ;; esac ;;
 	*) echo PSJ ;;
 	esac
 }
@@ -105,8 +188,9 @@ if [ "${SWEEP_FORGE:-1}" != 0 ] && command -v gh >/dev/null; then
 	repo="${SWEEP_REPO:-$(git remote get-url github 2>/dev/null | sed 's#.*github\.com[:/]##; s#\.git$##' || true)}"
 	tok="$(gh auth token --hostname github.com --user "${SWEEP_GH_USER:-psjg-claude}" 2>/dev/null || true)"
 	if [ -n "$repo" ] && [ -n "$tok" ] &&
-		GH_TOKEN="$tok" gh pr list -R "github.com/$repo" --state all --limit 1000 \
-			--json headRefName,state --jq '.[] | [.headRefName, .state] | @tsv' >"$tmp/prs.raw" 2>/dev/null; then
+		GH_TOKEN="$tok" gh pr list -R "github.com/$repo" --state all --limit 10000 \
+			--json headRefName,state --jq '.[] | [.headRefName, .state] | @tsv' >"$tmp/prs.raw" 2>/dev/null &&
+		[ "$(wc -l <"$tmp/prs.raw")" -lt 10000 ]; then # a full page may have been cut short
 		# OPEN beats MERGED beats CLOSED when a branch had several.
 		awk -F'\t' 'BEGIN { r["OPEN"] = 3; r["MERGED"] = 2; r["CLOSED"] = 1 }
 			{ if (r[$2] > r[$1 SUBSEP "s"]) { r[$1 SUBSEP "s"] = r[$2]; s[$1] = $2 } }
@@ -120,7 +204,7 @@ pr_of() {
 }
 
 # --- the rows ------------------------------------------------------------------------------
-# A freshness reference: a file as old as SWEEP_FRESH_MIN minutes, to compare mtimes with -nt.
+# A freshness reference: a file whose modification time is SWEEP_FRESH_MIN minutes ago.
 ref="$tmp/ref"
 if [ "$fresh" -gt 0 ]; then
 	then_s=$(($(date +%s) - fresh * 60))
@@ -134,15 +218,27 @@ merged_of() {
 	git merge-base --is-ancestor "$1" "$base" || rc=$?
 	case "$rc" in 0) echo yes ;; 1) echo no ;; *) die "merge-base failed for $1" ;; esac
 }
+# pids <range>: '<patch id> <commit>' for each commit of the range but merges, by git patch-id
+# --verbatim, which keeps whitespace; whatever the config says: the format, signatures, colour,
+# external diff and textconv, renames and diff.relative all stay out of the patch.
+pids() {
+	git log --no-merges --format='commit %H' --no-show-signature --no-color --no-ext-diff \
+		--no-textconv --no-renames --no-relative -p "$1" | git patch-id --verbatim
+}
 # new_of <sha>: how many of its commits the base lacks by patch, and its merge commits the base
-# lacks at all: git cherry skips a merge, whose own changes (a conflict resolution) a patch
-# comparison would not find in the base, so a merge is counted as new until it is an ancestor.
+# lacks at all: the patch of a merge is not compared, as its own changes (a conflict resolution)
+# would not be found in the base, so a merge is counted as new until it is an ancestor. The
+# commits compared are git cherry's: the head's the base lacks with the base's the head lacks. A
+# commit with an empty patch is new, as it is to cherry.
 new_of() {
-	local out plus merges
-	out="$(git cherry "$base" "$1")" || die "cherry failed for $1"
-	plus="$(printf '%s\n' "$out" | grep -c '^+' || true)"
+	local own in_base merges
+	pids "$1..$base" | cut -d' ' -f1 | sort -u >"$tmp/theirs" || die "patch-id failed for $base"
+	own="$(git rev-list --no-merges --count "$base..$1")" || die "rev-list failed for $1"
+	in_base="$(pids "$base..$1" |
+		awk 'NR == FNR { theirs[$1] = 1; next } $1 in theirs { n++ } END { print n + 0 }' "$tmp/theirs" -)" ||
+		die "patch-id failed for $1"
 	merges="$(git rev-list --merges --count "$base..$1")" || die "rev-list failed for $1"
-	echo $((plus + merges))
+	echo $((own - in_base + merges))
 }
 
 rows="$tmp/rows"
@@ -156,6 +252,8 @@ emit() {
 decide() {
 	if protected "$1" "$2"; then
 		printf 'keep\ton the do-not-touch list\n'
+	elif [ -n "$2" ] && [ "refs/heads/$2" = "$base_ref" ]; then
+		printf 'keep\tthe base\n'
 	elif [ "$6" = Cursor ] || [ "$6" = app-session ]; then
 		printf 'keep\t%s work\n' "$6"
 	elif [ "$5" = OPEN ]; then
@@ -213,7 +311,7 @@ while IFS="$tab" read -r path sha br locked gone; do
 	if [ "$gone" = 1 ] || [ ! -d "$path" ]; then
 		gone=1 dirty='-'
 	else
-		: >"$tmp/dirty"
+		: >"$tmp/dated"
 		git_in "$path" status --porcelain -z -uall >"$tmp/status"
 		skip=0
 		while IFS= read -r -d '' ent; do
@@ -221,15 +319,20 @@ while IFS="$tab" read -r path sha br locked gone; do
 			case "$ent" in [RC]?* | ?[RC]*) skip=1 ;; esac
 			dirty=$((dirty + 1))
 			f="${ent#???}"
-		# with -uall git lists every untracked file; an untracked directory is a repository
-		case "$ent" in '?? '*/) nested="${nested:-${f%/}}" ;; esac
-			if [ "$fresh" -gt 0 ] && [ "$active" = 0 ]; then
+			# with -uall git lists every untracked file; an untracked directory is a repository
+			case "$ent" in '?? '*/) nested="${nested:-${f%/}}" ;; esac
+			if [ "$fresh" -gt 0 ]; then
 				# a deleted file is dated by the nearest directory that is still there
 				t="$path/$f"
 				while [ ! -e "$t" ] && [ "$t" != "$path" ]; do t="${t%/*}"; done
-				if [ "$t" -nt "$ref" ]; then active=1; fi
+				printf '%s\0' "$t" >>"$tmp/dated"
 			fi
 		done <"$tmp/status"
+		# Dated by change time, which every write, chmod and touch -t moves; -nt reads the
+		# modification time, which a chmod leaves and touch -t sets back. One find for them all.
+		# shellcheck disable=SC2016 # expanded by the sh xargs runs
+		[ ! -s "$tmp/dated" ] ||
+			[ -z "$(xargs -0 sh -c 'find "$@" -prune -newercm "$0" -print' "$ref" <"$tmp/dated")" ] || active=1
 		[ "$dirty" -eq 0 ] || ndirty=$((ndirty + 1))
 		if [ "$fresh" -gt 0 ] && [ "$active" = 0 ]; then
 			gd="$(git_in "$path" rev-parse --absolute-git-dir)"
@@ -241,6 +344,10 @@ while IFS="$tab" read -r path sha br locked gone; do
 $(decide "$rel" "$b" "$merged" "$new" "$pr" "$owner" "$([ "$locked" = 1 ] && echo 1 || echo 0)" "$active" "$([ "$gone" = 1 ] && echo 1 || echo 0)")
 EOF
 	[ -z "$nested" ] || [ "$action" != archive ] || { action=review note="holds a repository at $nested"; }
+	if [ "$action" = archive ]; then
+		why="$(unkept "$path")"
+		[ -z "$why" ] || { action=review note="holds $why"; }
+	fi
 	[ "$path" != "$self" ] || { action=keep note="sweep runs here"; }
 	[ "$dirty" = 0 ] || [ "$dirty" = '-' ] || note="$note; $dirty dirty"
 	emit wt "$rel" "${b:--}" "$merged" "$new" "$dirty" "$pr" "$owner" "$action" "$note" "$sha" "$path"
@@ -275,7 +382,189 @@ fi
 	printf '# scope: %s worktrees (%s under worktrees/, %s under .claude/worktrees/, %s elsewhere), the root checkout not counted; %s of them dirty (untracked files count)\n' \
 		"$nwt" "$nunder" "$nclaude" "$((nwt - nunder - nclaude))" "$ndirty"
 	printf '# scope: %s branches without a worktree; %s stashes (never touched); base %s; forge %s\n' \
-		"$nbr" "$(git stash list | wc -l | tr -d ' ')" "$base" "$([ "$forge" = yes ] && echo asked || echo 'not asked: pr is ?')"
+		"$nbr" "$(git stash list | wc -l | tr -d ' ')" "$base" "$([ "$forge" = yes ] && echo asked || echo 'no full answer: pr is ?')"
 	printf '# actions: keep %s, review %s, archive %s\n' "$(count keep)" "$(count review)" "$(count archive)"
 }
-printf '# dry run: nothing was changed\n'
+[ "$mode" = apply ] || { printf '# dry run: nothing was changed\n'; exit 0; }
+
+# --- apply ---------------------------------------------------------------------------------
+# An open pull request keeps its branch; a table that cannot show one proposes blind.
+[ "$forge" = yes ] || die "--apply needs the forge's full answer (pr is ?); nothing was changed"
+archive_dir="$root/harness/sweep-archive"
+printf '%s\n' "$names" >"$tmp/names"
+applied=0 failed=0 skipped=0
+say() { printf 'apply\t%s\t%s\n' "$1" "$2"; }
+# Each name picks the archive row it is the name or branch of, else the one whose last path
+# component it is; the rows picked go to picked. A name that picks no row is said: a typo must
+# not read as a clean run. A name that picks two is said and picks neither: a short name names
+# one row, and a removal is no place to guess which.
+: >"$tmp/picked"
+nl='
+'
+while IFS= read -r n; do
+	[ -n "$n" ] || continue
+	m="$(awk -F'\t' -v n="$n" '$9 != "archive" { next } $2 == n || $3 == n { print $2; f = 1 }
+		{ k = $2; sub(/.*\//, "", k); if (k == n) s = s $2 "\n" } END { if (!f) printf "%s", s }' "$rows")"
+	case "$m" in
+	"") say "$n" "skipped: no archive row by that name"; skipped=$((skipped + 1)) ;;
+	*"$nl"*)
+		say "$n" "skipped: picks $(printf '%s\n' "$m" | paste -sd ' ' -); give the full name"
+		skipped=$((skipped + 1))
+		;;
+	*) printf '%s\n' "$m" >>"$tmp/picked" ;;
+	esac
+done <"$tmp/names"
+tip() { git rev-parse -q --verify "refs/heads/$1" 2>/dev/null || true; }
+# pdiff <worktree> <args>: git diff as git apply reads it back, whatever the config says: no
+# colour (color.diff=always colours a redirect too), no external diff or textconv, the a/ and b/
+# prefixes (diff.noprefix), the whole tree (diff.relative), a blank context line kept whole.
+pdiff() {
+	git_in "$1" -c diff.suppressBlankEmpty=false diff --no-color --no-ext-diff --no-textconv \
+		--no-relative --src-prefix=a/ --dst-prefix=b/ "${@:2}"
+}
+# mktag <name>: tag the row's head <name>, or find it tagged so already.
+mktag() { git tag -- "$1" "$sha" 2>/dev/null || [ "$(git rev-parse -q --verify "refs/tags/$1^{commit}")" = "$sha" ]; }
+common="$(git rev-parse --path-format=absolute --git-common-dir)"
+# occupied <branch>: checked out, rebased or bisected in some worktree, read now: what git
+# branch -d refuses to delete, and update-ref -d does not check.
+occupied() {
+	# The listing is read whole before it is searched: grep -q quits at the first match, and a
+	# git still writing then dies of SIGPIPE, which pipefail turns into "not found" and a delete.
+	# A listing that cannot be read counts as occupied.
+	local d list nl='
+'
+	list="$(git worktree list --porcelain)" || return 0
+	case "$nl$list$nl" in *"${nl}branch refs/heads/$1$nl"*) return 0 ;; esac
+	for d in "$common" "$common"/worktrees/*; do
+		grep -Fxqs -e "refs/heads/$1" -e "$1" "$d/rebase-merge/head-name" "$d/rebase-apply/head-name" "$d/BISECT_START" && return 0
+	done
+	return 1
+}
+# snap <worktree> <file>: its dirty files, untracked ones too, as a patch over HEAD (empty when
+# clean), made in a scratch index so the worktree's own stays as it was; and in <file>.index what
+# is staged in the real index, as a patch over HEAD, for staged content the files no longer hold
+# (a staged file deleted since): the patch of the files alone cannot show it. Status 3: it holds
+# a repository (a gitlink), which a patch records as one commit id and cannot keep.
+snap() {
+	local idx="$tmp/snap-index"
+	GIT_INDEX_FILE="$idx" git_in "$1" read-tree HEAD &&
+		GIT_INDEX_FILE="$idx" git_in "$1" -c advice.addEmbeddedRepo=false add -A &&
+		GIT_INDEX_FILE="$idx" pdiff "$1" --cached --raw HEAD >"$2.raw" &&
+		pdiff "$1" --cached --raw HEAD >>"$2.raw" || return 1
+	! awk '$1 == ":160000" || $2 == "160000" { f = 1 } END { exit !f }' "$2.raw" || return 3
+	GIT_INDEX_FILE="$idx" pdiff "$1" --cached --binary HEAD >"$2" &&
+		pdiff "$1" --cached --binary HEAD >"$2.index"
+}
+while IFS="$tab" read -r kind name b merged new dirty pr owner action note sha path; do
+	[ "$action" = archive ] || continue
+	if [ -n "$names" ]; then
+		grep -Fxq -- "$name" "$tmp/picked" || continue
+	fi
+	# The rule above is not trusted with the list that matters.
+	if protected "$([ "$kind" = wt ] && echo "$name")" "$([ "$b" = - ] || echo "$b")"; then
+		say "$name" "refused: on the do-not-touch list"
+		skipped=$((skipped + 1))
+		continue
+	fi
+	if [ "$kind" = wt ]; then
+		now="$(git_in "$path" rev-parse HEAD)" || { say "$name" "FAILED: cannot read its head"; failed=$((failed + 1)); continue; }
+	else
+		now="$(tip "$b")"
+	fi
+	if [ "$now" != "$sha" ]; then
+		say "$name" "skipped: its head moved since the table"
+		skipped=$((skipped + 1))
+		continue
+	fi
+	if [ "$b" != - ] && git symbolic-ref -q "refs/heads/$b" >/dev/null; then
+		say "$name" "FAILED: $b is a symbolic ref now; deleting it would delete its target; left as it is"
+		failed=$((failed + 1))
+		continue
+	fi
+	if [ "$b" != - ]; then tag="archive/$b"; else tag="archive/worktree/${name##*/}"; fi
+	# What is dirty is read now, not from the table: another session may have touched the worktree.
+	patch="" ipatch="" saved="" # each set once its file is written; saved: either
+	if [ "$kind" = wt ]; then
+		why="$(unkept "$path")"
+		[ -z "$why" ] || { say "$name" "FAILED: it holds $why, which a patch cannot keep; left as it is"; failed=$((failed + 1)); continue; }
+		rc=0
+		snap "$path" "$tmp/snap1" || rc=$?
+		if [ "$rc" -ne 0 ]; then
+			say "$name" "FAILED: $([ "$rc" = 3 ] && echo "it holds a repository a patch cannot keep" || echo "could not read the dirty files"); left as it is"
+			failed=$((failed + 1))
+			continue
+		fi
+		if [ -s "$tmp/snap1" ] || [ -s "$tmp/snap1.index" ]; then
+			p="$archive_dir/${name##*/}"
+			# a symlink anywhere on the way would put the patch outside the repository
+			if [ -L "$root/harness" ] || [ -L "$archive_dir" ] || [ -L "$p.patch" ] || [ -L "$p.index.patch" ]; then
+				say "$name" "FAILED: ${archive_dir#"$root"/} is or holds a symlink; left as it is"
+				failed=$((failed + 1))
+				continue
+			fi
+			if [ -e "$p.patch" ] || [ -e "$p.index.patch" ]; then
+				say "$name" "FAILED: $p.patch or $p.index.patch exists; move it away"
+				failed=$((failed + 1))
+				continue
+			fi
+			[ ! -s "$tmp/snap1" ] || patch="$p.patch"
+			[ ! -s "$tmp/snap1.index" ] || ipatch="$p.index.patch"
+			# private: a patch holds whatever the worktree did, a credential too. Created, never
+			# overwritten (noclobber opens it O_EXCL): another run may have written it since the test.
+			if ! (umask 077 && mkdir -p "$archive_dir" && set -C && { [ -z "$patch" ] || cat "$tmp/snap1" >"$patch"; } &&
+				{ [ -z "$ipatch" ] || cat "$tmp/snap1.index" >"$ipatch"; }) 2>/dev/null; then
+				say "$name" "FAILED: could not create $p.patch or $p.index.patch; left as it is"
+				failed=$((failed + 1))
+				continue
+			fi
+			saved="${patch:-$ipatch}"
+		fi
+	fi
+	# The name may be another commit's, no valid ref (a space), or clash with a tag above or below
+	# it (archive/x and archive/x/tip cannot both be): then the commit's own id names the tag.
+	if ! mktag "$tag"; then
+		tag="archive/sha/$sha"
+		mktag "$tag" || { say "$name" "FAILED: could not tag it; left as it is"; failed=$((failed + 1)); continue; }
+	fi
+	# Clean, it goes without --force, which refuses a worktree touched since; dirty, only if the
+	# files are still the ones in the patch.
+	if [ "$kind" = wt ]; then
+		if [ -n "$saved" ] && ! { snap "$path" "$tmp/snap2" && cmp -s "$tmp/snap1" "$tmp/snap2" && cmp -s "$tmp/snap1.index" "$tmp/snap2.index"; }; then
+			say "$name" "FAILED: it changed while being saved; tag $tag and its patches stay"
+			failed=$((failed + 1))
+			continue
+		fi
+		# A detached head that advanced since the table is reachable from nothing once the worktree
+		# goes, and the tag is on the old one; the clean-worktree check of remove does not see it.
+		if [ "$(git_in "$path" rev-parse HEAD 2>/dev/null)" != "$sha" ]; then
+			say "$name" "FAILED: its head moved while being saved; tag $tag stays"
+			failed=$((failed + 1))
+			continue
+		fi
+		# A bisect started meanwhile changes no file the snapshots compare.
+		why="$(unkept "$path")"
+		[ -z "$why" ] || { say "$name" "FAILED: it holds $why now; tag $tag stays"; failed=$((failed + 1)); continue; }
+		if ! git worktree remove ${saved:+--force} -- "$path" 2>/dev/null; then
+			say "$name" "FAILED: worktree remove; tag $tag stays"
+			failed=$((failed + 1))
+			continue
+		fi
+	fi
+	if [ "$b" != - ] && occupied "$b"; then
+		say "$name" "FAILED: $b was checked out meanwhile; tag $tag stays"
+		failed=$((failed + 1))
+		continue
+	fi
+	# update-ref -d with the old value is a compare-and-swap: a branch that moved since the tag
+	# was made stays, with its new commits. --no-deref: a branch that became a symbolic ref since
+	# the check above, to a branch at the same commit, passes the swap, and would delete its target.
+	if [ "$b" != - ] && ! git update-ref --no-deref -d "refs/heads/$b" "$sha" 2>/dev/null; then
+		say "$name" "FAILED: branch delete; tag $tag stays"
+		failed=$((failed + 1))
+		continue
+	fi
+	say "$name" "removed; tag $tag${patch:+; dirty files in ${patch#"$root"/}}${ipatch:+; staged in ${ipatch#"$root"/}}"
+	applied=$((applied + 1))
+done <"$rows"
+printf '# applied %s, skipped %s, failed %s\n' "$applied" "$skipped" "$failed"
+[ "$failed" -eq 0 ]
