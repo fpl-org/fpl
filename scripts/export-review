@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# noslop: skip predates the lint list: ruff finds 37 (19 E501) and would reformat it
 """scripts/export-review — put what was written in the Radicle review on the pull request.
 
     scripts/export-review <number>...     those pull requests

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# gates: $BIN/python $S/escapes --self-test
 """scripts/escapes — every way out of a check is named and says why.
 
     scripts/escapes [path ...]            (default: bootstrap/fpl bootstrap/tests)

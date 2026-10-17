@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# gates: $BIN/python $S/forward-only --self-test
 """scripts/forward-only — refuse a push that rewrites a pull request the maintainer approved.
 
     scripts/forward-only <remote> <url> < <pre-push lines>      (.githooks/pre-push)

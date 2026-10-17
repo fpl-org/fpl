@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# noslop: skip predates the lint list: ruff finds 399 (339 E501) and would reformat it
 """scripts/review-serve — review Radicle patches in the browser, with the whole file in view.
 
     scripts/review --serve [--port <n>]     the usual way in: stop a running page, import

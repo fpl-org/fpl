@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# gates: $BIN/python $S/mutants --self-test
 """scripts/mutants — mutation testing, and a verdict on every mutant that lived.
 
     scripts/mutants              run mutmut in the worktree, then judge its results

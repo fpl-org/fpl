@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# gates: $BIN/python $S/diagrams --self-test
 """scripts/diagrams — the map of the code, computed on demand and never committed.
 
     scripts/diagrams [--root DIR] [--source DIR] [--out DIR]

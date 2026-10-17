@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# gates: nix develop $ROOT#radicle -c python3 $S/task --self-test
+# (rad is only in the radicle layer of the dev shell; make gates needs nix already)
 """scripts/task — FPL's task graph, kept in the repository as Radicle COBs.
 
     scripts/task new "<title>" [-d <description>] [-b <id>]... [-p <id>]   open a task
