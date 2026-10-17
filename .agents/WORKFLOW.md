@@ -365,9 +365,13 @@ for c in $(git rev-list --reverse github/main..<head>); do
 done | tee manifest | shasum -a 256                      # the digest
 ```
 
-**Ready and approve.** The pull request is ready when the review bots have said what they
-will and their findings are dealt with: `gh pr ready <number> --repo github.com/<o>/<n>`, or
-the button. The maintainer reads the Commits tab commit by commit and approves in the UI:
+**Ready and approve.** CodeRabbit and Claude read the draft; Codex skips drafts and reads the
+pull request once it is ready (`codex-review.yml` runs only on a pull request that is not a
+draft; `claude-code-review.yml` runs on `opened` and again on `ready_for_review`). So: when
+the findings on the draft are dealt with, mark it ready,
+`gh pr ready <number> --repo github.com/<o>/<n>` or the button; wait for the reviews that
+starts and deal with their findings; only then ask the maintainer. His approval freezes the
+branch (rule 10), and a finding after it is a new pull request. The maintainer reads the Commits tab commit by commit and approves in the UI:
 Files changed, Review changes, Approve, Submit. That approves the head the page loaded, so
 reload if the branch moved; `land/approved` reads the SHA the approval names. Check it:
 
