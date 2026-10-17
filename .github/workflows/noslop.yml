@@ -16,9 +16,10 @@ on:
   push:
     branches: [main]
 
-# One run per pull request; a new push cancels the run of the commit it replaces.
+# One run per branch; a new push cancels the run of the commit it replaces, so a stale run
+# does not hold a hosted-runner slot.
 concurrency:
-  group: noslop-${{ github.event.pull_request.number || github.sha }}
+  group: noslop-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -27,6 +28,7 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v31
@@ -47,6 +49,7 @@ jobs:
     # and on a pull request only once it is out of draft.
     if: github.event_name == 'push' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v31
