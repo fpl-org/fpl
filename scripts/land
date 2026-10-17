@@ -19,6 +19,9 @@
 #   land/base               it is based on main
 #   land/head               the head the forge reports is the commit refs/pull/<n>/head holds
 #   land/author             the active gh account did not write it
+#   land/autodelete         the repository does not delete a branch when its pull request
+#                           merges: that would close the pull requests stacked on it before
+#                           they are retargeted, after this script's push or the owner's
 #   land/attributed         where a pull_request rule on main that asks one approval or
 #                           more sets require_extra_approval_for_unattributed_changes, a
 #                           user account opened the pull request, not an App under its own
@@ -99,9 +102,7 @@
 # There land/approved wants a code owner's approval of the head standing, land/author that
 # it is not the author's, and land/bypass that each ruleset on main lists the App
 # (FPL_LAND_APP_ID, default 5318175, fpl-lander) with bypass mode always, or, where the token
-# cannot see that list, that the ruleset lets the token past always, and land/autodelete that
-# the repository does not delete a branch when its pull request merges: that would close the
-# pull requests stacked on it before they are retargeted. Before the push it
+# cannot see that list, that the ruleset lets the token past always. Before the push it
 # writes the fpl/series check run on the head, when main holds scripts/series, with the
 # digest `scripts/series digest <main>..<head>` prints; the push carries the token. Once
 # GitHub shows the merge it retargets to main each pull request based on the landed branch,
@@ -161,11 +162,13 @@
 # a lock: whoever can push to main as an admin can do so without it.
 #
 # The dry run is also the by-hand route's rule table (.agents/WORKFLOW.md, "By hand"): one
-# line for each land/ rule above (with --ci, land/ci and land/autodelete as well; with
-# --relocate on a head main is no ancestor of, relocate/clean, relocate/trees and
-# relocate/ids), `ok`, `NO` with its remedy, or `--` where an answer the rule rests on is
-# missing; a count; and then the lines a person types, in order: the approval it would give,
-# the push, the retarget of what is stacked on the head and the check that main is the head.
+# line for each land/ rule above (with --ci, land/ci as well; with --relocate on a head main
+# is no ancestor of, relocate/clean, relocate/trees and relocate/ids), `ok`, `NO` with its
+# remedy, or `--` where an answer the rule rests on is missing; a count; and then the lines a
+# person types, in order: the approval it would give, the push, the retarget of what is
+# stacked on the head and the check that main is the head. The table needs land/remote and,
+# with --ci, land/ci to hold: the shell judges those two before judge() runs, and a refusal
+# of either is one line and its remedy, with no table.
 # When land/workflows is the only refusal, the push line is the owner's, printed instead of
 # this script's own.
 #
@@ -212,12 +215,12 @@ PAD = " " * 28
 # Every rule, in the order judge() prints them: a dry run's table holds each one, whether it
 # was judged or not (Verdict.close), and the self-test holds this list to the header's.
 RULES = ("land/remote", "land/open", "land/base", "land/head", "land/author",
-         "land/changes-requested", "land/codeowners", "land/approved", "land/threads",
+         "land/autodelete", "land/changes-requested", "land/codeowners", "land/approved", "land/threads",
          "land/checks", "land/ancestor", "land/linear", "land/size", "land/workflows",
          "land/gpt", "land/series", "land/series-fresh", "land/patch-fresh", "land/card",
          "land/attributed", "land/rules", "land/bypass")
-# The rules --ci alone judges (its paragraph above): its table holds them after the others.
-CI_RULES = ("land/ci", "land/autodelete")
+# The rule --ci alone judges (its paragraph above): its table holds it after the others.
+CI_RULES = ("land/ci",)
 # The rules judge() adds with --relocate, for a head main is no ancestor of; relocate/lease
 # is judged at the push, after the table.
 RELOCATE_RULES = ("relocate/clean", "relocate/trees", "relocate/ids")
@@ -1022,8 +1025,7 @@ def judge(d, repo, fetched, main, ancestor, merges, ci, dest, relocate="0", clai
     if ci:  # the shell refused a missing token, and one the forge shows a user for
         v.ok("land/ci", "GH_TOKEN is a token the forge shows no user for: the App's")
     judge_pull(v, pr, me, fetched, repo, ci)
-    if ci:
-        judge_autodelete(v, d)
+    judge_autodelete(v, d)
     approve, bodies = judge_reviews(v, d, pr, me, repo, ci)
     judge_threads(v, d)
     fault = rules_fault(rules)
@@ -1322,11 +1324,11 @@ gather() {
 			die "land/ci: GH_TOKEN is a person's, the forge shows a user for it;" \
 				"remedy: --ci acts as the fpl-lander App's installation token (harness/workflows/land.yml)"
 		fi
-		api "repos/$slug" >"$tmp/repo.json" || die "cannot read the repository $slug"
 		printf '{"login": "%s"}\n' "${FPL_LAND_APP:-fpl-lander[bot]}" >"$tmp/me.json"
 	else
 		api user >"$tmp/me.json" || die "cannot read who you are"
 	fi
+	api "repos/$slug" >"$tmp/repo.json" || die "cannot read the repository $slug"
 	api graphql --paginate --slurp -F owner="${slug%%/*}" -F name="${slug#*/}" \
 		-F number="$n" -f query="$THREADS" >"$tmp/threads.json" ||
 		die "cannot read the review threads of #$n"

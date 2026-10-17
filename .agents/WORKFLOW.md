@@ -310,8 +310,8 @@ Each of these steps, and each the lander takes, has a route without the automati
 Each step the scripts and workflows take has a route a person can walk with git, `gh` and the
 browser, so the pipeline is never the only way through, and a step that fails can be done by
 hand without guessing what it did. `<o>/<n>` is the repository (`fpl-org/fpl`), `$TOKEN` the
-machine account's token (`gh auth token --user <machine account>`), and every `gh` command
-names `github.com`, as `scripts/land` does.
+machine account's token (`gh auth token --hostname github.com --user <machine account>`), and
+every `gh` command names `github.com`, as `scripts/land` does.
 
 **Open a draft.** Push with the token in the URL and the helper list emptied (`-c credential.helper=`, so no
 helper is handed the token to store), then
@@ -358,13 +358,17 @@ for c in $(git rev-list --reverse github/main..<head>); do
     --diff-algorithm=myers --indent-heuristic "$c" | git patch-id --verbatim | cut -d' ' -f1)
   m=$({ git cat-file commit "$c" | sed -n '/^$/q; s/^author \(.*\) [0-9]* [-+][0-9]*$/\1/p'
         git cat-file commit "$c" | sed '1,/^$/d'; } | shasum -a 256 | cut -d' ' -f1)
-  echo "$p $m"
+  echo "${p:--} $m"                                      # "-": an empty commit has no patch id
 done | tee manifest | shasum -a 256                      # the digest
 ```
 
-**Ready and approve.** The pull request is ready when the review bots have said what they
-will and their findings are dealt with: `gh pr ready <number> --repo github.com/<o>/<n>`, or
-the button. The maintainer reads the Commits tab commit by commit and approves in the UI:
+**Ready and approve.** CodeRabbit and Claude read the draft; Codex skips drafts and reads the
+pull request once it is ready (`codex-review.yml` runs only on a pull request that is not a
+draft; `claude-code-review.yml` runs on `opened` and again on `ready_for_review`). So: when
+the findings on the draft are dealt with, mark it ready,
+`gh pr ready <number> --repo github.com/<o>/<n>` or the button; wait for the reviews that
+starts and deal with their findings; only then ask the maintainer. His approval freezes the
+branch (rule 10), and a finding after it is a new pull request. The maintainer reads the Commits tab commit by commit and approves in the UI:
 Files changed, Review changes, Approve, Submit. That approves the head the page loaded, so
 reload if the branch moved; `land/approved` reads the SHA the approval names. Check it:
 
@@ -374,10 +378,12 @@ gh api --hostname github.com repos/<o>/<n>/pulls/<number>/reviews \
 ```
 
 **Check.** `scripts/land --dry-run <number>` makes every check the lander makes but those
-of `--ci` alone (`land/ci`, `land/autodelete`, and the `relocate/` rules of `--relocate`),
+of `--ci` alone (`land/ci`, and the `relocate/` rules of `--relocate`),
 from the forge as it is, with no terminal,
 and writes nothing to the forge (it keeps temporary files and fetches the pull request's head
-into this clone's object store). It prints a line for each rule, `ok`,
+into this clone's object store). Once `land/remote` holds (and with `--ci`, `land/ci`),
+which the shell judges first and which refuse with one line and no table, it prints a line
+for each rule, `ok`,
 `NO` with its remedy, or `--` with the reason when an answer the rule rests on is missing;
 the count; the approval it would give; the exact push; the retarget of what is stacked on the
 head; and the `git ls-remote` that shows `main` is the head afterwards. A rule refused: do
@@ -387,9 +393,8 @@ not land. It needs `gh`: `scripts/layer on github`.
 
 - Dispatch the lander: Actions, land, Run workflow on `main` with `pr` set to the number, or
   `gh workflow run land.yml --repo github.com/<o>/<n> --ref main -f pr=<number>`. It judges
-  the same rules as the fpl-lander App, and two of its own: `land/ci`, that the token is the
-  App's, and `land/autodelete`, that the repository deletes no branch when its pull request
-  merges. It writes the `fpl/series` check run, fast-forwards `main`, retargets what is
+  the same rules as the fpl-lander App, and one of its own: `land/ci`, that the token is the
+  App's. It writes the `fpl/series` check run, fast-forwards `main`, retargets what is
   stacked on the landed branch, and deletes the branch only if it is still at the head that
   landed. A head `main` is no ancestor of it relocates onto `main` first (`--relocate`): when
   every commit keeps its patch id and message that lands on the old approval, else the
@@ -429,7 +434,12 @@ through only when every commit kept its pair:
 old=$(git merge-base github/main <branch>); was=$(git rev-parse <branch>)
 git rebase --onto github/main "$old" <branch>
 git range-diff "$old..$was" github/main..<branch>      # every pair '=': nothing changed
+FPL_FORWARD_ONLY_OVERRIDE="relocate: <Series-Id>" \
+  git push --force-with-lease=refs/heads/<branch>:"$was" github <branch>:refs/heads/<branch>
 ```
+
+The push names the remote, not a URL: the override checks the new head against
+`refs/remotes/<remote>/main`, which a URL has none of.
 
 Every pair `=` and the same manifest means the new head is the old review: the owner
 approves it again. A pair `!` is a commit whose diff changed; it needs reading, not carrying.
@@ -573,7 +583,8 @@ write to GitHub: git's credential helper, the active `gh` account and the ssh ke
 owner's admin account is any of them, a push from an agent's worktree goes out under it.
 `scripts/whoami-check` prints all three (username, gh, ssh) and a NAG line with the remedy when
 one is an admin account: push with the machine account token URL
-(`TOKEN=$(gh auth token --user <machine account>)`) or log the admin account out. It always
+(`TOKEN=$(gh auth token --hostname github.com --user <machine account>)`) or log the admin
+account out. It always
 exits 0, and `.githooks/pre-push` runs it first as a message, never as a refusal. The hook hands
 it the destination URL, so only the identity that transport uses is judged: a push to an https
 URL that carries its own credentials, as the remedy does, is not nagged.
