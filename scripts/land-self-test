@@ -33,7 +33,12 @@ export GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home"
 	XDG_CONFIG_HOME="$tmp/xdg" GH_CONFIG_DIR="$tmp/gh" GIT_AUTHOR_NAME=t \
 	GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t \
 	GIT_COMMITTER_EMAIL=t@example.invalid FPL_LAND_WAIT=0
-unset GH_TOKEN GITHUB_TOKEN GH_HOST GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_CONFIG_COUNT
+unset GH_TOKEN GITHUB_TOKEN GH_HOST
+# Every variable git reads as naming the repository it works in, as git itself lists them: one
+# inherited from a hook or a rebase's exec would point the git init below at the caller's
+# repository (GIT_COMMON_DIR makes it set core.bare=true there), not at a new one.
+# shellcheck disable=SC2046
+unset $(git rev-parse --local-env-vars)
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$GH_CONFIG_DIR"
 
 # The repository: main at M0, which holds CODEOWNERS; the pull request #7 one commit above
