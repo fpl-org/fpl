@@ -24,8 +24,8 @@
 #   owner   agent: agent/claude/* and detached worktrees; Cursor: agent/cursor/*; app-session:
 #           under .claude/worktrees, or claude/*; PSJ: the rest, agent/codex/* too (he runs it)
 #   action  by the first rule that fits:
-#             keep     on the do-not-touch list (below), Cursor's or an app session's, or its
-#                      pull request is open
+#             keep     on the do-not-touch list (below), the base branch itself, Cursor's or an
+#                      app session's, or its pull request is open
 #             review   locked, its directory gone, PSJ's, touched in the last SWEEP_FRESH_MIN
 #                      minutes (default 60: a run may use it), or new > 0: a person decides
 #             archive  merged, or new = 0: everything it committed is in the base; but review
@@ -63,6 +63,8 @@ fresh="${SWEEP_FRESH_MIN:-60}"
 case "$fresh" in "" | *[!0-9]*) die "SWEEP_FRESH_MIN is minutes, a number: '$fresh'" ;; esac
 fresh=$((10#$fresh)) # 08 is a number of minutes, not a bad octal one
 git rev-parse --verify -q "$base^{commit}" >/dev/null || die "no base '$base'"
+# A branch compared with itself is merged, so the base would be an archive row of its own.
+base_ref="$(git rev-parse --symbolic-full-name "$base" 2>/dev/null || true)"
 root="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
 self="$(git rev-parse --show-toplevel)"
 [ -d "$root" ] || die "cannot find the root checkout"
@@ -156,6 +158,8 @@ emit() {
 decide() {
 	if protected "$1" "$2"; then
 		printf 'keep\ton the do-not-touch list\n'
+	elif [ -n "$2" ] && [ "refs/heads/$2" = "$base_ref" ]; then
+		printf 'keep\tthe base\n'
 	elif [ "$6" = Cursor ] || [ "$6" = app-session ]; then
 		printf 'keep\t%s work\n' "$6"
 	elif [ "$5" = OPEN ]; then
