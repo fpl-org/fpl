@@ -1246,7 +1246,6 @@ reviews "$(review 1 psjg APPROVED "$HV" "gpt-ok: $V1 gpt-ok: $V2")"
 expect 1 "a gpt-ok for each, in full (the merge between them is refused)" --dry-run 7
 says "ok  land/gpt" "each names one commit"
 at="$H" HEAD_SHA="$H"
-at="$H" HEAD_SHA="$H"
 forge
 pull open false main @MERGED@ '## What\n## What changes\n## How checked\n## Limits'
 expect 1 "a body without the card's Verdict" --dry-run 7
