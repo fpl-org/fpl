@@ -74,7 +74,8 @@
 #                           may be github.com-<alias>, a Host of the ssh config with no dot
 #                           in it, where ssh decides where it leads. Any other scheme, host
 #                           or user is refused
-#   land/size               at most 10 commits and 600 lines added plus removed
+#   land/size               at most 10 commits and 600 lines added plus removed, counted
+#                           from the merge-base with main, not from main's tip
 #   land/workflows          no commit touches .github/workflows: those land by the owner path.
 #                           The App's token cannot push a workflow, and an agent's must not,
 #                           so the remedy is the owner's line, `git push
@@ -913,11 +914,20 @@ def owner_push(repo, head):
     return f"git push git@{DEPLOY_ALIAS}:{repo}.git {head}:refs/heads/main"
 
 
+def own(main, head):
+    """The commit the head's own work starts above: where it forks from main, their
+    merge-base. Main's tip is that commit only while main is an ancestor of the head; once
+    main moves on, a diff from its tip holds main's new work too, reversed."""
+    return git("merge-base", main, head).decode().strip()
+
+
 def judge_range(v, pr, main, head, bodies, repo, base=None):  # noqa: PLR0913, PLR0917
     """land/size, land/workflows, land/gpt, land/series, land/series-fresh, land/patch-fresh
-    and land/card: the commits base..head (base: main, or below the range a relocation
-    picks), judged fresh against main, and the pull request's body."""
-    base = base or main
+    and land/card: the commits base..head (base: below the range a relocation picks, else
+    where the head's own work starts), judged fresh against main, and the pull request's
+    body. land/size counts the lines of `git diff --numstat base head`, the sum
+    `--shortstat` prints."""
+    base = base or own(main, head)
     span, h = f"{base}..{head}", head[:12]
     commits = git("rev-list", span).decode().split()
     rows = [r.split("\t") for r in git("diff", "--numstat", base, head).decode().splitlines()]
