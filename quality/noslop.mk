@@ -157,42 +157,21 @@ ready: harden gates
 	uv export --project $(Q) --frozen --quiet > $(OUT)/requirements.txt
 	$(BIN)/pip-audit --progress-spinner off --requirement $(OUT)/requirements.txt --disable-pip
 
-# The harness's own Python, judged by the same ruff it judges others with.
-HARNESS := $(addprefix $(S)/,crap props escapes mutants gates forward-only diagrams ruff-limits \
-             wip-count brake-flip ruleset-check) \
-           $(addprefix $(S)/,task rad-cob-dagtaak) $(Q)/noslop_pytest.py
-
-# config-fresh is a prerequisite, as it is of check; scripts/gen-config-self-test is the proof
-# that it still bites, and scripts/ruff-limits --self-test that the width check does.
-# scripts/task needs rad, which only the radicle layer of the dev shell carries, so its
-# self-test runs in that shell; nix is already required here (config-fresh). The reducer,
-# scripts/rad-cob-dagtaak, needs nothing but Python.
+# The harness's own Python, judged by the same ruff it judges others with, then the proof that
+# each of its tools still bites, then scripts/gates: each check refuses its bad example. The
+# files say what is in the first two (scripts/gates-list): a new tool adds a file, or one
+# `# gates: <command>` line in its own header, never a line here. Each command is run as
+# written, with $BIN, $S and $ROOT set, and with make's stdin, never the list's, so a
+# self-test that reads stdin cannot swallow the commands after it. config-fresh is a
+# prerequisite, as it is of check; scripts/gen-config-self-test is the proof that it still
+# bites. scripts/gates runs last, by rule: it is not a tool's self-test, and it judges the
+# checks the self-tests have just proven.
 gates: venv config-fresh
-	$(BIN)/ruff check --config $(Q)/ruff.toml $(HARNESS)
-	$(BIN)/ruff format --config $(Q)/ruff.toml --check $(HARNESS)
-	$(BIN)/python $(S)/crap --self-test
-	$(BIN)/python $(S)/props --self-test
-	$(BIN)/python $(S)/escapes --self-test
-	$(BIN)/python $(S)/forward-only --self-test
-	$(BIN)/python $(S)/mutants --self-test
-	$(BIN)/python $(S)/diagrams --self-test
-	$(BIN)/python $(S)/ruff-limits --self-test
-	$(BIN)/python $(S)/wip-count --self-test
-	$(BIN)/python $(S)/brake-flip --self-test
-	$(S)/leak-check --self-test
-	$(S)/pre-push-self-test
-	$(S)/whoami-check-self-test
-	$(S)/boundary-self-test
-	$(S)/sweep-self-test
-	$(S)/spec-guard-self-test
-	$(S)/gen-config-self-test
-	$(S)/image-self-test
-	$(S)/land-self-test
-	$(S)/series-self-test
-	$(S)/present-check-self-test
-	$(BIN)/python $(S)/rad-cob-dagtaak --self-test
-	nix develop $(ROOT)#radicle -c python3 $(S)/task --self-test
-	$(S)/ruleset-check-self-test
+	@set -e; harness="$$($(S)/gates-list --lint)"; set -x; \
+	$(BIN)/ruff check --config $(Q)/ruff.toml $$harness; \
+	$(BIN)/ruff format --config $(Q)/ruff.toml --check $$harness
+	@set -e; tests="$$($(S)/gates-list)"; BIN=$(BIN) S=$(S) ROOT=$(ROOT); exec 3<&0; \
+	printf '%s\n' "$$tests" | while IFS= read -r c; do printf '%s\n' "$$c"; eval "$$c" <&3; done
 	$(BIN)/python $(S)/gates
 
 # Each tool syncs its own locked environment into <tool>/.venv, so its dependencies never
