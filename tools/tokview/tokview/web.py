@@ -1,13 +1,15 @@
-"""The page's server: the page, the example snippets, and a text laid out and tokenized.
+"""The page's server: the page, the example snippets, and a text laid out
+and tokenized.
 
-    GET /            the page
-    GET /snippets    {"<feature>/<file>": text} of fpl/features/*/examples/*.fpl under the root
-    POST /tokenize   {"text", "tokenizer", "wrap", "width", "claude"} ->
-                     {"text": the laid-out text, "tokens": [{"t": text or null, "h": hex bytes,
-                      "id": int, "n": byte length}], "count", "lines", "over", "claude"}
+GET /            the page GET /snippets    {"<feature>/<file>": text} of
+fpl/features/*/examples/*.fpl under the root POST /tokenize   {"text",
+"tokenizer", "wrap", "width", "claude"} -> {"text": the laid-out text,
+"tokens": [{"t": text or null, "h": hex bytes, "id": int, "n": byte
+length}], "count", "lines", "over", "claude"}
 
-The Claude count comes from Anthropic's token-counting endpoint, which is not a model call,
-and only when ANTHROPIC_API_KEY is set; otherwise it is null.
+The Claude count comes from Anthropic's token-counting endpoint, which
+is not a model call, and only when ANTHROPIC_API_KEY is set; otherwise
+it is null.
 """
 
 import json
@@ -45,9 +47,11 @@ TIMEOUT = 10.0  # seconds the counting endpoint may take before the count is giv
 
 
 class Unredirected(urllib.request.HTTPRedirectHandler):
-    """Follows no redirect. urllib's handler copies every header but Content-Type and
-    Content-Length to the new URL, so the counting call's x-api-key would go wherever a
-    redirect pointed; refused, a redirect is an HTTPError, and the count is None."""
+    """Follows no redirect. urllib's handler copies every header but
+    Content-Type and Content-Length to the new URL, so the counting
+    call's x-api-key would go wherever a redirect pointed; refused, a
+    redirect is an HTTPError, and the count is None.
+    """
 
     @override
     def redirect_request(
@@ -66,15 +70,20 @@ NO_REDIRECTS = urllib.request.build_opener(Unredirected)
 
 
 def send(request: urllib.request.Request) -> AbstractContextManager[Response]:
-    """The counting call's opener: request opened with a TIMEOUT, following no redirect."""
+    """
+    The counting call's opener: request opened with a TIMEOUT, following
+    no redirect.
+    """
     response: AbstractContextManager[Response] = NO_REDIRECTS.open(request, timeout=TIMEOUT)
     return response
 
 
 def claude_count(text: str, key: str, opener: Opener = send) -> int | None:
-    """Claude's token count of text as one user message, from the counting endpoint; None
-    when the endpoint cannot be reached, refuses, or answers something that is not a count.
-    The count is an extra, so its failure never costs the page the rest of the answer."""
+    """Claude's token count of text as one user message, from the counting
+    endpoint; None when the endpoint cannot be reached, refuses, or
+    answers something that is not a count. The count is an extra, so its
+    failure never costs the page the rest of the answer.
+    """
     request = urllib.request.Request(
         COUNT_URL,
         data=json.dumps({"model": MODEL, "messages": [{"role": "user", "content": text}]}).encode(),
@@ -93,8 +102,9 @@ def claude_count(text: str, key: str, opener: Opener = send) -> int | None:
 
 
 def layout(text: str, wrap: str, width: int) -> tuple[str, int]:
-    """Text under a wrap mode (folded, ventilated, else as written), and how many code lines
-    stay wider than width."""
+    """Text under a wrap mode (folded, ventilated, else as written), and
+    how many code lines stay wider than width.
+    """
     if wrap == "folded":
         return folded(text, width)
     laid = ventilated(text) if wrap == "ventilated" else text
@@ -108,7 +118,10 @@ def find_root(start: Path) -> Path | None:
 
 @dataclass
 class App:
-    """What a request needs: the checkout's root, the tokenizers, and how to open a URL."""
+    """
+    What a request needs: the checkout's root, the tokenizers, and how
+    to open a URL.
+    """
 
     root: Path
     opener: Opener = send
@@ -120,8 +133,10 @@ class App:
         return {f"{p.parent.parent.name}/{p.stem}": p.read_text().rstrip("\n") for p in paths}
 
     def tokenize(self, body: object) -> dict[str, Any]:
-        """The answer to POST /tokenize, given its decoded JSON body; a malformed request (not
-        an object, an unknown tokenizer, a width that is not a number) is a ValueError."""
+        """The answer to POST /tokenize, given its decoded JSON body; a
+        malformed request (not an object, an unknown tokenizer, a width
+        that is not a number) is a ValueError.
+        """
         if not isinstance(body, dict):
             raise ValueError("the request is not a JSON object")
         request = cast(dict[str, Any], body)
@@ -154,15 +169,18 @@ class App:
         }
 
     def post(self, length: str, read: Callable[[int], bytes]) -> tuple[int, bytes, str]:
-        """The status, body and type of the answer to POST /tokenize, whose Content-Length
-        header says length and whose body read gives.
+        """The status, body and type of the answer to POST /tokenize, whose
+        Content-Length header says length and whose body read gives.
 
-        A Content-Length that is not a count of digits is a 400: taken as int() takes it, a
-        negative one would read until the client hangs up, and "1_0" would wait for ten
-        bytes. A body over BODY bytes is a 413, refused before a byte of it is read; its
-        digits are counted before int() sees them, which refuses more than 4300. A
-        malformed request is a 400; a tokenizer that could not be fetched (refused,
-        unreachable, too slow, too large) is a 502 that says why, in at most ERROR bytes."""
+        A Content-Length that is not a count of digits is a 400: taken
+        as int() takes it, a negative one would read until the client
+        hangs up, and "1_0" would wait for ten bytes. A body over BODY
+        bytes is a 413, refused before a byte of it is read; its digits
+        are counted before int() sees them, which refuses more than
+        4300. A malformed request is a 400; a tokenizer that could not
+        be fetched (refused, unreachable, too slow, too large) is a 502
+        that says why, in at most ERROR bytes.
+        """
         if not (length.isascii() and length.isdigit()):
             return 400, f"Content-Length {length!r} is not a count".encode(), TEXT
         digits = length.lstrip("0") or "0"

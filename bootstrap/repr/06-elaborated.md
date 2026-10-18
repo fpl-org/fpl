@@ -1,0 +1,19 @@
+---
+type: Repr
+title: Elaborated
+description: Polarity, effects, and metavariables are known. Still surface-adjacent.
+tags:
+  - repr
+engine: marimo
+marimo-version: 0.23.10
+width: full
+---
+
+```python {.marimo name="setup"}
+import marimo as mo
+```
+
+# Elaborated
+
+Polarity, effects, and metavariables are known. Still surface-adjacent.
+

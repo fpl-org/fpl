@@ -23,7 +23,10 @@ SPECIAL = "<| |>"  # a space is outside the byte-level alphabet
 
 
 def tiny_tokenizer(path: Path) -> None:
-    """A byte-level BPE over the 256 byte characters, two merges, and an added special token."""
+    """
+    A byte-level BPE over the 256 byte characters, two merges, and an
+    added special token.
+    """
     vocab = dict(U2B) | {"du": 256, "dup": 257, "Ġt": 258}
     spec = {
         "version": "1.0",
@@ -119,7 +122,10 @@ def test_a_tokenizer_loads_once() -> None:
 
 
 class Watched:
-    """A lock that sets contended when a caller arrives while another holds it."""
+    """
+    A lock that sets contended when a caller arrives while another holds
+    it.
+    """
 
     def __init__(self) -> None:
         self.inner = threading.Lock()
@@ -186,8 +192,10 @@ def test_fetch_writes_the_body_whole(tmp_path: Path) -> None:
 
 @contextmanager
 def serving(answer: Callable[[BaseHTTPRequestHandler, threading.Event], None]) -> Generator[str]:
-    """The URL of a local server that answers each GET with answer, for the length of the
-    block; answer is handed an event set when the block ends, to stop waiting on."""
+    """The URL of a local server that answers each GET with answer, for the
+    length of the block; answer is handed an event set when the block
+    ends, to stop waiting on.
+    """
     done = threading.Event()
 
     class Answer(BaseHTTPRequestHandler):
@@ -308,8 +316,10 @@ def test_the_fetch_bounds_clear_the_real_files() -> None:
 
 @pytest.fixture
 def hf(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Tk:
-    """The tiny tokenizer, loaded the way a Hugging Face one is, fetched once. Skipped
-    without the hf extra; `make tools` syncs every extra, so the lane always runs it."""
+    """The tiny tokenizer, loaded the way a Hugging Face one is, fetched
+    once. Skipped without the hf extra; `make tools` syncs every extra,
+    so the lane always runs it.
+    """
     pytest.importorskip("tokenizers")
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     urls: list[str] = []

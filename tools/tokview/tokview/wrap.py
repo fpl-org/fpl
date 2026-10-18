@@ -1,9 +1,10 @@
 """Hard wrapping of FPL comments, never of code.
 
-A trailing `<tab>; note` that runs past the width continues on lone `;` lines at the code's
-indentation; a `;;`, `;;;` or `;;;;` line wraps with its own marker repeated. Code has no
-continuation form, so a code line past the width stays as it is and is counted as over.
-Ventilating cuts every note and comment line at sentence ends instead of at a width.
+A trailing `<tab>; note` that runs past the width continues on lone `;`
+lines at the code's indentation; a `;;`, `;;;` or `;;;;` line wraps with
+its own marker repeated. Code has no continuation form, so a code line
+past the width stays as it is and is counted as over. Ventilating cuts
+every note and comment line at sentence ends instead of at a width.
 """
 
 import importlib
@@ -31,8 +32,9 @@ def indentation(code: str) -> str:
 
 
 def wrap(words: list[str], width: int, prefix: int) -> list[str]:
-    """Words joined by spaces into lines that fit width after prefix columns. A word that
-    does not fit alone gets a line of its own."""
+    """Words joined by spaces into lines that fit width after prefix
+    columns. A word that does not fit alone gets a line of its own.
+    """
     out: list[str] = []
     cur = ""
     for word in words:
@@ -47,8 +49,10 @@ def wrap(words: list[str], width: int, prefix: int) -> list[str]:
 
 
 def fold_line(line: str, width: int) -> tuple[list[str], bool]:
-    """The line folded to width, and whether its code alone is wider than that. A comment
-    line that fits is left as written, its spacing included."""
+    """The line folded to width, and whether its code alone is wider than
+    that. A comment line that fits is left as written, its spacing
+    included.
+    """
     if m := COMMENT.match(line):
         if cols(line) <= width:
             return [line], False
@@ -67,7 +71,10 @@ def fold_line(line: str, width: int) -> tuple[list[str], bool]:
 
 
 def folded(text: str, width: int) -> tuple[str, int]:
-    """Every line of text folded to width, and how many code lines stay wider than it."""
+    """
+    Every line of text folded to width, and how many code lines stay
+    wider than it.
+    """
     out: list[str] = []
     over = 0
     for line in text.split("\n"):
@@ -78,8 +85,9 @@ def folded(text: str, width: int) -> tuple[str, int]:
 
 
 def sentences(note: str) -> list[str]:
-    """The note cut at sentence ends, then at `; ` between clauses. A list number standing
-    alone (`— 1.`) is kept with the item after it."""
+    """The note cut at sentence ends, then at `; ` between clauses. A list
+    number standing alone (`— 1.`) is kept with the item after it.
+    """
     parts: list[str] = []
     pending = ""
     segments: list[str] = SEGMENTER.segment(note)
@@ -96,7 +104,10 @@ def sentences(note: str) -> list[str]:
 
 
 def ventilated(text: str) -> str:
-    """Text with every note and comment line cut into one sentence per line."""
+    """
+    Text with every note and comment line cut into one sentence per
+    line.
+    """
     out: list[str] = []
     for line in text.split("\n"):
         if m := COMMENT.match(line):

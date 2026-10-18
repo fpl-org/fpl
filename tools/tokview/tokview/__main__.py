@@ -1,4 +1,7 @@
-"""tokview [--port N] [--root DIR]: serve the page on 127.0.0.1 and print its URL."""
+"""
+tokview [--port N] [--root DIR]: serve the page on 127.0.0.1 and print
+its URL.
+"""
 
 import argparse
 from collections.abc import Callable
@@ -12,7 +15,10 @@ def main(
     argv: list[str] | None = None,
     run: Callable[[ThreadingHTTPServer], None] = ThreadingHTTPServer.serve_forever,
 ) -> None:
-    """Parse argv, start the server, print its URL, and hand it to run (serve until killed)."""
+    """
+    Parse argv, start the server, print its URL, and hand it to run
+    (serve until killed).
+    """
     parser = argparse.ArgumentParser(prog="tokview", description=__doc__)
     parser.add_argument("--port", type=int, default=8765, help="port on 127.0.0.1 (8765)")
     parser.add_argument("--root", type=Path, help="the checkout whose fpl/features/ to list")

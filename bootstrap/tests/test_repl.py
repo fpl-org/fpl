@@ -1,6 +1,9 @@
-"""The command line of a session: one input runs as its file does, an append is checked against
-the head and durable before anything is printed, copies of a session answer alike, and the
-loop enters what successive -e calls enter."""
+"""
+The command line of a session: one input runs as its file does, an
+append is checked against the head and durable before anything is
+printed, copies of a session answer alike, and the loop enters what
+successive -e calls enter.
+"""
 
 import builtins
 import contextlib
@@ -39,21 +42,34 @@ command = st.one_of(
 )
 
 
-def called(argv: Sequence[str], env: Mapping[str, str], stdin: str = "") -> tuple[int, str, str]:
-    """The exit status, stdout and stderr of a call reading `stdin`."""
+def called(
+    argv: Sequence[str], env: Mapping[str, str], stdin: str = ""
+) -> tuple[int, str, str]:
+    """
+    The exit status, stdout and stderr of a call reading `stdin`.
+    """
     out, err = StringIO(), StringIO()
     code = main(list(argv), StringIO(stdin), out, err, env)
     return code, out.getvalue(), err.getvalue()
 
 
 def files(root: Path) -> dict[Path, bytes]:
-    """Every file under root, by its path from root, and its bytes."""
-    return {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    """
+    Every file under root, by its path from root, and its bytes.
+    """
+    return {
+        p.relative_to(root): p.read_bytes()
+        for p in root.rglob("*")
+        if p.is_file()
+    }
 
 
 @contextlib.contextmanager
 def session() -> Generator[tuple[Path, dict[str, str]]]:
-    """A fresh directory to work in, and an environment whose key lies beside it."""
+    """
+    A fresh directory to work in, and an environment whose key lies
+    beside it.
+    """
     with tempfile.TemporaryDirectory() as root:
         work = Path(root, "work")
         work.mkdir()
@@ -70,8 +86,11 @@ def session() -> Generator[tuple[Path, dict[str, str]]]:
 def test_one_input_runs_as_its_file(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], source: str
 ) -> None:
-    """[law: one-shot-is-file] main(["-e", s]) gives the same stdout, stderr and exit code as
-    python -m fpl on a file holding s plus a newline."""
+    """
+    [law: one-shot-is-file] main(["-e", s]) gives the same stdout,
+    stderr and exit code as python -m fpl on a file holding s plus a
+    newline.
+    """
     file = tmp_path / "p.fpl"
     file.write_text(source + "\n")
     code = run_file([str(file)])
@@ -79,10 +98,17 @@ def test_one_input_runs_as_its_file(
     assert called(["-e", source], {}) == (code, shown.out, shown.err)
 
 
-@given(st.lists(command, max_size=4), st.lists(command, min_size=1, max_size=3))
-def test_copies_of_a_session_answer_alike(history: list[list[str]], calls: list[list[str]]) -> None:
-    """[law: determinism] two copies of a session directory given the same argv, env and key
-    produce byte-identical stdout, stderr, exit code and file bytes."""
+@given(
+    st.lists(command, max_size=4), st.lists(command, min_size=1, max_size=3)
+)
+def test_copies_of_a_session_answer_alike(
+    history: list[list[str]], calls: list[list[str]]
+) -> None:
+    """
+    [law: determinism] two copies of a session directory given the same
+    argv, env and key produce byte-identical stdout, stderr, exit code
+    and file bytes.
+    """
     with session() as (work, env):
         for argv in history:
             called(SESSION + argv, env)
@@ -96,9 +122,13 @@ def test_copies_of_a_session_answer_alike(history: list[list[str]], calls: list[
 
 
 @given(st.lists(texts, min_size=1, max_size=4), st.data())
-def test_a_stale_head_is_refused(inputs: list[str], data: st.DataObject) -> None:
-    """[law: stale-head] an append whose --head is not the head exits 2 with one ERROR line
-    and leaves the file bytes unchanged."""
+def test_a_stale_head_is_refused(
+    inputs: list[str], data: st.DataObject
+) -> None:
+    """
+    [law: stale-head] an append whose --head is not the head exits 2
+    with one ERROR line and leaves the file bytes unchanged.
+    """
     with session() as (work, env):
         for text in inputs:
             called([*SESSION, "-e", text], env)
@@ -108,8 +138,13 @@ def test_a_stale_head_is_refused(inputs: list[str], data: st.DataObject) -> None
         refused = (2, f"ERROR: head moved: the head is {len(inputs)}\n", "")
         assert called([*SESSION, "--head", stale, *action], env) == refused
         assert files(work) == before
-        code, _, err = called([*SESSION, "--head", str(len(inputs)), "-e", "1"], env)
-        assert (code < 2, err.splitlines()[-1].startswith(f"HEAD {len(inputs) + 1} $")) == (
+        code, _, err = called(
+            [*SESSION, "--head", str(len(inputs)), "-e", "1"], env
+        )
+        assert (
+            code < 2,
+            err.splitlines()[-1].startswith(f"HEAD {len(inputs) + 1} $"),
+        ) == (
             True,
             True,
         )
@@ -117,7 +152,9 @@ def test_a_stale_head_is_refused(inputs: list[str], data: st.DataObject) -> None
 
 
 class Recorded(StringIO):
-    """A stream that notes each write in a shared list."""
+    """
+    A stream that notes each write in a shared list.
+    """
 
     def __init__(self, events: list[str]) -> None:
         super().__init__()
@@ -131,8 +168,10 @@ class Recorded(StringIO):
 
 @given(st.lists(texts, min_size=1, max_size=3))
 def test_an_append_is_durable_before_it_is_printed(inputs: list[str]) -> None:
-    """[law: write-ahead] the last fsync of an append happens before the first write to
-    stdout."""
+    """
+    [law: write-ahead] the last fsync of an append happens before the
+    first write to stdout.
+    """
     events: list[str] = []
     fsync = os.fsync
 
@@ -144,7 +183,13 @@ def test_an_append_is_durable_before_it_is_printed(inputs: list[str]) -> None:
         patch.setattr(os, "fsync", recorded)
         for text in inputs:
             events.clear()
-            main([*SESSION, "-e", text], StringIO(), Recorded(events), StringIO(), env)
+            main(
+                [*SESSION, "-e", text],
+                StringIO(),
+                Recorded(events),
+                StringIO(),
+                env,
+            )
             last = len(events) - events[::-1].index("fsync") - 1
             assert last < events.index("write")
 
@@ -168,7 +213,10 @@ def test_an_append_is_durable_before_it_is_printed(inputs: list[str]) -> None:
     ],
 )
 def test_argv_not_taken(argv: list[str]) -> None:
-    """argv the command line does not take prints the usage line alone and exits 2."""
+    """
+    argv the command line does not take prints the usage line alone and
+    exits 2.
+    """
     assert called(argv, {}) == (2, "", USAGE + "\n")
 
 
@@ -179,11 +227,17 @@ def test_argv_not_taken(argv: list[str]) -> None:
         (["--at", "1", "--show"], {}, "no event 1"),
         (["--at", "$0:0:0", "--show"], {}, "no event $0:0:0"),
         (["-e", "\udc80"], {}, "the input is not UTF-8"),
-        (["-e", "1"], {"FPL_MODEL": "é"}, "$FPL_MODEL is not printable ASCII of at most 256"),
+        (
+            ["-e", "1"],
+            {"FPL_MODEL": "é"},
+            "$FPL_MODEL is not printable ASCII of at most 256",
+        ),
     ],
 )
 def test_refused(argv: list[str], env: dict[str, str], message: str) -> None:
-    """A refusal prints one ERROR line to stdout and exits 2."""
+    """
+    A refusal prints one ERROR line to stdout and exits 2.
+    """
     code, out, err = called(argv, env)
     assert (code, err) == (2, "")
     assert out.startswith(f"ERROR: {message}")
@@ -191,19 +245,30 @@ def test_refused(argv: list[str], env: dict[str, str], message: str) -> None:
 
 
 def test_a_session() -> None:
-    """Inputs append at the head and name it; the log lists them, --show joins the program,
-    a rewind returns to an earlier state, and --at evaluates without appending."""
+    """
+    Inputs append at the head and name it; the log lists them, --show
+    joins the program, a rewind returns to an earlier state, and --at
+    evaluates without appending.
+    """
     with session() as (work, env):
         assert called([*SESSION, "-e", "f : -- x\n\t2\n"], env)[:2] == (0, "")
         code, out, err = called([*SESSION, "-e", "f"], env)
         assert (code, out) == (0, "2\n")
         assert err.startswith("HEAD 2 $45600:")
         second = err.removeprefix("HEAD 2 ").strip()
-        assert called([*SESSION, "--at", second, "--show"], env) == (0, "f : -- x\n\t2\nf\n", "")
+        assert called([*SESSION, "--at", second, "--show"], env) == (
+            0,
+            "f : -- x\n\t2\nf\n",
+            "",
+        )
         assert called([*SESSION, "--rewind", "1"], env)[:2] == (0, "")
         assert called([*SESSION, "--show"], env) == (0, "f : -- x\n\t2\n", "")
         before = files(work)
-        assert called([*SESSION, "--at", "2", "-e", "f"], env) == (0, "2\n", "")
+        assert called([*SESSION, "--at", "2", "-e", "f"], env) == (
+            0,
+            "2\n",
+            "",
+        )
         assert files(work) == before
         listed = called([*SESSION, "--log"], env)[1].splitlines()
         assert [row.rsplit(" ", 1)[0] for row in listed] == [
@@ -213,17 +278,21 @@ def test_a_session() -> None:
         ]
         assert listed[1].endswith(second)
         events = load(work / "s.fon", keyed(env)).events
-        assert called([*SESSION, "--at", events[0].ident.raw().hex(), "--show"], env)[1] == (
-            "f : -- x\n\t2\n"
-        )
+        assert called(
+            [*SESSION, "--at", events[0].ident.raw().hex(), "--show"], env
+        )[1] == ("f : -- x\n\t2\n")
         assert b"who operator" in (work / "s.fon").read_bytes()
 
 
 def test_an_input_that_fails() -> None:
-    """A failing input is appended as an error, exits 1 and prints its ERROR line; the caret
-    goes to stderr before the head."""
+    """
+    A failing input is appended as an error, exits 1 and prints its
+    ERROR line; the caret goes to stderr before the head.
+    """
     with session() as (_, env):
-        code, out, err = called([*SESSION, "--canonical", "-e", "1 ["], {**env, "FPL_MODEL": "m"})
+        code, out, err = called(
+            [*SESSION, "--canonical", "-e", "1 ["], {**env, "FPL_MODEL": "m"}
+        )
         assert (code, out) == (1, "ERROR: 1:3 [ never closed\n")
         assert err.splitlines()[-1].startswith("HEAD 1 $")
         assert "who agent" in (Path("s.fon")).read_text()
@@ -232,13 +301,22 @@ def test_an_input_that_fails() -> None:
 
 
 def test_canonical() -> None:
-    """--canonical prints the input as the printer writes it, before its output."""
+    """
+    --canonical prints the input as the printer writes it, before its
+    output.
+    """
     plain = called(["-e", "1  2  +"], {})[1]
-    assert called(["--canonical", "-e", "1  2  +"], {}) == (0, "1 2 +\n" + plain, "")
+    assert called(["--canonical", "-e", "1  2  +"], {}) == (
+        0,
+        "1 2 +\n" + plain,
+        "",
+    )
 
 
 def test_the_head_cannot_be_the_rewind_target() -> None:
-    """A rewind to the head is refused and writes nothing."""
+    """
+    A rewind to the head is refused and writes nothing.
+    """
     with session() as (work, env):
         called([*SESSION, "-e", "1"], env)
         before = files(work)
@@ -251,7 +329,9 @@ def test_the_head_cannot_be_the_rewind_target() -> None:
 
 
 def test_a_refused_log() -> None:
-    """A session file that does not load is refused with its line."""
+    """
+    A session file that does not load is refused with its line.
+    """
     with session() as (work, env):
         (work / "s.fon").write_text("1\n")
         code, out, _ = called([*SESSION, "--log"], env)
@@ -263,8 +343,11 @@ COMPLETE = [text for text in POOL if text.strip()]
 
 @given(st.lists(st.sampled_from(COMPLETE), max_size=5))
 def test_the_loop_enters_what_calls_enter(texts: list[str]) -> None:
-    """[law: interactive] the interactive loop over blank-line-joined inputs writes the same
-    log bytes as the same inputs given as successive -e calls."""
+    """
+    [law: interactive] the interactive loop over blank-line-joined
+    inputs writes the same log bytes as the same inputs given as
+    successive -e calls.
+    """
     joined = "\n".join(texts)
     lines = iter(joined.splitlines())
     assert list(inputs(lambda _: next(lines, None))) == texts
@@ -293,12 +376,17 @@ def test_the_loop_enters_what_calls_enter(texts: list[str]) -> None:
     ],
 )
 def test_pending(text: str, on: bool) -> None:
-    """An input goes on while a pair is open, after a head or a block, or after a trailing /."""
+    """
+    An input goes on while a pair is open, after a head or a block, or
+    after a trailing /.
+    """
     assert pending(text) is on
 
 
 def fed(lines: Sequence[str]) -> list[str]:
-    """The inputs the lines make, as the loop groups them."""
+    """
+    The inputs the lines make, as the loop groups them.
+    """
     feed = iter(lines)
     return list(inputs(lambda _: next(feed, None)))
 
@@ -309,54 +397,88 @@ def fed(lines: Sequence[str]) -> list[str]:
         (["f : -- x", "2", ""], ["f : -- x\n\t2\n"]),
         (["f : -- x", "\t2", ""], ["f : -- x\n\t2\n"]),
         (["f : -- x", "  2", ""], ["f : -- x\n  2\n"]),
-        (["a", "f : -- x", "\tg : -- y", "2", ""], ["a\n", "f : -- x\n\tg : -- y\n\t\t2\n"]),
+        (
+            ["a", "f : -- x", "\tg : -- y", "2", ""],
+            ["a\n", "f : -- x\n\tg : -- y\n\t\t2\n"],
+        ),
         (["f : -- x", "2", "3", ""], ["f : -- x\n\t2\n3\n"]),
         (["f : -- x", "", "2"], ["f : -- x\n", "2\n"]),
         (["1 [", "2 ]"], ["1 [\n2 ]\n"]),
         (["a/", "2"], ["a/\n2\n"]),
         (["“", "f : -- x", "”", ""], ["“\nf : -- x\n”\n"]),
         (["⟦ note", "⟧ f : -- x", "2", ""], ["⟦ note\n⟧ f : -- x\n\t2\n"]),
-        (["a/", "\tf : -- x", "⟦ note", "⟧", "2", ""], ["a/\n\tf : -- x\n\t\t⟦ note\n⟧\n\t\t2\n"]),
-        (["a/", "\t⟦ note ⟧\tf : -- x", "2", ""], ["a/\n\t⟦ note ⟧\tf : -- x\n\t\t\t2\n"]),
+        (
+            ["a/", "\tf : -- x", "⟦ note", "⟧", "2", ""],
+            ["a/\n\tf : -- x\n\t\t⟦ note\n⟧\n\t\t2\n"],
+        ),
+        (
+            ["a/", "\t⟦ note ⟧\tf : -- x", "2", ""],
+            ["a/\n\t⟦ note ⟧\tf : -- x\n\t\t\t2\n"],
+        ),
     ],
 )
 def test_a_body_at_the_margin(lines: list[str], made: list[str]) -> None:
-    """A line at the margin right after a definition head is the body's first, one tab deeper
-    than the head, also when the head follows the closer of a block comment on its line, and
-    when a block comment closed at the margin stands between a nested head and its body; one
-    that starts with a space or a tab, one after the body's first line or a line that is no
-    head, one after a blank line, and one after a line that only looks like a head inside an
-    open string, are left as they were written."""
+    """
+    A line at the margin right after a definition head is the body's
+    first, one tab deeper than the head, also when the head follows the
+    closer of a block comment on its line, and when a block comment
+    closed at the margin stands between a nested head and its body; one
+    that starts with a space or a tab, one after the body's first line
+    or a line that is no head, one after a blank line, and one after a
+    line that only looks like a head inside an open string, are left as
+    they were written.
+    """
     assert fed(lines) == made
 
 
-# What str.isprintable admits: no character of the categories C* and Z*, but the space.
+# What str.isprintable admits: no character of the categories C* and
+# Z*, but the space.
 PRINTABLE = st.characters(exclude_categories=("C", "Z"))
-BODIES = st.tuples(PRINTABLE, st.text(PRINTABLE | st.just(" "), max_size=8)).map("".join)
+BODIES = st.tuples(
+    PRINTABLE, st.text(PRINTABLE | st.just(" "), max_size=8)
+).map("".join)
 
 
 @given(st.sampled_from(["f : -- x", "f : n -- n ; note"]), BODIES)
-def test_a_body_is_read_with_or_without_its_tab(header: str, body: str) -> None:
-    """[law: body-margin] the lines of a head, a printable body at the margin and a blank line
-    make the inputs they make with the body one tab in."""
+def test_a_body_is_read_with_or_without_its_tab(
+    header: str, body: str
+) -> None:
+    """
+    [law: body-margin] the lines of a head, a printable body at the
+    margin and a blank line make the inputs they make with the body one
+    tab in.
+    """
     assert fed([header, body, ""]) == fed([header, "\t" + body, ""])
 
 
 def test_a_definition_without_tabs() -> None:
-    """The stream reader takes the unindented line after a head for the body, so the word it
-    defines works; in one-shot, a file's own rule holds."""
+    """
+    The stream reader takes the unindented line after a head for the
+    body, so the word it defines works; in one-shot, a file's own rule
+    holds.
+    """
     typed = "plus-one : n -- n\n1 +\n1 2 3 plus-one\n"
     assert called([], {}, typed) == (0, "2 3 4\n", "")
-    assert called([], {}, "plus-one : n -- n\n  1 +\n")[1].startswith("ERROR: 2:1 indentation")
+    assert called([], {}, "plus-one : n -- n\n  1 +\n")[1].startswith(
+        "ERROR: 2:1 indentation"
+    )
 
 
 def test_a_definition_without_a_body_is_noted() -> None:
-    """A definition whose head has no code under it is noted, naming the word and where its
-    head is, before the input's other notes, also when the input then fails; the note says
-    only that the body is empty, since a head group makes such a body a match and not the
-    identity. One with a body, a one-shot input and a command are not noted."""
+    """
+    A definition whose head has no code under it is noted, naming the
+    word and where its head is, before the input's other notes, also
+    when the input then fails; the note says only that the body is
+    empty, since a head group makes such a body a match and not the
+    identity. One with a body, a one-shot input and a command are not
+    noted.
+    """
     note = "NOTE 1:1 plus-one has an empty body\n"
-    assert called([], {}, "plus-one : n -- n\n\n1 2 3 plus-one\n") == (0, "1 2 3\n", note)
+    assert called([], {}, "plus-one : n -- n\n\n1 2 3 plus-one\n") == (
+        0,
+        "1 2 3\n",
+        note,
+    )
     assert called([], {}, "plus-one : n -- n\n") == (0, "", note)
     assert called([], {}, "plus-one : n -- n\n;; doc\n") == (0, "", note)
     nested = called([], {}, "a/\n\tb : -- x\n\n:show\n")
@@ -372,7 +494,9 @@ def test_a_definition_without_a_body_is_noted() -> None:
 
 
 def test_a_note_comes_before_the_head() -> None:
-    """In a session the NOTE comes first and the new head last."""
+    """
+    In a session the NOTE comes first and the new head last.
+    """
     with session() as (_, env):
         notes = called(SESSION, env, "f : -- x\n\n")[2].splitlines()
     assert notes[0] == "NOTE 1:1 f has an empty body"
@@ -380,13 +504,20 @@ def test_a_note_comes_before_the_head() -> None:
 
 
 def test_the_loop_in_memory() -> None:
-    """Without --session the loop keeps its log in memory and names no head; commands list,
-    show, rewind and toggle the canonical form; an unknown command is told and passed over."""
-    typed = "f : -- x\n\t2\n\nf\n:log\n:show\n:canonical\n1  2\n:rewind 0\nf\n:bogus\n:quit\n3\n"
+    """
+    Without --session the loop keeps its log in memory and names no
+    head; commands list, show, rewind and toggle the canonical form; an
+    unknown command is told and passed over.
+    """
+    typed = "f : -- x\n\t2\n\nf\n:log\n:show\n:canonical\n1  2\n:rewind "
+    "0\nf\n:bogus\n:quit\n3\n"
     code, out, err = called([], {}, typed)
     rows = out.splitlines()
     assert (code, err, rows[0]) == (0, "f\n^\n", "2")
-    assert [row.rsplit(" ", 1)[0] for row in rows[1:3]] == ["1 input ok 0 -", "2 input ok 1 -"]
+    assert [row.rsplit(" ", 1)[0] for row in rows[1:3]] == [
+        "1 input ok 0 -",
+        "2 input ok 1 -",
+    ]
     assert rows[3:] == [
         "f : -- x",
         "\t2",
@@ -400,28 +531,43 @@ def test_the_loop_in_memory() -> None:
 
 
 def test_the_loop_tells_an_unknown_word_at_the_word_in_its_input() -> None:
-    """The caret goes under the word in the input that holds it, not under the first input of
-    the session; the loop ends 0 as it does after any input that fails, a one-shot exits 1."""
+    """
+    The caret goes under the word in the input that holds it, not under
+    the first input of the session; the loop ends 0 as it does after any
+    input that fails, a one-shot exits 1.
+    """
     typed = "2 | 3 +\nfoo\n1 debug\n"
     assert called([], {}, typed) == (
         0,
-        "5\nERROR: 1:1 unknown word: foo\nERROR: 1:3 no evaluator yet: debug\n",
+        "5\nERROR: 1:1 unknown word: foo\nERROR: 1:3 no evaluator yet: "
+        "debug\n",
         "foo\n^\n1 debug\n  ^\n",
     )
-    assert called(["-e", "foo"], {}) == (1, "ERROR: 1:1 unknown word: foo\n", "foo\n^\n")
+    assert called(["-e", "foo"], {}) == (
+        1,
+        "ERROR: 1:1 unknown word: foo\n",
+        "foo\n^\n",
+    )
 
 
 def test_the_loop_names_a_redefinition_once() -> None:
-    """The input that redefines a word names the input it moved on stderr; the inputs after
-    it name nothing."""
+    """
+    The input that redefines a word names the input it moved on stderr;
+    the inputs after it name nothing.
+    """
     define = "plus-one : n -- n\n\t{} +\n\n"
-    code, out, err = called([], {}, define.format(1) + "3 plus-one\n" + define.format(2) + "1\n2\n")
+    code, out, err = called(
+        [], {}, define.format(1) + "3 plus-one\n" + define.format(2) + "1\n2\n"
+    )
     assert (code, out) == (0, "4\n1\n2\n")
     assert re.fullmatch(r"CHANGED 2 \$\S+\n", err)
 
 
 def test_the_loop_as_of_an_event() -> None:
-    """With --at every input is evaluated at that event and nothing is appended."""
+    """
+    With --at every input is evaluated at that event and nothing is
+    appended.
+    """
     with session() as (work, env):
         called([*SESSION, "-e", "f : -- x\n\t2\n"], env)
         before = files(work)
@@ -431,7 +577,9 @@ def test_the_loop_as_of_an_event() -> None:
 
 
 def test_a_log_refused_at_start() -> None:
-    """A session that does not load stops the loop before it reads."""
+    """
+    A session that does not load stops the loop before it reads.
+    """
     with session() as (work, env):
         (work / "s.fon").write_text("1\n")
         code, out, _ = called(SESSION, env, "1\n")
@@ -439,7 +587,9 @@ def test_a_log_refused_at_start() -> None:
 
 
 class Terminal(StringIO):
-    """A stream that says it is a terminal."""
+    """
+    A stream that says it is a terminal.
+    """
 
     @override
     def isatty(self) -> bool:
@@ -447,8 +597,11 @@ class Terminal(StringIO):
 
 
 def test_the_loop_at_a_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
-    """At a terminal the loop prompts through input(); an append from elsewhere moves the head,
-    so the next input is refused, and the one after appends at the head it adopted."""
+    """
+    At a terminal the loop prompts through input(); an append from
+    elsewhere moves the head, so the next input is refused, and the one
+    after appends at the head it adopted.
+    """
     prompts: list[str] = []
     with session() as (_, env):
         lines = iter(["1", "", "g : -- x", "\t3", "", "4"])
@@ -475,8 +628,10 @@ def test_the_loop_at_a_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_a_definition_at_a_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
-    """At a terminal the body typed without its tab is the body, as a prompt of continuation
-    after the head; an empty line ends the input."""
+    """
+    At a terminal the body typed without its tab is the body, as a
+    prompt of continuation after the head; an empty line ends the input.
+    """
     prompts: list[str] = []
     lines = iter(["plus-one : n -- n", "1 +", "", "1 2 3 plus-one"])
 
@@ -497,34 +652,47 @@ def test_a_definition_at_a_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_in_memory() -> None:
-    """Without --session the log is empty: --log lists nothing and --at 0 evaluates the input
-    alone, each exiting 0."""
+    """
+    Without --session the log is empty: --log lists nothing and --at 0
+    evaluates the input alone, each exiting 0.
+    """
     assert called(["--log"], {}) == (0, "", "")
     assert called(["--at", "0", "-e", "1 2"], {}) == (0, "1 2\n", "")
 
 
 def test_provenance() -> None:
-    """Either variable makes the input an agent's and is recorded as given, the other empty;
-    either is refused unless printable ASCII."""
+    """
+    Either variable makes the input an agent's and is recorded as given,
+    the other empty; either is refused unless printable ASCII.
+    """
     assert provenance({}) == ("operator", "", "")
     assert provenance({"FPL_MODEL": "m"}) == ("agent", "m", "")
     assert provenance({"FPL_SESSION_ID": "s"}) == ("agent", "", "s")
-    with pytest.raises(RefusedError, match=r"^\$FPL_SESSION_ID is not printable ASCII"):
+    with pytest.raises(
+        RefusedError, match=r"^\$FPL_SESSION_ID is not printable ASCII"
+    ):
         provenance({"FPL_SESSION_ID": "é"})
 
 
 def test_a_goal_is_noted_at_its_place_in_its_input() -> None:
-    """A goal in the second input is noted at its line in that input."""
+    """
+    A goal in the second input is noted at its line in that input.
+    """
     with session() as (_, env):
         called([*SESSION, "-e", "1"], env)
         assert called([*SESSION, "-e", "2 ?"], env)[2].startswith("GOAL 1:3 ")
 
 
 def test_an_append_waits_for_the_lock() -> None:
-    """An append takes the session's lock: while another holds it, nothing is written."""
+    """
+    An append takes the session's lock: while another holds it, nothing
+    is written.
+    """
     with session() as (work, env):
         path = work / "s.fon"
-        writer = threading.Thread(target=called, args=([*SESSION, "-e", "1"], env))
+        writer = threading.Thread(
+            target=called, args=([*SESSION, "-e", "1"], env)
+        )
         with locked(path):
             writer.start()
             writer.join(0.2)
@@ -534,7 +702,10 @@ def test_an_append_waits_for_the_lock() -> None:
 
 
 def test_the_loop_checks_a_given_head() -> None:
-    """--head given to the loop is the head its first input is checked against."""
+    """
+    --head given to the loop is the head its first input is checked
+    against.
+    """
     with session() as (_, env):
         called([*SESSION, "-e", "1"], env)
         refused = (0, "ERROR: head moved: the head is 1\n", "")
@@ -542,19 +713,31 @@ def test_the_loop_checks_a_given_head() -> None:
 
 
 def test_log_and_rewind_ignore_at() -> None:
-    """In a loop as of an event, :log lists and :rewind appends as they do without --at."""
+    """
+    In a loop as of an event, :log lists and :rewind appends as they do
+    without --at.
+    """
     with session() as (work, env):
         for text in ("1", "2"):
             called([*SESSION, "-e", text], env)
-        code, out, _ = called([*SESSION, "--at", "9"], env, ":log\n:rewind 1\n")
+        code, out, _ = called(
+            [*SESSION, "--at", "9"], env, ":log\n:rewind 1\n"
+        )
         rows = [row.rsplit(" ", 1)[0] for row in out.splitlines()]
         assert (code, rows) == (0, ["1 input ok 0 -", "2 input ok 1 -"])
-        kinds = [event.kind for event in load(work / "s.fon", keyed(env)).events]
+        kinds = [
+            event.kind for event in load(work / "s.fon", keyed(env)).events
+        ]
         assert kinds == ["input", "input", "rewind"]
 
 
-def test_the_loop_as_of_an_event_checks_no_head(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A loop as of an event checks no head, so an append from elsewhere does not refuse it."""
+def test_the_loop_as_of_an_event_checks_no_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A loop as of an event checks no head, so an append from elsewhere
+    does not refuse it.
+    """
     with session() as (_, env):
         called([*SESSION, "-e", "f : -- x\n\t2\n"], env)
         replies = iter(["f", "append", "f"])
@@ -575,31 +758,41 @@ def test_the_loop_as_of_an_event_checks_no_head(monkeypatch: pytest.MonkeyPatch)
 
 
 def _as_given(_work: Path, env: dict[str, str]) -> dict[str, str]:
-    """Nothing prepared."""
+    """
+    Nothing prepared.
+    """
     return env
 
 
 def _a_directory(work: Path, env: dict[str, str]) -> dict[str, str]:
-    """A directory where the log goes."""
+    """
+    A directory where the log goes.
+    """
     (work / "s.fon").mkdir()
     return env
 
 
 def _unwritable(work: Path, env: dict[str, str]) -> dict[str, str]:
-    """A working directory no file can be made in."""
+    """
+    A working directory no file can be made in.
+    """
     work.chmod(0o500)
     return env
 
 
 def _key_unwritable(work: Path, env: dict[str, str]) -> dict[str, str]:
-    """A key file in a directory no file can be made in."""
+    """
+    A key file in a directory no file can be made in.
+    """
     keys = work.parent / "keys"
     keys.mkdir(mode=0o500)
     return {**env, "FPL_LOG_KEY": f"{keys}/key"}
 
 
 def _no_home(_work: Path, _env: dict[str, str]) -> dict[str, str]:
-    """No variable that names a key file."""
+    """
+    No variable that names a key file.
+    """
     return {}
 
 
@@ -621,8 +814,10 @@ def test_a_path_refused(
     made: Callable[[Path, dict[str, str]], dict[str, str]],
     named: str,
 ) -> None:
-    """A path the system refuses, or none to find the key by, is a refusal: one ERROR line
-    naming it, exit 2, and nothing written but a lock."""
+    """
+    A path the system refuses, or none to find the key by, is a refusal:
+    one ERROR line naming it, exit 2, and nothing written but a lock.
+    """
     with session() as (work, given):
         env = made(work, given)
         before = files(work)
@@ -633,5 +828,9 @@ def test_a_path_refused(
         assert (code, err, out.count("\n")) == (2, "", 1)
         assert out.startswith("ERROR: ")
         assert named in out
-        after = {path: data for path, data in files(work).items() if path.suffix != ".lock"}
+        after = {
+            path: data
+            for path, data in files(work).items()
+            if path.suffix != ".lock"
+        }
         assert after == before

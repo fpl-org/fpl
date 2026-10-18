@@ -1,0 +1,10 @@
+.vendor/
+**/__pycache__/
+bin/
+site/node_modules/
+site/dist/
+site/.astro/
+_site/
+.quarto/
+**/*.qmd
+**/__marimo__/

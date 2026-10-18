@@ -1,1 +1,3 @@
-"""FPL. The layout is .agents/CONVENTIONS.md; the stack .agents/STACK.md."""
+"""
+FPL. The layout is .agents/CONVENTIONS.md; the stack .agents/STACK.md.
+"""

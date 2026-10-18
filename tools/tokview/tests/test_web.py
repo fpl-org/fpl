@@ -1,4 +1,7 @@
-"""tokview.web and tokview.__main__: the server answers the page's three requests."""
+"""
+tokview.web and tokview.__main__: the server answers the page's three
+requests.
+"""
 
 import http.client
 import inspect
@@ -61,7 +64,10 @@ def opener() -> FakeOpener:
 
 @contextmanager
 def serving(app: App) -> Generator[str]:
-    """The base URL of app served on a free port, for the length of the block."""
+    """
+    The base URL of app served on a free port, for the length of the
+    block.
+    """
     httpd = server(app, 0)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -141,7 +147,10 @@ def test_a_tokenizer_that_cannot_be_fetched_is_a_bad_gateway(root: Path) -> None
 
 
 def stated(url: str, length: str) -> int:
-    """The status of a bodiless POST /tokenize whose Content-Length header says length."""
+    """
+    The status of a bodiless POST /tokenize whose Content-Length header
+    says length.
+    """
     at = urllib.parse.urlsplit(url)
     connection = http.client.HTTPConnection(at.hostname or "", at.port, timeout=5)
     try:
@@ -233,7 +242,10 @@ def test_the_count_follows_no_redirect() -> None:
     followed: list[str] = []
 
     class Moved(BaseHTTPRequestHandler):
-        """Answers the POST with a redirect, and notes any request that follows it."""
+        """
+        Answers the POST with a redirect, and notes any request that
+        follows it.
+        """
 
         @override
         def log_message(self, format: str, *args: Any) -> None:

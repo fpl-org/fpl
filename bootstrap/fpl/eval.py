@@ -1,5 +1,7 @@
-"""The core as a step machine: a state is the stack and the code still to run, and `step` runs
-one node of it. Over the core AST only."""
+"""
+The core as a step machine: a state is the stack and the code still to
+run, and `step` runs one node of it. Over the core AST only.
+"""
 
 from collections import deque
 from collections.abc import Callable, Iterator, Mapping
@@ -48,12 +50,16 @@ type Bound = dict[str, Value]
 type Stack = tuple[Value, ...]
 
 LIMIT = 10**DIGITS
-"""The least magnitude a number cannot have."""
+"""
+The least magnitude a number cannot have.
+"""
 
 
 @dataclass(frozen=True)
 class State:
-    """The stack, top last; the code still to run; the definitions by name."""
+    """
+    The stack, top last; the code still to run; the definitions by name.
+    """
 
     stack: tuple[Value, ...]
     code: tuple[Node, ...]
@@ -63,12 +69,16 @@ class State:
 def evaluate(
     statements: tuple[Statement, ...], fuel: int | None = None
 ) -> tuple[tuple[Value, ...], ...]:
-    """The stack each run line leaves, every line on a fresh stack and within fuel steps, or
-    with no bound when fuel is None; a fuel below zero would bound nothing, so it is refused
-    before the first step. A definition is called at its word; a later definition of a word
-    shadows an earlier one, for every line; word/history pushes the ones it shadows, oldest
-    first, each as a quotation, word/doc the docstring of the one in force and word/effect its
-    effect line as a list of strings, +fail last when it may fail."""
+    """
+    The stack each run line leaves, every line on a fresh stack and
+    within fuel steps, or with no bound when fuel is None; a fuel below
+    zero would bound nothing, so it is refused before the first step. A
+    definition is called at its word; a later definition of a word
+    shadows an earlier one, for every line; word/history pushes the ones
+    it shadows, oldest first, each as a quotation, word/doc the
+    docstring of the one in force and word/effect its effect line as a
+    list of strings, +fail last when it may fail.
+    """
     budget(fuel)
     logged: dict[str, list[Define]] = {}
     for s in statements:
@@ -76,27 +86,39 @@ def evaluate(
             logged.setdefault(s.word, []).append(s)
     words = {word: log[-1].code for word, log in logged.items()}
     for word, log in logged.items():
-        words[f"{word}/history"] = (Push(Listed(tuple(Quotation(d.code) for d in log[:-1]))),)
+        words[f"{word}/history"] = (
+            Push(Listed(tuple(Quotation(d.code) for d in log[:-1]))),
+        )
         words[f"{word}/doc"] = (Push(log[-1].doc),)
         words[f"{word}/effect"] = (Push(effect_line(log[-1])),)
-    return tuple(metered(s, words, fuel) for s in statements if isinstance(s, Run))
+    return tuple(
+        metered(s, words, fuel) for s in statements if isinstance(s, Run)
+    )
 
 
 def budget(fuel: int | None) -> None:
-    """Refuses a fuel below zero, which Meter would count down past zero and never stop on."""
+    """
+    Refuses a fuel below zero, which Meter would count down past zero
+    and never stop on.
+    """
     if fuel is not None and fuel < 0:
         raise ValueError(f"fuel below zero: {fuel}")
 
 
 @dataclass
 class Meter:
-    """The steps a run line may still take, None for no bound, and the line charged for them."""
+    """
+    The steps a run line may still take, None for no bound, and the line
+    charged for them.
+    """
 
     left: int | None
     span: Span
 
     def spend(self) -> None:
-        """One step taken; refused, at the line, once none is left."""
+        """
+        One step taken; refused, at the line, once none is left.
+        """
         if self.left == 0:
             raise FplError(self.span, "out of fuel")
         if self.left is not None:
@@ -108,8 +130,11 @@ UNMETERED = Meter(None, Span(1, 1))
 
 
 def metered(run: Run, words: Words, fuel: int | None) -> tuple[Value, ...]:
-    """The stack the run line leaves, its steps and those of every run nested in it charged to
-    one meter. A recursion deeper than the walker's own stack is an error at the line."""
+    """
+    The stack the run line leaves, its steps and those of every run
+    nested in it charged to one meter. A recursion deeper than the
+    walker's own stack is an error at the line.
+    """
     token = FUEL.set(Meter(fuel, run.span))
     try:
         return final(State((), run.code, words))
@@ -120,8 +145,10 @@ def metered(run: Run, words: Words, fuel: int | None) -> tuple[Value, ...]:
 
 
 def effect_line(define: Define) -> Listed:
-    """ins -- outs, a typed input as its two strings `x:` and its type, then +fail if the word
-    may fail (hole effect-query)."""
+    """
+    ins -- outs, a typed input as its two strings `x:` and its type,
+    then +fail if the word may fail (hole effect-query).
+    """
     effect = define.effect
     fails = ("+fail",) if effect.fails else ()
     typed = zip(effect.ins, effect.types, strict=True)
@@ -130,20 +157,28 @@ def effect_line(define: Define) -> Listed:
 
 
 def slotted(name: str, part: str | None) -> tuple[str, ...]:
-    """An input as its effect line writes it: the name, or `name:` and its type."""
+    """
+    An input as its effect line writes it: the name, or `name:` and its
+    type.
+    """
     return (name,) if part is None else (name + ":", part)
 
 
 def final(state: State) -> tuple[Value, ...]:
-    """The stack once no code is left, each step spent from the line's meter, if any.
+    """
+    The stack once no code is left, each step spent from the line's
+    meter, if any.
 
-    A step reads only the first node and leaves the rest of the code behind what it puts in
-    place, so each step is taken on its node alone and the code still waiting is held here,
-    next node last: a step costs the code it puts in place, not the code waiting. Stepping the
-    whole state would copy that code each step, quadratic in the steps of a recursion that
-    leaves a call waiting each time (`f f`), which no budget of a million steps bounds in
-    time (#144). The stack and the values a step builds are still copied whole, so a loop that
-    grows either each round stays quadratic in its steps."""
+    A step reads only the first node and leaves the rest of the code
+    behind what it puts in place, so each step is taken on its node
+    alone and the code still waiting is held here, next node last: a
+    step costs the code it puts in place, not the code waiting. Stepping
+    the whole state would copy that code each step, quadratic in the
+    steps of a recursion that leaves a call waiting each time (`f f`),
+    which no budget of a million steps bounds in time (#144). The stack
+    and the values a step builds are still copied whole, so a loop that
+    grows either each round stays quadratic in its steps.
+    """
     meter = FUEL.get(UNMETERED)
     stack, waiting = state.stack, list(reversed(state.code))
     while waiting:
@@ -155,16 +190,21 @@ def final(state: State) -> tuple[Value, ...]:
 
 
 def running(state: State) -> bool:
-    """Some code is left to run."""
+    """
+    Some code is left to run.
+    """
     return bool(state.code)
 
 
 @icontract.require(running)
 def step(state: State) -> State:
-    """Run the first node: push its value, put a defined word's code in its place, apply a
-    builtin to the values it takes, put a binder's scope in its place with the top for its
-    name, or push the dict its values build. A control word puts the code it runs in its
-    place, and a match the body of the row it chose. A refusal raises its error."""
+    """
+    Run the first node: push its value, put a defined word's code in its
+    place, apply a builtin to the values it takes, put a binder's scope
+    in its place with the top for its name, or push the dict its values
+    build. A control word puts the code it runs in its place, and a
+    match the body of the row it chose. A refusal raises its error.
+    """
     node, rest = state.code[0], state.code[1:]
     match node:
         case Push():
@@ -172,9 +212,13 @@ def step(state: State) -> State:
         case Bind():
             return binding(node, state, rest)
         case Keyed():
-            return State((*state.stack, gathered(node, state.words)), rest, state.words)
+            return State(
+                (*state.stack, gathered(node, state.words)), rest, state.words
+            )
         case Call() if node.name in state.words:
-            return State(state.stack, state.words[node.name] + rest, state.words)
+            return State(
+                state.stack, state.words[node.name] + rest, state.words
+            )
         case Call():
             return builtin(node, state, rest)
         case Match():
@@ -186,21 +230,29 @@ def step(state: State) -> State:
 
 
 def binding(node: Bind, state: State, rest: tuple[Node, ...]) -> State:
-    """The binder's scope in its place, the top standing for its name."""
+    """
+    The binder's scope in its place, the top standing for its name.
+    """
     if not state.stack:
         raise FplError(node.span, "stack underflow")
     scope = substitute(node.body, node.name, state.stack[-1])
     return State(state.stack[:-1], scope + rest, state.words)
 
 
-def substitute(code: tuple[Node, ...], name: str, value: Value) -> tuple[Node, ...]:
-    """The code with every call of name, in quotations too, a push of value; a binder of the
-    same name shadows it for its scope."""
+def substitute(
+    code: tuple[Node, ...], name: str, value: Value
+) -> tuple[Node, ...]:
+    """
+    The code with every call of name, in quotations too, a push of
+    value; a binder of the same name shadows it for its scope.
+    """
     return tuple(replaced(node, name, value) for node in code)
 
 
 def replaced(node: Node, name: str, value: Value) -> Node:
-    """One node with name standing for value."""
+    """
+    One node with name standing for value.
+    """
     match node:
         case Call():
             return Push(value) if node.name == name else node
@@ -212,30 +264,47 @@ def replaced(node: Node, name: str, value: Value) -> Node:
             return rekeyed(node, name, value)
         case Match():
             return rematched(node, name, value)
-        case Refuse():  # pragma: no cover -- a refusing row binds nothing, so nothing substitutes
+        case Refuse():  # pragma: no cover -- a refusing row binds nothing
             return node
         case _:
             assert_never(node)
 
 
 def rebinder(node: Bind, name: str, value: Value) -> Bind:
-    """A binder's body with name standing for value, unless it binds name anew."""
-    body = node.body if node.name == name else substitute(node.body, name, value)
+    """
+    A binder's body with name standing for value, unless it binds name
+    anew.
+    """
+    body = (
+        node.body if node.name == name else substitute(node.body, name, value)
+    )
     return Bind(node.name, body, node.span)
 
 
 def rekeyed(node: Keyed, name: str, value: Value) -> Keyed:
-    """A dict's values with name standing for value."""
-    return Keyed(tuple((key, replaced(n, name, value)) for key, n in node.entries), node.span)
+    """
+    A dict's values with name standing for value.
+    """
+    return Keyed(
+        tuple((key, replaced(n, name, value)) for key, n in node.entries),
+        node.span,
+    )
 
 
 def rematched(node: Match, name: str, value: Value) -> Match:
-    """A match's rows with name standing for value."""
-    return Match(tuple(rebound(row, name, value) for row in node.rows), node.span)
+    """
+    A match's rows with name standing for value.
+    """
+    return Match(
+        tuple(rebound(row, name, value) for row in node.rows), node.span
+    )
 
 
 def rebound(row: Row, name: str, value: Value) -> Row:
-    """A row with name standing for value, up to the pattern that binds name anew."""
+    """
+    A row with name standing for value, up to the pattern that binds
+    name anew.
+    """
     patterns: list[Pattern] = []
     shadowed = False
     for pattern in row.patterns:
@@ -246,7 +315,9 @@ def rebound(row: Row, name: str, value: Value) -> Row:
 
 
 def pinned(pattern: Pattern, name: str, value: Value) -> Pattern:
-    """A pattern with each $name the value it pins."""
+    """
+    A pattern with each $name the value it pins.
+    """
     match pattern:
         case Equal():
             return Equal(replaced(pattern.node, name, value))
@@ -254,7 +325,11 @@ def pinned(pattern: Pattern, name: str, value: Value) -> Pattern:
             args = tuple(pinned(p, name, value) for p in pattern.args)
             return Inverse(pattern.name, args, pattern.span)
         case Guarded():
-            return Guarded(pinned(pattern.pattern, name, value), pattern.test, pattern.span)
+            return Guarded(
+                pinned(pattern.pattern, name, value),
+                pattern.test,
+                pattern.span,
+            )
         case Wild() | Var():
             return pattern
         case _:
@@ -262,7 +337,9 @@ def pinned(pattern: Pattern, name: str, value: Value) -> Pattern:
 
 
 def names(pattern: Pattern) -> frozenset[str]:
-    """The names a pattern binds."""
+    """
+    The names a pattern binds.
+    """
     match pattern:
         case Var():
             return frozenset((pattern.name,))
@@ -277,9 +354,11 @@ def names(pattern: Pattern) -> frozenset[str]:
 
 
 def matching(node: Match, state: State, rest: tuple[Node, ...]) -> State:
-    """The values the match takes replaced by the body of the first row matching them, each
-    name a pattern bound standing for its value; no row matching raises +fail, a FailError, at
-    the match."""
+    """
+    The values the match takes replaced by the body of the first row
+    matching them, each name a pattern bound standing for its value; no
+    row matching raises +fail, a FailError, at the match.
+    """
     cut = len(state.stack) - len(node.rows[0].patterns)
     if cut < 0:
         raise FplError(node.span, "stack underflow")
@@ -293,9 +372,13 @@ def matching(node: Match, state: State, rest: tuple[Node, ...]) -> State:
     raise FailError(node.span, "no row matches")
 
 
-def matches(patterns: tuple[Pattern, ...], values: Stack, words: Words) -> Bound | None:
-    """Each pattern against its value, left to right, a name bound by one pinned in those
-    after it; None if one fails."""
+def matches(
+    patterns: tuple[Pattern, ...], values: Stack, words: Words
+) -> Bound | None:
+    """
+    Each pattern against its value, left to right, a name bound by one
+    pinned in those after it; None if one fails.
+    """
     bound: Bound = {}
     for pattern, value in zip(patterns, values, strict=True):
         for name, earlier in bound.items():
@@ -308,8 +391,10 @@ def matches(patterns: tuple[Pattern, ...], values: Stack, words: Words) -> Bound
 
 
 def matched(pattern: Pattern, value: Value, words: Words) -> Bound | None:
-    """What one pattern binds on a value, or None: a guard is its pattern matching and then its
-    word leaving 1 on the value (hole guard-test)."""
+    """
+    What one pattern binds on a value, or None: a guard is its pattern
+    matching and then its word leaving 1 on the value (hole guard-test).
+    """
     match pattern:
         case Wild():
             return {}
@@ -326,16 +411,21 @@ def matched(pattern: Pattern, value: Value, words: Words) -> Bound | None:
 
 
 def guarded(guard: Guarded, value: Value, words: Words) -> Bound | None:
-    """What the inner pattern binds on the value, if the guard word then leaves 1 on it; the
-    word runs only on a value the inner pattern matched, so a row whose pattern refuses the
-    value falls through even where the word would raise on it."""
+    """
+    What the inner pattern binds on the value, if the guard word then
+    leaves 1 on it; the word runs only on a value the inner pattern
+    matched, so a row whose pattern refuses the value falls through even
+    where the word would raise on it.
+    """
     bound = matched(guard.pattern, value, words)
     return bound if bound is not None and tested(guard, value, words) else None
 
 
 def tested(guard: Guarded, value: Value, words: Words) -> bool:
-    """The guard's word leaves 1 on the value; its miss is not fitting, and any other error in
-    it propagates as that error (design 09 §3.9)."""
+    """
+    The guard's word leaves 1 on the value; its miss is not fitting, and
+    any other error in it propagates as that error (design 09 §3.9).
+    """
     try:
         left = final(State((value,), (Call(guard.test, guard.span),), words))
     except FailError:
@@ -344,7 +434,10 @@ def tested(guard: Guarded, value: Value, words: Words) -> bool:
 
 
 def unbuilt(pattern: Inverse, value: Value, words: Words) -> Bound | None:
-    """What the arguments bind on the values the constructor, run backwards, gives."""
+    """
+    What the arguments bind on the values the constructor, run
+    backwards, gives.
+    """
     given = undone(pattern.name, (value,), words, pattern.span)
     if given is None or len(given) != len(pattern.args):
         return None
@@ -352,11 +445,18 @@ def unbuilt(pattern: Inverse, value: Value, words: Words) -> Bound | None:
 
 
 def undone(
-    name: str, stack: Stack, words: Words, span: Span, trail: frozenset[str] = frozenset()
+    name: str,
+    stack: Stack,
+    words: Words,
+    span: Span,
+    trail: frozenset[str] = frozenset(),
 ) -> Stack | None:
-    """The stack with the word run backwards on its top, or None where the top is not a value
-    it builds. A defined word runs its body backwards, a primitive its inverse; any other
-    word, or a word inside its own body, is refused where the pattern names it."""
+    """
+    The stack with the word run backwards on its top, or None where the
+    top is not a value it builds. A defined word runs its body
+    backwards, a primitive its inverse; any other word, or a word inside
+    its own body, is refused where the pattern names it.
+    """
     if name in words and name not in trail:
         state: Stack | None = stack
         for node in reversed(words[name]):
@@ -372,18 +472,25 @@ def undone(
 def unrun(
     node: Node, stack: Stack, words: Words, span: Span, trail: frozenset[str]
 ) -> Stack | None:
-    """One node of a constructor's body run backwards: a push takes its value back off."""
+    """
+    One node of a constructor's body run backwards: a push takes its
+    value back off.
+    """
     match node:
         case Push():
             return unpush(node.value, stack)
         case Call():
             return undone(node.name, stack, words, span, trail)
         case _:
-            raise FplError(span, "a constructor is words and literals: not invertible")
+            raise FplError(
+                span, "a constructor is words and literals: not invertible"
+            )
 
 
 def unpush(value: Value, stack: Stack) -> Stack | None:
-    """The stack below its top, when the top is the value."""
+    """
+    The stack below its top, when the top is the value.
+    """
     match stack:
         case (*below, top) if top == value:
             return tuple(below)
@@ -392,7 +499,9 @@ def unpush(value: Value, stack: Stack) -> Stack | None:
 
 
 def unswap(stack: Stack) -> Stack | None:
-    """swap is its own inverse."""
+    """
+    swap is its own inverse.
+    """
     match stack:
         case (*below, x, y):
             return (*below, y, x)
@@ -401,7 +510,9 @@ def unswap(stack: Stack) -> Stack | None:
 
 
 def unpair(stack: Stack) -> Stack | None:
-    """A pair's two items."""
+    """
+    A pair's two items.
+    """
     match stack:
         case (*below, Listed(items=(a, b))):
             return (*below, a, b)
@@ -410,7 +521,9 @@ def unpair(stack: Stack) -> Stack | None:
 
 
 def uncons(stack: Stack) -> Stack | None:
-    """A non-empty list's first item and the rest."""
+    """
+    A non-empty list's first item and the rest.
+    """
     match stack:
         case (*below, Listed(items=(x, *xs))):
             return (*below, x, Listed(tuple(xs)))
@@ -426,18 +539,24 @@ INVERSES: dict[str, Callable[[Stack], Stack | None]] = {
 
 
 def held(inner: Value, name: str, value: Value) -> Value:
-    """A pushed value with name standing for value in the code it holds."""
+    """
+    A pushed value with name standing for value in the code it holds.
+    """
     match inner:
         case Quotation():
             return Quotation(substitute(inner.code, name, value))
         case Listed():
-            return Listed(tuple(held(item, name, value) for item in inner.items))
+            return Listed(
+                tuple(held(item, name, value) for item in inner.items)
+            )
         case _:
             return inner
 
 
 def gathered(node: Keyed, words: Words) -> Dict:
-    """Each value run on a fresh stack, where it must leave one value."""
+    """
+    Each value run on a fresh stack, where it must leave one value.
+    """
     entries: list[tuple[str, Value]] = []
     for key, code in node.entries:
         stack = final(State((), (code,), words))
@@ -448,9 +567,12 @@ def gathered(node: Keyed, words: Words) -> Dict:
 
 
 def builtin(call: Call, state: State, rest: tuple[Node, ...]) -> State:
-    """The state with a builtin's results in place of its arguments, or with a control word's
-    code before the rest. Fewer values than it takes is refused at the word: an effect line
-    promised more than its body left."""
+    """
+    The state with a builtin's results in place of its arguments, or
+    with a control word's code before the rest. Fewer values than it
+    takes is refused at the word: an effect line promised more than its
+    body left.
+    """
     cut = len(state.stack) - len(EFFECTS[call.name].ins)
     if cut < 0:
         raise FplError(call.span, "stack underflow")
@@ -458,11 +580,16 @@ def builtin(call: Call, state: State, rest: tuple[Node, ...]) -> State:
     if call.name in CONTROLS:
         code = CONTROLS[call.name](call.span, state.words, *taken)
         return State(below, code + rest, state.words)
-    return State((*below, *BUILTINS[call.name](call.span, *taken)), rest, state.words)
+    return State(
+        (*below, *BUILTINS[call.name](call.span, *taken)), rest, state.words
+    )
 
 
 def operands(value: Value, span: Span) -> tuple[Number, ...]:
-    """A number as one operand, a strand of numbers as its items; anything else is refused."""
+    """
+    A number as one operand, a strand of numbers as its items; anything
+    else is refused.
+    """
     items = value.items if isinstance(value, Strand) else (value,)
     numbers = tuple(item for item in items if isinstance(item, int | Decimal))
     if len(numbers) < len(items):
@@ -473,40 +600,59 @@ def operands(value: Value, span: Span) -> tuple[Number, ...]:
 def arithmetic(
     op: Callable[[Number, Number], Number], span: Span, a: Value, b: Value
 ) -> tuple[Value, ...]:
-    """A pervasive operator: a number meets a number, or each item of a strand; two strands
-    meet item by item and must be as long. A result of more than DIGITS digits before its point
-    is refused at the word."""
+    """
+    A pervasive operator: a number meets a number, or each item of a
+    strand; two strands meet item by item and must be as long. A result
+    of more than DIGITS digits before its point is refused at the word.
+    """
     xs, ys = operands(a, span), operands(b, span)
     if len(xs) != len(ys) and 1 not in (len(xs), len(ys)):
         raise FplError(span, "strands of unequal length")
-    zs = tuple(op(xs[i % len(xs)], ys[i % len(ys)]) for i in range(max(len(xs), len(ys))))
+    zs = tuple(
+        op(xs[i % len(xs)], ys[i % len(ys)])
+        for i in range(max(len(xs), len(ys)))
+    )
     if any(abs(z) >= LIMIT for z in zs):
         raise FplError(span, "number too large")
-    return (Strand(zs) if isinstance(a, Strand) or isinstance(b, Strand) else zs[0],)
+    return (
+        Strand(zs)
+        if isinstance(a, Strand) or isinstance(b, Strand)
+        else zs[0],
+    )
 
 
 def swap(_span: Span, a: Value, b: Value) -> tuple[Value, ...]:
-    """x y -- y x"""
+    """
+    x y -- y x
+    """
     return b, a
 
 
 def dup(_span: Span, a: Value) -> tuple[Value, ...]:
-    """x -- x x"""
+    """
+    x -- x x
+    """
     return a, a
 
 
 def drop(_span: Span, _a: Value) -> tuple[Value, ...]:
-    """x --"""
+    """
+    x --
+    """
     return ()
 
 
 def enclose(_span: Span, a: Value) -> tuple[Value, ...]:
-    """x -- [x]"""
+    """
+    x -- [x]
+    """
     return (Quotation((Push(a),)),)
 
 
 def join(span: Span, a: Value, b: Value) -> tuple[Value, ...]:
-    """Two quotations as one, or two lists as one."""
+    """
+    Two quotations as one, or two lists as one.
+    """
     match a, b:
         case Quotation(), Quotation():
             return (Quotation(a.code + b.code),)
@@ -517,31 +663,44 @@ def join(span: Span, a: Value, b: Value) -> tuple[Value, ...]:
 
 
 def pair(_span: Span, a: Value, b: Value) -> tuple[Value, ...]:
-    """a b -- p : a two-item list (hole pair-shape)."""
+    """
+    a b -- p : a two-item list (hole pair-shape).
+    """
     return (Listed((a, b)),)
 
 
 def cons(span: Span, x: Value, xs: Value) -> tuple[Value, ...]:
-    """x xs -- ys : x before the items of a list."""
+    """
+    x xs -- ys : x before the items of a list.
+    """
     if not isinstance(xs, Listed):
         raise FplError(span, "cons takes a list")
     return (Listed((x, *xs.items)),)
 
 
 def typed(kind: type[object], _span: Span, value: Value) -> tuple[Value, ...]:
-    """x -- b : 1 when x is of the type, or is a strand whose items all are; 0 on any other value,
-    an empty strand included."""
+    """
+    x -- b : 1 when x is of the type, or is a strand whose items all
+    are; 0 on any other value, an empty strand included.
+    """
     items = value.items if isinstance(value, Strand) else (value,)
-    return (int(bool(items) and all(isinstance(item, kind) for item in items)),)
+    return (
+        int(bool(items) and all(isinstance(item, kind) for item in items)),
+    )
 
 
 def unfilled(span: Span) -> tuple[Value, ...]:
-    """-- : a goal left in the code, refused where it runs (hole goal-placeholder)."""
+    """
+    -- : a goal left in the code, refused where it runs (hole
+    goal-placeholder).
+    """
     raise FplError(span, "unfilled goal")
 
 
 def nothing(_span: Span) -> tuple[Value, ...]:
-    """-- : a _ the elaborator inferred as nothing (hole infer-hole)."""
+    """
+    -- : a _ the elaborator inferred as nothing (hole infer-hole).
+    """
     return ()
 
 
@@ -566,34 +725,49 @@ BUILTINS: dict[str, Builtin] = {
 
 
 def quoted(value: Value, span: Span) -> Quotation:
-    """A value that must be a quotation."""
+    """
+    A value that must be a quotation.
+    """
     if not isinstance(value, Quotation):
         raise FplError(span, "a quotation is expected")
     return value
 
 
 def force(span: Span, _words: Words, q: Value) -> tuple[Node, ...]:
-    """q -- : q run in place; q fills a thunk slot, as every control word's quotation does."""
+    """
+    q -- : q run in place; q fills a thunk slot, as every control word's
+    quotation does.
+    """
     return quoted(q, span).code
 
 
-def choose(span: Span, _words: Words, c: Value, t: Value, e: Value) -> tuple[Node, ...]:
-    """c t e -- : t run in place on 1, e on 0; any other condition is refused (hole
-    truth-values)."""
+def choose(
+    span: Span, _words: Words, c: Value, t: Value, e: Value
+) -> tuple[Node, ...]:
+    """
+    c t e -- : t run in place on 1, e on 0; any other condition is
+    refused (hole truth-values).
+    """
     branches = quoted(e, span), quoted(t, span)
     if not isinstance(c, int) or c not in (0, 1):
         raise FplError(span, "if takes 0 or 1")
     return branches[c].code
 
 
-def commute(span: Span, _words: Words, x: Value, y: Value, q: Value) -> tuple[Node, ...]:
-    """x y q -- : q run in place on y x."""
+def commute(
+    span: Span, _words: Words, x: Value, y: Value, q: Value
+) -> tuple[Node, ...]:
+    """
+    x y q -- : q run in place on y x.
+    """
     return (Push(y), Push(x), *quoted(q, span).code)
 
 
 def repeat(span: Span, _words: Words, q: Value, n: Value) -> tuple[Node, ...]:
-    """q n -- : q run in place n times; n a count. Each round puts back one q and the rest of
-    the count, so the code grows by one q, not n."""
+    """
+    q n -- : q run in place n times; n a count. Each round puts back one
+    q and the rest of the count, so the code grows by one q, not n.
+    """
     code = quoted(q, span).code
     if not isinstance(n, int) or n < 0:
         raise FplError(span, "repeat takes a count")
@@ -603,14 +777,18 @@ def repeat(span: Span, _words: Words, q: Value, n: Value) -> tuple[Node, ...]:
 
 
 def items(xs: Value, span: Span) -> tuple[Value, ...]:
-    """The items of a strand or a list; anything else is refused."""
+    """
+    The items of a strand or a list; anything else is refused.
+    """
     if not isinstance(xs, Strand | Listed):
         raise FplError(span, "a strand or a list is expected")
     return xs.items
 
 
 def single(state: State, span: Span) -> Value:
-    """The one value a step leaves on its fresh stack (hole step-stack)."""
+    """
+    The one value a step leaves on its fresh stack (hole step-stack).
+    """
     stack = final(state)
     if len(stack) != 1:
         raise FplError(span, "each step leaves one value")
@@ -618,17 +796,24 @@ def single(state: State, span: Span) -> Value:
 
 
 def rebuilt(xs: Value, values: list[Value]) -> Push:
-    """The results pushed as a strand when xs was one and every result is a number or a
-    string, else as a list (hole sequence-shape)."""
+    """
+    The results pushed as a strand when xs was one and every result is a
+    number or a string, else as a list (hole sequence-shape).
+    """
     atoms = tuple(v for v in values if isinstance(v, int | Decimal | str))
     if isinstance(xs, Strand) and len(atoms) == len(values):
         return Push(Strand(atoms))
     return Push(Listed(tuple(values)))
 
 
-def running_results(span: Span, words: Words, xs: Value, q: Value) -> Iterator[Value]:
-    """The first item, then q run on the result so far and the next item, for each item; one
-    at a time, so a fold need not hold the ones it has passed."""
+def running_results(
+    span: Span, words: Words, xs: Value, q: Value
+) -> Iterator[Value]:
+    """
+    The first item, then q run on the result so far and the next item,
+    for each item; one at a time, so a fold need not hold the ones it
+    has passed.
+    """
     code = quoted(q, span).code
     values = items(xs, span)
     if not values:
@@ -641,18 +826,30 @@ def running_results(span: Span, words: Words, xs: Value, q: Value) -> Iterator[V
 
 
 def each(span: Span, words: Words, xs: Value, q: Value) -> tuple[Node, ...]:
-    """xs q -- ys : q run on each item alone."""
+    """
+    xs q -- ys : q run on each item alone.
+    """
     code = quoted(q, span).code
-    return (rebuilt(xs, [single(State((x,), code, words), span) for x in items(xs, span)]),)
+    return (
+        rebuilt(
+            xs,
+            [single(State((x,), code, words), span) for x in items(xs, span)],
+        ),
+    )
 
 
 def scan(span: Span, words: Words, xs: Value, q: Value) -> tuple[Node, ...]:
-    """xs q -- ys : every result a fold passes through."""
+    """
+    xs q -- ys : every result a fold passes through.
+    """
     return (rebuilt(xs, list(running_results(span, words, xs, q))),)
 
 
 def fold(span: Span, words: Words, xs: Value, q: Value) -> tuple[Node, ...]:
-    """xs q -- x : the last result of the scan; no item to start from is refused."""
+    """
+    xs q -- x : the last result of the scan; no item to start from is
+    refused.
+    """
     last = deque(running_results(span, words, xs, q), maxlen=1)
     if not last:
         raise FplError(span, "fold over nothing")

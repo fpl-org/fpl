@@ -1,5 +1,8 @@
-"""Running lines: the stack, frames and the bar, sections, strands, ( ), blocks and `:`
-definitions (draft2 §frames, §currying, §( ) rotates; draft1 blocks and node; draft3 effect)."""
+"""
+Running lines: the stack, frames and the bar, sections, strands, ( ),
+blocks and `:` definitions (draft2 §frames, §currying, §( ) rotates;
+draft1 blocks and node; draft3 effect).
+"""
 
 import re
 
@@ -35,8 +38,10 @@ LCURRY = "lcurry : x q -- q'\n\t[ swap ] swap , curry\n"
 SLOTS = "app : x t: [] c: Code -- y\n"
 
 bounded = st.integers(1 - 10**DIGITS, 10**DIGITS - 1)
-# A program over `items` may hold numerals of thousands of digits; the properties over it take
-# up to ~120 ms an example here, so a slower runner would trip Hypothesis's 200 ms deadline.
+# A program over `items` may hold numerals of thousands of digits; the
+# properties over it take
+# up to ~120 ms an example here, so a slower runner would trip
+# Hypothesis's 200 ms deadline.
 items = st.recursive(
     st.integers(-9, 99).map(str)
     | st.integers(4090, 4400).map(lambda n: "9" * n)
@@ -44,22 +49,35 @@ items = st.recursive(
     | st.sampled_from(["#a", "→a", "1 →a a", "{ k 1 }"]),
     lambda inner: (
         st.lists(inner, max_size=4).map(lambda xs: "[" + " ".join(xs) + "]")
-        | st.lists(inner, min_size=1, max_size=4).map(lambda xs: "(" + " ".join(xs) + ")")
+        | st.lists(inner, min_size=1, max_size=4).map(
+            lambda xs: "(" + " ".join(xs) + ")"
+        )
     ),
     max_leaves=12,
 )
-lines = st.lists(st.lists(items, min_size=1, max_size=4).map(" ".join), min_size=1, max_size=3)
-programs = st.lists(lines.map(" | ".join), min_size=1, max_size=3).map("\n".join)
+lines = st.lists(
+    st.lists(items, min_size=1, max_size=4).map(" ".join),
+    min_size=1,
+    max_size=3,
+)
+programs = st.lists(lines.map(" | ".join), min_size=1, max_size=3).map(
+    "\n".join
+)
 
 
 def readable(source: str) -> str:
-    """source with each numeral of more than DIGITS digits cut to DIGITS, so desugaring reads
-    it: for properties of the code a program makes rather than of its refusals."""
+    """
+    source with each numeral of more than DIGITS digits cut to DIGITS,
+    so desugaring reads it: for properties of the code a program makes
+    rather than of its refusals.
+    """
     return re.sub(f"9{{{DIGITS + 1},}}", "9" * DIGITS, source)
 
 
 def core(source: str) -> tuple[Statement, ...] | str:
-    """A program's statements, or its error's message without the position."""
+    """
+    A program's statements, or its error's message without the position.
+    """
     try:
         return desugar(parse(source))
     except FplError as error:
@@ -67,7 +85,9 @@ def core(source: str) -> tuple[Statement, ...] | str:
 
 
 def outcome(source: str) -> str:
-    """What a program prints, or its error's message without the position."""
+    """
+    What a program prints, or its error's message without the position.
+    """
     try:
         return run(source)
     except FplError as error:
@@ -75,8 +95,11 @@ def outcome(source: str) -> str:
 
 
 def resugared(source: str) -> str:
-    """The core written back as source; a source desugaring refuses, as it refuses a numeral
-    too long, is kept as it is, since its refusal is all it means."""
+    """
+    The core written back as source; a source desugaring refuses, as it
+    refuses a numeral too long, is kept as it is, since its refusal is
+    all it means.
+    """
     try:
         return render(resugar(desugar(parse(source))))
     except FplError:
@@ -87,8 +110,11 @@ def resugared(source: str) -> str:
 @given(st.sampled_from(["", CURRY, "nop : --\n", SLOTS]), programs)
 @settings(deadline=None)
 def test_desugaring_preserves_meaning(head: str, body: str) -> None:
-    """The core written back as source, with no bar, ( ) or block left, means what the source
-    meant: bars and ( ) only sequence, a section is its quotation, a block its children."""
+    """
+    The core written back as source, with no bar, ( ) or block left,
+    means what the source meant: bars and ( ) only sequence, a section
+    is its quotation, a block its children.
+    """
     source = head + body + "\n"
     assert outcome(resugared(source)) == outcome(source)
 
@@ -96,8 +122,10 @@ def test_desugaring_preserves_meaning(head: str, body: str) -> None:
 @given(programs)
 @settings(deadline=None)
 def test_comments_change_no_statement(body: str) -> None:
-    """A ;; line before each line and a note after it leave the core as it was: a comment is no
-    code, and a ;; before no definition is no doc."""
+    """
+    A ;; line before each line and a note after it leave the core as it
+    was: a comment is no code, and a ;; before no definition is no doc.
+    """
     commented = "".join(f";; d\n{line} ; n\n" for line in body.split("\n"))
     assert core(commented) == core(body + "\n")
 
@@ -115,34 +143,55 @@ def test_comments_change_no_statement(body: str) -> None:
         ("+ +\n\t1\n\t;; c\n\t2\n", "+ +\n\t1\n\t2\n"),
     ],
 )
-def test_a_line_with_no_code_is_no_statement(commented: str, plain: str) -> None:
-    """A comment's line and the empty first line run nothing, at the top, in a block or in a
-    body, and a block counts only the children that hold code: under + + two children leave it
-    one short, so it is a section."""
+def test_a_line_with_no_code_is_no_statement(
+    commented: str, plain: str
+) -> None:
+    """
+    A comment's line and the empty first line run nothing, at the top,
+    in a block or in a body, and a block counts only the children that
+    hold code: under + + two children leave it one short, so it is a
+    section.
+    """
     assert core(commented) == core(plain)
 
 
 def test_a_bar_alone_is_code() -> None:
-    """| holds two empty frames, so its line is code: no statement is dropped, and its block
-    is children pushed before it, not refused."""
+    """
+    | holds two empty frames, so its line is code: no statement is
+    dropped, and its block is children pushed before it, not refused.
+    """
     assert desugar(parse("|\n\t1\n")) == (Run((Push(Quotation((Push(1),))),)),)
 
 
-@pytest.mark.parametrize("source", ["", "\n", "\n\n", ";; d\n", "; a\n; b\n", "⍝ a\n\n;;;; f\n"])
-def test_a_program_of_comments_or_blank_lines_prints_nothing(source: str) -> None:
-    """A program with no code, empty or only comments, runs no line and so prints nothing."""
+@pytest.mark.parametrize(
+    "source", ["", "\n", "\n\n", ";; d\n", "; a\n; b\n", "⍝ a\n\n;;;; f\n"]
+)
+def test_a_program_of_comments_or_blank_lines_prints_nothing(
+    source: str,
+) -> None:
+    """
+    A program with no code, empty or only comments, runs no line and so
+    prints nothing.
+    """
     assert run(source) == ""
 
 
-@pytest.mark.parametrize(("pair", "value"), [("quotation", Quotation(())), ("group", Listed(()))])
+@pytest.mark.parametrize(
+    ("pair", "value"), [("quotation", Quotation(())), ("group", Listed(()))]
+)
 def test_an_empty_enclosure_means_what_no_frame_meant(
     pair: Pair, value: Quotation | Listed
 ) -> None:
-    """[] and ⟨⟩ hold one empty frame, the base case of bars + 1 frames; they desugar to the
-    empty quotation and the empty list, as an enclosure of no frames did."""
+    """
+    [] and ⟨⟩ hold one empty frame, the base case of bars + 1 frames;
+    they desugar to the empty quotation and the empty list, as an
+    enclosure of no frames did.
+    """
 
     def program(enclosure: Enclosure) -> Program:
-        """The one-line program whose only cell is the enclosure."""
+        """
+        The one-line program whose only cell is the enclosure.
+        """
         cell = Cell((enclosure,), START)
         return Program((Line((Frame((cell,), START),), (), START),), START)
 
@@ -150,53 +199,79 @@ def test_an_empty_enclosure_means_what_no_frame_meant(
     one = Enclosure(pair, (Frame((), START),), START)
     assert parse(source) == program(one)
     expected = (Run((Push(value),)),)
-    assert desugar(program(one)) == desugar(program(Enclosure(pair, (), START))) == expected
+    assert (
+        desugar(program(one))
+        == desugar(program(Enclosure(pair, (), START)))
+        == expected
+    )
 
 
 def test_literals_strand_inside_a_frame_and_the_bar_applies_across() -> None:
-    """[D2.1] 1 | 1 2 3 + gives 2 3 4: the strand takes the 1 the bar carries; + is pervasive."""
+    """
+    [D2.1] 1 | 1 2 3 + gives 2 3 4: the strand takes the 1 the bar
+    carries; + is pervasive.
+    """
     assert run("1 | 1 2 3 +\n") == "2 3 4\n"
 
 
 def test_an_unsaturated_frame_with_nothing_below_is_a_section() -> None:
-    """[D2.2] 1 2 3 + is the section [1‿2‿3 +], as the printer writes a quotation."""
+    """
+    [D2.2] 1 2 3 + is the section [1‿2‿3 +], as the printer writes a
+    quotation.
+    """
     assert run("1 2 3 +\n") == "[ 1 2 3 + ]\n"
 
 
 def test_the_bar_supplies_what_a_frame_lacks() -> None:
-    """[D2.3] 2 | 3 + gives 5."""
+    """
+    [D2.3] 2 | 3 + gives 5.
+    """
     assert run("2 | 3 +\n") == "5\n"
 
 
 def test_a_number_meets_a_number_as_a_number() -> None:
-    """[D2.3] 2 | 3 + leaves the number 5, not a strand of one."""
+    """
+    [D2.3] 2 | 3 + leaves the number 5, not a strand of one.
+    """
     assert evaluate(desugar(parse("2 | 3 +\n"))) == ((5,),)
 
 
 def test_each_line_runs_on_a_fresh_stack() -> None:
-    """draft2 examples/01-frames.fpl:2-4: one result per line; nothing a line leaves is below
-    the next."""
+    """
+    draft2 examples/01-frames.fpl:2-4: one result per line; nothing a
+    line leaves is below the next.
+    """
     assert run("1 | 1 2 3 +\n1 2 3 +\n2 | 3 +\n") == "2 3 4\n[ 1 2 3 + ]\n5\n"
 
 
 def test_curry_puts_the_value_before_the_code() -> None:
-    """[D2.5] curry : x q -- q' gives [x q]."""
+    """
+    [D2.5] curry : x q -- q' gives [x q].
+    """
     assert run(CURRY + "1 [ + ] curry\n") == "[ 1 + ]\n"
 
 
 def test_lcurry_puts_a_swap_between() -> None:
-    """[D2.6] lcurry : x q -- q' gives [x swap q]; a word may be used above its definition."""
+    """
+    [D2.6] lcurry : x q -- q' gives [x swap q]; a word may be used above
+    its definition.
+    """
     assert run(LCURRY + CURRY + "1 [ - ] lcurry\n") == "[ 1 swap - ]\n"
 
 
 def test_a_block_is_one_node_per_head() -> None:
-    """[D1.4] one block per minimum-depth line: head and its subtree, each a result."""
+    """
+    [D1.4] one block per minimum-depth line: head and its subtree, each
+    a result.
+    """
     assert run(",\n\t1\n\t2\n,\n\t3\n\t4\n") == "[ 1 | 2 ]\n[ 3 | 4 ]\n"
 
 
 def test_children_are_quotations_before_the_head() -> None:
-    """[D1.5] node: children-quotations , head-tokens; quotations because , takes two code
-    slots (S49 rule 5), not by their position."""
+    """
+    [D1.5] node: children-quotations , head-tokens; quotations because ,
+    takes two code slots (S49 rule 5), not by their position.
+    """
     assert run(",\n\t1 2\n\t+\n") == "[ 1 2 + ]\n"
 
 
@@ -211,10 +286,15 @@ def test_children_are_quotations_before_the_head() -> None:
         ("1 + +\n\t10\n\t20\n", "31\n"),
     ],
 )
-def test_a_child_under_a_value_slot_runs_at_once(source: str, printed: str) -> None:
-    """[S49] rule 5 and S42 (children push, head consumes): each child fills an input of the
-    head phrase, the first child the deepest; under a value slot it runs at once, top to bottom,
-    on the stack its head then consumes."""
+def test_a_child_under_a_value_slot_runs_at_once(
+    source: str, printed: str
+) -> None:
+    """
+    [S49] rule 5 and S42 (children push, head consumes): each child
+    fills an input of the head phrase, the first child the deepest;
+    under a value slot it runs at once, top to bottom, on the stack its
+    head then consumes.
+    """
     assert run(source) == printed
 
 
@@ -228,21 +308,31 @@ def test_a_child_under_a_value_slot_runs_at_once(source: str, printed: str) -> N
         ("dup\n\t1\n\t2\n", "[ 1 ] 2 | 2\n"),
         ("dup\n\t+\n", "[ + ] [ + ]\n"),
         ("+ dup times\n\t1\n\t2\n\t3\n", "[ 1 ] 25\n"),
-        ("mk : x --\n\tdrop\nwrap : t: [] -- t\nmk wrap\n\t1 | 2 +\n\t3\n", "[ 1 | 2 + ]\n"),
+        (
+            "mk : x --\n\tdrop\nwrap : t: [] -- t\nmk wrap\n\t1 | 2 +\n\t3\n",
+            "[ 1 | 2 + ]\n",
+        ),
         ("pair : x t: [] -- x t\n1 pair\n\t1 | 2 +\n", "3 | 1\n"),
     ],
 )
 def test_a_child_under_a_thunk_or_code_slot_is_pushed_as_a_quotation(
     source: str, printed: str
 ) -> None:
-    """[S49] rule 5: a child is only ever run by its head; under a thunk or Code slot it is
-    pushed as a quotation. A child past the head's inputs is one too (hole child-slots), and a
-    value child that reaches below its balance is a section, as a frame is (decision f)."""
+    """
+    [S49] rule 5: a child is only ever run by its head; under a thunk or
+    Code slot it is pushed as a quotation. A child past the head's
+    inputs is one too (hole child-slots), and a value child that reaches
+    below its balance is a section, as a frame is (decision f).
+    """
     assert run(source) == printed
 
 
-def test_a_lone_literal_is_itself_and_literals_side_by_side_are_one_strand() -> None:
-    """[D2.1] 1‿2 is one value; the 3 beside no other literal is not a strand."""
+def test_a_lone_literal_is_itself_and_literals_side_by_side_are_one_strand(
+) -> None:
+    """
+    [D2.1] 1‿2 is one value; the 3 beside no other literal is not a
+    strand.
+    """
     assert desugar(parse("1 2 | 3 +\n")) == (
         Run((Push(Strand((1, 2))), Push(3), Call("+", START))),
     )
@@ -256,9 +346,14 @@ def test_a_lone_literal_is_itself_and_literals_side_by_side_are_one_strand() -> 
         ("1 + | swap\n", "[ 1 + ] [ swap ]\n"),
     ],
 )
-def test_a_frame_that_reaches_below_its_balance_is_a_section(source: str, printed: str) -> None:
-    """[D2.2] the second + would take the 1 the bar carries and a value below it: the frame is
-    pushed whole; a section counts as one value for the frames after it."""
+def test_a_frame_that_reaches_below_its_balance_is_a_section(
+    source: str, printed: str
+) -> None:
+    """
+    [D2.2] the second + would take the 1 the bar carries and a value
+    below it: the frame is pushed whole; a section counts as one value
+    for the frames after it.
+    """
     assert run(source) == printed
 
 
@@ -278,37 +373,57 @@ def test_a_frame_that_reaches_below_its_balance_is_a_section(source: str, printe
     ],
 )
 def test_core_without_sugar_writes_back_as_its_source(source: str) -> None:
-    """A source with no bar but between two literals, no ( ) and no block but a definition's
-    body is what resugar writes for its core; a slot is written bare, `t: []` or `c: Code`."""
+    """
+    A source with no bar but between two literals, no ( ) and no block
+    but a definition's body is what resugar writes for its core; a slot
+    is written bare, `t: []` or `c: Code`.
+    """
     assert resugar(desugar(parse(source))) == parse(source)
 
 
 def test_a_written_tree_points_at_the_start() -> None:
-    """A tree desugar writes has no source of its own: every span is 1:1, where it refuses."""
+    """
+    A tree desugar writes has no source of its own: every span is 1:1,
+    where it refuses.
+    """
     source = (
-        ";; d\n" + CURRY + SLOTS + "nop : --\n1 [ + ] curry\n“a” ⟨ 1 ⟩ 1.5\n#a { k 1 } 1 →a a\n"
+        ";; d\n"
+        + CURRY
+        + SLOTS
+        + "nop : --\n1 [ + ] curry\n“a” ⟨ 1 ⟩ 1.5\n#a { k 1 } 1 →a a\n"
     )
     statements = desugar(parse(source))
-    written = [*spans(resugar(statements)), *spans(listing(evaluate(statements)))]
+    written = [
+        *spans(resugar(statements)),
+        *spans(listing(evaluate(statements))),
+    ]
     assert set(written) == {START}
 
 
 def test_a_string_is_its_parts_in_order() -> None:
-    """A string without islands is its text parts joined in the order written."""
+    """
+    A string without islands is its text parts joined in the order
+    written.
+    """
     assert text(Text("str", ("a", "b"), START)) == "ab"
 
 
 def test_the_effect_line_is_kept_as_declared() -> None:
-    """[D3.4] words/*/effect: the declared effect is kept as data (the query: hole
-    effect-query)."""
+    """
+    [D3.4] words/*/effect: the declared effect is kept as data (the
+    query: hole effect-query).
+    """
     definition, *_ = desugar(parse(CURRY))
     assert isinstance(definition, Define)
     assert definition.effect == Effect(("x", "q"), ("q'",))
 
 
 def test_an_effect_takes_values_unless_its_slots_say_otherwise() -> None:
-    """S49 rule 5: an input is a value, a thunk or code; an effect line with no slot given takes
-    values, and a slot count other than one per input is refused."""
+    """
+    S49 rule 5: an input is a value, a thunk or code; an effect line
+    with no slot given takes values, and a slot count other than one per
+    input is refused.
+    """
     assert Effect(("x", "y"), ("z",)).slots == ("value", "value")
     assert Effect(("q",), (), slots=("thunk",)).slots == ("thunk",)
     assert Effect(("x",), ()) == Effect(("x",), (), slots=("value",))
@@ -317,8 +432,11 @@ def test_an_effect_takes_values_unless_its_slots_say_otherwise() -> None:
 
 
 def test_a_typed_effect_line_declares_its_slots() -> None:
-    """[S49] name: Type per slot: a type spelled [ ] makes a thunk, Code a code slot, a name a
-    value of that type; a bare name is an untyped value; an output's type is read past."""
+    """
+    [S49] name: Type per slot: a type spelled [ ] makes a thunk, Code a
+    code slot, a name a value of that type; a bare name is an untyped
+    value; an output's type is read past.
+    """
     source = "f : t: [ -- x ]  c: Code  n: Int  m -- z: Int\n"
     definition, *_ = desugar(parse(source))
     assert isinstance(definition, Define)
@@ -331,8 +449,11 @@ def test_a_typed_effect_line_declares_its_slots() -> None:
 
 
 def test_a_slot_name_is_every_character_before_its_colon() -> None:
-    """[S49] `name: Type`: the slot is named all of `name`; a lone `:` is a bare name, an
-    untyped value (hole bare-slot-names), not the colon of a slot with no name."""
+    """
+    [S49] `name: Type`: the slot is named all of `name`; a lone `:` is a
+    bare name, an untyped value (hole bare-slot-names), not the colon of
+    a slot with no name.
+    """
     typed, *_ = desugar(parse("f : xs: Int  q: [] -- y\n"))
     assert isinstance(typed, Define)
     assert typed.effect == Effect(
@@ -344,12 +465,18 @@ def test_a_slot_name_is_every_character_before_its_colon() -> None:
 
 
 def test_a_slot_type_is_not_a_slot() -> None:
-    """[S49] f : x: Int  y: Int -- z: Int takes two values, not four: 1 | 2 f runs f."""
+    """
+    [S49] f : x: Int  y: Int -- z: Int takes two values, not four: 1 | 2
+    f runs f.
+    """
     assert run("f : x: Int  y: Int -- z: Int\n\t+\n1 | 2 f\n") == "3\n"
 
 
 def test_parentheses_rotate_the_head_to_the_end() -> None:
-    """draft2 examples/09-rotates.fpl:2-3: (+ 1 2) is 1 | 2 + = 3, (+ (times 2 3) 4) is 10."""
+    """
+    draft2 examples/09-rotates.fpl:2-3: (+ 1 2) is 1 | 2 + = 3, (+
+    (times 2 3) 4) is 10.
+    """
     assert run("(+ 1 2)\n(+ (times 2 3) 4)\n") == "3\n10\n"
 
 
@@ -367,13 +494,19 @@ def test_parentheses_rotate_the_head_to_the_end() -> None:
         ("[ ]\n", "[]\n"),
         ("⟨⟩\n", "⟨⟩\n"),
         ("0.0000001\n", "0.0000001\n"),
-        ("123456789012345 | 123456789012345 times\n", "15241578753238669120562399025\n"),
+        (
+            "123456789012345 | 123456789012345 times\n",
+            "15241578753238669120562399025\n",
+        ),
         ("1 2 | 10 times\n", "10 20\n"),
         (": : --\n1\t2 : 3\n", "1 | 2 | 3\n"),
     ],
 )
 def test_stack_words_and_literals(source: str, printed: str) -> None:
-    """Literals, strands and the stack words print the stack each line leaves."""
+    """
+    Literals, strands and the stack words print the stack each line
+    leaves.
+    """
     assert run(source) == printed
 
 
@@ -388,7 +521,10 @@ def test_stack_words_and_literals(source: str, printed: str) -> None:
     ],
 )
 def test_a_word_refuses_at_its_position(source: str, error: str) -> None:
-    """A word given operands it cannot take refuses at its own position, not the line's."""
+    """
+    A word given operands it cannot take refuses at its own position,
+    not the line's.
+    """
     with pytest.raises(FplError) as caught:
         run(source)
     assert str(caught.value) == error
@@ -403,9 +539,14 @@ def test_a_word_refuses_at_its_position(source: str, error: str) -> None:
     ],
     ids=["4097 nines", "4301 digits", "a decimal"],
 )
-def test_a_numeral_longer_than_digits_is_refused_at_its_position(source: str, error: str) -> None:
-    """A numeral has at most DIGITS digits, below Python's 4300-digit int-from-str limit, so no
-    numeral reaches int() as a ValueError (hole number-bound)."""
+def test_a_numeral_longer_than_digits_is_refused_at_its_position(
+    source: str, error: str
+) -> None:
+    """
+    A numeral has at most DIGITS digits, below Python's 4300-digit
+    int-from-str limit, so no numeral reaches int() as a ValueError
+    (hole number-bound).
+    """
     with pytest.raises(FplError) as caught:
         run(source)
     assert str(caught.value) == error
@@ -424,18 +565,24 @@ def test_a_numeral_longer_than_digits_is_refused_at_its_position(source: str, er
 def test_a_result_of_more_than_digits_digits_is_refused_at_the_word(
     source: str, error: str
 ) -> None:
-    """A computed number has at most DIGITS digits before its point, as a written one does, so
-    printing it never meets Python's int-to-str limit and a decimal never overflows its context
-    (hole number-bound)."""
+    """
+    A computed number has at most DIGITS digits before its point, as a
+    written one does, so printing it never meets Python's int-to-str
+    limit and a decimal never overflows its context (hole number-bound).
+    """
     with pytest.raises(FplError) as caught:
         run(source)
     assert str(caught.value) == error
 
 
 @given(bounded, bounded, st.sampled_from(["+", "-", "times"]))
-def test_arithmetic_prints_its_result_or_refuses_it(x: int, y: int, word: str) -> None:
-    """Any two integers the language can write meet as a printed number or as the refusal,
-    never as a Python error."""
+def test_arithmetic_prints_its_result_or_refuses_it(
+    x: int, y: int, word: str
+) -> None:
+    """
+    Any two integers the language can write meet as a printed number or
+    as the refusal, never as a Python error.
+    """
     z = {"+": x + y, "-": x - y, "times": x * y}[word]
     expected = f"{z}\n" if abs(z) < 10**DIGITS else "ERROR number too large"
     assert outcome(f"{x} | {y} {word}\n") == expected
@@ -447,7 +594,9 @@ def test_arithmetic_prints_its_result_or_refuses_it(x: int, y: int, word: str) -
     ids=["nines", "signed", "a decimal"],
 )
 def test_a_numeral_of_digits_digits_reads(numeral: str) -> None:
-    """The sign and the point are not digits."""
+    """
+    The sign and the point are not digits.
+    """
     assert run(numeral + "\n") == numeral + "\n"
 
 
@@ -461,9 +610,13 @@ def test_a_numeral_of_digits_digits_reads(numeral: str) -> None:
         "f : x: Foo -- y\n\t1\n",
     ],
 )
-def test_what_no_part_implements_is_refused_before_running(source: str) -> None:
-    """Syntax no part implements yet, and a type word nothing names, is refused at 1:1 as `no
-    evaluator yet`, before any line runs."""
+def test_what_no_part_implements_is_refused_before_running(
+    source: str,
+) -> None:
+    """
+    Syntax no part implements yet, and a type word nothing names, is
+    refused at 1:1 as `no evaluator yet`, before any line runs.
+    """
     with pytest.raises(FplError) as caught:
         run(source)
     assert str(caught.value) == "ERROR: 1:1 no evaluator yet"
@@ -476,60 +629,88 @@ def test_what_no_part_implements_is_refused_before_running(source: str) -> None:
         ("1 2 3 sqrt\n", "ERROR: 1:7 unknown word: sqrt"),
         ("2 | 3 +\nfoo\n", "ERROR: 2:1 unknown word: foo"),
         ("a/b\n", "ERROR: 1:1 unknown word: a/b"),
-        ("f : -- y\n\t1\nf/history/x\n", "ERROR: 3:1 unknown word: f/history/x"),
+        (
+            "f : -- y\n\t1\nf/history/x\n",
+            "ERROR: 3:1 unknown word: f/history/x",
+        ),
         ("f : -- y\n\t../g\n", "ERROR: 2:2 unknown word: ../g"),
         ("1 debug\n", "ERROR: 1:3 no evaluator yet: debug"),
         ("[ 1 newline ] !\n", "ERROR: 1:5 no evaluator yet: newline"),
         ("#m bind\n", "ERROR: 1:4 no evaluator yet: bind"),
         ("m/\n\tk : -- y\n\t\t1\nm\n", "ERROR: 4:1 no evaluator yet: m"),
-        ("m/\n\tn/\n\t\tk : -- y\n\t\t\t1\n\tf : -- y\n\t\tn\n", "ERROR: 6:3 no evaluator yet: n"),
         (
-            "m/\n\tn/\n\t\tk : -- y\n\t\t\t1\na/\n\t#m bind\n\tf : -- y\n\t\tn\n",
+            "m/\n\tn/\n\t\tk : -- y\n\t\t\t1\n\tf : -- y\n\t\tn\n",
+            "ERROR: 6:3 no evaluator yet: n",
+        ),
+        (
+            "m/\n\tn/\n\t\tk : -- y\n\t\t\t1\na/\n\t#m bind\n\tf : -- "
+            "y\n\t\tn\n",
             "ERROR: 8:3 no evaluator yet: n",
         ),
         (
-            "m/\n\tn/\n\t\tp/\n\t\t\tk : -- y\n\t\t\t\t1\na/\n\t#m bind\n\tf : -- y\n\t\tn/p\n",
+            "m/\n\tn/\n\t\tp/\n\t\t\tk : -- y\n\t\t\t\t1\n"
+            "a/\n\t#m bind\n\tf : -- y\n\t\tn/p\n",
             "ERROR: 9:3 no evaluator yet: n/p",
         ),
-        ("m/\n\tk : -- y\n\t\t1\na/\n\t#m bind\n\tf : -- y\n\t\tn\n", "ERROR: 7:3 unknown word: n"),
+        (
+            "m/\n\tk : -- y\n\t\t1\na/\n\t#m bind\n\tf : -- y\n\t\tn\n",
+            "ERROR: 7:3 unknown word: n",
+        ),
     ],
 )
-def test_a_call_nothing_answers_is_refused_at_its_word(source: str, error: str) -> None:
-    """A word no definition and no builtin names is `unknown word: w` where w is written; w is
-    `no evaluator yet: w` when it is a directory, or a word the language's examples call and
-    nothing here runs (PLANNED). Either way the span is w's own, not the source's start."""
+def test_a_call_nothing_answers_is_refused_at_its_word(
+    source: str, error: str
+) -> None:
+    """
+    A word no definition and no builtin names is `unknown word: w` where
+    w is written; w is `no evaluator yet: w` when it is a directory, or
+    a word the language's examples call and nothing here runs (PLANNED).
+    Either way the span is w's own, not the source's start.
+    """
     with pytest.raises(UnresolvedError) as caught:
         run(source)
     assert str(caught.value) == error
 
 
 def test_a_word_that_runs_is_no_longer_planned() -> None:
-    """A planned word moves to EFFECTS when a part runs it."""
+    """
+    A planned word moves to EFFECTS when a part runs it.
+    """
     assert PLANNED.isdisjoint(EFFECTS)
 
 
 @pytest.mark.parametrize("word", sorted(PLANNED - {"bind"}))
 def test_a_planned_word_that_is_defined_runs(word: str) -> None:
-    """A word the examples call is refused only while nothing names it: a definition answers."""
+    """
+    A word the examples call is refused only while nothing names it: a
+    definition answers.
+    """
     assert run(f"{word} : x -- x\n\tdup drop\n1 {word}\n") == "1\n"
 
 
 def test_join_takes_code_and_enclose_a_value() -> None:
-    """[S49] , inspects its operands, never runs them: two code slots; enclose quotes the value
-    it is given (hole quotation-slot-words)."""
+    """
+    [S49] , inspects its operands, never runs them: two code slots;
+    enclose quotes the value it is given (hole quotation-slot-words).
+    """
     assert EFFECTS[","].slots == ("code", "code")
     assert EFFECTS["enclose"].slots == ("value",)
 
 
 def test_every_declared_builtin_has_an_implementation() -> None:
-    """Every word with a declared effect has an implementation, a builtin or a control, and no
-    other one does."""
+    """
+    Every word with a declared effect has an implementation, a builtin
+    or a control, and no other one does.
+    """
     assert set(EFFECTS) == set(BUILTINS) | set(CONTROLS)
 
 
 @given(st.sampled_from(["", CURRY, "nop : --\n"]), programs.map(readable))
 def test_a_run_is_placed_at_its_line(head: str, body: str) -> None:
-    """A run line's statement points at the line it runs, column 1, below any definition."""
+    """
+    A run line's statement points at the line it runs, column 1, below
+    any definition.
+    """
     statements = desugar(parse(head + body + "\n"))
     first = head.count("\n") + 1
     lines = [Span(first + index, 1) for index in range(body.count("\n") + 1)]
@@ -537,8 +718,11 @@ def test_a_run_is_placed_at_its_line(head: str, body: str) -> None:
 
 
 def test_a_typed_head_is_read_as_the_slice_reads_it() -> None:
-    """[S49] `∈` on an effect line is refused; a group slot `( p )` is a clause of its own
-    word; `x: Int` is a value slot of type Int, written back as it is written."""
+    """
+    [S49] `∈` on an effect line is refused; a group slot `( p )` is a
+    clause of its own word; `x: Int` is a value slot of type Int,
+    written back as it is written.
+    """
     with pytest.raises(FplError, match=r"^ERROR: 1:1 no evaluator yet$"):
         desugar(parse("f : x ∈ number -- y\n"))
     circle = "circle : r -- shape\n\t#circle swap pair\n"
@@ -552,16 +736,24 @@ def test_a_typed_head_is_read_as_the_slice_reads_it() -> None:
 
 
 def test_a_slot_kind_disagreeing_within_an_arity_is_refused() -> None:
-    """[S49] Two definitions of one word taking as many inputs must agree on their slot kinds,
-    else the later is refused at its head; a same key shadows as before."""
-    with pytest.raises(FplError, match=r"^ERROR: 3:1 f/1/2 takes a thunk at 1, f/1/1 a value$"):
+    """
+    [S49] Two definitions of one word taking as many inputs must agree
+    on their slot kinds, else the later is refused at its head; a same
+    key shadows as before.
+    """
+    with pytest.raises(
+        FplError, match=r"^ERROR: 3:1 f/1/2 takes a thunk at 1, f/1/1 a value$"
+    ):
         run("f : x -- y\n\t1\nf : t: [ ] -- y\n\t2\n")
     assert run("f : x -- y\n\tdrop 1\nf : x -- y\n\tdrop 2\n5 f\n") == "2\n"
 
 
 def test_a_value_nested_too_deep_to_print_is_refused() -> None:
-    """Issue #95: a value built at run time deeper than the build can recurse to writes no
-    traceback; it is one error at the source's start, as the parser's nesting refusal is."""
+    """
+    Issue #95: a value built at run time deeper than the build can
+    recurse to writes no traceback; it is one error at the source's
+    start, as the parser's nesting refusal is.
+    """
     with pytest.raises(FplError) as caught:
         run("1" + " enclose" * 3000 + "\n")
     assert str(caught.value) == "ERROR: 1:1 nesting too deep to print"

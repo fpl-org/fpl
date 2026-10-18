@@ -1,4 +1,7 @@
-"""The pre-lexer keeps every code character's place in the source and every string's interior."""
+"""
+The pre-lexer keeps every code character's place in the source and every
+string's interior.
+"""
 
 from hypothesis import given
 from hypothesis import strategies as st
@@ -31,16 +34,25 @@ def test_a_string_keeps_its_interior(interior: str) -> None:
 
 
 def test_the_stash_holds_each_string_by_its_kind() -> None:
-    assert prelex("“a” 「b」").stash == {0: Stashed("str", 1, 2, 0), 3: Stashed("raw", 5, 6, 0)}
+    assert prelex("“a” 「b」").stash == {
+        0: Stashed("str", 1, 2, 0),
+        3: Stashed("raw", 5, 6, 0),
+    }
 
 
 def test_an_opener_left_open_counts_to_none() -> None:
-    """counted: an opener its own closer never balances before the end is None, not an
-    offset; a nested opener of the same pair counts against the one closer."""
+    """
+    counted: an opener its own closer never balances before the end is
+    None, not an offset; a nested opener of the same pair counts against
+    the one closer.
+    """
     assert counted("“a“b”", 0, "”", 5) is None
 
 
 def test_a_string_placeholder_and_its_pad_keep_the_opener_offset() -> None:
-    """Prelexed.origin: the placeholder a string becomes and the pad after it both map back
-    to the string's opener; the closing newline and the end map to the source's end."""
+    """
+    Prelexed.origin: the placeholder a string becomes and the pad after
+    it both map back to the string's opener; the closing newline and the
+    end map to the source's end.
+    """
     assert prelex("“ab”").origin == (0, 0, 4, 4)

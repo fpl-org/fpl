@@ -1,4 +1,7 @@
-"""Every maintainer-written example runs to its `.expected` output (.agents/CONVENTIONS.md)."""
+"""
+Every maintainer-written example runs to its `.expected` output
+(.agents/CONVENTIONS.md).
+"""
 
 from pathlib import Path
 
@@ -25,26 +28,37 @@ UNRESOLVED = {
     "match/05-5-prolog-s-family": "unknown word: x",
     "sketch/05-5-multiple-dispatch": "unknown word: shape/kind",
 }
-"""The examples whose `.expected` holds the skeleton's blanket refusal for a call nothing
-answers, each with the refusal it gets now, at its word. Only these are mapped back to the
-placeholder, so another example that starts failing so, or one of these whose word changes
-(PLANNED moved), fails a test; the owner rewrites the `.expected` files and drops the map."""
+"""
+The examples whose `.expected` holds the skeleton's blanket refusal for
+a call nothing answers, each with the refusal it gets now, at its word.
+Only these are mapped back to the placeholder, so another example that
+starts failing so, or one of these whose word changes (PLANNED moved),
+fails a test; the owner rewrites the `.expected` files and drops the
+map.
+"""
 
 
 def name(program: Path) -> str:
-    """The suite and the example, as the tests and UNRESOLVED name it."""
+    """
+    The suite and the example, as the tests and UNRESOLVED name it.
+    """
     return f"{program.parts[-3]}/{program.stem}"
 
 
 def output(program: Path) -> str:
-    """What `python -m fpl` prints for a program: its output, or its one error line. A call
-    nothing answers is told at its word there, but the maintainer's `.expected` files of the
-    programs in UNRESOLVED still hold the skeleton's blanket refusal, and it stands for them
-    here until they are rewritten (hole unimplemented-words)."""
+    """
+    What `python -m fpl` prints for a program: its output, or its one
+    error line. A call nothing answers is told at its word there, but
+    the maintainer's `.expected` files of the programs in UNRESOLVED
+    still hold the skeleton's blanket refusal, and it stands for them
+    here until they are rewritten (hole unimplemented-words).
+    """
     try:
         return run(program.read_text())
     except FplError as error:
-        mapped = isinstance(error, UnresolvedError) and name(program) in UNRESOLVED
+        mapped = (
+            isinstance(error, UnresolvedError) and name(program) in UNRESOLVED
+        )
         return PLACEHOLDER if mapped else f"{error}\n"
 
 
@@ -55,8 +69,11 @@ def test_example(program: Path) -> None:
 
 @pytest.mark.parametrize("example", sorted(UNRESOLVED))
 def test_the_word_a_placeholder_stands_for(example: str) -> None:
-    """Each mapped example still fails at the word recorded, and its `.expected` is the
-    placeholder: a word that moves in or out of PLANNED, or a fixture rewritten, breaks this."""
+    """
+    Each mapped example still fails at the word recorded, and its
+    `.expected` is the placeholder: a word that moves in or out of
+    PLANNED, or a fixture rewritten, breaks this.
+    """
     (program,) = (p for p in EXAMPLES if name(p) == example)
     with pytest.raises(UnresolvedError) as caught:
         run(program.read_text())

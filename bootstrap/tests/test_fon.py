@@ -1,4 +1,7 @@
-"""FON data reads what it writes, within its bounds, and refuses everything else in place."""
+"""
+FON data reads what it writes, within its bounds, and refuses everything
+else in place.
+"""
 
 import math
 from decimal import Decimal
@@ -36,7 +39,9 @@ NAMES = ("true", "false", "∞", "-∞", "nan", "-nan")
 
 symbol = st.from_regex(r"[a-z][a-z0-9-]{0,7}", fullmatch=True).map(Sym)
 token = (
-    st.from_regex(rf"[^{SPECIALS}$#&_0-9-][^{SPECIALS}]{{0,7}}", fullmatch=True)
+    st.from_regex(
+        rf"[^{SPECIALS}$#&_0-9-][^{SPECIALS}]{{0,7}}", fullmatch=True
+    )
     .filter(lambda name: name not in NAMES)
     .map(Sym)
 )
@@ -46,16 +51,24 @@ number = st.decimals(allow_nan=False, allow_infinity=False, places=3).map(
 text = st.text(alphabet=st.characters(exclude_characters="“”"), max_size=12)
 string = st.one_of(
     text.map(Str),
-    st.text(alphabet=st.characters(exclude_characters="「」"), max_size=12).map(
-        lambda raw: Str(raw, raw=True)
-    ),
+    st.text(
+        alphabet=st.characters(exclude_characters="「」"), max_size=12
+    ).map(lambda raw: Str(raw, raw=True)),
 )
-digest = st.tuples(st.integers(0, 32), st.binary(min_size=32, max_size=32)).map(
-    lambda zeros_bytes: bytes(zeros_bytes[0]) + zeros_bytes[1][zeros_bytes[0] :]
+digest = st.tuples(
+    st.integers(0, 32), st.binary(min_size=32, max_size=32)
+).map(
+    lambda zeros_bytes: (
+        bytes(zeros_bytes[0]) + zeros_bytes[1][zeros_bytes[0] :]
+    )
 )
 ident = digest.map(lambda d: Multihash(BLAKE2B_256, d))
-hashes = st.one_of(st.binary(max_size=32), st.binary(min_size=33, max_size=64)).map(content)
-floats = st.one_of(st.floats(allow_nan=False), st.sampled_from([math.nan, -math.nan])).map(Flt.of)
+hashes = st.one_of(
+    st.binary(max_size=32), st.binary(min_size=33, max_size=64)
+).map(content)
+floats = st.one_of(
+    st.floats(allow_nan=False), st.sampled_from([math.nan, -math.nan])
+).map(Flt.of)
 leaf: st.SearchStrategy[Leaf] = st.one_of(
     st.just(Absent()),
     st.booleans().map(Bool),
@@ -72,11 +85,18 @@ key: st.SearchStrategy[Leaf] = st.one_of(symbol, number, string)
 
 
 def nested(inner: st.SearchStrategy[Value]) -> st.SearchStrategy[Value]:
-    """Lists, tagged tuples, code and dicts of `inner`."""
+    """
+    Lists, tagged tuples, code and dicts of `inner`.
+    """
     items = st.lists(inner, max_size=4).map(tuple)
-    entries = st.lists(st.tuples(key, inner), max_size=4, unique_by=lambda entry: entry[0])
+    entries = st.lists(
+        st.tuples(key, inner), max_size=4, unique_by=lambda entry: entry[0]
+    )
     return st.one_of(
-        items.map(List), items.map(Tagged), items.map(Code), entries.map(lambda e: Dict(tuple(e)))
+        items.map(List),
+        items.map(Tagged),
+        items.map(Code),
+        entries.map(lambda e: Dict(tuple(e))),
     )
 
 
@@ -89,13 +109,17 @@ json: st.SearchStrategy[Json] = st.recursive(
         st.floats(allow_nan=False, allow_infinity=False),
         text,
     ),
-    lambda inner: st.one_of(st.lists(inner, max_size=4), st.dictionaries(text, inner, max_size=4)),
+    lambda inner: st.one_of(
+        st.lists(inner, max_size=4), st.dictionaries(text, inner, max_size=4)
+    ),
     max_leaves=12,
 )
 
 
 def refusal(document: str, **bounds: int) -> str:
-    """The error line reading gives."""
+    """
+    The error line reading gives.
+    """
     with pytest.raises(FplError) as caught:
         read(document, **bounds)
     return str(caught.value)
@@ -103,7 +127,10 @@ def refusal(document: str, **bounds: int) -> str:
 
 @given(value)
 def test_read_after_write_is_the_identity(v: Value) -> None:
-    """read ∘ write = id on values, and write is idempotent on the text it gives."""
+    """
+    read ∘ write = id on values, and write is idempotent on the text it
+    gives.
+    """
     written = write(v)
     assert read(written) == v
     assert write(read(written)) == written
@@ -111,22 +138,29 @@ def test_read_after_write_is_the_identity(v: Value) -> None:
 
 @given(json)
 def test_json_embeds_and_reads_back(j: Json) -> None:
-    """A JSON value holding no “ or ” in its texts embeds and reads back (HOLES.md:
-    fon-unwritable)."""
+    """
+    A JSON value holding no “ or ” in its texts embeds and reads back
+    (HOLES.md: fon-unwritable).
+    """
     embedded = embed(j)
     assert read(write(embedded)) == embedded
 
 
 @pytest.mark.parametrize("name", ["a", "X", "x1"])
 def test_a_cell_that_opens_with_a_letter_is_a_name(name: str) -> None:
-    """$ then a letter is a name, whatever the letter."""
+    """
+    $ then a letter is a name, whatever the letter.
+    """
     assert read("$" + name) == Cell(name)
 
 
 @given(ident, hashes)
 def test_fon_ids(i: Multihash, h: Multihash) -> None:
-    """[law: fon-ids] FON reads and writes $ ids and & hashes in the decimal spelling as the
-    same values, and the hex alias reads as the decimal value."""
+    """
+    [law: fon-ids] FON reads and writes $ ids and & hashes in the
+    decimal spelling as the same values, and the hex alias reads as the
+    decimal value.
+    """
     assert write(Cell(i)) == "$" + i.spelled()
     assert write(Hash(h)) == "&" + h.spelled()
     assert read(write(Cell(i))) == Cell(i)
@@ -143,7 +177,10 @@ def test_fon_ids(i: Multihash, h: Multihash) -> None:
         ("&zz", "ERROR: 1:1 malformed hash reference &zz"),
         ("&abcdef", "ERROR: 1:1 malformed hash reference &abcdef"),
         ("&45600:01", "ERROR: 1:1 malformed hash reference &45600:01"),
-        ("&b22020" + "0" * 64, "ERROR: 1:1 malformed hash reference &b22020" + "0" * 64),
+        (
+            "&b22020" + "0" * 64,
+            "ERROR: 1:1 malformed hash reference &b22020" + "0" * 64,
+        ),
         ("&7:1", "ERROR: 1:1 malformed hash reference &7:1"),
         ("&0:33:0", "ERROR: 1:1 malformed hash reference &0:33:0"),
         ("&0:1:256", "ERROR: 1:1 malformed hash reference &0:1:256"),
@@ -157,7 +194,10 @@ def test_fon_ids(i: Multihash, h: Multihash) -> None:
         ("0x1p-2000", "ERROR: 1:1 non-canonical number 0x1p-2000"),
         ("0x0p5", "ERROR: 1:1 non-canonical number 0x0p5"),
         ("-0x0p-0", "ERROR: 1:1 non-canonical number -0x0p-0"),
-        ("0x0.0000000000001p-1022", "ERROR: 1:1 non-canonical number 0x0.0000000000001p-1022"),
+        (
+            "0x0.0000000000001p-1022",
+            "ERROR: 1:1 non-canonical number 0x0.0000000000001p-1022",
+        ),
         ("⟨ 0x1p2000 ⟩", "ERROR: 1:3 float out of range 0x1p2000"),
         ("“a", "ERROR: 1:1 “ never closed"),
         ("⟨ a }\n⟩", "ERROR: 1:5 unexpected input"),
@@ -212,9 +252,14 @@ def test_a_float_is_its_bits(x: float, spelled: str) -> None:
         ("0x0.fffffffffffffp-1022", "0x1.ffffffffffffep-1023"),
     ],
 )
-def test_a_subnormal_is_written_normalised(subnormal: str, spelled: str) -> None:
-    """A subnormal is written 0x1[.hex]p<exp> like every other nonzero float, its exponent
-    below binary64's -1022, and reads back as exactly the float it was written from."""
+def test_a_subnormal_is_written_normalised(
+    subnormal: str, spelled: str
+) -> None:
+    """
+    A subnormal is written 0x1[.hex]p<exp> like every other nonzero
+    float, its exponent below binary64's -1022, and reads back as
+    exactly the float it was written from.
+    """
     x = float.fromhex(subnormal)
     assert write(Flt.of(x)) == spelled
     back = read(spelled)
@@ -225,8 +270,10 @@ def test_a_subnormal_is_written_normalised(subnormal: str, spelled: str) -> None
 
 @given(st.floats(allow_nan=False, allow_subnormal=True))
 def test_a_float_has_one_spelling(x: float) -> None:
-    """Over the whole binary64 range, subnormals included, the written spelling reads back as
-    the float and writes again as itself."""
+    """
+    Over the whole binary64 range, subnormals included, the written
+    spelling reads back as the float and writes again as itself.
+    """
     spelled = write(Flt.of(x))
     assert read(spelled) == Flt.of(x)
     assert write(read(spelled)) == spelled
@@ -234,8 +281,11 @@ def test_a_float_has_one_spelling(x: float) -> None:
 
 @given(st.from_regex(HEXFLT, fullmatch=True))
 def test_a_hex_float_reads_only_as_it_is_written(spelled: str) -> None:
-    """Every token of hex float shape is refused in place or reads back to itself: no second
-    spelling of a float, and no float beyond binary64, gets past the reader."""
+    """
+    Every token of hex float shape is refused in place or reads back to
+    itself: no second spelling of a float, and no float beyond binary64,
+    gets past the reader.
+    """
     try:
         outcome = write(read(spelled))
     except FplError as refused:
@@ -248,8 +298,13 @@ def test_a_hex_float_reads_only_as_it_is_written(spelled: str) -> None:
 
 
 def test_the_reader_is_inert() -> None:
-    """Names, references, tuples and code are data; nothing is resolved or called."""
-    assert read("( p { class “x” } 「r」 $c &0:3:6382179 $45600:0 #s )") == Tagged(
+    """
+    Names, references, tuples and code are data; nothing is resolved or
+    called.
+    """
+    assert read(
+        "( p { class “x” } 「r」 $c &0:3:6382179 $45600:0 #s )"
+    ) == Tagged(
         (
             Sym("p"),
             Dict(((Sym("class"), Str("x")),)),
@@ -260,7 +315,9 @@ def test_the_reader_is_inert() -> None:
             Sym("s"),
         )
     )
-    assert read("[ dup + →k ; ]") == Code((Sym("dup"), Sym("+"), Sym("→k"), Sym(";")))
+    assert read("[ dup + →k ; ]") == Code(
+        (Sym("dup"), Sym("+"), Sym("→k"), Sym(";"))
+    )
     assert read("  a\n\t_ ") == List((Sym("a"), Absent()))
     assert read("") == List(())
 
@@ -275,11 +332,17 @@ def test_empty_enclosures_are_written_canonically() -> None:
 
 
 def test_entries_are_written_between_single_spaces() -> None:
-    assert write(Dict(((Sym("a"), Num(Decimal(1))), (Sym("b"), Num(Decimal(2)))))) == "{ a 1 b 2 }"
+    assert (
+        write(Dict(((Sym("a"), Num(Decimal(1))), (Sym("b"), Num(Decimal(2))))))
+        == "{ a 1 b 2 }"
+    )
 
 
 def test_a_semicolon_is_a_symbol_even_before_a_string() -> None:
-    """FON has no comments: ; is read as a symbol, and a string after it is still a string."""
+    """
+    FON has no comments: ; is read as a symbol, and a string after it is
+    still a string.
+    """
     assert read("( ; “x” )") == Tagged((Sym(";"), Str("x")))
 
 
@@ -291,4 +354,6 @@ def test_json_keys_are_symbols_where_they_can_be() -> None:
             (Str("1"), List((Num(Decimal("1.5")), Bool(True)))),
         )
     )
-    assert embed({"01": None, "&zz": None}) == Dict(((Str("01"), Absent()), (Str("&zz"), Absent())))
+    assert embed({"01": None, "&zz": None}) == Dict(
+        ((Str("01"), Absent()), (Str("&zz"), Absent()))
+    )

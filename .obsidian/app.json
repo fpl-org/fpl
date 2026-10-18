@@ -1,0 +1,30 @@
+{
+  "useMarkdownLinks": true,
+  "newLinkFormat": "relative",
+  "alwaysUpdateLinks": true,
+  "userIgnoreFilters": [
+    "worktrees/",
+    "node_modules/",
+    "python/",
+    "_site/",
+    "__pycache__/",
+    "_extensions/",
+    "bin/",
+    "dist/",
+    "bootstrap/fpl/",
+    "bootstrap/tests/",
+    "bootstrap/handoff/",
+    "bootstrap/__pycache__/",
+    "bootstrap/_extensions/",
+    "bootstrap/_site/",
+    "bootstrap/bin/",
+    "bootstrap/labs/__marimo__/",
+    "bootstrap/python/",
+    "bootstrap/site/node_modules/",
+    "bootstrap/site/dist/",
+    "bootstrap/site/src/",
+    "quality/",
+    "scripts/",
+    "tools/"
+  ]
+}

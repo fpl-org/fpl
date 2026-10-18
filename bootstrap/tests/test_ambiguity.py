@@ -1,8 +1,12 @@
-"""The grammar parses without an Earley ambiguity (.agents/STACK.md). Programs Hypothesis derives
-from the grammar reach the corners no example was written for; they are drawn from the grammar
-with its blocks flattened, since an indenter cannot run inside a derivation (HOLES.md:
-ambiguity-over-flat). The corpus is pre-lexed and read by Earley over the whole grammar with the
-tab indenter, which keeps every derivation it finds."""
+"""
+The grammar parses without an Earley ambiguity (.agents/STACK.md).
+Programs Hypothesis derives from the grammar reach the corners no
+example was written for; they are drawn from the grammar with its blocks
+flattened, since an indenter cannot run inside a derivation (HOLES.md:
+ambiguity-over-flat). The corpus is pre-lexed and read by Earley over
+the whole grammar with the tab indenter, which keeps every derivation it
+finds.
+"""
 
 from pathlib import Path
 
@@ -18,7 +22,10 @@ from fpl.parse import GRAMMAR, FplIndenter, parse
 
 CORPUS = PROGRAMS
 REWRITES = [
-    ("line: frames (NOTE | DOC)? _NL block?", "line: frames (NOTE | DOC)? _NL"),
+    (
+        "line: frames (NOTE | DOC)? _NL block?",
+        "line: frames (NOTE | DOC)? _NL",
+    ),
     ("block: _INDENT line+ _DEDENT\n", ""),
     ("%declare _INDENT _DEDENT\n", ""),
     (r"_NL: /(\r?\n[\t\f ]*)*\r?\n\t*/", r"_NL: /\n/"),
@@ -26,15 +33,23 @@ REWRITES = [
 
 
 def flat(grammar: str) -> str:
-    """The grammar with its blocks removed: a line is frames, its comment and one newline.
-    Each rewrite must change the text, or the grammar has moved under this test."""
+    """
+    The grammar with its blocks removed: a line is frames, its comment
+    and one newline. Each rewrite must change the text, or the grammar
+    has moved under this test.
+    """
     for old, new in REWRITES:
         assert old in grammar, old
         grammar = grammar.replace(old, new)
     return grammar
 
 
-FLAT = Lark(flat(GRAMMAR.read_text()), parser="earley", lexer="basic", ambiguity="explicit")
+FLAT = Lark(
+    flat(GRAMMAR.read_text()),
+    parser="earley",
+    lexer="basic",
+    ambiguity="explicit",
+)
 FULL = Lark(
     GRAMMAR.read_text(),
     parser="earley",
@@ -45,7 +60,9 @@ FULL = Lark(
 
 
 def ambiguous(tree: Tree[Token]) -> bool:
-    """Whether Lark left an `_ambig` node anywhere in the tree."""
+    """
+    Whether Lark left an `_ambig` node anywhere in the tree.
+    """
     return any(node.data == "_ambig" for node in tree.iter_subtrees())
 
 
@@ -56,7 +73,11 @@ def test_no_ambiguity_in_the_corpus(program: Path) -> None:
     assert not ambiguous(FULL.parse(prelex(source).code))  # pyright: ignore[reportUnknownMemberType] -- lark types its text argument loosely
 
 
-@pytest.mark.obligation("programs derived from the grammar parse without ambiguity")
+@pytest.mark.obligation(
+    "programs derived from the grammar parse without ambiguity"
+)
 @given(from_lark(FLAT))
-def test_no_ambiguity_in_programs_derived_from_the_grammar(program: str) -> None:
+def test_no_ambiguity_in_programs_derived_from_the_grammar(
+    program: str,
+) -> None:
     assert not ambiguous(FLAT.parse(program))  # pyright: ignore[reportUnknownMemberType] -- lark types its text argument loosely
