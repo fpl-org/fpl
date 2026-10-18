@@ -1,0 +1,15 @@
+.vendor/
+**/__pycache__/
+bin/
+site/node_modules/
+site/dist/
+site/.astro/
+_site/
+.quarto/
+**/*.qmd
+!index.qmd
+_book/
+**/__marimo__/
+
+/.quarto/
+**/*.quarto_ipynb
