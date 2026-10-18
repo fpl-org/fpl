@@ -36,7 +36,7 @@
           packages = [ pkgs.radicle-node ];
         };
         pijul = {
-          description = "pijul, for scripts/mirror and scripts/import-pr";
+          description = "pijul, for .harness/scripts/mirror.sh and .harness/scripts/import-pr.sh";
           packages = [ pkgs.pijul ];
         };
         radicleui = {
@@ -93,8 +93,8 @@
           }) raw;
 
       # The one place the line limits live. Everything that states one is generated from here
-      # by `nix run .#gen-config`: .editorconfig, quality/ruff-limits.toml (which
-      # quality/ruff.toml extends) and .githooks/commit-limits (which .githooks/commit-rules
+      # by `nix run .#gen-config`: .editorconfig, .harness/quality/ruff-limits.toml (which
+      # .harness/quality/ruff.toml extends) and .githooks/commit-limits (which .githooks/commit-rules
       # sources). The generated files stay committed, for a clone without Nix, and
       # `make gates` fails when one differs from what this file says. A limit changes here, in
       # a harness commit, and `nix run .#gen-config` rewrites the rest.
@@ -133,15 +133,15 @@
             [COMMIT_EDITMSG]
             max_line_length = ${toString (nixpkgs.lib.min limits.commit.header limits.commit.body)}
 
-            # quality/ruff.toml extends quality/ruff-limits.toml. EditorConfig has one
+            # .harness/quality/ruff.toml extends .harness/quality/ruff-limits.toml. EditorConfig has one
             # width, the code limit. The docstring limit is in that ruff file.
             [*.py]
             max_line_length = ${toString limits.python.lineLength}
           '';
 
-          # ruff reads this through `extend` in quality/ruff.toml, so that file stays
+          # ruff reads this through `extend` in .harness/quality/ruff.toml, so that file stays
           # hand-written. line-length is the formatter and E501. max-doc-length is W505.
-          "quality/ruff-limits.toml" = ''
+          ".harness/quality/ruff-limits.toml" = ''
             ${notice "#"}line-length = ${toString limits.python.lineLength}
 
             [lint.pycodestyle]
@@ -235,7 +235,7 @@
       #   (no argument)  open this checkout's README in Marimo
       #   ARGS           passed to `marimo edit`, so --headless and --port work
       # The walker is the tangled tree. PYTHONSAFEPATH keeps the feature tree fpl/ off the
-      # path, or `import fpl` would find that namespace instead of bootstrap/python/fpl.
+      # path, or `import fpl` would find that namespace instead of 01-bootstrap/python/fpl.
       marimoApp =
         pkgs:
         let
@@ -267,11 +267,62 @@
             top="$(git rev-parse --show-toplevel)"
             cd "$top"
             export PYTHONSAFEPATH=1
-            export PYTHONPATH="$top/bootstrap/python''${PYTHONPATH:+:$PYTHONPATH}"
+            export PYTHONPATH="$top/01-bootstrap/python''${PYTHONPATH:+:$PYTHONPATH}"
             if [ "$#" -eq 0 ]; then
               exec ${python}/bin/marimo edit README.md
             fi
             exec ${python}/bin/marimo edit "$@"
+          '';
+        };
+
+      # nix run .#publish [-- html|tex|pdf|site]
+      #   (no argument)  html, then the LuaLaTeX book, then the PDF, then the site
+      #   html           README -> index.qmd, then `quarto render` of the site profile
+      #   tex            the book, written to _book/FPL.pdf
+      #   pdf            that PDF onto gh-pages and onto main as pdf/FPL.pdf
+      #   site           _site/ onto the gh-pages root
+      # Pushes only to psjg/fpl-lit-scratch. The walker is the tangled tree. PYTHONSAFEPATH
+      # stays unset: Quarto's Jupyter helper imports modules that sit beside its script.
+      publishApp =
+        pkgs:
+        let
+          # icontract's install check builds z3 on aarch64-darwin. The pages do not use it.
+          python =
+            (pkgs.python312.override {
+              packageOverrides = _final: prev: {
+                icontract = prev.icontract.overrideAttrs (_old: {
+                  doInstallCheck = false;
+                });
+              };
+            }).withPackages
+              (ps: [
+                ps.lark
+                ps.icontract
+                ps.ipykernel
+                ps."jupyter-core"
+                ps.nbclient
+                ps.nbformat
+                ps.pyyaml
+              ]);
+        in
+        pkgs.writeShellApplication {
+          name = "fpl-publish";
+          runtimeInputs = [
+            pkgs.git
+            python
+          ];
+          text = ''
+            top="$(git rev-parse --show-toplevel)"
+            cd "$top"
+            export PYTHONPATH="$top/01-bootstrap/python''${PYTHONPATH:+:$PYTHONPATH}"
+            export QUARTO_PYTHON="${python}/bin/python3"
+            if [ -d /Library/TeX/texbin ]; then
+              export PATH="/Library/TeX/texbin:$PATH"
+            fi
+            if ! command -v quarto >/dev/null 2>&1 && [ -x /usr/local/bin/quarto ]; then
+              export PATH="/usr/local/bin:$PATH"
+            fi
+            exec "$top/.harness/scripts/publish.sh" "$@"
           '';
         };
     in
@@ -283,7 +334,7 @@
           # talks to a forge: the default shell must be enough to do all the work offline
           # and against any remote.
           base = [
-            # The harness: scripts/ and .githooks/ are bash >= 4 (mapfile) and were written
+            # The harness: .harness/scripts/ and .githooks/ are bash >= 4 (mapfile) and were written
             # against GNU userland; macOS ships bash 3.2 and BSD tools.
             pkgs.bashInteractive
             pkgs.coreutils
@@ -292,14 +343,14 @@
             pkgs.gawk
             pkgs.git
             pkgs.jujutsu # optional workflow, .agents/JJ.md
-            pkgs.diff2html-cli # scripts/review renders a branch as a page
-            # scripts/leak-check, which the hooks run on every commit and push: the
+            pkgs.diff2html-cli # .harness/scripts/review.sh renders a branch as a page
+            # .harness/scripts/leak-check.sh, which the hooks run on every commit and push: the
             # repository is public, so it cannot wait in an opt-in layer.
             pkgs.gitleaks
 
             # The implementation stack, .agents/STACK.md, and the noslop gate, .agents/QUALITY.md.
             # A bare Python 3.12, and uv, which syncs Lark and the gate's Python tools into
-            # each worktree's .venv at the versions quality/uv.lock pins: several of them
+            # each worktree's .venv at the versions .harness/quality/uv.lock pins: several of them
             # (import-linter, deptry, CrossHair) are not in nixpkgs. pyright stays here,
             # since it is a Node program; ruff too, for the root and for editors.
             pkgs.python312
@@ -327,9 +378,9 @@
                   export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
                 ''}
                 if top="$(git rev-parse --show-toplevel 2>/dev/null)" \
-                  && [ -x "$top/scripts/setup" ] \
+                  && [ -x "$top/.harness/scripts/setup.sh" ] \
                   && [ "$(git config --local --get core.hooksPath 2>/dev/null)" != ".githooks" ]; then
-                  "$top/scripts/setup"
+                  "$top/.harness/scripts/setup.sh"
                 fi
               '';
             };
@@ -369,6 +420,11 @@
           type = "app";
           program = "${marimoApp pkgs}/bin/fpl-marimo";
           meta.description = "Open the checkout README in Marimo";
+        };
+        publish = {
+          type = "app";
+          program = "${publishApp pkgs}/bin/fpl-publish";
+          meta.description = "Render the site and the LuaLaTeX book, and push them to the scratch repo";
         };
       });
 

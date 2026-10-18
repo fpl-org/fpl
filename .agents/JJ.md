@@ -4,7 +4,7 @@
 commits: amending a commit rebases its descendants by itself, there is no staging area, and a
 change keeps its identity while its commits are rewritten. It is in the dev shell
 (`.agents/DEVSHELL.md`). **It is optional, and it is for humans.** Agents use git and
-`scripts/acommit`: `jj` runs no hooks and has no scripting to put the gates back, so an agent
+`.harness/scripts/acommit.sh`: `jj` runs no hooks and has no scripting to put the gates back, so an agent
 on `jj` would work outside the harness. The git-native flow of `.agents/WORKFLOW.md` stays
 canonical; `jj` writes the same git history.
 
@@ -32,8 +32,8 @@ hook**, and `jj git push` does not run `pre-push`. So none of these act on a `jj
 
 | Gate | Hook it lives in | Who judges a `jj` commit instead |
 | --- | --- | --- |
-| message format, provenance, `Stack:`, agent territory | `commit-msg`, `pre-push` | `scripts/commit-lint`, and the `commit-lint` check on the pull request |
-| one commit on one side of the harness/implementation boundary | `pre-push` (`scripts/commit-lint`) | `scripts/commit-lint`, and the `commit-lint` check on the pull request: CI's commit-lint is jj's gate |
+| message format, provenance, `Stack:`, agent territory | `commit-msg`, `pre-push` | `.harness/scripts/commit-lint.sh`, and the `commit-lint` check on the pull request |
+| one commit on one side of the harness/implementation boundary | `pre-push` (`.harness/scripts/commit-lint.sh`) | `.harness/scripts/commit-lint.sh`, and the `commit-lint` check on the pull request: CI's commit-lint is jj's gate |
 | atomicity | `atomic-check` | nobody; keep commits atomic by hand |
 | no commit on `main` | `pre-commit` | the ruleset on `main` (`.agents/WORKFLOW.md`, rule 6) |
 | branch names | `reference-transaction`, `pre-push` | the `branch-lint` check on the pull request |
@@ -42,7 +42,7 @@ hook**, and `jj git push` does not run `pre-push`. So none of these act on a `jj
 Before pushing, run the message gates yourself:
 
 ```
-scripts/commit-lint -b <branch> github/main..<bookmark>
+.harness/scripts/commit-lint.sh -b <branch> github/main..<bookmark>
 ```
 
 A human commit carries `Human-Only: true` (`.agents/COMMITS.md`). `jj` can add it to every
@@ -59,10 +59,10 @@ On a stack branch the message also needs `Stack: <name>`; add that line yourself
 | Operation | git-native | jj |
 | --- | --- | --- |
 | start a stack off base | `git switch -c stack/x/tip main` | `jj new main` |
-| commit current work | `scripts/acommit …` | `jj commit -m "<message>"` |
+| commit current work | `.harness/scripts/acommit.sh …` | `jj commit -m "<message>"` |
 | new change on top | edit + `acommit` | `jj new` then edit |
 | amend a lower change | `git rebase -i --update-refs` | `jj edit <rev>`, edit, `jj new`; or `jj squash --into <rev>` |
-| restack on moved base | `scripts/restack` | `jj rebase -d main` (descendants follow) |
+| restack on moved base | `.harness/scripts/restack.sh` | `jj rebase -d main` (descendants follow) |
 | name a reviewable boundary | `git branch stack/x/1` | `jj bookmark set stack/x/1 -r @-` |
 | view the stack | `git log --oneline --decorate main..HEAD` | `jj log` |
 | push branches | `git push` | `jj git push` |

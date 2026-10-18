@@ -16,15 +16,15 @@ Read it first. This file only covers Claude Code tooling that lives under `.clau
   skill is just a trigger.
 - **Hooks** (`.claude/settings.json`):
   - `PreToolUse(Edit|Write)` → `.claude/hooks/guard-specs.sh`: blocks edits to
-    `fpl/features/*/spec.md` / `fpl/features/*/examples/*` / `docs/DESIGN.md` / `docs/SPEC.md`
+    `03-fpl/03.01-features/*/spec.md` / `03-fpl/03.01-features/*/examples/*` / `02-docs/02.01-design.md` / `02-docs/02.02-spec.md`
     unless the session sets `FPL_SPEC_EDIT=1`. Mirrors the `[spec]`-marker check in `.githooks/commit-msg`.
   - `Stop` → `.claude/hooks/stop-check.sh`: in an implementation worktree, best-effort
     `make fix` + `make quick`; no-op at the harness root.
 
-The git-level tooling (`scripts/acommit`, `scripts/commit-lint`, `scripts/restack`,
-`scripts/setup`,
-`scripts/new-worktree`, `scripts/branch-lint`, `scripts/forward-only`, `scripts/layer`,
-`scripts/pr`, `scripts/land`, `.githooks/*`) is not
+The git-level tooling (`.harness/scripts/acommit.sh`, `.harness/scripts/commit-lint.sh`, `.harness/scripts/restack.sh`,
+`.harness/scripts/setup.sh`,
+`.harness/scripts/new-worktree.sh`, `.harness/scripts/branch-lint.sh`, `.harness/scripts/forward-only`, `.harness/scripts/layer.sh`,
+`.harness/scripts/pr.sh`, `.harness/scripts/land.sh`, `.githooks/*`) is not
 Claude-specific — see `AGENTS.md` and
 `.agents/COMMITS.md`.
 
@@ -32,7 +32,7 @@ Claude-specific — see `AGENTS.md` and
 
 When `@claude` on an issue or pull request starts you in GitHub Actions, the git hooks are
 wired and your author address is the App's. A plain `git commit` without the trailer block
-is refused. Commit with `scripts/acommit -M "<your model name>" -t … -s … -m … -b …`;
+is refused. Commit with `.harness/scripts/acommit.sh -M "<your model name>" -t … -s … -m … -b …`;
 `FPL_SESSION_ID` is already set, and `Stack:` is derived from the branch.
 
 ## Branch names

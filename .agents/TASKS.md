@@ -9,17 +9,17 @@ repository, and who opened, moved or blocked a task is part of the record, per a
 
 **Status: empty.** The repository has been through `rad init`, so the store exists and the
 maintainer's key is the one that signs. No task has been written to it. Needs `rad`:
-`scripts/layer on radicle`.
+`.harness/scripts/layer.sh on radicle`.
 
 ```
-scripts/task new "parser: integer expressions" -b <id>    # -b: blocked by; repeatable
-scripts/task ready                                       # what can be picked up now; 1 on a loop
-scripts/task list [--all]
-scripts/task start|done|drop|reopen <id>
-scripts/task block|unblock <id> <by>                     # block -f records a loop anyway
-scripts/task assign <id> <did>|me|nobody
-scripts/task edit <id> [-t <title>] [-d <description>]
-scripts/task show <id>                                   # the full state, as JSON
+.harness/scripts/task new "parser: integer expressions" -b <id>    # -b: blocked by; repeatable
+.harness/scripts/task ready                                       # what can be picked up now; 1 on a loop
+.harness/scripts/task list [--all]
+.harness/scripts/task start|done|drop|reopen <id>
+.harness/scripts/task block|unblock <id> <by>                     # block -f records a loop anyway
+.harness/scripts/task assign <id> <did>|me|nobody
+.harness/scripts/task edit <id> [-t <title>] [-d <description>]
+.harness/scripts/task show <id>                                   # the full state, as JSON
 ```
 
 An `<id>` is any unambiguous prefix. A task is `todo`, `doing`, `done` or `dropped`. It is
@@ -37,7 +37,7 @@ So `block` stops rather than refuses. A block that would close a loop prints the
 what it costs, and `block --force` records it anyway:
 
 ```
-$ scripts/task block 1234567 89abcde
+$ .harness/scripts/task block 1234567 89abcde
 task: that makes a loop: 1234567 -> 89abcde -> 1234567
      nothing in it would be ready. See whether one of them splits into
      the part the other needs; to record the loop anyway, block --force.
@@ -48,7 +48,7 @@ line — may not go quiet. It keeps every task in it out of `ready`, and `ready`
 and exits 1:
 
 ```
-$ scripts/task ready
+$ .harness/scripts/task ready
 5ff0a21  todo     lexer: integer literals
 # waiting on each other, nothing here can start: 1234567 -> 89abcde -> 1234567
 $ echo $?
@@ -88,7 +88,7 @@ acyclic when it is healthy, and a loop is a diagnosis rather than a forbidden sh
 ## Who may do what
 
 An external COB has no authorisation but what its reducer gives it, and any peer can write
-operations. So `scripts/rad-cob-dagtaak` decides, per operation, by the key that signed it:
+operations. So `.harness/scripts/rad-cob-dagtaak` decides, per operation, by the key that signed it:
 
 | Actor | May |
 | --- | --- |
@@ -104,7 +104,7 @@ record shows that it did. Repository delegates are not consulted.
 `rad` knows issues and patches. For any other type it runs a helper, named after the last
 segment of the type name, once per operation: the state so far and the operation in, the new
 state out, as JSON (`radicle::cob::external`). The type is `nl.psjs.dagtaak`, so the helper
-is `rad-cob-dagtaak`; `scripts/task` puts `scripts/` on `PATH` for the `rad` it runs. With plain
+is `rad-cob-dagtaak`; `.harness/scripts/task` puts `.harness/scripts/` on `PATH` for the `rad` it runs. With plain
 `rad cob …` do the same: `PATH="$PWD/scripts:$PATH" rad cob show …`.
 
 The name is settled. It is a reversed domain the maintainer owns, and it carries no project:
@@ -116,16 +116,16 @@ Two properties of that protocol shape the helper (checked with `rad` 1.10.3):
 
 - `rad` replays every operation through the helper each time it reads an object. The helper
   is therefore the meaning of the stored operations. Changing it reinterprets every task
-  ever written: treat a change to `scripts/rad-cob-dagtaak` like a schema migration.
+  ever written: treat a change to `.harness/scripts/rad-cob-dagtaak` like a schema migration.
 - A helper that exits non-zero makes the object unreadable, for everyone. So it never fails:
   whatever is malformed, unknown or not allowed is skipped and counted. It is also
   deterministic: no clock, no environment, nothing but stdin and stdout.
 
 ## What was verified
 
-- `scripts/rad-cob-dagtaak --self-test`: the reducer alone, no `rad` needed. Order of `open`,
+- `.harness/scripts/rad-cob-dagtaak --self-test`: the reducer alone, no `rad` needed. Order of `open`,
   the three kinds of actor, junk and oversized input, and that nothing raises.
-- `scripts/task --self-test`: every command against a real `rad` in a throwaway home,
+- `.harness/scripts/task --self-test`: every command against a real `rad` in a throwaway home,
   including a two-task loop: the second `block` is refused and says how to go on, `--force`
   records it, both stay out of `ready`, `ready` names them, and dropping one frees the other.
 - Two `radicle-node`s on an isolated test network on one x86_64-linux machine, two keys:

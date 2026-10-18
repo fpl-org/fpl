@@ -21,7 +21,7 @@ except Exception: print("")')"
 [ -n "$path" ] || exit 0
 
 case "$path" in
-*/docs/DESIGN.md|docs/DESIGN.md|*/docs/SPEC.md|docs/SPEC.md|*/fpl/features/*/spec.md|fpl/features/*/spec.md|*/fpl/features/*/examples/*|fpl/features/*/examples/*)
+*/02-docs/02.01-design.md|02-docs/02.01-design.md|*/02-docs/02.02-spec.md|02-docs/02.02-spec.md|*/03-fpl/03.01-features/*/spec.md|03-fpl/03.01-features/*/spec.md|*/03-fpl/03.01-features/*/examples/*|03-fpl/03.01-features/*/examples/*)
 	if [ "${FPL_SPEC_EDIT:-0}" = "1" ]; then
 		exit 0
 	fi

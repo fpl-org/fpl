@@ -2,10 +2,10 @@
 
 An implementation worktree is done when `make check` is green (AGENTS.md). This file says what
 that gate runs, why each check is in it, and how its strictness is kept out of reach of the
-code it judges. The harness side lives in `quality/` and `scripts/` at the root; the project
-it judges is the walker in `bootstrap/`, whose `Makefile` is one line, `include
-../quality/noslop.mk`. The root's `Makefile` runs each lane there, so `make check` from the
-root is the gate; the lanes run in `bootstrap/` and use the one `.venv` at the root.
+code it judges. The harness side lives in `.harness/quality/` and `.harness/scripts/` at the root; the project
+it judges is the walker in `01-bootstrap/`, whose `Makefile` is one line, `include
+../.harness/quality/noslop.mk`. The root's `Makefile` runs each lane there, so `make check` from the
+root is the gate; the lanes run in `01-bootstrap/` and use the one `.venv` at the root.
 
 The checks are aimed at the ways agent-written code goes wrong without failing a test: code
 nobody runs, tests that run code without checking it, branches that pile up, layers that leak
@@ -23,7 +23,7 @@ make harden   check, then the long search: 20x the examples, CrossHair on every 
               and every contract, mutation testing
 make ready    harden, then gates, then a known-vulnerability audit of the pinned tools
 make gates    proof that each check still refuses a bad example, and the harness's own lint
-make tools    the tooling beside the language, tools/<name>/, judged as strictly (see Tools)
+make tools    the tooling beside the language, .harness/tools/<name>/, judged as strictly (see Tools)
 make map      the map of the code, never committed (below); no other lane runs it
 ```
 
@@ -34,47 +34,47 @@ make run FILE=f   run the file f, a path from the root
 make repl ARGS=a  the REPL (python -m fpl.repl a)
 ```
 
-The package is `bootstrap/fpl`, so a bare `python -m fpl` from the root finds no module; both
-targets put `bootstrap/` on the path of the one `.venv`'s python. A console script was
-weighed and left: it needs a build backend in `bootstrap/pyproject.toml` and the walker
-installed into `quality/`'s locked environment, a policy change for the same reach.
+The package is `01-bootstrap/fpl`, so a bare `python -m fpl` from the root finds no module; both
+targets put `01-bootstrap/` on the path of the one `.venv`'s python. A console script was
+weighed and left: it needs a build backend in `01-bootstrap/pyproject.toml` and the walker
+installed into `.harness/quality/`'s locked environment, a policy change for the same reach.
 
 The same lanes run on the forge (`.github/workflows/noslop.yml`): `make check` on every push
 to a pull request, `make ready` once it is out of draft and on every push to `main`. A
 harness-only branch, which has no code to judge, runs `make gates` from the root instead:
-`make -f quality/noslop.mk gates`. The runner enters the dev shell of `flake.nix`, so it judges
+`make -f .harness/quality/noslop.mk gates`. The runner enters the dev shell of `flake.nix`, so it judges
 with the tools a laptop has.
 
-`make map` is a view, not a check. `scripts/diagrams` draws the import graph of the root
-package `quality/importlinter.ini` names, found in the directory the script's `SOURCE`
+`make map` is a view, not a check. `.harness/scripts/diagrams` draws the import graph of the root
+package `.harness/quality/importlinter.ini` names, found in the directory the script's `SOURCE`
 names, with import-linter's own verdict on each contract of that file, the verdict
 lint-imports gives in `make check`, and a class diagram per module, as Mermaid, into
 `.noslop/map/`.
 Its output is never committed: computed from the code each time, it cannot go stale.
 `.github/workflows/map.yml` draws the head and the base of every pull request into the run's
 summary, with the difference between the two. Each checkout is drawn where its own
-`scripts/diagrams` says its package lies, read without running it, so the base of a pull
+`.harness/scripts/diagrams` says its package lies, read without running it, so the base of a pull
 request that moves the package is drawn where the package was.
 
 `make check` runs, in order:
 
 | Check | Refuses |
 | --- | --- |
-| `ruff-limits` | a `quality/ruff-limits.toml` that sets no `line-length`, which would give ruff its default of 88; every lane that runs ruff checks it first |
+| `ruff-limits` | a `.harness/quality/ruff-limits.toml` that sets no `line-length`, which would give ruff its default of 88; every lane that runs ruff checks it first |
 | `pristine` | an uncommitted change to a policy file (below) |
-| `config-fresh` | a file generated from `lib.limits` in `flake.nix` (`.editorconfig`, `quality/ruff-limits.toml`, `.githooks/commit-limits`) that differs from the flake or is gone; the remedy is `nix run .#gen-config` |
-| `ruff check`, `ruff format --check` | lint findings, including cyclomatic complexity over 8 (`quality/ruff.toml`); unformatted code |
-| `pyright`, strict | anything strict mode refuses, and a `match` that misses a case (`quality/pyright.json`) |
-| `mypy`, strict | the same code as the reference implementation of the typing PEPs reads it, with unreachable code and unused ignores as errors (`quality/mypy.ini`) |
-| `scripts/escapes` | a waiver that does not name its rule and give a reason |
-| `scripts/props` | a module with code that no property test imports |
-| `pytest` under `coverage` | a failing test; less than 100% line and branch coverage (`quality/coveragerc`) |
-| `scripts/crap` | a function whose CRAP score is over 8 (`quality/crap.toml`) |
-| `lint-imports` | an import that crosses the layering of CONVENTIONS.md (`quality/importlinter.ini`) |
+| `config-fresh` | a file generated from `lib.limits` in `flake.nix` (`.editorconfig`, `.harness/quality/ruff-limits.toml`, `.githooks/commit-limits`) that differs from the flake or is gone; the remedy is `nix run .#gen-config` |
+| `ruff check`, `ruff format --check` | lint findings, including cyclomatic complexity over 8 (`.harness/quality/ruff.toml`); unformatted code |
+| `pyright`, strict | anything strict mode refuses, and a `match` that misses a case (`.harness/quality/pyright.json`) |
+| `mypy`, strict | the same code as the reference implementation of the typing PEPs reads it, with unreachable code and unused ignores as errors (`.harness/quality/mypy.ini`) |
+| `.harness/scripts/escapes` | a waiver that does not name its rule and give a reason |
+| `.harness/scripts/props` | a module with code that no property test imports |
+| `pytest` under `coverage` | a failing test; less than 100% line and branch coverage (`.harness/quality/coveragerc`) |
+| `.harness/scripts/crap` | a function whose CRAP score is over 8 (`.harness/quality/crap.toml`) |
+| `lint-imports` | an import that crosses the layering of CONVENTIONS.md (`.harness/quality/importlinter.ini`) |
 | `deptry` | an import of a package `pyproject.toml` does not declare, or a declared one nobody imports |
 | `vulture` | code nothing uses |
 | `pylint` duplicate-code | six or more lines repeated |
-| `make run` from the root | the entry a README points to failing, or printing other than the `.expected` of `fpl/features/draft2/examples/01-frames` (the lanes run in `bootstrap/`, so only this step runs the walker from the root) |
+| `make run` from the root | the entry a README points to failing, or printing other than the `.expected` of `03-fpl/03.01-features/draft2/examples/01-frames` (the lanes run in `01-bootstrap/`, so only this step runs the walker from the root) |
 
 On the milestone-0 skeleton `make check` takes about 6 seconds and `make harden` about 3
 minutes, almost all of it CrossHair.
@@ -82,23 +82,23 @@ minutes, almost all of it CrossHair.
 ## Tools
 
 Tooling that serves the language without being part of it, a page that shows how tokenizers
-cut FPL source say, lives under `tools/<name>/`: each a uv project of its own, with its own
+cut FPL source say, lives under `.harness/tools/<name>/`: each a uv project of its own, with its own
 `pyproject.toml`, lock, `pyright.json` and `coveragerc`, so its dependencies never enter the
 environment the language is judged in. `make tools` (from the root, `make -f
-quality/noslop.mk tools`) judges every such directory with the gate's own strictness: ruff
-under `quality/ruff.toml`, pyright strict, mypy under `quality/mypy.ini`, the waiver check of
-`scripts/escapes`, and its tests, with the harness's Hypothesis profiles, at 100% line and
+.harness/quality/noslop.mk tools`) judges every such directory with the gate's own strictness: ruff
+under `.harness/quality/ruff.toml`, pyright strict, mypy under `.harness/quality/mypy.ini`, the waiver check of
+`.harness/scripts/escapes`, and its tests, with the harness's Hypothesis profiles, at 100% line and
 branch coverage.
 
 It is a lane apart. `check`, `quick`, `harden`, `ready` and `gates` do not depend on it, and
-deptry in `check` excludes `tools/`, so the inner loop of the language never waits on a
+deptry in `check` excludes `.harness/tools/`, so the inner loop of the language never waits on a
 tool's environment or reads a tool's imports. On the forge it runs from
-`.github/workflows/tools.yml`, only when `tools/` or the policy that judges it changes.
+`.github/workflows/tools.yml`, only when `.harness/tools/` or the policy that judges it changes.
 
 ## CRAP
 
 CRAP(m) = C²(1 − p)³ + C, with C the cyclomatic complexity of function m and p the share of its
-lines and branches the tests run. `scripts/crap` computes it from radon's complexity and
+lines and branches the tests run. `.harness/scripts/crap` computes it from radon's complexity and
 coverage.py's branch data, counting only a function's body, since its `def` line runs on
 import. A function over 8 fails, and so does one the coverage report does not know.
 
@@ -106,14 +106,14 @@ With coverage at 100% CRAP equals C, so in practice the limit is a complexity li
 ruff also enforces. The CRAP gate matters when coverage slips, and even then it is lenient:
 complexity 5 with four of its branches untested scores 7.6 and passes. Coverage at 100% is what
 bites first. Martin found that a hard complexity limit makes an agent split functions into
-pieces that only pass their arguments along; `scripts/crap` counts those one-call wrappers in
+pieces that only pass their arguments along; `.harness/scripts/crap` counts those one-call wrappers in
 its report, and does not refuse them.
 
 ## Properties
 
 Every module with code needs a test that imports it and uses Hypothesis's `@given`. Which
 properties it states is the author's to judge; that there is one is not optional. The profiles
-are in `quality/noslop_pytest.py`, loaded by every test run:
+are in `.harness/quality/noslop_pytest.py`, loaded by every test run:
 
 - `quick`, 100 examples per property: `make quick` and `make check`.
 - `harden`, 2000 examples: `make harden`.
@@ -155,8 +155,8 @@ tested through the callers that satisfy it.
 
 A language has properties its implementation must keep. They are stated as properties, under
 Hypothesis in `make check` and CrossHair in `make harden`, and each is due from the moment
-the module it concerns has code. `quality/obligations.toml` lists them per module;
-`scripts/props` fails a module with code whose obligation no property test pays, and a test
+the module it concerns has code. `.harness/quality/obligations.toml` lists them per module;
+`.harness/scripts/props` fails a module with code whose obligation no property test pays, and a test
 pays one by naming it:
 
 ```python
@@ -184,10 +184,10 @@ file and not owed by anyone until it does.
 
 ## Mutants
 
-`scripts/mutants` runs mutmut: it changes the code one small way at a time (`<` to `<=`, a
+`.harness/scripts/mutants` runs mutmut: it changes the code one small way at a time (`<` to `<=`, a
 string to another, an argument to `None`) and runs the tests against each change. A mutant the
 tests do not catch has survived: the line it changed runs, but nothing checks what it does.
-Every mutant that is not killed fails `make harden`, unless `bootstrap/mutants.allow` names
+Every mutant that is not killed fails `make harden`, unless `01-bootstrap/mutants.allow` names
 it with a reason:
 
 ```
@@ -217,29 +217,29 @@ each with its reason. A bare `# type: ignore` is refused.
 The gate is only as strict as the files that configure it, and an agent that can edit them in
 the same commit as its code can make any code pass. So:
 
-- `quality/` and `scripts/` are harness. A commit that touches them touches no implementation
-  path (`scripts/boundary`, judged by `scripts/commit-lint` at push and in CI), so such a
+- `.harness/quality/` and `.harness/scripts/` are harness. A commit that touches them touches no implementation
+  path (`.harness/scripts/boundary.sh`, judged by `.harness/scripts/commit-lint.sh` at push and in CI), so such a
   change is a commit of its own, made from any checkout.
-- `quality/`, and the `pyproject.toml`, `Makefile` and `mutants.allow` of the root and of
-  `bootstrap/`, are policy. A commit that changes one carries the marker `[policy]` in its
+- `.harness/quality/`, and the `pyproject.toml`, `Makefile` and `mutants.allow` of the root and of
+  `01-bootstrap/`, are policy. A commit that changes one carries the marker `[policy]` in its
   message and touches no code or tests (the `fpl` package and its tests, at the root or in
-  `bootstrap/`; `.githooks/commit-msg`), so the change is reviewed on its own.
+  `01-bootstrap/`; `.githooks/commit-msg`), so the change is reviewed on its own.
 - The gate judges only committed policy: `make check` stops when any policy file, or
-  `scripts/`, differs from what is committed, and also when git cannot say.
-- The examples under `fpl/features/*/examples/` are oracle, like `spec.md`: `[spec]` and the
+  `.harness/scripts/`, differs from what is committed, and also when git cannot say.
+- The examples under `03-fpl/03.01-features/*/examples/` are oracle, like `spec.md`: `[spec]` and the
   `guard-specs` hook (AGENTS.md, "The oracle rule").
 
-The tools and their versions are pinned in `quality/uv.lock`. `make` syncs them into the
+The tools and their versions are pinned in `.harness/quality/uv.lock`. `make` syncs them into the
 root's `.venv` with `uv sync --frozen` the first time and whenever the lock changes.
 
 ## Proof that the checks bite
 
 A check that passes everything looks the same as a check that found nothing. `make gates` first
-holds the harness's own Python (`scripts/crap`, `props`, `escapes`, `mutants`, `gates`,
+holds the harness's own Python (`.harness/scripts/crap`, `props`, `escapes`, `mutants`, `gates`,
 `forward-only`, `diagrams` and the pytest plugin) to the ruff rules it holds others to, then
-runs the self-tests of the six of those scripts that have one, of `scripts/leak-check`, of the
-pre-push hook and of `scripts/boundary`, then
-`scripts/gates`: for each case in `quality/bad/`, the check runs on a small fixture of the
-repository (the harness at its root, a project in `bootstrap/`), where it must pass, and then with the case's bad example laid over it, where it must fail with a
+runs the self-tests of the six of those scripts that have one, of `.harness/scripts/leak-check.sh`, of the
+pre-push hook and of `.harness/scripts/boundary.sh`, then
+`.harness/scripts/gates`: for each case in `.harness/quality/bad/`, the check runs on a small fixture of the
+repository (the harness at its root, a project in `01-bootstrap/`), where it must pass, and then with the case's bad example laid over it, where it must fail with a
 given message. The first run is the control; without it, a check that fails for an unrelated
 reason would count as having caught something. Adding a check means adding its case.

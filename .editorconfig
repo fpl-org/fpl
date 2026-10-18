@@ -11,7 +11,7 @@ root = true
 [COMMIT_EDITMSG]
 max_line_length = 72
 
-# quality/ruff.toml extends quality/ruff-limits.toml. EditorConfig has one
+# .harness/quality/ruff.toml extends .harness/quality/ruff-limits.toml. EditorConfig has one
 # width, the code limit. The docstring limit is in that ruff file.
 [*.py]
 max_line_length = 79

@@ -1,0 +1,35 @@
+# .harness/quality/ruff.toml — format and lint for every implementation worktree (.agents/QUALITY.md).
+# Harness policy: changing it takes a harness commit with [policy], never one that changes code.
+
+target-version = "py312"
+# line-length comes from here: generated from lib.limits in flake.nix (nix run .#gen-config),
+# the one place the line limits are written. Ruff resolves the path against this file.
+extend = "ruff-limits.toml"
+
+[lint]
+select = [
+  "E", "W", "F",   # pycodestyle, pyflakes
+  "I",             # import order
+  "B",             # bugbear: likely bugs
+  "UP",            # modern syntax for 3.12
+  "SIM", "C4", "PIE", "RET",  # simpler forms
+  "C90",           # McCabe complexity, see max-complexity
+  "ARG",           # unused arguments
+  "ERA",           # commented-out code
+  "BLE",           # blind `except Exception`
+  "PT",            # pytest idioms
+  "N",             # naming
+  "PL",            # pylint's rules that ruff has
+  "RUF",
+  "PGH",           # blanket `# type: ignore` and `# noqa`
+]
+ignore = [
+  "PLR2004",       # magic numbers: tests are made of them
+]
+
+[lint.mccabe]
+# CRAP <= 8 at the 100% coverage the gate demands is complexity <= 8 (.harness/quality/crap.toml).
+max-complexity = 8
+
+[lint.per-file-ignores]
+"tests/**" = ["PLR0913"]

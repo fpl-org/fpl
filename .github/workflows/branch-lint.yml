@@ -27,8 +27,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Grammar self-test
-        run: scripts/branch-lint --self-test
+        run: .harness/scripts/branch-lint.sh --self-test
       - name: Head branch parses
         env:
           HEAD_REF: ${{ github.head_ref }}
-        run: scripts/branch-lint "$HEAD_REF"
+        run: .harness/scripts/branch-lint.sh "$HEAD_REF"

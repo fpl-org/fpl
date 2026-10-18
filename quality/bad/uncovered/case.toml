@@ -1,3 +1,0 @@
-why = "a branch no test takes fails the coverage gate"
-run = "coverage run --rcfile=../quality/coveragerc -m pytest -q && coverage report --rcfile=../quality/coveragerc"
-expect = "Coverage failure"

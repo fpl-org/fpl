@@ -12,7 +12,7 @@ __pycache__/
 dist/
 *.egg-info/
 
-# What the noslop lanes leave behind in a worktree (quality/noslop.mk)
+# What the noslop lanes leave behind in a worktree (.harness/quality/noslop.mk)
 .noslop/
 mutants/
 .hypothesis/
@@ -25,3 +25,13 @@ mutants/
 # (.agents/DEVSHELL.md). Per-checkout choices, so they must never travel with a commit.
 .fpl-shell
 .envrc.local
+
+# The Quarto site and book, rebuilt with `quarto render` at the root.
+# index.qmd is generated from README.md by .harness/scripts/homepage.py.
+/index.qmd
+.site/
+.book/
+.quarto/
+
+/.quarto/
+**/*.quarto_ipynb

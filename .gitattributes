@@ -7,5 +7,5 @@
 # Written by nix run .#gen-config from lib.limits in flake.nix, never by hand. GitHub folds
 # them in a diff and leaves them out of the language bar and the review count.
 .editorconfig linguist-generated=true
-quality/ruff-limits.toml linguist-generated=true
+.harness/quality/ruff-limits.toml linguist-generated=true
 .githooks/commit-limits linguist-generated=true

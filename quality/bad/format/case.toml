@@ -1,3 +1,0 @@
-why = "code the formatter would change is not committed"
-run = "ruff format --config ../quality/ruff.toml --check fpl tests"
-expect = "would be reformatted"

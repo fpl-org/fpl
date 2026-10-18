@@ -2,7 +2,7 @@
 
 FPL uses a **stacked-commits** workflow (the Meta/Phabricator and Google model): a change is a
 short chain of small, individually reviewable commits, each depending on the one below. No
-extra tooling — plain git, one config flag, and `scripts/restack`. If you prefer `jj`, see
+extra tooling — plain git, one config flag, and `.harness/scripts/restack.sh`. If you prefer `jj`, see
 `.agents/JJ.md`; it produces the same history.
 
 Vocabulary: **base** (the branch you'll land on, `main`) · **stack** (your ordered commits on
@@ -42,11 +42,11 @@ top of base) · **restack** (rebase the stack when base or a lower commit change
    every use (a Secure Enclave key; checked, it asks each time, twice in a row too). No key
    that works without him is registered for the account on a machine where agents run.
 9. **Nothing private reaches the repository.** It is public, and so is whatever a commit,
-   a push or a pull request carries. **[gate]** `scripts/leak-check` runs
+   a push or a pull request carries. **[gate]** `.harness/scripts/leak-check.sh` runs
    [gitleaks](https://github.com/gitleaks/gitleaks) over the staged change
    (`.githooks/pre-commit`), the message (`.githooks/commit-msg`), every commit and ref
    name a push sends (`.githooks/pre-push`), and a pull request's title and body
-   (`scripts/pr`). It judges added lines, file names and messages against two sets of
+   (`.harness/scripts/pr.sh`). It judges added lines, file names and messages against two sets of
    rules: gitleaks's defaults, which find keys and tokens, and a private list of terms.
    The list is local and per maintainer, never committed: one regular expression per line
    in Go's RE2 syntax (`\b`, not `\<`), matched regardless of case, `^` and `$` at line
@@ -57,7 +57,7 @@ top of base) · **restack** (rebase the stack when base or a lower commit change
    judges the branch's whole history. Its report names the rule, the list line and the
    place, never the match. With no list only the defaults run.
    `FPL_LEAK_GATE=block` (default) · `warn` (report, don't block) · `off`. It covers what
-   leaves through git and `scripts/pr`; the comments `scripts/export-review` posts, and
+   leaves through git and `.harness/scripts/pr.sh`; the comments `.harness/scripts/export-review` posts, and
    anything written on the forge by hand, do not pass it.
 10. **An approved pull request is frozen; fix forward.** Until the maintainer approves a pull
     request, agents rewrite it freely, in this order: the machines first (`make check` and
@@ -76,7 +76,7 @@ top of base) · **restack** (rebase the stack when base or a lower commit change
     turns a push after an approval into a dismissed approval, is on only for pull requests
     based on `main` and on the branches the review ruleset names (today `walker/01-syntax`,
     `walker/06-match` and `asm-layers`); on any other base the approval stays, on an older
-    commit. **[gate]** `.githooks/pre-push` runs `scripts/forward-only`: a push to GitHub
+    commit. **[gate]** `.githooks/pre-push` runs `.harness/scripts/forward-only`: a push to GitHub
     that would overwrite or delete the branch of an open pull request that a human approved
     is refused, whichever commit he approved, so the gate does not lean on the tripwire. He
     lifts the freeze by dismissing his approval or by requesting changes. Bots, `psjg-codex`
@@ -90,7 +90,7 @@ top of base) · **restack** (rebase the stack when base or a lower commit change
 ## Setup (once per clone/worktree)
 
 ```
-scripts/setup
+.harness/scripts/setup.sh
 ```
 
 sets `rebase.updateRefs=true` (carry intermediate branch refs during rebase),
@@ -105,18 +105,18 @@ The repository is meant to live in more than one place (rule 7), and with two re
 git remote rename origin github
 ```
 
-The scripts assume no remote name: `scripts/restack` follows the upstream of the base
-branch, `scripts/pr` the remote the branch tracks. The recipes below spell `github`.
+The scripts assume no remote name: `.harness/scripts/restack.sh` follows the upstream of the base
+branch, `.harness/scripts/pr.sh` the remote the branch tracks. The recipes below spell `github`.
 
 ## Build a stack
 
 ```
 git switch -c stack/typed-let/tip main     # start the stack off base; you work on …/tip
 # … edit …
-scripts/acommit -t feat -s parser -m "parse let-bindings"      # commit 1 (bottom)
+.harness/scripts/acommit.sh -t feat -s parser -m "parse let-bindings"      # commit 1 (bottom)
 git branch stack/typed-let/1                # ref at the first reviewable boundary
 # … edit …
-scripts/acommit -t feat -s eval -m "evaluate let-bindings"     # commit 2
+.harness/scripts/acommit.sh -t feat -s eval -m "evaluate let-bindings"     # commit 2
 git branch stack/typed-let/2
 ```
 
@@ -138,11 +138,11 @@ around; only a real conflict with `main` asks for a rebase, and that is rule 10'
 exception.
 
 ```
-scripts/restack            # git fetch github && git rebase --update-refs github/main
+.harness/scripts/restack.sh            # git fetch github && git rebase --update-refs github/main
 ```
 
 `--update-refs` moves every `stack/typed-let/*` ref that pointed into the stack along with the
-rebase, so the PR branches stay correct. Conflicts: resolve, then `scripts/restack --continue`
+rebase, so the PR branches stay correct. Conflicts: resolve, then `.harness/scripts/restack.sh --continue`
 (or `--abort`). `rerere` replays the same resolution on the next restack.
 
 To amend a commit that isn't on top, before it is approved:
@@ -154,9 +154,9 @@ git rebase -i --update-refs github/main    # mark the target 'edit', amend, cont
 ## Read the diff with the file around it
 
 ```
-scripts/review                 the current branch against main
-scripts/review -b <base> …     against the branch below, in a stack
-scripts/review -s              side by side
+.harness/scripts/review.sh                 the current branch against main
+.harness/scripts/review.sh -b <base> …     against the branch below, in a stack
+.harness/scripts/review.sh -s              side by side
 ```
 
 renders every changed file whole — `git diff -U9999` through `diff2html` — and opens the page
@@ -181,25 +181,25 @@ gh pr create --base stack/typed-let/1 --head stack/typed-let/2
 For agent work there are two scripts, one for each side of the review:
 
 ```
-scripts/pr [<branch>]      # the agent's side: file the branch as the machine account,
+.harness/scripts/pr.sh [<branch>]      # the agent's side: file the branch as the machine account,
                            # on the tail of the queue
-scripts/land [<number>]    # the maintainer's side: checks, conversation, diff, then decide
+.harness/scripts/land.sh [<number>]    # the maintainer's side: checks, conversation, diff, then decide
 ```
 
-`scripts/pr` refuses unless the token it uses belongs to the machine account of
+`.harness/scripts/pr.sh` refuses unless the token it uses belongs to the machine account of
 `.git/agent-identity` and the branch on the forge is the commit you have; it does not push.
 It files the pull request on the tail of the queue, and refuses a branch that is not built
 on that tail, with the rebase that puts it there; `-B <base>` overrides the choice.
-`scripts/land` waits for the checks, prints the conversation, opens the diff in the browser,
+`.harness/scripts/land.sh` waits for the checks, prints the conversation, opens the diff in the browser,
 and only after Enter approves, rebase-merges, deletes the branch and updates `main`. It lands
 the one pull request you name, with `gh pr merge --rebase`, which suits the bottom of a stack
 landed alone. A stack up to a higher pull request lands from the merge box (below) until
-`scripts/land` learns the asynchronous merge endpoint, which GitHub requires for merging a
+`.harness/scripts/land.sh` learns the asynchronous merge endpoint, which GitHub requires for merging a
 stack through the API. The author of a pull request cannot approve it, which is why the two
 sides are two accounts.
 
-`scripts/land` needs `gh`, which is not in the default dev shell: `scripts/layer on github`
-(`.agents/DEVSHELL.md`, "Forge tools are opt-in"), or land in the browser. `scripts/pr` needs
+`.harness/scripts/land.sh` needs `gh`, which is not in the default dev shell: `.harness/scripts/layer.sh on github`
+(`.agents/DEVSHELL.md`, "Forge tools are opt-in"), or land in the browser. `.harness/scripts/pr.sh` needs
 neither: it calls the API with python3 from the default shell.
 
 - **A stack lands as a unit.** The maintainer picks the highest pull request to land and
@@ -234,18 +234,18 @@ cheap.
 
 ## A public mirror of a pijul channel
 
-Not in use yet: this repository still lives in git. `scripts/mirror` and `scripts/import-pr`
+Not in use yet: this repository still lives in git. `.harness/scripts/mirror.sh` and `.harness/scripts/import-pr.sh`
 are ready for the day the code moves to pijul and a public forge becomes a mirror of it
-rather than the home of it. Needs the `pijul` layer (`scripts/layer on pijul`).
+rather than the home of it. Needs the `pijul` layer (`.harness/scripts/layer.sh on pijul`).
 
 The shape is three one-way flows, each piece of state with exactly one home:
 
-- **Out.** `scripts/mirror <pijul> <git> [<channel> [<branch>]]` projects a channel onto a
+- **Out.** `.harness/scripts/mirror.sh <pijul> <git> [<channel> [<branch>]]` projects a channel onto a
   branch. It is deterministic — authors, dates and trees all come from the changes — so the
   same changes give the same commit ids and exporting again is a no-op. Every commit carries
   `Pijul-Change: <hash>`.
 - **In.** A pull request is fetched without any forge API (`git fetch <forge>
-  pull/<n>/head:refs/pull/<n>/head`) and `scripts/import-pr` records it as one pijul change
+  pull/<n>/head:refs/pull/<n>/head`) and `.harness/scripts/import-pr.sh` records it as one pijul change
   under the contributor's name, with `Git-Commit:` and `Landed-By:` in its description. The
   record hooks run on it like on anything else.
 - **Back.** On the next export the contributor's own commit is put on the branch — reused as
@@ -256,21 +256,21 @@ The shape is three one-way flows, each piece of state with exactly one home:
 **`main` in pijul only grows.** Landed is frozen. The mirror refuses (exit 3) to export a
 `main` that no longer descends from what it exported before, because that would be a force
 push on a public branch. Stacks live on other channels and go to other branches, which may be
-rewritten — `scripts/mirror -f` — exactly as a pull request branch may be on any forge.
+rewritten — `.harness/scripts/mirror.sh -f` — exactly as a pull request branch may be on any forge.
 
 What stays two-sided: the review conversation happens where the contributor is, in the pull
 request thread. Summarise it into the change's description when landing so the reasons stay
 here. CI on the forge is a courtesy to the contributor; the gate is the pijul record hooks.
 
-`scripts/mirror --self-test` runs both scripts against a real pijul and git: determinism,
+`.harness/scripts/mirror.sh --self-test` runs both scripts against a real pijul and git: determinism,
 append-only exports, a PR on the latest `main` reused as is, a PR on an older `main` merged
 in under the lander's name with the contributor's commit kept, and the refusal to rewrite.
 
 ## Bring the review home
 
 ```
-scripts/import-review <number>...   those pull requests, into Radicle patches
-scripts/import-review --open        every open one
+.harness/scripts/import-review <number>...   those pull requests, into Radicle patches
+.harness/scripts/import-review --open        every open one
 ```
 
 The code already has a home that is not the forge; the conversation about it did not. This
@@ -285,15 +285,15 @@ also how a second run skips it, so importing twice changes nothing. The Radicle 
 stays empty, because Radicle keeps one review per signer per revision, and that one is for
 the verdict of whoever runs the import.
 
-It pushes to the `rad` remote and so needs `rad` (`scripts/layer on radicle`) and the key in
+It pushes to the `rad` remote and so needs `rad` (`.harness/scripts/layer.sh on radicle`) and the key in
 the agent. `--self-test` runs it in a throwaway Radicle home without the network.
 
 ```
-scripts/review --serve       import the open pull requests, then show them in the browser
+.harness/scripts/review.sh --serve       import the open pull requests, then show them in the browser
 ```
 
 stops the page this clone is already serving, if there is one, imports every open pull
-request (`scripts/import-review --open`), and serves the patches on 127.0.0.1. The page
+request (`.harness/scripts/import-review --open`), and serves the patches on 127.0.0.1. The page
 reads the patches and nothing else. Its address, token included, is also written to
 `.git/review-serve.pid`, so it can be opened in another browser than the default.
 
@@ -321,7 +321,7 @@ change.
 At the end of a pull request the page stops. Scroll on and a bar there fills; past the line
 you are in the next pull request. The same going back up, into the ones already merged.
 
-Only what is in Radicle shows; `scripts/review-serve` without `--fresh` serves it without
+Only what is in Radicle shows; `.harness/scripts/review-serve` without `--fresh` serves it without
 importing first. What you write there goes into the patch under your key, the way the
 Radicle CLI writes it: a line comment into your review of the revision, a reply into the
 thread it answers, accept or reject as your review's verdict. Comments in a review can be
@@ -329,7 +329,7 @@ resolved; imported ones cannot, because Radicle keeps them on the revision, wher
 no resolve, so they are answered instead.
 
 ```
-scripts/export-review <number>... | --open
+.harness/scripts/export-review <number>... | --open
 ```
 
 is the way back. What was written in the review and not imported goes onto the pull
@@ -337,10 +337,10 @@ request once, posted by the machine account: a line comment as a review comment 
 lines (or, for a line outside the forge's diff, a plain comment that names and links the
 line), a reply to a forge comment as a reply in its thread, anything else and a verdict as a
 comment. The first line names the writer and the key that signed it; the last is an HTML
-comment with the Radicle id, which is how a second run skips it and how scripts/import-review
+comment with the Radicle id, which is how a second run skips it and how .harness/scripts/import-review
 leaves it out. So a conversation can run in both places and each comment keeps one home.
 
-The page also lands, one pull request at a time, as scripts/land does. A patch from a pull
+The page also lands, one pull request at a time, as .harness/scripts/land.sh does. A patch from a pull
 request at the bottom of its stack has an "approve and merge" button: your gh account
 approves and rebase-merges it, but only while the forge still has the commit you reviewed
 and its checks passed. The merge is then recorded in Radicle, the patches stacked on it
@@ -359,7 +359,7 @@ so no other page in the browser can write to it, or land.
 https://<machine account>:<token>@github.com
 ```
 
-That is git's credential-store format, so the same file serves a push and `scripts/pr`:
+That is git's credential-store format, so the same file serves a push and `.harness/scripts/pr.sh`:
 
 ```
 git -c credential.helper="store --file=$PWD/.git/agent-credentials" push origin <branch>

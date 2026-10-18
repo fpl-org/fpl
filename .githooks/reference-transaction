@@ -38,7 +38,7 @@ while read -r old new ref; do updates+=("$new $ref"); done
 [ "${#updates[@]}" -gt 0 ] || exit 0
 
 top="$(git rev-parse --show-toplevel 2>/dev/null)" || top=""
-lint="$top/scripts/branch-lint"
+lint="$top/.harness/scripts/branch-lint.sh"
 
 # new value this same transaction gives REF, if it touches it
 in_txn() {

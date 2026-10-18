@@ -1,0 +1,19 @@
+// .harness/quality/pyright.json — strict typing for the project in 01-bootstrap/ (.agents/STACK.md,
+// .agents/QUALITY.md). Paths are relative to this file.
+{
+  "include": ["../../01-bootstrap/fpl", "../../01-bootstrap/tests"],
+  "pythonVersion": "3.12",
+  "venvPath": "../..",
+  "venv": ".venv",
+  "typeCheckingMode": "strict",
+  // mypy's waiver is '# type: ignore[code]'; it must not also silence pyright on that line.
+  "enableTypeIgnoreComments": false,
+  "reportMatchNotExhaustive": "error",
+  "reportUnnecessaryTypeIgnoreComment": "error",
+  "reportImplicitOverride": "error",
+  "reportUninitializedInstanceVariable": "error",
+  "reportPropertyTypeMismatch": "error",
+  "reportMissingSuperCall": "none",
+  "reportUnusedCallResult": "none",
+  "executionEnvironments": [{ "root": "../../01-bootstrap", "extraPaths": ["../../01-bootstrap"] }]
+}

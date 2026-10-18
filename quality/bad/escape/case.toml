@@ -1,3 +1,0 @@
-why = "a waiver that names no rule and gives no reason is refused"
-run = "python ../scripts/escapes fpl tests"
-expect = "name the code and give a reason"

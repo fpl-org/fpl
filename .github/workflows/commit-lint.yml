@@ -7,7 +7,7 @@
 # hard gate.
 #
 # The judge is the one on main, not the one the pull request carries: a pull request that
-# edits scripts/commit-lint, scripts/boundary, scripts/leak-check, scripts/branch-lint or
+# edits .harness/scripts/commit-lint.sh, .harness/scripts/boundary.sh, .harness/scripts/leak-check.sh, .harness/scripts/branch-lint.sh or
 # .githooks/commit-msg cannot loosen its own verdict. The anchor is main, not the PR base:
 # the base of a stacked PR may itself hold unreviewed script edits. By design a PR that
 # changes the gates is judged by the old gates; the owner reviews such PRs by hand.
@@ -61,10 +61,10 @@ jobs:
           main_sha="$(git rev-parse HEAD)"
           # Lint only what this PR adds: not what its base holds, and not what main holds.
           # A stacked PR that merged newer main into its head would otherwise be judged on
-          # commits that already landed. scripts/commit-lint takes one range, so build a
+          # commits that already landed. .harness/scripts/commit-lint.sh takes one range, so build a
           # throwaway commit with both as parents: "X..HEAD" then excludes the ancestors of
           # each. It is never referenced and dies with the runner.
           export GIT_AUTHOR_NAME=lint GIT_AUTHOR_EMAIL=lint@invalid
           export GIT_COMMITTER_NAME=lint GIT_COMMITTER_EMAIL=lint@invalid
           exclude="$(git commit-tree -m exclude -p "$BASE_SHA" -p "$main_sha" "$BASE_SHA^{tree}")"
-          scripts/commit-lint -b "$HEAD_REF" "$exclude..$HEAD_SHA"
+          .harness/scripts/commit-lint.sh -b "$HEAD_REF" "$exclude..$HEAD_SHA"

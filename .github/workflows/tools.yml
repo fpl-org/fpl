@@ -1,7 +1,7 @@
 # The tools lane: the tooling beside the language, judged as strictly as the code
 # (docs/QUALITY.md, "Tools").
 #
-# Every tools/<name>/ is a uv project of its own; `make tools` syncs each from its lock and
+# Every .harness/tools/<name>/ is a uv project of its own; `make tools` syncs each from its lock and
 # runs ruff, pyright and mypy strict, the waiver check, and its tests under 100% coverage. It
 # runs only when a tool or the policy that judges it changes, so the gate of the language
 # never waits on it. tiktoken fetches its encoding files on first use; they are kept between
@@ -11,10 +11,10 @@ name: tools
 on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
-    paths: ["tools/**", "quality/noslop.mk", "quality/ruff.toml", "quality/mypy.ini", "quality/pyproject.toml", "quality/uv.lock", "quality/noslop_pytest.py", "scripts/escapes", ".github/workflows/tools.yml"]
+    paths: [".harness/tools/**", ".harness/quality/noslop.mk", ".harness/quality/ruff.toml", ".harness/quality/mypy.ini", ".harness/quality/pyproject.toml", ".harness/quality/uv.lock", ".harness/quality/noslop_pytest.py", ".harness/scripts/escapes", ".github/workflows/tools.yml"]
   push:
     branches: [main]
-    paths: ["tools/**", "quality/noslop.mk", "quality/ruff.toml", "quality/mypy.ini", "quality/pyproject.toml", "quality/uv.lock", "quality/noslop_pytest.py", "scripts/escapes", ".github/workflows/tools.yml"]
+    paths: [".harness/tools/**", ".harness/quality/noslop.mk", ".harness/quality/ruff.toml", ".harness/quality/mypy.ini", ".harness/quality/pyproject.toml", ".harness/quality/uv.lock", ".harness/quality/noslop_pytest.py", ".harness/scripts/escapes", ".github/workflows/tools.yml"]
 
 # One run per pull request; a new push cancels the run of the commit it replaces.
 concurrency:
@@ -38,6 +38,6 @@ jobs:
           path: |
             ~/.cache/uv
             ~/.cache/tiktoken
-          key: tools-${{ runner.os }}-${{ hashFiles('quality/uv.lock', 'tools/*/uv.lock') }}
+          key: tools-${{ runner.os }}-${{ hashFiles('.harness/quality/uv.lock', '.harness/tools/*/uv.lock') }}
       - name: The tools lane
-        run: nix develop -c make -f quality/noslop.mk tools
+        run: nix develop -c make -f .harness/quality/noslop.mk tools

@@ -2,8 +2,8 @@
 # .githooks/pre-push) accept them for an agent commit beside .git/agent-identity
 # (.agents/COMMITS.md, sections 1 and 2). In CI the trusted list is the one the commit-lint
 # workflow sets inline in FPL_AGENT_EMAILS: this file comes from the pull request under
-# judgment, so scripts/commit-lint never reads it there. It must be a subset of that
-# list, and scripts/commit-lint refuses, naming the address, when it lists one the
+# judgment, so .harness/scripts/commit-lint.sh never reads it there. It must be a subset of that
+# list, and .harness/scripts/commit-lint.sh refuses, naming the address, when it lists one the
 # workflow's list lacks. Add an address to the workflow first, then here.
 326980220+psjg-claude@users.noreply.github.com
 41898282+claude[bot]@users.noreply.github.com

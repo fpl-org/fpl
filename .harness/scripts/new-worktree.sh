@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+#
+# .harness/scripts/new-worktree.sh — create an implementation worktree under worktrees/<name>/.
+#
+# The create recipe from .agents/WORKTREES.md as one command, usable by any agent or
+# human (`.claude/commands/new-worktree.md` is a thin wrapper over this):
+#
+#   1. `git worktree add worktrees/<name> -b <branch> <base>`, always from the
+#      root checkout, so it works when invoked from inside another worktree.
+#      <branch> is attempt/<name>, or agent/<id>/attempt/<name> with -a: agent
+#      commits are only accepted on agent branches (.agents/BRANCHES.md), so an
+#      attempt an agent will work in needs -a.
+#   2. Carries the root's agent identity into the new worktree. The file lives
+#      under the per-worktree git dir, so a fresh worktree starts without one;
+#      .agents/COMMITS.md fixes the email as one constant machine-account address,
+#      so inheriting it is safe. Skipped when the root has none.
+#   3. Runs `.harness/scripts/setup.sh` inside the new worktree (hooks, stacked-commit config,
+#      identity report).
+#
+# It scaffolds nothing: an attempt's code and its `03-fpl/03.01-features/` are the first implementation
+# session's job (.agents/CONVENTIONS.md).
+#
+# Usage:
+#   .harness/scripts/new-worktree.sh [-n] [-a <id>] <name> [base]
+#
+#   <name>   [a-z0-9][a-z0-9._-]*  -> path worktrees/<name>, branch attempt/<name>
+#   [base]   ref to branch from (default: main)
+#   -a <id>  the agent that leads the attempt (claude, codex, …): the branch
+#            becomes agent/<id>/attempt/<name>; the path stays worktrees/<name>
+#   -n       dry run: print the commands, create nothing
+
+set -euo pipefail
+
+die() { echo "new-worktree: $*" >&2; exit 2; }
+
+dry=0; agent_id=""
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-n) dry=1; shift ;;
+	-a) agent_id="${2:-}"; [ -n "$agent_id" ] || die "-a needs an agent id"; shift 2 ;;
+	*) break ;;
+	esac
+done
+name="${1:-}"; base="${2:-main}"
+[ -n "$name" ] || die "usage: new-worktree [-n] [-a <id>] <name> [base]"
+[ $# -le 2 ] || die "too many arguments"
+printf '%s' "$name" | grep -Eq '^[a-z0-9][a-z0-9._-]*$' \
+	|| die "invalid name '$name' (want [a-z0-9][a-z0-9._-]*)"
+
+# The root checkout is always the first entry, wherever we were invoked from.
+root="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+[ -n "$root" ] || die "not inside a git repository"
+path="worktrees/$name"; branch="${agent_id:+agent/$agent_id/}attempt/$name"
+"$root/.harness/scripts/branch-lint.sh" "$branch" || die "branch '$branch' does not parse"
+
+[ ! -e "$root/$path" ] || die "$path already exists"
+git -C "$root" rev-parse --verify --quiet "$base^{commit}" >/dev/null \
+	|| die "base '$base' is not a commit"
+if git -C "$root" show-ref --verify --quiet "refs/heads/$branch"; then
+	die "branch $branch already exists"
+fi
+
+if [ "$dry" -eq 1 ]; then
+	echo "git -C $root worktree add $path -b $branch $base"
+	echo "(cd $root/$path && $root/.harness/scripts/setup.sh)"
+	exit 0
+fi
+
+echo "==> git worktree add $path -b $branch $base"
+git -C "$root" worktree add "$path" -b "$branch" "$base"
+
+if email="$(cd "$root" && .harness/scripts/agent-identity.sh show 2>/dev/null)"; then
+	echo "==> inherit agent identity from the root checkout"
+	(cd "$root/$path" && "$root/.harness/scripts/agent-identity.sh" set "$email" >/dev/null)
+fi
+
+(cd "$root/$path" && "$root/.harness/scripts/setup.sh")
+
+echo "==> ready: $root/$path on $branch (from $base)"

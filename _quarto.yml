@@ -1,0 +1,9 @@
+profile:
+  default: site
+  group:
+    - [site, book]
+execute:
+  enabled: false
+number-sections: false
+filters:
+  - .harness/scripts/essay.lua

@@ -1,0 +1,165 @@
+project:
+  type: website
+  output-dir: .site
+  render:
+    - index.qmd
+    - 01-bootstrap/README.md
+    - 01-bootstrap/01.01-boundary/README.md
+    - 01-bootstrap/01.02-pass/README.md
+    - 01-bootstrap/01.03-repr/README.md
+    - 01-bootstrap/01.04-compose/README.md
+    - 01-bootstrap/01.05-labs/README.md
+    - 01-bootstrap/01.06-nagini/README.md
+    - 02-docs/README.md
+    - 02-docs/02.04-notes/README.md
+    - 03-fpl/README.md
+    - 03-fpl/03.01-features/README.md
+    - 01-bootstrap/01.01-boundary/01.01.01-source.qmd
+    - 01-bootstrap/01.01-boundary/01.01.02-fon.qmd
+    - 01-bootstrap/01.01-boundary/01.01.03-pipe.qmd
+    - 01-bootstrap/01.01-boundary/01.01.04-render.qmd
+    - 01-bootstrap/01.02-pass/01.02.01-lex.qmd
+    - 01-bootstrap/01.02-pass/01.02.02-parse.qmd
+    - 01-bootstrap/01.02-pass/01.02.03-resolve.qmd
+    - 01-bootstrap/01.02-pass/01.02.04-expand.qmd
+    - 01-bootstrap/01.02-pass/01.02.05-desugar.qmd
+    - 01-bootstrap/01.02-pass/01.02.06-elaborate.qmd
+    - 01-bootstrap/01.02-pass/01.02.07-lower.qmd
+    - 01-bootstrap/01.02-pass/01.02.08-normalize.qmd
+    - 01-bootstrap/01.02-pass/01.02.09-optimize.qmd
+    - 01-bootstrap/01.02-pass/01.02.10-evaluate.qmd
+    - 01-bootstrap/01.02-pass/01.02.11-codegen.qmd
+    - 01-bootstrap/01.03-repr/01.03.01-source.qmd
+    - 01-bootstrap/01.03-repr/01.03.02-tokens.qmd
+    - 01-bootstrap/01.03-repr/01.03.03-syntax.qmd
+    - 01-bootstrap/01.03-repr/01.03.04-resolved.qmd
+    - 01-bootstrap/01.03-repr/01.03.05-expanded.qmd
+    - 01-bootstrap/01.03-repr/01.03.06-elaborated.qmd
+    - 01-bootstrap/01.03-repr/01.03.07-core.qmd
+    - 01-bootstrap/01.04-compose/01.04.01-pass.qmd
+    - 01-bootstrap/01.04-compose/01.04.02-run.qmd
+    - 01-bootstrap/01.04-compose/01.04.03-inspect.qmd
+    - 01-bootstrap/01.04-compose/01.04.04-build.qmd
+    - 01-bootstrap/01.05-labs/01.05.01-pipeline.qmd
+    - 01-bootstrap/01.06-nagini/01.06.01-advance.qmd
+    - 02-docs/02.01-design.md
+    - 02-docs/02.02-spec.md
+    - 02-docs/02.03-roadmap.md
+    - 02-docs/02.04-notes/02.04.01-issue-task-patch.md
+    - 02-docs/02.04-notes/02.04.02-sober.md
+    - 02-docs/02.04-notes/02.04.03-mediating-project.md
+    - 03-fpl/03.01-features/draft1/spec.md
+    - 03-fpl/03.01-features/draft2/spec.md
+    - 03-fpl/03.01-features/draft3/spec.md
+    - 03-fpl/03.01-features/match/spec.md
+    - 03-fpl/03.01-features/server/spec.md
+    - 03-fpl/03.01-features/sketch/spec.md
+website:
+  title: "FPL"
+  site-url: https://psjg.github.io/fpl-lit-scratch
+  page-navigation: true
+  sidebar:
+    search: true
+    contents:
+      - section: 01-bootstrap/README.md
+        contents:
+          - section: 01-bootstrap/01.01-boundary/README.md
+            contents:
+              - text: "1.1.1 Source"
+                href: 01-bootstrap/01.01-boundary/01.01.01-source.qmd
+              - text: "1.1.2 FON"
+                href: 01-bootstrap/01.01-boundary/01.01.02-fon.qmd
+              - text: "1.1.3 Pipe"
+                href: 01-bootstrap/01.01-boundary/01.01.03-pipe.qmd
+              - text: "1.1.4 Render"
+                href: 01-bootstrap/01.01-boundary/01.01.04-render.qmd
+          - section: 01-bootstrap/01.02-pass/README.md
+            contents:
+              - text: "1.2.1 Lex"
+                href: 01-bootstrap/01.02-pass/01.02.01-lex.qmd
+              - text: "1.2.2 Parse"
+                href: 01-bootstrap/01.02-pass/01.02.02-parse.qmd
+              - text: "1.2.3 Resolve"
+                href: 01-bootstrap/01.02-pass/01.02.03-resolve.qmd
+              - text: "1.2.4 Expand"
+                href: 01-bootstrap/01.02-pass/01.02.04-expand.qmd
+              - text: "1.2.5 Desugar"
+                href: 01-bootstrap/01.02-pass/01.02.05-desugar.qmd
+              - text: "1.2.6 Elaborate"
+                href: 01-bootstrap/01.02-pass/01.02.06-elaborate.qmd
+              - text: "1.2.7 Lower"
+                href: 01-bootstrap/01.02-pass/01.02.07-lower.qmd
+              - text: "1.2.8 Normalize"
+                href: 01-bootstrap/01.02-pass/01.02.08-normalize.qmd
+              - text: "1.2.9 Optimize"
+                href: 01-bootstrap/01.02-pass/01.02.09-optimize.qmd
+              - text: "1.2.10 Evaluate"
+                href: 01-bootstrap/01.02-pass/01.02.10-evaluate.qmd
+              - text: "1.2.11 Codegen"
+                href: 01-bootstrap/01.02-pass/01.02.11-codegen.qmd
+          - section: 01-bootstrap/01.03-repr/README.md
+            contents:
+              - text: "1.3.1 Source"
+                href: 01-bootstrap/01.03-repr/01.03.01-source.qmd
+              - text: "1.3.2 Tokens"
+                href: 01-bootstrap/01.03-repr/01.03.02-tokens.qmd
+              - text: "1.3.3 Syntax"
+                href: 01-bootstrap/01.03-repr/01.03.03-syntax.qmd
+              - text: "1.3.4 Resolved"
+                href: 01-bootstrap/01.03-repr/01.03.04-resolved.qmd
+              - text: "1.3.5 Expanded"
+                href: 01-bootstrap/01.03-repr/01.03.05-expanded.qmd
+              - text: "1.3.6 Elaborated"
+                href: 01-bootstrap/01.03-repr/01.03.06-elaborated.qmd
+              - text: "1.3.7 Core"
+                href: 01-bootstrap/01.03-repr/01.03.07-core.qmd
+          - section: 01-bootstrap/01.04-compose/README.md
+            contents:
+              - text: "1.4.1 Pass"
+                href: 01-bootstrap/01.04-compose/01.04.01-pass.qmd
+              - text: "1.4.2 Run"
+                href: 01-bootstrap/01.04-compose/01.04.02-run.qmd
+              - text: "1.4.3 Inspect"
+                href: 01-bootstrap/01.04-compose/01.04.03-inspect.qmd
+              - text: "1.4.4 Build"
+                href: 01-bootstrap/01.04-compose/01.04.04-build.qmd
+          - section: 01-bootstrap/01.05-labs/README.md
+            contents:
+              - text: "1.5.1 Pipeline"
+                href: 01-bootstrap/01.05-labs/01.05.01-pipeline.qmd
+          - section: 01-bootstrap/01.06-nagini/README.md
+            contents:
+              - text: "1.6.1 Advance"
+                href: 01-bootstrap/01.06-nagini/01.06.01-advance.qmd
+      - section: 02-docs/README.md
+        contents:
+          - text: "2.1 Design"
+            href: 02-docs/02.01-design.md
+          - text: "2.2 Spec"
+            href: 02-docs/02.02-spec.md
+          - text: "2.3 Roadmap"
+            href: 02-docs/02.03-roadmap.md
+          - section: 02-docs/02.04-notes/README.md
+            contents:
+              - text: "2.4.1 Issue, task, patch"
+                href: 02-docs/02.04-notes/02.04.01-issue-task-patch.md
+              - text: "2.4.2 Plumbing, not prophecy"
+                href: 02-docs/02.04-notes/02.04.02-sober.md
+              - text: "2.4.3 The project that mediates the language"
+                href: 02-docs/02.04-notes/02.04.03-mediating-project.md
+      - section: 03-fpl/README.md
+        contents:
+          - section: 03-fpl/03.01-features/README.md
+            contents:
+              - 03-fpl/03.01-features/draft1/spec.md
+              - 03-fpl/03.01-features/draft2/spec.md
+              - 03-fpl/03.01-features/draft3/spec.md
+              - 03-fpl/03.01-features/match/spec.md
+              - 03-fpl/03.01-features/server/spec.md
+              - 03-fpl/03.01-features/sketch/spec.md
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 2
+    code-overflow: wrap

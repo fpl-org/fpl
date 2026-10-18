@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+#
+# .harness/scripts/layer.sh — turn the opt-in layers of the dev shell on and off for this checkout.
+#
+#   .harness/scripts/layer.sh                  list the layers; * marks the ones that are on here
+#   .harness/scripts/layer.sh on github gitlab
+#   .harness/scripts/layer.sh off gitlab
+#   .harness/scripts/layer.sh reset            no layers: back to the default shell
+#
+# Layers are declared in flake.nix (.agents/DEVSHELL.md). The choice is stored in the
+# git-ignored file .fpl-shell at the top of the checkout, which .envrc reads; direnv
+# picks a change up at the next prompt. This script is the way to write that file: it
+# checks names against the flake before anything is stored. For one command without
+# direnv, skip all of this: `nix develop .#github -c gh …`.
+set -euo pipefail
+
+die() {
+	printf 'layer: %s\n' "$*" >&2
+	exit 1
+}
+
+top="$(git rev-parse --show-toplevel 2>/dev/null)" || die "not inside a git checkout"
+file="$top/.fpl-shell"
+
+# name<TAB>description, one layer per line, straight from the flake.
+# shellcheck disable=SC2016 # the ${…} below is Nix, not shell
+known="$(nix eval --raw "$top#lib.layers" --apply \
+	'l: builtins.concatStringsSep "\n" (map (n: "${n}\t${l.${n}}") (builtins.attrNames l))')" ||
+	die "could not read lib.layers from $top/flake.nix"
+
+# The layers that are on: what .envrc would accept from the file, nothing else.
+current() {
+	[ -f "$file" ] || return 0
+	sed -e 's/#.*//' "$file" | tr -cd 'a-z0-9\n' | grep -v '^$' | grep -xF -f <(cut -f1 <<<"$known") |
+		LC_ALL=C sort -u || true
+}
+
+store() { # stdin: names, one per line
+	local names
+	names="$(grep -v '^$' | LC_ALL=C sort -u || true)"
+	if [ -z "$names" ]; then
+		rm -f "$file"
+		printf 'layer: none on; direnv loads .#default at the next prompt\n'
+	else
+		printf '# written by .harness/scripts/layer.sh; one layer per line\n%s\n' "$names" >"$file"
+		printf 'layer: on: %s; direnv loads .#%s at the next prompt\n' \
+			"$(paste -sd' ' - <<<"$names")" "$(paste -sd- - <<<"$names")"
+	fi
+}
+
+cmd="${1:-list}"
+[ $# -gt 0 ] && shift
+case "$cmd" in
+list)
+	on="$(current)"
+	width="$(cut -f1 <<<"$known" | awk '{ if (length > w) w = length } END { print w }')"
+	while IFS=$'\t' read -r name description; do
+		mark=' '
+		grep -qxF "$name" <<<"$on" && mark='*'
+		printf '%s %-*s  %s\n' "$mark" "$width" "$name" "$description"
+	done <<<"$known"
+	;;
+on | off)
+	[ $# -gt 0 ] || die "usage: .harness/scripts/layer.sh $cmd <name>..."
+	for n in "$@"; do
+		cut -f1 <<<"$known" | grep -qxF -- "$n" || die "no such layer: $n  (.harness/scripts/layer.sh lists them)"
+	done
+	next="$(current | grep -vxF -f <(printf '%s\n' "$@") || true)"
+	[ "$cmd" = on ] && next="$(printf '%s\n' "$next" "$@")"
+	store <<<"$next"
+	;;
+reset)
+	store </dev/null
+	;;
+*)
+	die "usage: .harness/scripts/layer.sh [list | on <name>... | off <name>... | reset]"
+	;;
+esac

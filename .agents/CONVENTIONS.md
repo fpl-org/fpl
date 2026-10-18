@@ -2,16 +2,16 @@
 
 Canonical for every agent. The Claude `fpl-conventions` skill and the `.claude/commands/*`
 wrappers just point here. The walker, the Python implementation, is a project of its own in
-`bootstrap/`: its package is `fpl`, so `import fpl` and the module names below are what they
-were; only the directory moved, and with it the paths of its files. `fpl/features/`,
+`01-bootstrap/`: its package is `fpl`, so `import fpl` and the module names below are what they
+were; only the directory moved, and with it the paths of its files. `03-fpl/03.01-features/`,
 the conformance suite, stays above the project, in the language's own tree `fpl/` at the root,
 because it is the language's, not the walker's: FPL can later test itself against it, and the
 walker is one implementation tested against it.
 
-## Source tree (`bootstrap/fpl/`)
+## Source tree (`01-bootstrap/fpl/`)
 
 ```
-bootstrap/fpl/
+01-bootstrap/fpl/
   grammar.lark      syntax spec; the file the maintainer edits. Declarative only.
   parse.py          grammar → Lark tree → surface AST. Dumb. No semantics here.
   ast_surface.py    frozen @dataclass nodes; every node carries a Span.
@@ -24,7 +24,7 @@ bootstrap/fpl/
   repl.py           interactive loop.
   __main__.py       `python -m fpl file.fpl` runs a file; `python -m fpl` starts the REPL.
                     From the root: `make run FILE=file.fpl`, `make repl` (the package is
-                    bootstrap/fpl, so `python -m fpl` runs only inside bootstrap/).
+                    01-bootstrap/fpl, so `python -m fpl` runs only inside 01-bootstrap/).
 ```
 
 Hard rules:
@@ -39,7 +39,7 @@ Hard rules:
 ## Features and conformance
 
 ```
-fpl/features/
+03-fpl/03.01-features/
   _template/
     spec.md
     examples/hello.fpl
@@ -48,9 +48,9 @@ fpl/features/
     spec.md              maintainer-authored: surface syntax, desugaring, semantics
     examples/*.fpl        maintainer-authored programs
     examples/*.expected   maintainer-authored expected output
-bootstrap/tests/
-  corpus.py              finds fpl/features/ above the project: the examples every test reads
-  test_conformance.py    runs the driver on fpl/features/*/examples/*.fpl, diffs .expected
+01-bootstrap/tests/
+  corpus.py              finds 03-fpl/03.01-features/ above the project: the examples every test reads
+  test_conformance.py    runs the driver on 03-fpl/03.01-features/*/examples/*.fpl, diffs .expected
   test_ambiguity.py      asserts the grammar parses the corpus with zero Earley ambiguity
 ```
 
@@ -67,8 +67,8 @@ and `SPEC.md` are edit-protected (`[spec]` marker required).
 
 ## The gate (`make check` at the root)
 
-`bootstrap/Makefile` is `include ../quality/noslop.mk`, and the root's `Makefile` runs each
-lane in `bootstrap/`, so `make check` from the root is the walker's gate. It runs ruff, strict pyright
+`01-bootstrap/Makefile` is `include ../.harness/quality/noslop.mk`, and the root's `Makefile` runs each
+lane in `01-bootstrap/`, so `make check` from the root is the walker's gate. It runs ruff, strict pyright
 (`reportMatchNotExhaustive=error`) and strict mypy, the tests (unit, `test_ambiguity`, conformance) under
 100% branch coverage, and the structural checks of `.agents/QUALITY.md`: CRAP, a property test
 per module, the layering of the source tree above, declared dependencies, dead and duplicate
@@ -78,7 +78,7 @@ Green ⇔ done. A feature with a red or unrun `make check` is not done.
 
 ## Adding a feature — the loop
 
-1. `fpl/features/<name>/` scaffolded from `_template/` (`/new-feature` does this, then stops).
+1. `03-fpl/03.01-features/<name>/` scaffolded from `_template/` (`/new-feature` does this, then stops).
 2. Maintainer fills `spec.md` + `examples/*.fpl` + `*.expected`.
 3. Agent: `make check` is now red. Implement across `grammar.lark` → `desugar.py` →
    (rarely) `ast_core.py`/`eval.py` until green. Never touch `spec.md`.

@@ -9,14 +9,14 @@
 #
 # It acts when git opens an editor on an empty message: the source git passes in $2 is empty
 # (a plain `git commit`) or "template" (-t, commit.template) and nothing but comments is in
-# the file. It leaves alone "message" (-m, -F, which scripts/acommit uses), "merge", "squash"
+# the file. It leaves alone "message" (-m, -F, which .harness/scripts/acommit.sh uses), "merge", "squash"
 # and "commit" (-C, -c, --amend): those carry a message already.
 #
 # What it writes, at the top of the file:
 #     <type>(<scope>): <summary>
 #     (two empty lines: the body goes there)
-#     Stack: <name>        derived from the branch exactly as scripts/acommit derives it
-#     Human-Only: true     where no agent identity is set (scripts/agent-identity)
+#     Stack: <name>        derived from the branch exactly as .harness/scripts/acommit.sh derives it
+#     Human-Only: true     where no agent identity is set (.harness/scripts/agent-identity.sh)
 # and the rules as comment lines, which git strips. They must never reach the commit, so where
 # they go depends on how git cleans the message up (git commit --help, --cleanup):
 #   a scissors line is in the file   git wrote it for -v or commit.cleanup=scissors, and drops
@@ -152,7 +152,7 @@ fi
 trailers=""
 stack="$(commit_stack_of_branch "$(git branch --show-current)")"
 [ -z "$stack" ] || trailers="Stack: $stack"
-if ! "$repo_root/scripts/agent-identity" show >/dev/null 2>&1; then
+if ! "$repo_root/.harness/scripts/agent-identity.sh" show >/dev/null 2>&1; then
 	trailers="${trailers:+$trailers$'\n'}Human-Only: true"
 fi
 

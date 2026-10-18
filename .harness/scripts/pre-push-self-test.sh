@@ -1,0 +1,1423 @@
+#!/usr/bin/env bash
+#
+# .harness/scripts/pre-push-self-test.sh — proof that .githooks/pre-push holds every commit a push adds
+# to the commit-msg gates, as the commit-lint workflow will on the pull request, and lets
+# through what that workflow would pass. Run by `make gates`.
+#
+# commit-msg judges a commit's 'Stack:' trailer against the branch it is made on. A commit
+# moved afterwards (cherry-pick, rebase --onto, branch -f) keeps the trailer of the branch
+# it left, and only the forge noticed (fpl-org/fpl#125, #126). Every commit below is made
+# with the hooks off, which is how such a commit looks to the push.
+#
+# Everything happens in a throwaway clone of this checkout's .githooks/, .harness/scripts/ and
+# .github/, pushing to a bare repository on disk: forward-only does not judge a push that
+# does not go to GitHub, and nothing reaches the network. Git's global and system config,
+# HOME and XDG_CONFIG_HOME point away from the maintainer's. The leak gate is off: it has
+# a self-test of its own, and the copied scripts hold its synthetic key.
+#
+# Where there is a /bin/bash, the whole run is made a second time with it first on PATH: on
+# a Mac that is bash 3.2, which a push from outside the dev shell gets, and which every
+# script the hook reaches must run under.
+
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+# The line limits are generated into .githooks/commit-limits (lib.limits in flake.nix). Every
+# over-long fixture below is built from them, so a changed limit needs no edit here.
+# shellcheck source=../../.githooks/commit-limits
+. "$root/.githooks/commit-limits"
+# overlong <text>: the text, padded with words until it is longer than the body limit. A line
+# is judged only with a space in it (an unbreakable token is exempt), and the padding has some.
+overlong() {
+	local s="$1"
+	while [ "${#s}" -le "$COMMIT_BODY_MAX" ]; do s="$s and more words"; done
+	printf '%s' "$s"
+}
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/pre-push-self-test.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+: >"$tmp/gitconfig"
+export GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home" \
+	XDG_CONFIG_HOME="$tmp/xdg" GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid \
+	GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid FPL_LEAK_GATE=off
+unset FPL_BRANCH_GATE FPL_AGENT_EMAILS FPL_LINT_BRANCH FPL_LINT_COMMIT \
+	FPL_FORWARD_ONLY_OVERRIDE GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE
+mkdir -p "$HOME" "$XDG_CONFIG_HOME"
+
+remote="$tmp/remote.git"
+git init -q --bare -b main "$remote"
+repo="$tmp/repo"
+git init -q -b main "$repo"
+cd "$repo"
+mkdir -p .harness
+cp -R "$root/.githooks" "$root/.github" .
+cp -R "$root/.harness/scripts" .harness/scripts
+rm -rf .harness/scripts/__pycache__
+commit() { git -c core.hooksPath=/dev/null commit -q --allow-empty "$@"; }
+git add -A
+commit -m "chore(harness): base" -m "Human-Only: true"
+git remote add origin "$remote"
+git push -q --no-verify origin main
+git config core.hooksPath .githooks
+
+fails=0 total=0
+# expect <exit code> <description> <git push arguments...>: push to origin, output in $tmp/out.
+expect() {
+	local want="$1" what="$2" rc=0
+	shift 2
+	total=$((total + 1))
+	git push --porcelain origin "$@" >"$tmp/out" 2>&1 || rc=$?
+	[ "$rc" -eq 0 ] || rc=1
+	if [ "$rc" -ne "$want" ]; then
+		fails=$((fails + 1))
+		echo "self-test: $what: exit $rc, want $want" >&2
+		sed 's/^/    /' "$tmp/out" >&2
+	fi
+}
+# says <text> <description>: the last push's output contains text.
+says() {
+	total=$((total + 1))
+	grep -Fq -- "$1" "$tmp/out" || {
+		fails=$((fails + 1))
+		echo "self-test: $2: output lacks '$1'" >&2
+	}
+}
+# never <text> <description>: the last push's output does not contain text.
+never() {
+	total=$((total + 1))
+	if grep -Fq -- "$1" "$tmp/out"; then
+		fails=$((fails + 1))
+		echo "self-test: $2: output holds '$1'" >&2
+	fi
+}
+# absent <ref> <description>: the remote does not hold ref.
+absent() {
+	total=$((total + 1))
+	if git --git-dir="$remote" rev-parse -q --verify "$1" >/dev/null; then
+		fails=$((fails + 1))
+		echo "self-test: $2: the remote holds $1" >&2
+	fi
+}
+# hook <exit code> <description> <update line> [closed]: run the hook itself on one line of
+# what git hands it, for what a whole push cannot isolate: git refuses some of these pushes
+# itself, later, and git's own messages need a stderr. With 'closed', stderr is shut. The
+# URL is $url when it is set, the remote on disk otherwise.
+hook() {
+	local want="$1" what="$2" rc=0
+	total=$((total + 1))
+	if [ "${4:-}" = closed ]; then
+		.githooks/pre-push origin "${url:-$remote}" <<<"$3" >"$tmp/out" 2>&- || rc=$?
+	else
+		.githooks/pre-push origin "${url:-$remote}" <<<"$3" >"$tmp/out" 2>&1 || rc=$?
+	fi
+	[ "$rc" -eq 0 ] || rc=1
+	if [ "$rc" -ne "$want" ]; then
+		fails=$((fails + 1))
+		echo "self-test: $what: exit $rc, want $want" >&2
+		sed 's/^/    /' "$tmp/out" >&2
+	fi
+}
+zero=0000000000000000000000000000000000000000
+human() { commit -m "$1" -m "Stack: $2"$'\n'"Human-Only: true"; }
+pick() { git -c core.hooksPath=/dev/null cherry-pick --allow-empty "$1" >/dev/null; }
+
+# A commit made for stack a, then moved onto stack b: refused, by commit-lint's own words.
+git switch -q -c agent/claude/stack/a/1 main
+human "feat(x): one" a
+git switch -q -c agent/claude/stack/b main
+pick agent/claude/stack/a/1
+expect 1 "a new branch holding another stack's commit" agent/claude/stack/b
+says "needs 'Stack: b'" "the refusal is commit-lint's"
+says "commit-lint: 1 of 1 commits failed" "only the commit the push adds is judged"
+absent refs/heads/agent/claude/stack/b "a refused push"
+
+# The same commit where it belongs goes (part 1 of stack a), and so does what follows it.
+expect 0 "a new branch whose commits carry its stack" agent/claude/stack/a/1
+git switch -q agent/claude/stack/a/1
+human "feat(x): two" a
+expect 0 "an update whose commits carry its stack" agent/claude/stack/a/1
+
+# An update that brings in a commit made for another stack.
+git switch -q agent/claude/stack/b
+human "feat(x): three" b
+git switch -q agent/claude/stack/a/1
+pick agent/claude/stack/b
+expect 1 "an update holding another stack's commit" agent/claude/stack/a/1
+says "needs 'Stack: a'" "an update's refusal is commit-lint's"
+git reset -q --hard origin/agent/claude/stack/a/1
+
+# Pushed under another name, the commits it adds are judged against the name they arrive
+# under. Those the remote holds already are not: a name that only points at them adds none.
+git switch -q --detach agent/claude/stack/a/1
+human "feat(x): renamed" a
+expect 1 "a branch pushed under another stack's name" HEAD:refs/heads/agent/claude/stack/c
+says "needs 'Stack: c'" "a rename's refusal is commit-lint's"
+absent refs/heads/agent/claude/stack/c "a refused rename"
+git switch -q agent/claude/stack/a/1
+expect 0 "a pushed branch under another name, adding no commit" \
+	agent/claude/stack/a/1:refs/heads/agent/claude/stack/c
+
+# Part 2 of a stack is judged with its parent's commits, which carry the same name.
+git switch -q -c agent/claude/stack/a/2
+human "feat(x): four" a
+expect 0 "part 2 of a stack" agent/claude/stack/a/2
+
+# An agent commit by an address the commit-lint workflow accepts, though this clone's
+# .git/agent-identity is unset: the local verdict is the forge's.
+GIT_AUTHOR_EMAIL=336224473+psjg-codex@users.noreply.github.com commit -m "feat(x): five" \
+	-m "Stack: a"$'\n'"Assisted-By: gpt"$'\n'"Session-Id: s"
+expect 0 "an agent address the workflow accepts" agent/claude/stack/a/2
+
+# An address with a glob class, as the GitHub App's is, where a file named like what the
+# class matches sits in the working directory: the list of addresses must not be globbed.
+: >41898282+claudeb@users.noreply.github.com
+GIT_AUTHOR_EMAIL='41898282+claude[bot]@users.noreply.github.com' commit -m "feat(x): bot" \
+	-m "Stack: a"$'\n'"Assisted-By: claude"$'\n'"Session-Id: s"
+expect 0 "an agent address holding a glob class, beside a file it matches" agent/claude/stack/a/2
+rm -f 41898282+claudeb@users.noreply.github.com
+
+# A new stack on a parent not merged yet: the parent's commits are on the remote already,
+# under their own name, and the pull request is based on the parent, so they are not judged.
+git switch -q -c agent/claude/stack/g agent/claude/stack/a/2
+human "feat(x): eight" g
+expect 0 "a new stack on an unmerged parent" agent/claude/stack/g
+
+# A replace ref would show the gates another commit than the one the push sends.
+git switch -q -c agent/claude/stack/r main
+human "feat(x): replaced" a
+git replace HEAD "$(git commit-tree -p main -m "feat(x): replaced" \
+	-m "Stack: r"$'\n'"Human-Only: true" "HEAD^{tree}")"
+expect 1 "a commit with a replacement that would pass" agent/claude/stack/r
+says "needs 'Stack: r'" "the commit judged is the one pushed"
+git replace -d HEAD >/dev/null
+
+# A main that moved since the last fetch: judged against the main last fetched.
+git clone -q "$remote" "$tmp/other"
+git -C "$tmp/other" -c core.hooksPath=/dev/null commit -q --allow-empty -m "chore(x): elsewhere" \
+	-m "Human-Only: true"
+git -C "$tmp/other" push -q --no-verify origin main
+git switch -q -c agent/claude/stack/f main
+human "feat(x): six" f
+expect 0 "a new branch, after main moved on the remote" agent/claude/stack/f
+human "feat(x): seven" a
+expect 1 "another stack's commit, after main moved on the remote" agent/claude/stack/f
+says "needs 'Stack: f'" "a refusal after main moved is commit-lint's"
+
+# What the workflow never judges: no commits, a tag, a deletion, main.
+git branch agent/claude/stack/e main
+expect 0 "a new branch with no commit of its own" agent/claude/stack/e
+git tag v0 agent/claude/stack/b
+expect 0 "a tag" v0
+expect 0 "a deletion" :agent/claude/stack/e
+
+# A refusal that cannot be printed is a refusal still.
+git switch -q -c agent/claude/stack/s main
+human "feat(x): unprinted" a
+s="$(git rev-parse HEAD)"
+hook 1 "a refusal with stderr closed" "refs/heads/agent/claude/stack/s $s refs/heads/agent/claude/stack/s $zero" closed
+
+# A URL that cannot be listed refuses, and the refusal names it without the credential it
+# carries. Nothing listens on port 9 here, so nothing leaves this machine.
+url="https://agent:s3cret@127.0.0.1:9/fpl.git" GIT_TERMINAL_PROMPT=0 \
+	hook 1 "a URL that cannot be listed" "refs/heads/agent/claude/stack/s $s refs/heads/agent/claude/stack/s $zero"
+says "cannot list https://127.0.0.1:9/fpl.git" "the refusal names the URL"
+never "s3cret" "the refusal names no credential"
+
+# A walk that fails (here a commit whose parent is gone) judges nothing, so it refuses.
+git switch -q -c agent/claude/stack/h main
+human "feat(x): lost" a
+lost="$(git rev-parse HEAD)"
+human "feat(x): nine" h
+rm "$(git rev-parse --git-path objects)/${lost:0:2}/${lost:2}"
+h="$(git rev-parse HEAD)"
+hook 1 "a range git cannot walk" "refs/heads/agent/claude/stack/h $h refs/heads/agent/claude/stack/h $zero"
+
+# commit-lint's list of agent addresses. With FPL_AGENT_EMAILS set (CI), that list alone
+# is trusted: .github/agent-emails comes from the pull request, and an author added there
+# in the same pull request must not pass the provenance gate (Codex on fpl-org/fpl#129).
+git switch -q -c agent/claude/stack/k main
+rogue=999+rogue@users.noreply.github.com
+GIT_AUTHOR_EMAIL=$rogue commit -m "feat(x): rogue" \
+	-m "Stack: k"$'\n'"Assisted-By: claude"$'\n'"Session-Id: s"
+# The workflow's inline list, simulated: every address the checked-in file holds.
+ci="$(sed -e 's/#.*//' .github/agent-emails | xargs)"
+lint() { # lint <exit code> <description>: .harness/scripts/commit-lint.sh over the branch, output in $tmp/out
+	local want="$1" what="$2" rc=0
+	total=$((total + 1))
+	.harness/scripts/commit-lint.sh -b "$(git branch --show-current)" main..HEAD >"$tmp/out" 2>&1 || rc=$?
+	[ "$rc" -eq 0 ] || rc=1
+	if [ "$rc" -ne "$want" ]; then
+		fails=$((fails + 1))
+		echo "self-test: $what: exit $rc, want $want" >&2
+		sed 's/^/    /' "$tmp/out" >&2
+	fi
+}
+echo "$rogue" >>.github/agent-emails
+FPL_AGENT_EMAILS="$ci" lint 1 "an address only the file lists, with the workflow's list set"
+says "$rogue" "the refusal names the address"
+says "the trusted one" "the refusal says the workflow's list is trusted"
+lint 0 "the same address, with no workflow list: the file is used locally"
+git checkout -q -- .github/agent-emails
+FPL_AGENT_EMAILS="$ci" lint 1 "an author the workflow's list lacks, though the file is a subset"
+says "author email is" "the author gate refuses it"
+FPL_AGENT_EMAILS="$ci $rogue" lint 0 "an author in the workflow's list"
+git reset -q --hard HEAD~1
+GIT_AUTHOR_EMAIL=326980220+psjg-claude@users.noreply.github.com commit -m "feat(x): listed" \
+	-m "Stack: k"$'\n'"Assisted-By: claude"$'\n'"Session-Id: s"
+FPL_AGENT_EMAILS="$ci" lint 0 "the file a subset of the workflow's list"
+lint 0 "no workflow list: the file's addresses"
+
+# What commit-msg lets through unjudged is what git wrote, not what a message says: a merge
+# is a commit with more than one parent, a revert one whose message is git's own and names a
+# commit that exists. A one-parent commit that only opens with "Merge" or "Revert" is judged
+# like any other, and changes a protected file without [spec] only where it is allowed to.
+gate() { # gate <exit code> <description> <command>...: a command's exit, output in $tmp/out
+	local want="$1" what="$2" rc=0
+	shift 2
+	total=$((total + 1))
+	"$@" >"$tmp/out" 2>&1 || rc=$?
+	[ "$rc" -eq 0 ] || rc=1
+	if [ "$rc" -ne "$want" ]; then
+		fails=$((fails + 1))
+		echo "self-test: $what: exit $rc, want $want" >&2
+		sed 's/^/    /' "$tmp/out" >&2
+	fi
+}
+git switch -q -c agent/claude/stack/m main
+mkdir -p 02-docs
+echo spec >02-docs/02.02-spec.md
+git add 02-docs/02.02-spec.md
+commit -m "feat(x): spec" -m "[spec]" -m "Stack: m"$'\n'"Human-Only: true"
+lint 0 "a protected file edited with [spec]"
+spec="$(git rev-parse HEAD)"
+# [A-Z] is a collation range in bash 3.2 under a UTF-8 locale, and takes "s": every summary
+# was refused as capitalised. A class does not depend on the locale.
+utf8=""
+for l in en_US.UTF-8 C.UTF-8 en_US.utf8; do
+	if locale -a 2>/dev/null | grep -x "$l" >/dev/null; then
+		utf8="$l"
+		break
+	fi
+done
+if [ -n "$utf8" ]; then
+	LC_ALL="$utf8" lint 0 "a lower-case summary, in a UTF-8 locale"
+	commit -m "feat(x): Upper"
+	LC_ALL="$utf8" lint 1 "a capitalised summary, in a UTF-8 locale"
+	says "summary must start lower-case" "the capital is what is refused"
+	git reset -q --hard "$spec"
+fi
+# The case is judged on the summary's first character, which follows ': ' directly: spaces
+# before it hid a capital from the check (GPT review of these branches, finding 6).
+for summary in Upper lower; do
+	commit -m "feat(x):  $summary" -m "Stack: m"$'\n'"Human-Only: true"
+	lint 1 "a summary after two spaces ($summary)"
+	says "summary" "the leading space is refused ($summary)"
+	git reset -q --hard "$spec"
+done
+git -c core.hooksPath=/dev/null revert --no-edit HEAD >/dev/null
+lint 0 "a real revert of that commit, though its message names no [spec]"
+git reset -q --hard "$spec"
+for word in Merge Revert; do
+	echo more >>02-docs/02.02-spec.md
+	git add 02-docs/02.02-spec.md
+	commit -m "$word anything"
+	lint 1 "a one-parent commit that opens with '$word', editing a protected file"
+	says "header must be" "the '$word' commit is judged as any other"
+	git reset -q --hard "$spec"
+done
+echo more >>02-docs/02.02-spec.md
+git add 02-docs/02.02-spec.md
+commit -m 'Revert "feat(x): spec"' -m "This reverts commit 0123456789abcdef0123456789abcdef01234567."
+lint 1 "git's revert text naming a commit that does not exist"
+git reset -q --hard "$spec"
+echo more >>02-docs/02.02-spec.md
+git add 02-docs/02.02-spec.md
+commit -m 'Revert "feat(x): spec"'
+lint 1 "a revert subject with no 'This reverts commit' line"
+git reset -q --hard "$spec"
+# git's text naming a commit that exists is not yet a revert: the commit must hold the tree
+# git revert makes of that commit. A forger copies the text and edits a protected file under it.
+echo more >>02-docs/02.02-spec.md
+git add 02-docs/02.02-spec.md
+commit -m 'Revert "feat(x): spec"' -m "This reverts commit $spec."
+lint 1 "git's revert text naming a real commit, over a diff that is no inverse"
+says "header must be" "the forged revert is judged as any commit"
+git reset -q --hard "$spec"
+# The commit named must be one the branch holds. Two commits made only to be named make any
+# tree the "revert" of the second: P holds the forged tree, R undoes it back to the branch's
+# tree, and the revert of R onto the branch is P's tree. Neither is in the branch's history,
+# so the named commit is no ancestor of the one judged (CodeRabbit on PR #138).
+echo forged >>02-docs/02.02-spec.md
+git add 02-docs/02.02-spec.md
+forged_p="$(git commit-tree -p "$spec" -m "p" "$(git write-tree)")"
+forged_r="$(git commit-tree -p "$forged_p" -m "r" "$(git rev-parse "$spec^{tree}")")"
+printf 'Revert "r"\n\nThis reverts commit %s.\n' "$forged_r" >"$tmp/forged-msg"
+gate 1 "revert text naming a commit made only to be named, in hook mode" \
+	.githooks/commit-msg "$tmp/forged-msg"
+says "header must be" "the revert of a commit outside the branch is judged"
+commit -F "$tmp/forged-msg"
+lint 1 "revert text naming a commit made only to be named"
+says "header must be" "the revert of a commit outside the branch is judged as any commit"
+git reset -q --hard "$spec"
+git -c core.hooksPath=/dev/null revert --no-commit HEAD
+mkdir -p 02-docs
+echo extra >02-docs/02.01-design.md
+git add 02-docs/02.01-design.md
+commit -m 'Revert "feat(x): spec"' -m "This reverts commit $spec."
+lint 1 "a real revert with another protected file edited beside it"
+says "header must be" "the revert with a rider is judged as any commit"
+git reset -q --hard "$spec"
+echo more >>02-docs/02.02-spec.md
+git add 02-docs/02.02-spec.md
+commit -m "feat(x): more spec" -m "[spec]" -m "Stack: m"$'\n'"Human-Only: true"
+more="$(git rev-parse HEAD)"
+git -c core.hooksPath=/dev/null revert --no-commit HEAD
+commit -m 'Revert "feat(x): spec"' -m "This reverts commit $spec."
+lint 1 "the inverse of one commit, under the text that names another"
+says "header must be" "the revert of the wrong commit is judged as any commit"
+git reset -q --hard "$more"
+git -c core.hooksPath=/dev/null revert --no-edit HEAD >/dev/null
+lint 0 "a real revert of the second of two commits"
+git reset -q --hard "$spec"
+# The revert is exact on the added and removed lines, not on the lines around them: a revert
+# of a commit whose neighbourhood changed since still merges cleanly, and is still a revert.
+seq 1 7 >n.txt
+git add n.txt
+commit -m "feat(x): n" -m "Stack: m"$'\n'"Human-Only: true"
+sed -i.bak 3s/3/three/ n.txt && rm n.txt.bak
+git add n.txt
+commit -m "feat(x): n3" -m "Stack: m"$'\n'"Human-Only: true"
+n3="$(git rev-parse HEAD)"
+sed -i.bak 5s/5/five/ n.txt && rm n.txt.bak
+git add n.txt
+commit -m "feat(x): n5" -m "Stack: m"$'\n'"Human-Only: true"
+git -c core.hooksPath=/dev/null revert --no-edit "$n3" >/dev/null
+lint 0 "a real revert of a commit whose neighbouring lines changed since"
+git reset -q --hard "$spec"
+# Hook mode: the revert in the making is the staged change.
+git -c core.hooksPath=/dev/null revert --no-commit HEAD
+printf 'Revert "feat(x): spec"\n\nThis reverts commit %s.\n' "$spec" >"$tmp/revert-msg"
+gate 0 "a revert in the making, judged in hook mode" .githooks/commit-msg "$tmp/revert-msg"
+mkdir -p 02-docs
+echo extra >02-docs/02.01-design.md
+git add 02-docs/02.01-design.md
+gate 1 "the same revert with another protected file staged beside it" .githooks/commit-msg "$tmp/revert-msg"
+says "header must be" "the revert with a rider is judged"
+git reset -q --hard "$spec"
+echo more >>02-docs/02.02-spec.md
+git add 02-docs/02.02-spec.md
+gate 1 "revert text over a staged edit that is no inverse" .githooks/commit-msg "$tmp/revert-msg"
+says "header must be" "the forged revert is judged"
+git reset -q --hard "$spec"
+# The inverse is the tree git revert makes, not a diff that agrees with it line for line: git
+# patch-id drops the line numbers, so a line the reverted commit removed, put back elsewhere,
+# read as its revert. A forger restores the line at the end of a protected file instead of in
+# its place.
+printf '%s\n' a b c d e f >02-docs/02.01-design.md
+git add 02-docs/02.01-design.md
+commit -m "feat(x): design" -m "[spec]" -m "Stack: m"$'\n'"Human-Only: true"
+sed -i.bak 3d 02-docs/02.01-design.md && rm 02-docs/02.01-design.md.bak
+git add 02-docs/02.01-design.md
+commit -m "feat(x): drop c" -m "[spec]" -m "Stack: m"$'\n'"Human-Only: true"
+drop="$(git rev-parse HEAD)"
+echo c >>02-docs/02.01-design.md
+git add 02-docs/02.01-design.md
+printf 'Revert "feat(x): drop c"\n\nThis reverts commit %s.\n' "$drop" >"$tmp/moved-msg"
+gate 1 "the removed line put back elsewhere, judged in hook mode" .githooks/commit-msg "$tmp/moved-msg"
+says "header must be" "the moved line is judged as any commit"
+commit -F "$tmp/moved-msg"
+lint 1 "the removed line put back elsewhere, under git's revert text"
+says "header must be" "the moved line is judged as any commit in lint mode"
+git reset -q --hard "$drop"
+git -c core.hooksPath=/dev/null revert --no-edit HEAD >/dev/null
+lint 0 "the real revert of the same commit"
+# A revert follows a rename made since, as git revert does; and git 2.43 on titles the revert
+# of a revert 'Reapply "..."', over the same 'This reverts commit' line.
+seq 1 20 >r.txt
+git add r.txt
+commit -m "feat(x): r" -m "Stack: m"$'\n'"Human-Only: true"
+sed -i.bak 4s/4/four/ r.txt && rm r.txt.bak
+git add r.txt
+commit -m "feat(x): r4" -m "Stack: m"$'\n'"Human-Only: true"
+r4="$(git rev-parse HEAD)"
+git mv r.txt r2.txt
+commit -m "feat(x): move r" -m "Stack: m"$'\n'"Human-Only: true"
+git -c core.hooksPath=/dev/null revert --no-edit "$r4" >/dev/null
+lint 0 "a real revert of a commit whose file was renamed since"
+git -c core.hooksPath=/dev/null revert --no-edit HEAD >/dev/null
+same_subject="$(git log -1 --format=%s)"
+case "$same_subject" in 'Reapply "'*) ;; *) echo "self-test: git titled the revert of a revert '$same_subject'" >&2 ;; esac
+lint 0 "a real revert of a revert, titled Reapply"
+git reset -q --hard "$spec"
+# git revert --reference (or revert.reference=true) names the commit by an abbreviated id and
+# its subject, '<abbrev> (<subject>, <date>).', and leaves the title to the person. Its tree is
+# what makes it a revert, as for git's other text (GPT review of these branches, finding 7).
+git -c core.hooksPath=/dev/null revert --no-edit --reference HEAD >/dev/null
+lint 0 "a real revert made with --reference"
+git reset -q --hard "$spec"
+GIT_EDITOR="sed -i.bak -e '1s/^#.*/revert(x): undo the spec/'" \
+	git -c core.hooksPath=/dev/null -c revert.reference=true revert HEAD >/dev/null
+lint 0 "a real revert made under revert.reference=true, titled by the person"
+git reset -q --hard "$spec"
+# Either form under any title: the person may title a reference revert 'Revert "..."', and git
+# titles one made with --no-edit with a comment line it keeps.
+GIT_EDITOR="sed -i.bak -e '1s/.*/Revert \"feat(x): spec\"/'" \
+	git -c core.hooksPath=/dev/null revert -e --reference HEAD >/dev/null
+lint 0 "a real revert made with --reference, titled Revert \"...\" by the person"
+git reset -q --hard "$spec"
+GIT_EDITOR="sed -i.bak -e '1s/.*/Revert \"feat(x): spec\"/'" \
+	git -c core.hooksPath=/dev/null -c revert.reference=true revert -e HEAD >/dev/null
+lint 0 "a real revert made under revert.reference=true, titled Revert \"...\" by the person"
+git reset -q --hard "$spec"
+# The abbreviation names one commit or none: of two commits that share it, neither is the one
+# reverted, and the commit is judged as any (a real revert of either, without [spec], is then
+# refused). git commit-tree makes candidates, the same change under other subjects, until two
+# share their first four digits (some 300 of them, by the birthday bound on 16^4).
+echo twin >02-docs/02.02-spec.md
+git add 02-docs/02.02-spec.md
+twins="$(git write-tree)" twin=""
+: >"$tmp/ids"
+for ((i = 0; i < 5000 && ${#twin} == 0; i++)); do
+	git commit-tree -p "$spec" -m "feat(x): twin $i" -m "[spec]" -m "Stack: m"$'\n'"Human-Only: true" \
+		"$twins" >>"$tmp/ids"
+	if [ $((i % 50)) -eq 49 ]; then twin="$(cut -c1-4 "$tmp/ids" | sort | uniq -d | head -n1)"; fi
+done
+[ -n "$twin" ] || { fails=$((fails + 1)); echo "self-test: no two of $i commits share four digits" >&2; }
+git reset -q --hard "$(grep -m1 "^$twin" "$tmp/ids")"
+git -c core.hooksPath=/dev/null revert --no-commit HEAD
+commit -m "revert(x): undo a twin" -m "This reverts commit $twin (feat(x): twin, 2026-10-07)." -m "Stack: m"$'\n'"Human-Only: true"
+lint 1 "a real revert named by an abbreviation two commits share"
+says "edits a protected spec file" "the ambiguous reference names no commit"
+git reset -q --hard HEAD^
+git -c core.hooksPath=/dev/null revert --no-edit --reference HEAD >/dev/null
+lint 0 "the same revert named by an abbreviation of its own"
+git reset -q --hard "$spec"
+# An id is an object's: a tag spelt in hex names no commit here.
+git tag fade0fade0 "$spec"
+git -c core.hooksPath=/dev/null revert --no-commit HEAD
+commit -m "revert(x): undo the spec" -m "This reverts commit fade0fade0 (feat(x): spec, 2026-10-07)." -m "Stack: m"$'\n'"Human-Only: true"
+lint 1 "a real revert naming its commit by a tag spelt in hex"
+says "edits a protected spec file" "the tag names no commit"
+git tag -d fade0fade0 >/dev/null
+git reset -q --hard "$spec"
+echo more >>02-docs/02.02-spec.md
+git add 02-docs/02.02-spec.md
+commit -m "revert(x): undo the spec" -m "This reverts commit ${spec:0:7} (feat(x): spec, 2026-10-07)." -m "Stack: m"$'\n'"Human-Only: true"
+lint 1 "the reference form naming a real commit, over a diff that is no inverse"
+says "edits a protected spec file" "the forged reference revert is judged as any commit"
+git reset -q --hard "$spec"
+git -c core.hooksPath=/dev/null revert --no-commit HEAD
+printf 'revert(x): undo the spec\n\nThis reverts commit %s (feat(x): spec, 2026-10-07).\n' "${spec:0:7}" >"$tmp/ref-msg"
+gate 0 "a reference revert in the making, judged in hook mode" .githooks/commit-msg "$tmp/ref-msg"
+git reset -q --hard "$spec"
+# An amend of a real revert is judged as a new commit even when nothing is reworded: git does
+# not say it is one. The refusal says so, and how to get past it.
+git -c core.hooksPath=/dev/null revert --no-commit HEAD
+gate 0 "a real revert made with git commit" env GIT_EDITOR=true git commit -q
+gate 1 "an amend of a real revert, not reworded" env GIT_EDITOR=true git commit -q --amend --no-edit
+says "reworded or not" "the refusal says an amend is refused unreworded too"
+says "--no-verify" "the refusal names the way out"
+git -c core.hooksPath=/dev/null reset -q --hard "$spec"
+# A fixup!, squash! or amend! commit is spared the header and trailer gates while it waits
+# for an autosquash, but not the path guards: what it changes lands with the commit it folds
+# into, and the guards judge the message it carries now.
+echo fix >>02-docs/02.02-spec.md
+git add 02-docs/02.02-spec.md
+gate 1 "a fixup commit that edits a protected file, without [spec]" \
+	git commit -q --fixup=HEAD
+says "edits a protected spec file" "the oracle guard judges a fixup"
+gate 0 "the same fixup with [spec]" git commit -q --fixup=HEAD -m "[spec]"
+git -c core.hooksPath=/dev/null reset -q --hard "$spec"
+# A real merge: judged by its parents (lint mode) or by the merge git is making (hook mode).
+git switch -q -c agent/claude/stack/m-side "$spec"
+echo side >>02-docs/02.02-spec.md
+git add 02-docs/02.02-spec.md
+commit -m "feat(x): side" -m "[spec]" -m "Stack: m"$'\n'"Human-Only: true"
+git switch -q agent/claude/stack/m
+echo trunk >t.txt
+git add t.txt
+commit -m "feat(x): trunk" -m "Stack: m"$'\n'"Human-Only: true"
+git -c core.hooksPath=/dev/null merge -q --no-ff -m "Merge branch 'side'" agent/claude/stack/m-side
+git log -1 --format=%B >"$tmp/merge-msg"
+gate 0 "a merge, judged in lint mode" env FPL_LINT_COMMIT="$(git rev-parse HEAD)" .githooks/commit-msg "$tmp/merge-msg"
+merge="$(git rev-parse HEAD)"
+# git revert -m N undoes what the merge changed against its parent N.
+for m in 1 2; do
+	git -c core.hooksPath=/dev/null revert -m "$m" --no-edit "$merge" >/dev/null
+	lint 0 "a real revert of a merge, against its parent $m"
+	git reset -q --hard "$merge"
+	# --reference ends the line that names the merge in ', reversing', as the full form does.
+	git -c core.hooksPath=/dev/null revert -m "$m" --no-edit --reference "$merge" >/dev/null
+	lint 0 "a real revert of a merge made with --reference, against its parent $m"
+	git reset -q --hard "$merge"
+	GIT_EDITOR="sed -i.bak -e '1s/.*/Revert \"Merge branch side\"/'" \
+		git -c core.hooksPath=/dev/null revert -e -m "$m" --reference "$merge" >/dev/null
+	lint 0 "the same, titled Revert \"...\" by the person, against its parent $m"
+	git reset -q --hard "$merge"
+done
+git -c core.hooksPath=/dev/null revert --no-commit -m 1 "$merge"
+printf 'revert(x): back out the side\n\nThis reverts commit %s (Merge side, 2026-10-07), reversing\nchanges made to %s (feat(x): trunk, 2026-10-07).\n' \
+	"${merge:0:7}" "$(git rev-parse --short "$merge^1")" >"$tmp/ref-merge-msg"
+gate 0 "a reference revert of a merge in the making, judged in hook mode" \
+	.githooks/commit-msg "$tmp/ref-merge-msg"
+git -c core.hooksPath=/dev/null reset -q --hard "$merge"
+git reset -q --hard HEAD^
+git merge --no-ff --no-commit agent/claude/stack/m-side >/dev/null 2>&1
+gate 0 "a merge in the making, judged in hook mode" .githooks/commit-msg "$tmp/merge-msg"
+git merge --abort
+gate 1 "the same message with no merge in the making" .githooks/commit-msg "$tmp/merge-msg"
+says "header must be" "the message is judged"
+# git does not say a `git commit --amend` is one, so an amended merge is a Merge subject on a
+# commit with no merge in the making, and cannot be told from a new commit that borrows the
+# words. It is refused, and the refusal says what to do (.agents/COMMITS.md).
+git -c core.hooksPath=/dev/null reset -q --hard "$merge"
+gate 1 "an amend of a merge, which the hook cannot tell from a new commit" \
+	git commit -q --amend -F "$tmp/merge-msg"
+says "git does not tell this hook of an amend" "the refusal names the limit"
+says "--no-verify" "the refusal names the way out"
+# Why "HEAD has more than one parent" is not enough to call a commit an amend: so does the
+# parent of every plain commit made on top of a merge. A rule that took it for one would let
+# that commit borrow the word, so it stays refused.
+echo sneak >>02-docs/02.02-spec.md
+git add 02-docs/02.02-spec.md
+printf 'Merge sneaky\n' >"$tmp/borrow-msg"
+gate 1 "a new commit on top of a merge that borrows the word, over a protected file" \
+	.githooks/commit-msg "$tmp/borrow-msg"
+says "header must be" "the borrowed Merge is judged as any commit"
+git -c core.hooksPath=/dev/null reset -q --hard "$merge"
+git reset -q --hard "$spec"
+
+# A match must stay a match however long the list of paths is. `printf | grep -q` stops
+# reading at the first match, a long enough remainder gives printf SIGPIPE, and under
+# pipefail the condition reads false: a commit that changes thousands of files could carry a
+# protected one past [spec] and [policy] (GPT review of the commit-lint workflow, finding 4).
+empty="$(git hash-object -w --stdin </dev/null)"
+plant() { # plant <commit-tree args>: paths NUL-separated on stdin; a commit on HEAD holding them, empty
+	local idx="$tmp/plant-index" tree new p
+	GIT_INDEX_FILE="$idx" git read-tree HEAD
+	while IFS= read -r -d '' p; do
+		printf '100644 %s 0\t%s\0' "$empty" "$p"
+	done | GIT_INDEX_FILE="$idx" git update-index -z --add --index-info
+	tree="$(GIT_INDEX_FILE="$idx" git write-tree)"
+	new="$(git commit-tree "$tree" -p HEAD "$@")"
+	git -c core.hooksPath=/dev/null update-ref HEAD "$new"
+	rm -f "$idx"
+}
+many() { # many <count>: that many long paths, NUL-separated
+	local i
+	for ((i = 0; i < $1; i++)); do printf 'g/a-path-long-enough-to-fill-the-pipe-%06d\0' "$i"; done
+}
+trail="Stack: m"$'\n'"Human-Only: true"
+plant -m "feat(x): wide policy" -m "$trail" < <(printf 'Makefile\0'; many 8000)
+lint 1 "a Makefile edit among thousands of paths, without [policy]"
+says "changes the gate's policy" "the policy guard saw the Makefile"
+git reset -q --hard "$spec"
+plant -m "feat(x): wide spec" -m "$trail" < <(printf '02-docs/02.01-design.md\0'; many 8000)
+lint 1 "a spec edit among thousands of paths, without [spec]"
+says "edits a protected spec file" "the oracle guard saw the spec"
+git reset -q --hard "$spec"
+plant -m "chore(x): wide mix" -m "[policy]" -m "$trail" \
+	< <(printf 'fpl/code.py\0'; many 8000; printf '.harness/quality/ruff.toml\0')
+lint 1 "a [policy] commit among thousands of paths that also changes fpl/"
+says "may not also change fpl/ or tests/" "the separation guard saw fpl/"
+git reset -q --hard "$spec"
+
+# A path is matched as it is, not as git prints it. Without -z git quotes a name holding
+# non-ASCII, quote, backslash or control characters, in quotes and with escapes, so it starts
+# with a quote and no pattern anchored at 03-fpl/03.01-features/ or .harness/quality/ takes it. Raw bytes that are
+# no UTF-8 escape a `.` in a UTF-8 locale. A rename shows only its new name, so a spec file
+# moved out of 03-fpl/03.01-features/ was never seen (GPT review of the commit-lint workflow, finding 3).
+odd=(é '"q"' 'a\b' $'a\tb' $'a\nb' $'a\xffb')
+for name in "${odd[@]}"; do
+	printf -v shown '%q' "$name"
+	[ "$name" != $'a\xffb' ] || [ -n "$utf8" ] || continue
+	plant -m "feat(x): odd spec name" -m "$trail" < <(printf '03-fpl/03.01-features/x/examples/%s.fpl\0' "$name")
+	LC_ALL="${utf8:-C}" lint 1 "a spec file named $shown, without [spec]"
+	says "edits a protected spec file" "the oracle guard saw $shown"
+	git reset -q --hard "$spec"
+	plant -m "feat(x): odd policy name" -m "$trail" < <(printf '.harness/quality/%s.toml\0' "$name")
+	LC_ALL="${utf8:-C}" lint 1 "a policy file named $shown, without [policy]"
+	says "changes the gate's policy" "the policy guard saw $shown"
+	git reset -q --hard "$spec"
+	plant -m "chore(x): odd code name" -m "[policy]" -m "$trail" \
+		< <(printf '.harness/quality/ruff.toml\0fpl/%s.py\0' "$name")
+	LC_ALL="${utf8:-C}" lint 1 "a [policy] commit that also changes a file named $shown in fpl/"
+	says "may not also change fpl/ or tests/" "the separation guard saw $shown"
+	git reset -q --hard "$spec"
+done
+plant -m "feat(x): odd spec name" -m "[spec]" -m "$trail" < <(printf '03-fpl/03.01-features/x/examples/é.fpl\0')
+lint 0 "a spec file named é, with [spec]"
+git reset -q --hard "$spec"
+# Hook mode, where git diff --cached would show a moved file under its new name only.
+plant -m "feat(x): example" -m "[spec]" -m "$trail" < <(printf '03-fpl/03.01-features/x/examples/a.fpl\0')
+git -c core.hooksPath=/dev/null reset -q --hard HEAD
+git mv 03-fpl/03.01-features/x/examples/a.fpl other.fpl
+printf 'feat(x): move\n\n%s\n' "$trail" >"$tmp/move-msg"
+gate 1 "a spec file moved out of 03-fpl/03.01-features/, without [spec]" \
+	env FPL_ATOMIC_GATE=off .githooks/commit-msg "$tmp/move-msg"
+says "edits a protected spec file" "the oracle guard saw the move"
+git reset -q --hard "$spec"
+
+# The message: what git reads as its trailers is the last paragraph alone (git
+# interpret-trailers --parse), so a trailer-like line in the body is text, and one block holds
+# the provenance (GPT review of these branches, findings 2 to 5).
+msg() { # msg <exit code> <description> <message>: a commit of that message on $spec, linted
+	commit -m "$3"
+	lint "$1" "$2"
+	git reset -q --hard "$spec"
+}
+claude=326980220+psjg-claude@users.noreply.github.com
+msg 1 "trailers in a paragraph the body continues after" \
+	"feat(x): explain provenance"$'\n\n'"Stack: m"$'\n'"Human-Only: true"$'\n\n'"This paragraph follows the supposed trailers."
+says "missing 'Assisted-By:'" "trailers in the body are no provenance"
+GIT_AUTHOR_EMAIL=$claude msg 1 "agent trailers in a paragraph the body continues after" \
+	"feat(x): explain provenance"$'\n\n'"Stack: m"$'\n'"Assisted-By: claude"$'\n'"Session-Id: example"$'\n\n'"This paragraph follows the supposed trailers."
+says "missing 'Assisted-By:'" "agent trailers in the body are no provenance"
+msg 0 "a trailer-like example in the body, before a well-ordered block" \
+	"feat(x): explain sessions"$'\n\n'"Session-Id: example"$'\n\n'"The line above is an example."$'\n\n'"Refs: x"$'\n'"Stack: m"$'\n'"Human-Only: true"
+# git reads a trailer key without regard to case, in a last paragraph it takes for the block:
+# all trailers, or a quarter of them with one git writes itself (Signed-off-by), prose beside.
+# The gates read the keys as git does.
+sob="Signed-off-by: t <t@example.invalid>"$'\n'"a line of prose in the block"
+GIT_AUTHOR_EMAIL=$claude msg 0 "agent trailers with lower-case keys, in a block with prose git reads" \
+	"feat(x): a"$'\n\n'"$sob"$'\n'"Stack: m"$'\n'"assisted-by: claude"$'\n'"session-id: s"
+GIT_AUTHOR_EMAIL=$claude msg 1 "trailers with lower-case keys, out of order" \
+	"feat(x): a"$'\n\n'"Stack: m"$'\n'"session-id: s"$'\n'"assisted-by: claude"
+says "out of order" "a lower-case key is ranked as its key"
+# The width gate spares that block, and only it: a last paragraph of lines with a colon is
+# prose to git when a key holds a space, so its long line is judged.
+long="$(overlong "Note the cause: the old reader took this paragraph for trailers, and spared this line")"
+msg 1 "a long line in a last paragraph git reads as prose" \
+	"feat(x): a"$'\n\n'"Stack: m"$'\n'"Human-Only: true"$'\n\n'"$long"
+says "body line" "the long prose line is judged"
+# Within the block only the trailers are spared: a comment line, which git skips there and
+# keeps in the message (-m and -F strip none), and a prose line beside a Signed-off-by are text.
+msg 1 "a long '#' line in the trailer block, which git keeps" \
+	"feat(x): a"$'\n\n'"Stack: m"$'\n'"Human-Only: true"$'\n'"# $long"
+says "body line" "the long comment line is judged"
+msg 1 "a long prose line in a block with a Signed-off-by" \
+	"feat(x): a"$'\n\n'"$sob"$'\n'"$long"$'\n'"Stack: m"$'\n'"Human-Only: true"
+says "body line" "the long prose line in the block is judged"
+msg 1 "the branch's Stack: in the body only" \
+	"feat(x): a"$'\n\n'"Stack: m"$'\n\n'"prose"$'\n\n'"Human-Only: true"
+says "needs 'Stack: m'" "a Stack: line in the body is no stack record"
+# git splits a trailer at the separators trailer.separators names, ':' by default. A person's
+# '=' (git config --global trailer.separators =) left git reading no trailers at all, and a valid
+# message was refused for its missing Assisted-By (Codex review of #138). The rules write ':'
+# and the forge reads with git's default, so the gates read with ':' whatever is configured.
+git config --global trailer.separators '='
+msg 0 "a valid message, linted under a global trailer.separators of '='" \
+	"feat(x): a"$'\n\n'"Stack: m"$'\n'"Human-Only: true"
+git config --global --unset trailer.separators
+# Provenance is one of two forms, never both (finding 3).
+GIT_AUTHOR_EMAIL=$claude msg 1 "Human-Only: true beside agent trailers" \
+	"feat(x): a"$'\n\n'"Stack: m"$'\n'"Assisted-By: claude"$'\n'"Session-Id: s"$'\n'"Human-Only: true"
+says "Human-Only: true beside" "mixed provenance is refused as such"
+GIT_AUTHOR_EMAIL=$claude msg 1 "Human-Only: true beside lower-case agent trailers" \
+	"feat(x): a"$'\n\n'"Stack: m"$'\n'"assisted-by: claude"$'\n'"session-id: s"$'\n'"Human-Only: true"
+says "Human-Only: true beside" "lower-case keys are the same trailers"
+GIT_AUTHOR_EMAIL=$claude msg 1 "the same, in a block with prose git reads" \
+	"feat(x): a"$'\n\n'"$sob"$'\n'"Stack: m"$'\n'"assisted-by: claude"$'\n'"session-id: s"$'\n'"Human-Only: true"
+says "Human-Only: true beside" "the prose line does not hide the block"
+# One Stack: trailer, and a valid one (finding 4).
+msg 1 "a second Stack: trailer with an invalid value" \
+	"feat(x): a"$'\n\n'"Stack: m"$'\n'"Stack: INVALID"$'\n'"Human-Only: true"
+says "Stack:" "the second Stack: is judged"
+msg 1 "the same Stack: trailer twice" \
+	"feat(x): a"$'\n\n'"Stack: m"$'\n'"Stack: m"$'\n'"Human-Only: true"
+says "one 'Stack:' trailer" "a repeated Stack: is refused"
+msg 1 "a second Stack: trailer with a lower-case key" \
+	"feat(x): a"$'\n\n'"Stack: m"$'\n'"stack: y"$'\n'"Human-Only: true"
+says "one 'Stack:' trailer" "a lower-case key is a Stack: too"
+msg 1 "the same, in a block with prose git reads" \
+	"feat(x): a"$'\n\n'"$sob"$'\n'"Stack: m"$'\n'"stack: y"$'\n'"Human-Only: true"
+says "one 'Stack:' trailer" "the prose line does not hide the block"
+msg 1 "an empty Stack: trailer" "feat(x): a"$'\n\n'"Stack:"$'\n'"Human-Only: true"
+says "must match" "an empty Stack: value is refused"
+# The header: a scope is required, and '!' goes with a BREAKING-CHANGE trailer and only with
+# one (finding 5).
+msg 1 "a header without a scope" "feat: omit the scope"$'\n\n'"$trail"
+says "has no scope" "the missing scope is refused"
+msg 1 "'!' without a BREAKING-CHANGE trailer" "feat(x)!: change the interface"$'\n\n'"$trail"
+says "BREAKING-CHANGE" "the refusal names the trailer"
+msg 1 "a BREAKING-CHANGE trailer without '!'" \
+	"feat(x): change the interface"$'\n\n'"Stack: m"$'\n'"BREAKING-CHANGE: x goes"$'\n'"Human-Only: true"
+says "BREAKING-CHANGE" "the refusal names the trailer"
+msg 1 "'!' with an empty BREAKING-CHANGE trailer" \
+	"feat(x)!: change the interface"$'\n\n'"Stack: m"$'\n'"BREAKING-CHANGE:"$'\n'"Human-Only: true"
+says "BREAKING-CHANGE" "an empty trailer is no description"
+msg 0 "'!' with a BREAKING-CHANGE trailer" \
+	"feat(x)!: change the interface"$'\n\n'"Stack: m"$'\n'"BREAKING-CHANGE: x goes"$'\n'"Human-Only: true"
+
+# One source of truth (.githooks/commit-rules): the type list and the scope class are written
+# once. A second copy in a consumer or in the docs is how the three drift apart.
+for f in .githooks/commit-msg .githooks/prepare-commit-msg .harness/scripts/acommit.sh; do
+	[ -e "$f" ] || continue
+	total=$((total + 1))
+	if grep -Eqw 'refactor|a-z0-9/\._-' "$f"; then
+		fails=$((fails + 1))
+		echo "self-test: $f holds its own copy of the type list or the scope class; read it from .githooks/commit-rules" >&2
+	fi
+done
+total=$((total + 1))
+if grep -Eqw 'refactor|a-z0-9/\._-' "$root/.agents/COMMITS.md"; then
+	fails=$((fails + 1))
+	echo "self-test: .agents/COMMITS.md repeats the type list or the scope class; cite .githooks/commit-rules" >&2
+fi
+
+
+
+
+
+
+
+
+
+
+
+
+same() { # same <description> <expected> <actual>
+	total=$((total + 1))
+	[ "$2" = "$3" ] || {
+		fails=$((fails + 1))
+		echo "self-test: $1:" >&2
+		printf '%s\n' "--- want" "$2" "--- got" "$3" | sed 's/^/    /' >&2
+	}
+}
+# ---- commit-msg and prepare-commit-msg, through git itself --------------------------------
+# A real `git commit` in the throwaway clone, with GIT_EDITOR a script that plays the person:
+# it writes ED_MSG in place of the message in the file git prepared and keeps git's comment
+# lines (when there is none: ED_SED edits the file, as -e -F needs), and appends ED_TAIL. ED_ALL replaces
+# the file with that text instead; ED_COPY saves what the editor was shown, ED_KEEP leaves it.
+export FPL_ATOMIC_GATE=off
+ed="$tmp/editor"
+cat >"$ed" <<'ED'
+#!/bin/sh
+[ -z "${ED_COPY:-}" ] || cp "$1" "$ED_COPY"
+[ -z "${ED_KEEP:-}" ] || exit 0
+[ -z "${ED_ALL:-}" ] || { printf '%s\n' "$ED_ALL" >"$1"; exit 0; }
+{
+	if [ -n "${ED_MSG:-}" ]; then
+		printf '%s\n' "$ED_MSG"
+		grep -E '^[#;]' "$1" || true
+	else
+		sed -e "${ED_SED:-}" "$1"
+	fi
+	printf '%s' "${ED_TAIL:-}"
+} >"$1.new" &&
+	mv "$1.new" "$1"
+ED
+chmod +x "$ed"
+export GIT_EDITOR="$ed"
+ok=$'feat(x): fine\n\nStack: t\nHuman-Only: true'
+long="$(overlong "# Your branch is ahead of 'origin/main' by 2 commits, and this comment line is far too long")"
+stored() { git log -1 --format=%B; }
+git switch -q -c agent/claude/stack/t main
+
+# Cleanup: git applies it after the hook, so the hook judges the message as git will store it.
+# Everything git adds for the person (its status block, as plain comment lines) is gone from the
+# stored message and must not be judged: a long '# Your branch is ahead of ...' line refused
+# a message the owner had fixed (git commit -e -F COMMIT_EDITMSG).
+gate 0 "an edited message with a long comment line below it (default cleanup strips)" \
+	env ED_MSG="$ok" ED_TAIL="$long"$'\n' git commit -q --allow-empty
+total=$((total + 1)); stored | grep -q '^# ' && { fails=$((fails + 1)); echo "self-test: the stored message holds a comment line" >&2; }
+gate 0 "an amend with a long comment line below the message" \
+	env ED_MSG="" ED_TAIL="$long"$'\n' git commit -q --allow-empty --amend
+gate 1 "a refused message, so that COMMIT_EDITMSG holds it" \
+	env ED_MSG=$'docs(x): bad\n\nbody\n\nStack: t' ED_TAIL="$long"$'\n' git commit -q --allow-empty
+gate 0 "the refused message reused with -e -F, its comment block long, the header fixed" \
+	env ED_SED='1s/.*/feat(x): fixed/;/^Stack: t$/a\
+Human-Only: true' git commit -q --allow-empty -e -F "$(git rev-parse --git-path COMMIT_EDITMSG)"
+
+# Where git does not strip, the line stays in the commit, and is judged.
+printf '%s\n\n%s\n\nStack: t\nHuman-Only: true\n' 'feat(x): fine' "$long" >"$tmp/with-comment"
+gate 1 "a long comment line in a message given with -F, which git keeps" \
+	git commit -q --allow-empty -F "$tmp/with-comment"
+says "body line 3 is" "the refusal names the line"
+gate 1 "the same message edited, under commit.cleanup=whitespace, which keeps comments" \
+	env ED_MSG="$ok" ED_TAIL="$long"$'\n' git -c commit.cleanup=whitespace commit -q --allow-empty
+gate 0 "the same message with -F, under commit.cleanup=strip, which strips without an editor" \
+	git -c commit.cleanup=strip commit -q --allow-empty -F "$tmp/with-comment"
+# Scissors: cut below the line when an editor was used, whitespace cleanup otherwise.
+sc='# ------------------------ >8 ------------------------'
+printf '%s\n\n%s\n%s\n\nStack: t\nHuman-Only: true\n' 'feat(x): fine' "$sc" "$long" >"$tmp/below-scissors"
+printf '%s\n\nStack: t\nHuman-Only: true\n\n%s\n%s\n' 'feat(x): fine' "$sc" "$long" >"$tmp/below-scissors2"
+gate 0 "text below the scissors line, edited, under commit.cleanup=scissors" \
+	env ED_MSG="$ok" ED_TAIL=$'\n'"$sc"$'\n'"$long"$'\n' git -c commit.cleanup=scissors commit -q --allow-empty
+gate 1 "text below the scissors line, with -F, under commit.cleanup=scissors: kept" \
+	git -c commit.cleanup=scissors commit -q --allow-empty -F "$tmp/below-scissors2"
+# The comment character: core.commentChar, and 'auto' (git picks one, the file shows which).
+gate 0 "a long ';' comment line, edited, under core.commentChar=;" \
+	env ED_MSG="$ok" ED_TAIL="${long/#\#/;}"$'\n' git -c core.commentChar=';' commit -q --allow-empty
+gate 1 "a long '#' line, edited, under core.commentChar=;: not a comment, kept" \
+	env ED_MSG="$ok" ED_TAIL=$'\n'"$long"$'\n' git -c core.commentChar=';' commit -q --allow-empty
+# Under 'auto' git picks the character before the editor opens and tells no hook; the message
+# as it comes back cannot show which, since a line the person wrote may start with any of them.
+# A guess from the last line took a person's ';' line for a comment and judged a message git
+# stores with it (GPT review of these branches, finding 9). Nothing is taken for a comment then.
+gate 0 "a long comment line, edited, under core.commentChar=auto: prepare-commit-msg kept git's pick" \
+	env ED_MSG="$ok" ED_TAIL="$long"$'\n' git -c core.commentChar=auto commit -q --allow-empty
+printf '%s\n' "$ok" >"$tmp/ok-msg"
+gate 1 "the same with -e -F, where no hook learns git's pick: the line is judged" \
+	env ED_MSG= ED_TAIL="$long"$'\n' git -c core.commentChar=auto commit -q --allow-empty -e -F "$tmp/ok-msg"
+gate 1 "a person's ';' line last, under core.commentChar=auto: judged, so the trailers are no block" \
+	env ED_MSG=$'docs(hooks): preserve a literal line\n\nStack: t\nHuman-Only: true\n\n; do not remove this user-written line' \
+	git -c core.commentChar=auto -c commit.status=false commit -q --allow-empty
+says "missing 'Assisted-By:'" "the ';' line is judged as the message's last paragraph"
+gate 1 "the same, with -F: git strips nothing under auto without an editor" \
+	git -c core.commentChar=auto commit -q --allow-empty -F "$tmp/with-comment"
+# commit.cleanup=scissors (which .harness/scripts/setup.sh sets) cuts at git's scissors line. Under 'auto' git
+# has picked the character by the time prepare-commit-msg runs, and the status block it appended
+# shows which: for -e -F and an amend too, where no template is written (the pick is recorded
+# all the same). Without it the hook judged the text git cuts away (CodeRabbit on #150).
+gate 0 "text below git's scissors line, -e -F, under commit.cleanup=scissors and core.commentChar=auto" \
+	env ED_MSG= ED_TAIL="$long"$'\n' git -c commit.cleanup=scissors -c core.commentChar=auto commit -q --allow-empty -e -F "$tmp/ok-msg"
+same "-e -F, scissors, auto: the message given is stored" "$ok" "$(stored)"
+printf '%s\n\n%s\n\n%s\n%s\n' 'feat(x): fine' '# typed by the person, so git picks another character' 'Stack: t' 'Human-Only: true' >"$tmp/hash-msg"
+gate 0 "the same where the message has a '#' line, so git picks another character" \
+	env ED_MSG= ED_TAIL="${long/#\#/;}"$'\n' git -c commit.cleanup=scissors -c core.commentChar=auto commit -q --allow-empty -e -F "$tmp/hash-msg"
+same "-e -F, scissors, auto, a '#' line: the message given is stored" "$(cat "$tmp/hash-msg")" "$(stored)"
+gate 0 "an amend, the same" \
+	env ED_MSG= ED_TAIL="$long"$'\n' git -c commit.cleanup=scissors -c core.commentChar=auto commit -q --allow-empty --amend
+# A scissors line the person typed is git's too when it is made of the character git picked: git
+# cuts at the first such line (measured, git 2.54). One of another character is text, and kept.
+printf '%s\n\n%s\n%s\n\nStack: t\nHuman-Only: true\n' 'feat(x): fine' "${sc/#\#/;}" "$long" >"$tmp/semi-below"
+gate 1 "a scissors line the person typed in git's own character, -e -F: git cuts there" \
+	git -c commit.cleanup=scissors -c core.commentChar=auto commit -q --allow-empty -e -F "$tmp/below-scissors"
+says "missing 'Assisted-By:'" "what is left above the typed scissors line is what is judged"
+gate 1 "a typed scissors line in another character, -e -F: not git's, so the text is kept" \
+	git -c commit.cleanup=scissors -c core.commentChar=auto commit -q --allow-empty -e -F "$tmp/semi-below"
+says "body line" "the line below the typed ';' scissors line is judged"
+# A scissors line the person typed shows git's pick only where git wrote a status block below it,
+# and git writes none when no editor runs (-F, -m, -C: GIT_EDITOR=: for the hook), nor under
+# --no-status, which reaches no hook. The text below a typed scissors line is the person's then,
+# and git, which picked '#', stores it: the hook took it for the status block and stripped it
+# (a cross-family review of #150). The pick is read from a scissors line only where git writes
+# one into the status block, commit.cleanup=scissors, or from the diff of -v.
+printf '%s\n\n%s\n%s\n\n%s\n%s\n' 'feat(x): fine' 'Stack: t' 'Human-Only: true' \
+	"${sc/#\#/;}" "${long/#\#/;}" >"$tmp/semi-tail"
+gate 1 "a typed ';' scissors line and a long ';' line, -F without an editor, auto, strip: git stores them" \
+	git -c core.commentChar=auto -c commit.cleanup=strip commit -q --allow-empty -F "$tmp/semi-tail"
+says "body line" "the long ';' line git stores is judged (-F)"
+gate 1 "the same with -e -F --no-status, where git writes no status block" \
+	env ED_MSG= git -c core.commentChar=auto -c commit.cleanup=strip commit -q --allow-empty --no-status -e -F "$tmp/semi-tail"
+says "body line" "the long ';' line git stores is judged (-e -F --no-status)"
+# Under commit.cleanup=scissors, --no-status and an editor, the file git shows holds nothing a hook
+# can tell from the person's own text, so this one is left to commit-lint, which reads the
+# message as stored. The same holds for a scissors line and a quoted diff the person typed, with
+# commit.verbose=false: no -v, so git cuts nowhere.
+env ED_MSG= git -c core.hooksPath=/dev/null -c core.commentChar=auto -c commit.cleanup=scissors \
+	commit -q --allow-empty --no-status -e -F "$tmp/semi-tail"
+gate 1 "commit-lint on a typed ';' scissors line git did not cut at (--no-status, scissors, auto)" \
+	.harness/scripts/commit-lint.sh -b agent/claude/stack/t HEAD^..HEAD
+says "[body-width]" "commit-lint judges the ';' line git stored"
+git reset -q --hard HEAD^
+printf '%s\n\n%s\n%s\n\n%s\ndiff --git a/x b/x\n%s\n' 'feat(x): fine' 'Stack: t' 'Human-Only: true' "$sc" \
+	"$(overlong "a line typed below a quoted diff, which git stores as it is")" >"$tmp/hash-tail"
+gate 1 "a typed scissors line and a quoted diff, -F without an editor, commit.verbose=false" \
+	git -c commit.cleanup=strip -c commit.verbose=false commit -q --allow-empty -F "$tmp/hash-tail"
+says "missing 'Assisted-By:'" "the quoted diff git stores follows the trailers, so they are no block (-F)"
+env ED_MSG= ED_SED= git -c core.hooksPath=/dev/null -c commit.cleanup=strip -c commit.verbose=false \
+	commit -q --allow-empty --no-status -e -F "$tmp/hash-tail"
+gate 1 "commit-lint on a typed scissors line and a quoted diff git did not cut at (--no-status)" \
+	.harness/scripts/commit-lint.sh -b agent/claude/stack/t HEAD^..HEAD
+says "[provenance-assisted]" "commit-lint reads the trailers where git does, above the quoted diff it stored"
+git reset -q --hard HEAD^
+# With -v the pick is still read, from git's scissors line above its diff, under any cleanup.
+lf="a file name with spaces that is long enough to pass the seventy-two column limit.txt"
+base="$(git rev-parse HEAD)"
+: >"$lf"
+git add "$lf"
+gate 0 "-v -e -F, auto, strip: git's status block is read for its pick, so its long 'new file:' line is not judged" \
+	env ED_MSG= ED_SED= git -c core.commentChar=auto -c commit.cleanup=strip commit -q -v -e -F "$tmp/ok-msg"
+git reset -q --hard "$base"
+rm -f "$lf"
+# The same separators, set for one command: git hands them to the hook (GIT_CONFIG_PARAMETERS).
+gate 0 "a valid message, committed under git -c trailer.separators='='" \
+	git -c trailer.separators='=' commit -q --allow-empty -F "$tmp/ok-msg"
+# core.commentString (git 2.45 on) sets the same prefix as core.commentChar: the two are
+# aliases, the one set last wins, and it may be more than one character. git skips a comment line
+# after the trailer block, so the scan for the block must skip it too, or the block it finds is
+# the comment's paragraph and a long trailer is judged as body text (Codex review of #138: the
+# hook read core.commentChar alone). With -F git keeps the comment line in the commit.
+# A git before 2.45 ignores core.commentString: it keeps a '//' line, edited or not, and reads
+# no trailer block above one, so the hook must not honour it there (Codex review of #138, round
+# 2: under git 2.44.2 a long '//' line, edited, passed the hook and was stored). Whether this git
+# reads it is asked of git itself, hooks off, by the line it keeps: an oracle apart from the
+# hook's own probe. Where it does not, every case below is refused, by git's own reading.
+env ED_MSG="$ok" ED_TAIL=$'// a comment line\n' \
+	git -c core.hooksPath=/dev/null -c core.commentString=// commit -q --allow-empty
+cs=0 # the exit the cases git reads under core.commentString want
+if stored | grep -q '^// a comment line$'; then cs=1; fi
+git reset -q --hard HEAD^
+total=$((total + 1))
+[ "$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.commentString GIT_CONFIG_VALUE_0=// bash -c \
+	'. .githooks/commit-rules && if commit_comment_string_known; then echo 0; else echo 1; fi')" = "$cs" ] ||
+	{ fails=$((fails + 1)); echo "self-test: commit-rules reads core.commentString where this git does not, or the reverse" >&2; }
+cotrailer="$(overlong "Co-Authored-By: A Person <a.person@example.invalid>")"
+printf '%s\n\n%s\n%s\n%s\n\n%s\n' 'feat(x): fine' 'Stack: t' 'Human-Only: true' "$cotrailer" \
+	'// a note after the trailers' >"$tmp/slash-comment"
+gate "$cs" "a '//' line after a long trailer, under core.commentString=//" \
+	git -c core.commentString=// commit -q --allow-empty -F "$tmp/slash-comment"
+gate "$cs" "the same under core.commentChar=; then core.commentString=//: the last set wins" \
+	git -c core.commentChar=';' -c core.commentString=// commit -q --allow-empty -F "$tmp/slash-comment"
+gate 1 "the same under core.commentString=// then core.commentChar=;: the '//' line is text" \
+	git -c core.commentString=// -c core.commentChar=';' commit -q --allow-empty -F "$tmp/slash-comment"
+says "body line" "the trailers above a paragraph of text are no block, so the long one is judged"
+gate "$cs" "a long '//' comment line, edited, under core.commentString=//" \
+	env ED_MSG="$ok" ED_TAIL="//${long#\#}"$'\n' git -c core.commentString=// commit -q --allow-empty
+# git commit -v: the diff below the scissors line is git's, and long lines of it are no fault.
+printf '%s\n' "$(overlong "x$(printf '%0*d' "$COMMIT_BODY_MAX" 0) with a space")" >wide.txt
+git add wide.txt
+gate 0 "git commit -v over a staged diff with a long line" \
+	env ED_MSG="$ok" git commit -q -v
+# The diff left in the file, as an editor shows it: cut where git cuts, in every mode, under
+# -vv, and in an amend and with -e -F, sources for which prepare-commit-msg writes no template
+# but records the scissors line all the same (commit_cut_state).
+vfix='1s/.*/feat(x): fine/'
+git reset -q --soft HEAD^
+for mode in strip whitespace verbatim; do
+	gate 0 "git commit -v, the diff with its long line left in, under commit.cleanup=$mode" \
+		env ED_SED="$vfix" git -c commit.cleanup="$mode" commit -q -v
+	git reset -q --soft HEAD^
+done
+printf '%s\n' "$(overlong "y$(printf '%0*d' "$COMMIT_BODY_MAX" 0) with a space")" >>wide.txt
+gate 0 "git commit -vv, a long line in the unstaged diff too" env ED_SED="$vfix" git commit -q -vv
+gate 0 "an amend with -v, the diff left in" env ED_SED= git commit -q --amend -v
+git reset -q --soft HEAD^
+gate 0 "-v -e -F, the diff left in" env ED_MSG= ED_SED= git commit -q -v -e -F "$tmp/ok-msg"
+git reset -q --hard HEAD
+# A scissors line and a quoted diff the person typed, without -v: git cuts nowhere and stores
+# them, so the text below them is judged. A guess from that text took it for the diff of -v and
+# let a long line past the hook (Codex review of #138, round 2).
+hw="$(overlong "a line typed below a quoted diff, which git stores as it is") and more"
+typed=$'\n'"$sc"$'\ndiff --git a/x b/x\n'"$hw"$'\n'
+for mode in strip whitespace verbatim; do
+	gate 1 "a typed scissors line and a quoted diff, edited, under commit.cleanup=$mode" \
+		env ED_MSG="$ok" ED_TAIL="$typed" git -c commit.cleanup="$mode" commit -q --allow-empty
+	says "body line" "the line below the quoted diff is judged ($mode)"
+done
+# The same text in a message given to git with -e -F: git's status block follows it, so it is
+# not the diff of -v, and with commit.status=false git writes no diff for -v at all.
+printf '%s\n\n%s\n%s\n%s' 'feat(x): fine' 'Stack: t' 'Human-Only: true' "$typed" >"$tmp/typed-msg"
+for st in true false; do
+	gate 1 "a given message ending in a scissors line and a quoted diff, -e -F, commit.status=$st" \
+		env ED_MSG= ED_SED= git -c commit.status="$st" commit -q --allow-empty -e -F "$tmp/typed-msg"
+	says "body line" "the line below the quoted diff is judged (-e -F, commit.status=$st)"
+done
+# What git stores is what commit-lint, the push gate, judges: the same message, committed with
+# the hooks off, is refused there as well.
+env ED_MSG="$ok" ED_TAIL="$typed" git -c core.hooksPath=/dev/null commit -q --allow-empty
+gate 1 "commit-lint on that message as git stored it" .harness/scripts/commit-lint.sh -b agent/claude/stack/t HEAD^..HEAD
+says "[body-width]" "commit-lint judges the line below the quoted diff"
+git reset -q --hard HEAD^
+# An editor of ':' leaves nothing to tell it from -m: judged as unedited, the strict reading.
+printf '%s\n\n%s\n\nStack: t\nHuman-Only: true\n' 'feat(x): fine' "$long" >"$tmp/tmpl"
+gate 1 "an editor that is ':' (as -m runs the hook): the comment line is judged" \
+	env GIT_EDITOR=: git commit -q --allow-empty -t "$tmp/tmpl"
+
+# A refusal names its rule, the part that fails, and what to do about it. Judged in hook mode
+# (the message of the commit in the making) and, where the rule differs, in lint mode (a commit
+# that exists, as commit-lint runs it).
+refuse() { # refuse <hook|lint> <rule> <text> <message>
+	printf '%s\n' "$4" >"$tmp/m"
+	if [ "$1" = lint ]; then
+		gate 1 "$2 ($1)" env FPL_LINT_COMMIT="$(git rev-parse HEAD)" .githooks/commit-msg "$tmp/m"
+	else
+		gate 1 "$2 ($1)" .githooks/commit-msg "$tmp/m"
+	fi
+	says "[$2]" "the refusal names its rule"
+	says "$3" "the refusal names the failing part"
+	says "remedy:" "the refusal says what to do"
+	if [ "$1" = hook ]; then
+		says "git commit -e -F" "a refusal in hook mode says how to reuse the message"
+	else
+		never "git commit -e -F" "a refusal in lint mode has no message to reuse"
+	fi
+}
+tr="Stack: t"$'\n'"Human-Only: true"
+# The over-long header and body are built from the limits sourced at the top.
+long_header="docs(x): $(printf 'w%.0s' $(seq 1 $((COMMIT_HEADER_MAX - 8))))"
+# a body line is refused only with a space past the limit (an unbreakable token is exempt)
+words=$((COMMIT_BODY_MAX / 5 + 1))
+long_body="$(printf 'word %.0s' $(seq 1 "$words"))x"
+# The limits fail closed. .githooks/commit-rules reads them from a generated file, and a file that
+# is missing, empty, comment-only or malformed must stop its caller with the rule id and the
+# remedy, never leave a limit unset, inherited from the environment or not a number (a test
+# against COMMIT_HEADER_MAX=oops is an error that skips the refusal). <contents> is the whole
+# commit-limits file, or MISSING for none; the rest is environment for the run, which a file
+# that sets nothing must not inherit.
+limits_refused() { # limits_refused <description> <contents|MISSING> [NAME=value...]
+	local what="$1" body="$2" rc=0
+	shift 2
+	total=$((total + 1))
+	rm -rf "$tmp/lim"
+	mkdir "$tmp/lim"
+	cp .githooks/commit-rules "$tmp/lim/"
+	[ "$body" = MISSING ] || printf '%s\n' "$body" >"$tmp/lim/commit-limits"
+	env "$@" bash -c '. "$1"; echo "ran on with ${COMMIT_HEADER_MAX-} ${COMMIT_BODY_MAX-}"' _ "$tmp/lim/commit-rules" \
+		>"$tmp/out" 2>&1 || rc=$?
+	[ "$rc" -ne 0 ] || rc=1
+	[ "$rc" -eq 2 ] || { fails=$((fails + 1)); echo "self-test: $what: exit $rc, want 2" >&2; sed 's/^/    /' "$tmp/out" >&2; }
+	says "[limits-file]" "$what: the refusal names its rule"
+	says "remedy: run nix run .#gen-config" "$what: the refusal says what to do"
+	never "ran on" "$what: the caller went on"
+}
+good=$'COMMIT_HEADER_MAX=72\nCOMMIT_BODY_MAX=72'
+limits_refused "no commit-limits file" MISSING
+limits_refused "no file, limits in the environment" MISSING COMMIT_HEADER_MAX=72 COMMIT_BODY_MAX=72
+limits_refused "an empty file, limits in the environment" "" COMMIT_HEADER_MAX=72 COMMIT_BODY_MAX=72
+limits_refused "a comment-only file" "# generated, and nothing else"
+limits_refused "a non-numeric header limit" $'COMMIT_HEADER_MAX=oops\nCOMMIT_BODY_MAX=72'
+limits_refused "a non-numeric body limit" $'COMMIT_HEADER_MAX=72\nCOMMIT_BODY_MAX=oops'
+limits_refused "an empty header limit" $'COMMIT_HEADER_MAX=\nCOMMIT_BODY_MAX=72'
+limits_refused "a zero body limit" $'COMMIT_HEADER_MAX=72\nCOMMIT_BODY_MAX=0'
+limits_refused "a negative header limit" $'COMMIT_HEADER_MAX=-72\nCOMMIT_BODY_MAX=72'
+limits_refused "a limit with a leading zero, which arithmetic reads as octal" $'COMMIT_HEADER_MAX=072\nCOMMIT_BODY_MAX=72'
+limits_refused "a fractional body limit" $'COMMIT_HEADER_MAX=72\nCOMMIT_BODY_MAX=72.5'
+limits_refused "a missing body limit, one in the environment" "COMMIT_HEADER_MAX=72" COMMIT_BODY_MAX=72
+limits_refused "a missing header limit" "COMMIT_BODY_MAX=72"
+limits_refused "a file that does not parse" $'COMMIT_HEADER_MAX=72\nCOMMIT_BODY_MAX=72 ) ('
+# The control, so that the refusals above are for the file and not for the harness: a good file
+# is sourced, and the limits are the file's, not the environment's.
+total=$((total + 1))
+printf '%s\n' "$good" >"$tmp/lim/commit-limits"
+env COMMIT_HEADER_MAX=1 COMMIT_BODY_MAX=1 bash -c '. "$1"; echo "ran on with ${COMMIT_HEADER_MAX-} ${COMMIT_BODY_MAX-}"' _ "$tmp/lim/commit-rules" \
+	>"$tmp/out" 2>&1 || { fails=$((fails + 1)); echo "self-test: a good commit-limits was refused" >&2; sed 's/^/    /' "$tmp/out" >&2; }
+says "ran on with 72 72" "the limits are the file's, not the environment's"
+# End to end: the hook itself refuses to judge a message by a malformed file. The message is
+# a good one, so a green here would be the hook skipping its length check.
+cp .githooks/commit-limits "$tmp/commit-limits.real"
+printf '%s\n' "COMMIT_HEADER_MAX=oops" "COMMIT_BODY_MAX=72" >.githooks/commit-limits
+printf '%s\n' "docs(x): a" "" "$tr" >"$tmp/m"
+gate 1 "the hook with a malformed commit-limits" .githooks/commit-msg "$tmp/m"
+says "[limits-file]" "the hook names the rule"
+says "remedy: run nix run .#gen-config" "the hook says what to do"
+cp "$tmp/commit-limits.real" .githooks/commit-limits
+gate 0 "the same message with the file restored" .githooks/commit-msg "$tmp/m"
+refuse hook header-shape "header must be '<type>(<scope>): <summary>'" "just some words"
+refuse hook type-unknown "unknown type 'doc': did you mean 'docs'?" "doc(readme): x"$'\n\n'"$tr"
+refuse hook type-unknown "unknown type 'feature': did you mean 'feat'?" "feature(x): y"$'\n\n'"$tr"
+refuse hook type-unknown "unknown type 'wibble'" "wibble(x): y"$'\n\n'"$tr"
+never "did you mean" "a type nothing is near suggests nothing"
+refuse lint type-case "type must be lowercase: Docs -> docs" "Docs(x): y"$'\n\n'"$tr"
+refuse lint scope-case "scope must be lowercase: README -> readme" "docs(README): y"$'\n\n'"$tr"
+refuse hook scope-chars "scope 'a b' may hold only" "docs(a b): y"$'\n\n'"$tr"
+refuse hook scope-chars "scope is empty" "docs(): y"$'\n\n'"$tr"
+refuse hook header-length "header is $((COMMIT_HEADER_MAX + 1)) chars (>$COMMIT_HEADER_MAX)" "$long_header"$'\n\n'"$tr"
+refuse hook summary-case "summary must start lower-case: Upper -> upper" "docs(x): Upper"$'\n\n'"$tr"
+refuse hook summary-period "summary must not end with a period: done." "docs(x): done."$'\n\n'"$tr"
+refuse hook blank-line-2 "line 2 must be blank" "docs(x): a"$'\n'"body"
+refuse hook body-width "body line 3 is $((5 * words + 1)) chars (>$COMMIT_BODY_MAX)" "docs(x): a"$'\n\n'"$long_body"$'\n\n'"$tr"
+refuse hook provenance-assisted "missing 'Assisted-By:'" "docs(x): a"$'\n\n'"Stack: t"
+refuse hook provenance-session "missing 'Session-Id:'" "docs(x): a"$'\n\n'"Stack: t"$'\n'"Assisted-By: claude"
+refuse hook agent-identity-unset "agent identity unset" "docs(x): a"$'\n\n'"Stack: t"$'\n'"Assisted-By: claude"$'\n'"Session-Id: s"
+printf '%s\n' "other@example.invalid" >"$(git rev-parse --git-path agent-identity)"
+refuse hook author-email "author email is 't@example.invalid'" "docs(x): a"$'\n\n'"Stack: t"$'\n'"Assisted-By: claude"$'\n'"Session-Id: s"
+rm -f "$(git rev-parse --git-path agent-identity)"
+refuse hook trailer-order "trailer 'Refs' is out of order" "docs(x): a"$'\n\n'"Stack: t"$'\n'"Refs: x"$'\n'"Human-Only: true"
+refuse hook stack-value "Stack: value 'Bad' must match" "docs(x): a"$'\n\n'"Stack: Bad"$'\n'"Human-Only: true"
+refuse hook stack-missing "on branch agent/claude/stack/t the message needs 'Stack: t'" "docs(x): a"$'\n\n'"Human-Only: true"
+refuse hook stack-many "holds 2 'Stack:' trailers" "docs(x): a"$'\n\n'"Stack: t"$'\n'"Stack: t"$'\n'"Human-Only: true"
+refuse hook scope-missing "the header has no scope" "docs: a"$'\n\n'"$tr"
+refuse hook summary-space "summary must follow ': '" "docs(x):  a"$'\n\n'"$tr"
+refuse hook breaking-trailer "no BREAKING-CHANGE trailer" "docs(x)!: a"$'\n\n'"$tr"
+refuse hook breaking-bang "no '!' in the header" "docs(x): a"$'\n\n'"Stack: t"$'\n'"BREAKING-CHANGE: b"$'\n'"Human-Only: true"
+refuse hook provenance-mixed "Human-Only: true beside" "docs(x): a"$'\n\n'"Stack: t"$'\n'"Assisted-By: claude"$'\n'"Session-Id: s"$'\n'"Human-Only: true"
+mkdir -p 02-docs
+echo spec >02-docs/02.02-spec.md
+git add 02-docs/02.02-spec.md
+refuse hook spec-guard "edits a protected spec file" "docs(x): a"$'\n\n'"$tr"
+git reset -q
+: >Makefile
+git add -f Makefile
+refuse hook policy-guard "changes the gate's policy" "docs(x): a"$'\n\n'"$tr"
+mkdir -p 03-fpl
+: >03-fpl/x.py
+git add -f 03-fpl/x.py
+refuse hook policy-split "may not also change fpl/ or tests/" "docs(x): a [policy]"$'\n\n'"$tr"
+git reset -q
+rm -rf 02-docs/02.02-spec.md Makefile 03-fpl
+git -c core.hooksPath=/dev/null switch -q -c plain-branch
+printf '%s\n' "t@example.invalid" >"$(git rev-parse --git-path agent-identity)"
+refuse hook agent-territory "agent commit on 'plain-branch'" "docs(x): a"$'\n\n'"Assisted-By: claude"$'\n'"Session-Id: s"
+rm -f "$(git rev-parse --git-path agent-identity)"
+git switch -q agent/claude/stack/t
+git -c core.hooksPath=/dev/null branch -q -D plain-branch
+# fixup left in a branch (lint mode only: made now, it is an autosquash to come)
+refuse lint fixup-left "'fixup!' commit left in the branch" "fixup! docs(x): a"
+gate 0 "a fixup in the making is no refusal" .githooks/commit-msg "$tmp/m"
+
+# The reuse remedy, through git: the refused message is still in COMMIT_EDITMSG, whatever the
+# message came from, and the command the refusal prints brings it back into the editor.
+reuse() { # reuse <description> <git commit arguments for the refused attempt>
+	gate 1 "$1: refused" env ED_MSG=$'doc(x): typed\n\nbody line\n\nStack: t\nHuman-Only: true' git commit -q --allow-empty "${@:2}"
+	says "did you mean 'docs'?" "$1: the refusal names the type"
+	# shellcheck disable=SC2016 # the text git prints, not to be expanded
+	says 'git commit -e -F "$(git rev-parse --git-path COMMIT_EDITMSG)"' "$1: the refusal prints the reuse command"
+	local cmd
+	cmd="$(sed -n 's/^ *\(git commit -e -F .*\)$/\1/p' "$tmp/out")"
+	gate 0 "$1: the printed command, with the header fixed" env GIT_EDITOR="$ed" ED_MSG= ED_SED='1s/^doc(/docs(/' sh -c "$cmd --allow-empty -q"
+	total=$((total + 1))
+	[ "$(stored | sed -n '1p;3p')" = $'docs(x): typed\nbody line' ] || {
+		fails=$((fails + 1))
+		echo "self-test: $1: the stored message is not the typed one:" >&2
+		stored | sed 's/^/    /' >&2
+	}
+}
+reuse "a plain commit"
+printf '%s\n' $'doc(x): typed\n\nbody line\n\nStack: t\nHuman-Only: true' >"$tmp/typed"
+GIT_EDITOR=: reuse "a message given with -F" -F "$tmp/typed"
+GIT_EDITOR=: reuse "a message given with -m" -m $'doc(x): typed\n\nbody line\n\nStack: t\nHuman-Only: true'
+
+# Tolerance, counted. Git reads a trailer key without regard to case; this repository writes
+# one spelling. Where a message can be corrected with no doubt about what was meant, the hook
+# corrects it, in the file git commits, and says so, with how often it had to: a reader that
+# tolerates a spelling quietly makes that spelling a standard (RFC 9413). A message that cannot
+# be corrected without a guess is refused. In lint mode nothing can be edited: a key that differs
+# only in case is accepted as that key, so landed history is not refused for case alone.
+logf="$(git rev-parse --git-path commit-msg-tolerated.log)"
+rm -f "$logf"
+canon=$'docs(readme): fine\n\nStack: t\nHuman-Only: true'
+sloppy=$'Docs(README): fine\n\nStack: t\nHuman-only: true'
+gate 0 "a capitalised type, a capitalised scope and a trailer key in the wrong case, edited" \
+	env ED_ALL="$sloppy" git commit -q --allow-empty
+says "wrote 'Docs' as 'docs'" "the scold names the type"
+says "wrote 'README' as 'readme'" "the scold names the scope"
+says "wrote 'Human-only' as 'Human-Only'" "the scold names the key"
+says "1st time" "the scold counts"
+same "the edit sticks in a plain commit" "$canon" "$(stored)"
+same "each tolerance is logged: kind, from, to" $'type\tDocs\tdocs\nscope\tREADME\treadme\ntrailer-key\tHuman-only\tHuman-Only' \
+	"$(cut -f2- "$logf")"
+total=$((total + 1))
+grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+Z	' "$logf" || { fails=$((fails + 1)); echo "self-test: the log line has no date" >&2; }
+gate 0 "a trailer key in the wrong case, with -m" \
+	env GIT_EDITOR=: git commit -q --allow-empty -m $'docs(readme): fine\n\nStack: t\nhuman-only: true'
+says "wrote 'human-only' as 'Human-Only'" "the scold names the key"
+says "2nd time in this clone" "the count of that kind goes up"
+same "the edit sticks with -m" "$canon" "$(stored)"
+printf '%s\n' "$sloppy" >"$tmp/sloppy"
+gate 0 "the same with -F" env GIT_EDITOR=: git commit -q --allow-empty -F "$tmp/sloppy"
+says "3rd time in this clone" "the count of trailer keys is 3"
+same "the edit sticks with -F" "$canon" "$(stored)"
+gate 0 "the same with -e -F" env ED_MSG= git commit -q --allow-empty -e -F "$tmp/sloppy"
+same "the edit sticks with -e -F" "$canon" "$(stored)"
+gate 0 "the same in an amend" env ED_ALL="$sloppy" git commit -q --allow-empty --amend
+same "the edit sticks in an amend" "$canon" "$(stored)"
+gate 0 "the same in an amend with -m" env GIT_EDITOR=: git commit -q --allow-empty --amend -m "$sloppy"
+same "the edit sticks in an amend with -m" "$canon" "$(stored)"
+# git reads 'Key:value', 'Key:<tab>value' and 'Key :value' as the trailer 'Key: value'
+# (find_separator in trailer.c), so the provenance gate passed them, and the key was left in
+# the wrong case: the correction wanted ': ' (Codex review of #138, round 2). Only the key
+# changes; the rest of the line is the person's. A key may open with a digit ('1x'), and git
+# reads it too: the correction counts it, or it falls out of step with git's trailers.
+for k in 'human-only:true' $'human-only:\ttrue' 'human-only :true' $'1x: a\nhuman-only: true'; do
+	l="${k//$'\t'/<tab>}" # the line as the description shows it
+	l="${l//$'\n'/ | }"
+	gate 0 "a trailer key in the wrong case, written '$l', with -m" \
+		env GIT_EDITOR=: git commit -q --allow-empty -m $'docs(readme): fine\n\nStack: t\n'"$k"
+	says "wrote 'human-only' as 'Human-Only'" "the scold names the key written '$l'"
+	same "only the key of '$l' is corrected" \
+		$'docs(readme): fine\n\nStack: t\n'"${k/human-only/Human-Only}" "$(stored)"
+done
+# The block corrected is the one git reads, prose and all: a key in it is a trailer to git.
+sobbed=$'docs(readme): fine\n\nSigned-off-by: t <t@example.invalid>\na line of prose in the block\nStack: t\n'
+gate 0 "a trailer key in the wrong case, in a block with prose git reads" \
+	env GIT_EDITOR=: git commit -q --allow-empty -m "${sobbed}human-only: true"
+same "the edit sticks in that block" "${sobbed}Human-Only: true" "$(stored)"
+# Only what git reads as a trailer is corrected: a comment line is the person's, whatever its
+# words (GPT final round). Git's trailer parser skips a line that opens with the comment prefix, so
+# 'session-id: ...' under core.commentChar=s, or '# assisted-by: ...' under the default, is a comment
+# in the stored message; written as 'Session-Id:' it became a trailer, beside Human-Only.
+for c in "an 's' comment|-c core.commentChar=s|session-id: this is a literal comment" \
+	"a '#' comment|-c core.commentChar=#|# assisted-by: this is a literal comment"; do
+	IFS='|' read -r cname cflag cline <<<"$c"
+	# shellcheck disable=SC2086 # $cflag is a git option and its value, split on purpose
+	gate 0 "$cname line last that looks like a trailer ($cflag), -m" \
+		env GIT_EDITOR=: git $cflag commit -q --allow-empty -m $'docs(x): a comment\n\nStack: t\nHuman-Only: true\n'"$cline"
+	never "wrote" "a comment line is not corrected ($cflag)"
+	same "a comment line last that looks like a trailer is stored as written ($cflag)" \
+		$'docs(x): a comment\n\nStack: t\nHuman-Only: true\n'"$cline" "$(stored)"
+done
+gate 0 "a comment line between trailers, one trailer key in the wrong case" \
+	env GIT_EDITOR=: git commit -q --allow-empty -m $'docs(x): a comment\n\nStack: t\n# session-id: not a trailer\nhuman-only: true'
+says "wrote 'human-only' as 'Human-Only'" "the trailer beside the comment is corrected"
+same "only the trailer is corrected, the comment stays as written" \
+	$'docs(x): a comment\n\nStack: t\n# session-id: not a trailer\nHuman-Only: true' "$(stored)"
+# No guess, no edit: a refused message is left as typed, and nothing is logged.
+before="$(cat "$logf")"
+gate 1 "an unknown type with a key in the wrong case" env ED_ALL=$'doc(x): a\n\nStack: t\nhuman-only: true' git commit -q --allow-empty
+says "did you mean 'docs'?" "the refusal offers the type"
+never "wrote" "a refused message is not corrected"
+same "a refusal leaves the log alone" "$before" "$(cat "$logf")"
+same "a refusal leaves the typed message in COMMIT_EDITMSG" "human-only: true" "$(grep -o 'human-only: true' "$(git rev-parse --git-path COMMIT_EDITMSG)")"
+# A type that is no type in any case, a scope that is none in any case: refused, not guessed.
+refuse hook type-unknown "unknown type 'Doc'" "Doc(x): y"$'\n\n'"$tr"
+refuse hook scope-chars "scope 'READ ME' may hold only" "docs(READ ME): y"$'\n\n'"$tr"
+# Lint mode: nothing to edit, and a key in the wrong case is that key.
+printf '%s\n' $'docs(x): fine\n\nStack: t\nHuman-only: true' >"$tmp/m"
+cp "$tmp/m" "$tmp/m.orig"
+gate 0 "lint mode: a trailer key in the wrong case is accepted" env FPL_LINT_COMMIT="$(git rev-parse HEAD)" .githooks/commit-msg "$tmp/m"
+never "wrote" "lint mode does not scold"
+same "lint mode leaves the message alone" "$(cat "$tmp/m.orig")" "$(cat "$tmp/m")"
+same "lint mode logs nothing" "$before" "$(cat "$logf")"
+# acommit's own messages are canonical: the hook has nothing to correct.
+"$root/.harness/scripts/agent-identity.sh" set t@example.invalid >/dev/null
+printf -v want '%s' "$(.harness/scripts/acommit.sh -n -M "Claude Test 1" -S sess -t feat -s x -m "made by acommit" </dev/null | sed '1d;/^--- command ---$/,$d')"
+gate 0 "a commit made by .harness/scripts/acommit.sh" sh -c '.harness/scripts/acommit.sh "$@" </dev/null' acommit -M "Claude Test 1" -S sess -t feat -s x -m "made by acommit" -- --allow-empty -q
+never "wrote" "acommit's message needs no correction"
+same "acommit's message is stored as it was made" "$want" "$(stored)"
+same "acommit logs no tolerance" "$before" "$(cat "$logf")"
+rm -f "$(git rev-parse --git-path agent-identity)"
+# A correction touches the header and the trailer keys it corrects, in the file git commits,
+# and nothing else: the body stays as the person wrote it. A --cleanup option on the command
+# line keeps what the config's reading strips, and a correction that wrote back the message as
+# judged dropped a '#' line git was told to keep (GPT review of these branches, finding 9).
+gate 0 "a correction under --cleanup=whitespace, with a '#' line in the body" \
+	env ED_ALL=$'Docs(x): keep\n\n# a line the person wrote\n\nStack: t\nHuman-only: true' \
+	git commit -q --allow-empty --cleanup=whitespace
+same "the correction leaves the body as written" \
+	$'docs(x): keep\n\n# a line the person wrote\n\nStack: t\nHuman-Only: true' "$(stored)"
+# One pass over the trailer keys: each key not known cost a process for every known key, and
+# 100 of them took seconds (finding 10).
+keys="$(for i in $(seq 1 400); do printf 'X-Key-%d: v\n' "$i"; done)"
+SECONDS=0
+gate 0 "a message with 400 trailers of keys not known" env GIT_EDITOR=: git commit -q --allow-empty \
+	-m "docs(x): many keys"$'\n\n'"Stack: t"$'\n'"Human-Only: true"$'\n'"$keys"
+took=$SECONDS
+total=$((total + 1))
+[ "$took" -le 4 ] || { fails=$((fails + 1)); echo "self-test: 400 trailer keys not known took ${took}s, want 4 or less" >&2; }
+
+# The template: git opens an editor on an empty message, and the hook fills it with the header
+# skeleton, the trailers that can be known (Stack: from the branch as acommit derives it,
+# Human-Only: where no agent identity is set) and the rules, as comments git strips.
+seen="$tmp/seen"
+want_stack="$(.harness/scripts/acommit.sh -n -H -t feat -s x -m x </dev/null | sed -n 's/^Stack: /Stack: /p')"
+gate 1 "a message left as the skeleton is refused" env ED_COPY="$seen" ED_KEEP=1 git commit -q --allow-empty
+says "[skeleton]" "the refusal names its rule"
+says "<type>(<scope>): <summary>" "the refusal shows the skeleton"
+says "remedy:" "the refusal says what to do"
+same "the header the editor is shown is the skeleton" "<type>(<scope>): <summary>" "$(sed -n 1p "$seen")"
+same "the trailers it is shown are the branch's stack and a human commit" $'Stack: t\nHuman-Only: true' "$(grep -E '^(Stack|Human-Only):' "$seen")"
+same "the stack is the one acommit derives" "$want_stack" "$(grep '^Stack:' "$seen")"
+for want in "feat fix docs refactor perf test build ci chore revert" "[a-z0-9/._-]" "lower-case" "at most $COMMIT_HEADER_MAX characters" "at most $COMMIT_BODY_MAX columns" ".agents/COMMITS.md"; do
+	total=$((total + 1))
+	grep -Fq -- "$want" "$seen" || { fails=$((fails + 1)); echo "self-test: the template lacks '$want'" >&2; }
+done
+total=$((total + 1))
+rules="$(grep -c '^# ' "$seen" || true)"
+[ "$rules" -ge 6 ] || { fails=$((fails + 1)); echo "self-test: the template explains the rules in $rules comment lines, want 6 or more" >&2; }
+fixed='1s/.*/feat(x): templated/'
+stored_want=$'feat(x): templated\n\nStack: t\nHuman-Only: true'
+gate 0 "the template, with its header filled in, commits" env ED_SED="$fixed" git commit -q --allow-empty
+same "the rules are not in the commit" "$stored_want" "$(stored)"
+gate 0 "the same under commit.cleanup=scissors, where the rules sit below the scissors line" \
+	env ED_COPY="$seen" ED_SED="$fixed" git -c commit.cleanup=scissors commit -q --allow-empty
+same "scissors: the rules are not in the commit" "$stored_want" "$(stored)"
+total=$((total + 1))
+# The rules are in the template, and below the scissors line, where git drops them.
+awk '/>8/ { cut = 1 } /feat fix docs/ { if (cut) below = 1; else bad = 1 } END { exit bad || !below }' "$seen" ||
+	{ fails=$((fails + 1)); echo "self-test: scissors: the rules are missing, or sit above the scissors line where git keeps them" >&2; }
+gate 0 "the same with git commit -v" env ED_SED="$fixed" git commit -q -v --allow-empty
+same "-v: the rules are not in the commit" "$stored_want" "$(stored)"
+# git commit -v over a staged change: the diff below the scissors line is no message, so the
+# skeleton and the rules are still written, above it and below git's own comment lines.
+printf 'staged\n' >staged.txt
+git add staged.txt
+rm -f "$seen"
+gate 1 "git commit -v over a staged change: the skeleton is refused" \
+	env ED_COPY="$seen" ED_KEEP=1 git commit -q -v
+same "-v over a staged change: the editor is shown the skeleton" "<type>(<scope>): <summary>" "$(sed -n 1p "$seen" 2>/dev/null)"
+total=$((total + 1))
+awk '/>8/ { cut = 1 } /feat fix docs/ { if (cut) below = 1 } /^diff --git/ { if (!below) bad = 1 } END { exit bad || !below }' "$seen" 2>/dev/null ||
+	{ fails=$((fails + 1)); echo "self-test: -v over a staged change: the rules are missing, or not between the scissors line and the diff" >&2; }
+gate 0 "the same with its header filled in" env ED_SED="$fixed" git commit -q -v
+same "-v over a staged change: the rules are not in the commit" "$stored_want" "$(stored)"
+gate 0 "the same under core.commentChar=;" env ED_COPY="$seen" ED_SED="$fixed" git -c core.commentChar=';' commit -q --allow-empty
+same "commentChar: the rules are not in the commit" "$stored_want" "$(stored)"
+total=$((total + 1))
+grep -q '^; .*feat fix docs' "$seen" || { fails=$((fails + 1)); echo "self-test: the rules are not written with the comment character" >&2; }
+gate 0 "the same under core.commentChar=auto" env ED_COPY="$seen" ED_SED="$fixed" git -c core.commentChar=auto commit -q --allow-empty
+same "auto: the rules are not in the commit" "$stored_want" "$(stored)"
+# Where comments are kept (whitespace, verbatim) the rules cannot be hidden, so they are not written.
+gate 1 "under commit.cleanup=whitespace the skeleton is refused, with no rules written into it" \
+	env ED_COPY="$seen" ED_KEEP=1 git -c commit.cleanup=whitespace commit -q --allow-empty
+total=$((total + 1))
+! grep -Fq "feat fix docs" "$seen" || { fails=$((fails + 1)); echo "self-test: whitespace cleanup: the rules were written where git keeps comments" >&2; }
+# A --cleanup option on the command line reaches neither hook: the rules are written, as for
+# the config's strip, and commit-msg takes them out again before git stores what it keeps.
+for mode in whitespace verbatim; do
+	gate 0 "the template filled in, with --cleanup=$mode on the command line" \
+		env ED_SED="$fixed" git commit -q --allow-empty --cleanup="$mode"
+	total=$((total + 1))
+	! stored | grep -Fq "Commit message rules" || { fails=$((fails + 1)); echo "self-test: --cleanup=$mode: the rules reached the commit" >&2; }
+	same "--cleanup=$mode: the header and trailers are stored" $'feat(x): templated\n\nStack: t\nHuman-Only: true' "$(stored | sed -n '1,2p;/^Stack:/p;/^Human-Only:/p')"
+done
+# The rules are taken out by the block prepare-commit-msg wrote and recorded for this commit,
+# its marker line last, never by their text: a person who quotes them keeps the quotation
+# (GPT review of these branches, finding 8).
+quoted="$(. .githooks/commit-rules && commit_rules_text | sed 's/^/> /')"
+printf '%s\n' "docs(x): quote the rules" "" '```' "$quoted" '```' "" "Stack: t" "Human-Only: true" >"$tmp/quote-msg"
+gate 0 "a message given with -F that quotes the rules" env GIT_EDITOR=: git commit -q --allow-empty -F "$tmp/quote-msg"
+same "-F: the quotation of the rules is stored" "$(cat "$tmp/quote-msg")" "$(stored)"
+gate 0 "the rules quoted in an edited template, with --cleanup=whitespace" \
+	env ED_MSG="$(cat "$tmp/quote-msg")" \
+	git commit -q --allow-empty --cleanup=whitespace
+total=$((total + 1))
+stored | grep -Fq "> Commit message rules" || { fails=$((fails + 1)); echo "self-test: the quoted rules were taken out of an edited message" >&2; }
+total=$((total + 1))
+! stored | grep -q "^# Commit message rules" || { fails=$((fails + 1)); echo "self-test: the template's rules reached the commit beside a quotation" >&2; }
+# An agent identity set: no Human-Only line to claim. A branch with no stack: no Stack line.
+printf '%s\n' t@example.invalid >"$(git rev-parse --git-path agent-identity)"
+gate 1 "the skeleton with an agent identity set" env ED_COPY="$seen" ED_KEEP=1 git commit -q --allow-empty
+same "no Human-Only line where an agent identity is set" "Stack: t" "$(grep -E '^(Stack|Human-Only):' "$seen")"
+rm -f "$(git rev-parse --git-path agent-identity)"
+git -c core.hooksPath=/dev/null switch -q -c plain-branch
+gate 1 "the skeleton on a branch with no stack" env ED_COPY="$seen" ED_KEEP=1 git commit -q --allow-empty
+same "no Stack line on a branch that has none" "Human-Only: true" "$(grep -E '^(Stack|Human-Only):' "$seen")"
+git switch -q agent/claude/stack/t
+git -c core.hooksPath=/dev/null branch -q -D plain-branch
+# Not an empty message: an amend, a template with text, -m, -F.
+rm -f "$seen"
+gate 0 "a human commit to amend" env GIT_EDITOR=: git commit -q --allow-empty -m "$ok"
+gate 0 "an amend is not given the skeleton" env ED_COPY="$seen" ED_KEEP=1 git commit -q --allow-empty --amend
+total=$((total + 1))
+! grep -Fq "<summary>" "$seen" || { fails=$((fails + 1)); echo "self-test: an amend was given the skeleton" >&2; }
+printf '%s\n' $'feat(x): from a template\n\nStack: t\nHuman-Only: true' >"$tmp/tmpl2"
+gate 0 "a template with text is left as it is" env ED_COPY="$seen" ED_SED='1s/template/templ/' git commit -q --allow-empty -t "$tmp/tmpl2"
+same "the template's header is what the editor is shown" "feat(x): from a template" "$(sed -n 1p "$seen")"
+# The skeleton, or one of its three placeholders in its own place, is no message (lint mode too).
+refuse hook skeleton "the header is still the skeleton" "<type>(<scope>): <summary>"$'\n\n'"$tr"
+refuse hook skeleton "the header is still the skeleton" "feat(x): <summary>"$'\n\n'"$tr"
+refuse lint skeleton "the header is still the skeleton" "<type>(<scope>): <summary>"$'\n\n'"$tr"
+# Spaces around a placeholder do not make it a summary.
+refuse hook skeleton "the header is still the skeleton" "chore(x):  <summary>"$'\n\n'"$tr"
+printf '%s\n' "chore(x):  <summary>" "" "$tr" >"$tmp/m2"
+gate 1 "a skeleton summary after two spaces, through git commit -F" \
+	env GIT_EDITOR=: git commit -q --allow-empty -F "$tmp/m2"
+says "[skeleton]" "the two-space skeleton is refused as one"
+gate 0 "a summary that merely mentions a placeholder" env GIT_EDITOR=: git commit -q --allow-empty -m $'docs(x): explain <type> in <scope>\n\nStack: t\nHuman-Only: true'
+
+# .harness/scripts/setup.sh wires .githooks/ through core.hooksPath, so a hook is wired when it is there and
+# executable; it says which git will run, and says so of one that is not executable.
+total=$((total + 1))
+[ -x "$root/.githooks/prepare-commit-msg" ] || { fails=$((fails + 1)); echo "self-test: .githooks/prepare-commit-msg is not executable" >&2; }
+gate 0 ".harness/scripts/setup.sh wires the hooks" .harness/scripts/setup.sh
+says "    prepare-commit-msg" "setup reports the template hook"
+says "    commit-msg" "setup reports the gate"
+same "core.hooksPath points at the tracked hooks" ".githooks" "$(git config --local core.hooksPath)"
+same ".harness/scripts/setup.sh sets the scissors cleanup the rules rely on" "scissors" "$(git config --local commit.cleanup)"
+chmod -x .githooks/prepare-commit-msg
+gate 0 ".harness/scripts/setup.sh with a hook that is not executable" .harness/scripts/setup.sh
+says "prepare-commit-msg is not executable" "setup says git will ignore it"
+chmod +x .githooks/prepare-commit-msg
+# Exit 5 when the key is unset: the check above names that, and the run still reaches its count.
+git config --local --unset commit.cleanup || true
+
+echo "pre-push self-test: $fails of $total checks failed (bash $BASH_VERSION)"
+if [ -z "${PRE_PUSH_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ]; then
+	mkdir -p "$tmp/shim"
+	ln -s /bin/bash "$tmp/shim/bash"
+	PATH="$tmp/shim:$PATH" PRE_PUSH_SELF_TEST_SHIM=1 /bin/bash "$root/.harness/scripts/pre-push-self-test.sh" ||
+		fails=$((fails + 1))
+fi
+[ "$fails" -eq 0 ]

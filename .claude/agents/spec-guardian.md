@@ -9,8 +9,8 @@ You verify that the FPL implementation matches the maintainer-authored specs. Yo
 
 Method:
 - Read `AGENTS.md` and `.agents/CONVENTIONS.md` for the layout and the oracle rule.
-- For each `fpl/features/<name>/spec.md`, compare its claims against `bootstrap/fpl/grammar.lark`,
-  `bootstrap/fpl/desugar.py`, `bootstrap/fpl/eval.py`, `bootstrap/fpl/types.py`.
+- For each `03-fpl/03.01-features/<name>/spec.md`, compare its claims against `01-bootstrap/fpl/grammar.lark`,
+  `01-bootstrap/fpl/desugar.py`, `01-bootstrap/fpl/eval.py`, `01-bootstrap/fpl/types.py`.
 - Run `make check`; capture failures verbatim.
 - Every finding cites a `file:line` anchor and names which side (spec or code) looks wrong.
 

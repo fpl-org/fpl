@@ -1,0 +1,245 @@
+#!/usr/bin/env bash
+#
+# .harness/scripts/pr.sh — open the pull request for an agent branch, as the machine account.
+#
+#   .harness/scripts/pr.sh                     the current branch; title and body from its first
+#                                  commit, and with more than one commit the body also
+#                                  lists every subject
+#   .harness/scripts/pr.sh <branch>            that branch, without checking it out
+#   .harness/scripts/pr.sh -t <title> -b <text>
+#   .harness/scripts/pr.sh -B <base>           target that branch instead of the tail of the queue
+#   .harness/scripts/pr.sh -n                  dry run: print what would be sent
+#
+# Open pull requests form one queue, first in, first out: each is based on the one filed
+# before it, and only the head is based on main, so they merge one after another without
+# conflicts between them (.agents/WORKFLOW.md). A new pull request goes on the tail: its base
+# is the branch of the last open pull request, and the branch must already contain it.
+# If it does not, this stops and says how to rebase onto it.
+#
+# Naming the branch matters when the checkout is someone's working copy: switching it to
+# the branch rewrites their files, and a session that may not delete files can leave it
+# half switched. Nothing below reads the working tree, only refs.
+#
+# Prints the URL of the pull request, and nothing else, on stdout. If the branch already
+# has an open pull request, that one's URL is printed and nothing is created.
+#
+# The author of a pull request cannot approve it, so agent work is filed by the machine
+# account and the maintainer reviews it (.agents/WORKFLOW.md). gh falls back to the active
+# account without a word when a token lookup comes back empty, which would file the
+# request as the maintainer and leave nobody to approve it. So this refuses unless the
+# token belongs to the account named in .git/agent-identity, and unless the branch on the
+# forge is the commit you have here. It does not push: a push is yours or the
+# maintainer's to make (WORKFLOW.md, rule 8).
+#
+# It talks to the forge over its API, with python3 from the default dev shell, so the
+# github layer is not needed. The token is gh's if gh has one for the machine account,
+# else the one in .git/agent-credentials (.agents/WORKFLOW.md).
+set -euo pipefail
+
+die() {
+	printf 'pr: %s\n' "$*" >&2
+	exit 1
+}
+
+base="" title="" body="" dry=0
+while getopts "t:b:B:n" opt; do
+	case "$opt" in
+	t) title="$OPTARG" ;;
+	b) body="$OPTARG" ;;
+	B) base="$OPTARG" ;;
+	n) dry=1 ;;
+	*) die "usage: .harness/scripts/pr.sh [-n] [-t <title>] [-b <body>] [-B <base>] [<branch>]" ;;
+	esac
+done
+shift $((OPTIND - 1))
+[ $# -le 1 ] || die "usage: .harness/scripts/pr.sh [-n] [-t <title>] [-b <body>] [-B <base>] [<branch>]"
+
+top="$(git rev-parse --show-toplevel)"
+branch="${1:-$(git branch --show-current)}"
+[ -n "$branch" ] || die "detached HEAD; name the branch to file"
+git rev-parse -q --verify "refs/heads/$branch" >/dev/null ||
+	die "no local branch '$branch'"
+parsed="$("$top/.harness/scripts/branch-lint.sh" --parse "$branch")" ||
+	die "branch '$branch' does not parse"
+kind="$(sed -n 's/^kind=//p' <<<"$parsed")"
+stack="$(sed -n 's/^stack=//p' <<<"$parsed")"
+case "$kind" in
+agent-* | vendor) ;;
+*) die "'$branch' is not an agent branch; a human files their own pull request" ;;
+esac
+
+# The machine account: the login inside the noreply address of .git/agent-identity.
+identity="$("$top/.harness/scripts/agent-identity.sh" show)" ||
+	die "agent identity unset (.harness/scripts/agent-identity.sh)"
+login="${identity#*+}"
+login="${login%@*}"
+[ -n "$login" ] && [ "$login" != "$identity" ] ||
+	die "cannot read a login from '$identity'"
+
+# The forge is the remote the branch tracks, else the one the base tracks, else the one
+# main tracks: a branch stacked on another agent branch usually tracks nothing, and its
+# base, created here, often does not either. Failing all three, a clone with a single
+# remote has only one forge to mean.
+remote="$(git config "branch.$branch.remote" ||
+	git config "branch.$base.remote" ||
+	git config branch.main.remote ||
+	{ [ "$(git remote | wc -l)" -eq 1 ] && git remote; })" ||
+	die "cannot tell the forge: '$branch', '$base' and main track no remote, and there is more than one"
+
+# .git/agent-credentials, if it is there: a git credential-store file holding one
+# https://<login>:<token>@github.com line for the machine account (.agents/WORKFLOW.md).
+cred="$(cd "$(git rev-parse --git-common-dir)" && pwd)/agent-credentials"
+[ -r "$cred" ] || cred=""
+
+# A private repository answers nothing to an anonymous read, and the session an agent runs
+# in has no keyring for git to ask. So a call to the forge goes out with that file, and
+# with the inherited helpers cleared first: a helper that answers for the maintainer would
+# be the wrong account, silently.
+git_forge() {
+	if [ -n "$cred" ]; then
+		git -c credential.helper= -c credential.helper="store --file=$cred" "$@"
+	else
+		git "$@"
+	fi
+}
+
+# The token of the machine account. gh keeps one per account in the system keyring;
+# .git/agent-credentials is the fallback, a git credential-store file holding one
+# https://<login>:<token>@github.com line. Its login must be the machine account's: a
+# credential for somebody else is not a fallback, it is the wrong author.
+token=""
+if command -v gh >/dev/null; then
+	token="$(gh auth token -u "$login" 2>/dev/null || true)"
+fi
+if [ -z "$token" ] && [ -n "$cred" ]; then
+	line="$(grep -m1 -E "^https://$login:[^@]+@github\\.com" "$cred" || true)"
+	token="${line#*:*:}"
+	token="${token%@*}"
+fi
+[ -n "$token" ] || die "no token for '$login': gh has none, and neither has ${cred:-.git/agent-credentials}"
+
+# owner/repo from the remote, so the API knows where to file.
+slug="$(git remote get-url "$remote")"
+slug="${slug%.git}"
+slug="${slug#*github.com}"
+slug="${slug#[:/]}"
+case "$slug" in
+*/*) ;;
+*) die "cannot read owner/repo from the url of '$remote'" ;;
+esac
+
+here="$(git rev-parse "refs/heads/$branch")"
+there="$(git_forge ls-remote "$remote" "refs/heads/$branch" | cut -f1)"
+[ -n "$there" ] || die "'$branch' is not on $remote yet; push it first"
+[ "$there" = "$here" ] || die "$remote has ${there:0:7}, you have ${here:0:7}; push first"
+
+# The tail of the queue: the open pull request no other one is based on. None means the
+# queue is empty and this one is its head, on main.
+if [ -z "$base" ]; then
+	base="$(FPL_TOKEN="$token" python3 - "$slug" "$branch" <<'PY'
+import json, os, sys, urllib.request
+
+slug, branch = sys.argv[1:3]
+request = urllib.request.Request(
+    f"https://api.github.com/repos/{slug}/pulls?state=open&per_page=100",
+    headers={"Authorization": f"Bearer {os.environ['FPL_TOKEN']}", "Accept": "application/vnd.github+json"},
+)
+with urllib.request.urlopen(request) as response:
+    open_prs = json.load(response)
+filed = [p for p in open_prs if p["head"]["ref"] == branch]
+if filed:
+    print(filed[0]["base"]["ref"])  # already in the queue; the forge knows its place
+    raise SystemExit(0)
+under = {p["base"]["ref"] for p in open_prs}
+tails = [p for p in open_prs if p["head"]["ref"] not in under]
+if len(tails) > 1:
+    names = ", ".join(f"#{p['number']} {p['head']['ref']}" for p in tails)
+    sys.exit(f"pr: the queue has more than one end ({names}); give the base with -B")
+print(tails[0]["head"]["ref"] if tails else "main")
+PY
+)" || exit 1
+fi
+if [ "$base" != main ]; then
+	git_forge fetch -q "$remote" "+refs/heads/$base:refs/remotes/$remote/$base" ||
+		die "cannot fetch '$base' from $remote"
+fi
+git merge-base --is-ancestor "$remote/$base" "$here" ||
+	die "'$branch' is not on top of $base, the tail of the queue; git rebase --onto $remote/$base $remote/main $branch, push, and run this again"
+
+first="$(git rev-list --reverse "$remote/$base..$here" | head -n1)"
+[ -n "$first" ] || die "no commits between $remote/$base and $branch"
+count="$(git rev-list --count "$remote/$base..$here")"
+[ -n "$title" ] || title="$(git log -1 --format=%s "$first")"
+# Default body: the first paragraph of the first commit's body, as one line.
+[ -n "$body" ] || body="$(git log -1 --format=%b "$first" |
+	awk 'NF==0{exit} {printf "%s%s", sep, $0; sep=" "}')"
+# One commit speaks for itself. More than one: the first commit's paragraph describes only
+# the first change, so list them all.
+subjects=""
+[ "$count" = 1 ] || subjects="$(git log --reverse --format='- %s' "$remote/$base..$here")"$'\n\n'
+text="$(printf '%s%s\n\n%s%s commit%s, rebase-merge.' \
+	"${stack:+Stack: $stack$'\n\n'}" "$body" "$subjects" "$count" "$([ "$count" = 1 ] || echo s)")"
+
+# The forge is public: the title, the text and the branch name go through the leak gate
+# first (.harness/scripts/leak-check.sh; FPL_LEAK_GATE=warn overrides), dry run or not.
+said="$(mktemp -d)"
+trap 'rm -rf -- "$said"' EXIT
+printf '%s\n%s\n\n%s\n' "$branch" "$title" "$text" >"$said/pull-request"
+"$top/.harness/scripts/leak-check.sh" --text "$said/pull-request" || die "nothing was sent"
+
+if [ "$dry" -eq 1 ]; then
+	printf 'as:    %s\nbase:  %s\nhead:  %s\ntitle: %s\n\n%s\n' \
+		"$login" "$base" "$branch" "$title" "$text" >&2
+	exit 0
+fi
+
+# One round trip per step: who the token is, whether the branch is already filed, and
+# then the pull request. Anything but 'the token is the machine account' stops here.
+FPL_TOKEN="$token" python3 - "$slug" "$login" "$branch" "$base" "$title" "$text" <<'PY'
+import json, os, sys, urllib.error, urllib.request
+
+slug, login, branch, base, title, body = sys.argv[1:7]
+
+
+def die(message):
+    print(f"pr: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def api(path, payload=None):
+    request = urllib.request.Request(
+        f"https://api.github.com{path}",
+        data=None if payload is None else json.dumps(payload).encode(),
+        headers={
+            "Authorization": f"Bearer {os.environ['FPL_TOKEN']}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Content-Type": "application/json",
+        },
+        method="GET" if payload is None else "POST",
+    )
+    try:
+        with urllib.request.urlopen(request) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        detail = json.loads(error.read() or b"{}")
+        die(f"{path}: {error.code} {detail.get('message', error.reason)}")
+
+
+whoami = api("/user").get("login")
+if whoami != login:
+    die(f"the token belongs to '{whoami}', not '{login}'")
+
+owner = slug.split("/")[0]
+open_prs = api(f"/repos/{slug}/pulls?state=open&head={owner}:{branch}")
+if open_prs:
+    print("pr: already open", file=sys.stderr)
+    print(open_prs[0]["html_url"])
+    raise SystemExit(0)
+
+created = api(
+    f"/repos/{slug}/pulls",
+    {"title": title, "body": body, "head": branch, "base": base},
+)
+print(created["html_url"])
+PY

@@ -3,7 +3,7 @@
 # .githooks/commit-rules — the commit-message rules of .agents/COMMITS.md, in one place.
 #
 # Sourced, never run, by .githooks/commit-msg (the gate), .githooks/prepare-commit-msg (the
-# template that tells a person the rules) and scripts/acommit (the happy path). Each of them
+# template that tells a person the rules) and .harness/scripts/acommit.sh (the happy path). Each of them
 # used to carry its own copy of the type list and the patterns, which is how three copies
 # drift. A rule that changes changes here, and .agents/COMMITS.md cites this file instead of
 # repeating it. Plain strings and functions only: bash 3.2, still /bin/bash on a Mac, has no
@@ -101,10 +101,10 @@ commit_nearest_type() {
 }
 
 # commit_stack_of_branch <branch>: the stack name a branch carries, or nothing
-# (scripts/branch-lint --parse: stack/<name>[/<part>], agent/<id>/stack/<name>[/<part>]).
+# (.harness/scripts/branch-lint.sh --parse: stack/<name>[/<part>], agent/<id>/stack/<name>[/<part>]).
 commit_stack_of_branch() {
 	[ -n "$1" ] || return 0
-	"$(git rev-parse --show-toplevel)/scripts/branch-lint" --parse "$1" 2>/dev/null \
+	"$(git rev-parse --show-toplevel)/.harness/scripts/branch-lint.sh" --parse "$1" 2>/dev/null \
 		| sed -n 's/^stack=//p' || true
 }
 

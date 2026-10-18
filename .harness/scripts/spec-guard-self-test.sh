@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+#
+# .harness/scripts/spec-guard-self-test.sh — proof that both halves of the oracle rule still bite where the
+# maintainer's spec lives: the conformance suite 03-fpl/03.01-features/, and 02-docs/02.01-design.md and
+# 02-docs/02.02-spec.md. Run by `make gates`.
+#
+#   .claude/hooks/guard-specs.sh   PreToolUse(Edit|Write), fed the JSON the harness sends:
+#                                  an edit of a spec.md or of anything under examples/, as an
+#                                  absolute or a relative path, and of the two docs, is refused
+#                                  (exit 2, with its reason); any other path goes (exit 0), and
+#                                  so does a spec path when the session has opted in with
+#                                  FPL_SPEC_EDIT=1, the hook's designed exit
+#   .githooks/commit-msg           gate 7: a commit that stages (or, in lint mode, holds) such a
+#                                  path is refused without the marker [spec] in its message, and
+#                                  goes with it; a commit of other paths needs no marker
+#
+# The run counts what it was asked and what it got; a refusal that never came, or a pass that
+# should not have been, fails the test. Everything happens in a throwaway repository, with Git's
+# global and system config, HOME and XDG_CONFIG_HOME pointed away from the maintainer's; the
+# leak gate has a self-test of its own and is off here. Runs under any bash, 3.2 included.
+
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/spec-guard-self-test.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+: >"$tmp/gitconfig"
+export GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home" \
+	XDG_CONFIG_HOME="$tmp/xdg" GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid \
+	GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid FPL_LEAK_GATE=off
+unset FPL_BRANCH_GATE FPL_AGENT_EMAILS FPL_LINT_BRANCH FPL_LINT_COMMIT FPL_SPEC_EDIT \
+	GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE
+mkdir -p "$HOME" "$XDG_CONFIG_HOME"
+
+repo="$tmp/repo"
+git init -q -b main "$repo"
+cd "$repo"
+mkdir -p .harness
+cp -R "$root/.githooks" .
+cp -R "$root/.harness/scripts" .harness/scripts
+rm -rf .harness/scripts/__pycache__
+git add -A
+git -c core.hooksPath=/dev/null commit -q -m "chore(harness): base" -m "Human-Only: true"
+
+fails=0 total=0
+# check <ok|bad> <description> <rc> <want> <text>: the exit code is the wanted one and the
+# output holds the text (when one is given).
+verdict() {
+	local what="$1" rc="$2" want="$3" text="$4"
+	total=$((total + 1))
+	if [ "$rc" -ne "$want" ]; then
+		fails=$((fails + 1))
+		echo "self-test: $what: exit $rc, want $want" >&2
+		sed 's/^/    /' "$tmp/out" >&2
+	elif [ -n "$text" ] && ! grep -Fq -- "$text" "$tmp/out"; then
+		fails=$((fails + 1))
+		echo "self-test: $what: output lacks '$text'" >&2
+		sed 's/^/    /' "$tmp/out" >&2
+	fi
+}
+
+# --- the Claude Code hook ---------------------------------------------------------------------
+# hook <exit code> <description> <path> [text]: a PreToolUse event for an edit of <path>.
+hook() {
+	local want="$1" what="$2" path="$3" text="${4:-}" rc=0
+	printf '{"tool_name":"Edit","tool_input":{"file_path":"%s"}}' "$path" \
+		| bash "$root/.claude/hooks/guard-specs.sh" >"$tmp/out" 2>&1 || rc=$?
+	verdict "guard-specs $what" "$rc" "$want" "$text"
+}
+
+for p in /w/03-fpl/03.01-features/draft1/spec.md /w/03-fpl/03.01-features/draft1/examples/a.fpl \
+	/w/03-fpl/03.01-features/draft1/examples/a.expected /w/02-docs/02.01-design.md /w/02-docs/02.02-spec.md \
+	03-fpl/03.01-features/draft1/spec.md 03-fpl/03.01-features/draft1/examples/a.fpl 02-docs/02.01-design.md 02-docs/02.02-spec.md; do
+	hook 2 "refuses $p" "$p" "maintainer-authored spec"
+done
+for p in /w/03-fpl/03.01-features/notes.md /w/fpl/eval.py /w/01-bootstrap/fpl/eval.py /w/02-docs/02.03-roadmap.md \
+	/w/AGENTS.md /w/01-bootstrap/tests/test_conformance.py 03-fpl/03.01-features/README.md ""; do
+	hook 0 "lets '$p' through" "$p"
+done
+rc=0
+printf '{"tool_input":{"file_path":"/w/03-fpl/03.01-features/draft1/spec.md"}}' \
+	| FPL_SPEC_EDIT=1 bash "$root/.claude/hooks/guard-specs.sh" >"$tmp/out" 2>&1 || rc=$?
+verdict "guard-specs lets an opted-in session edit a spec" "$rc" 0 ""
+rc=0
+printf 'not json' | bash "$root/.claude/hooks/guard-specs.sh" >"$tmp/out" 2>&1 || rc=$?
+verdict "guard-specs ignores an event it cannot read" "$rc" 0 ""
+
+# --- the commit-msg gate ----------------------------------------------------------------------
+# msg <marked>: the message file, a human commit, with the marker [spec] in its body or not.
+msg() {
+	{
+		echo "chore(spec): touch a file"
+		echo
+		if [ "$1" = marked ]; then echo "[spec] the maintainer asked for this."; else echo "A change."; fi
+		echo
+		echo "Human-Only: true"
+	} >"$tmp/msg"
+}
+# staged <marked|unmarked> <exit code> <description> <path> [text]: stage <path>, judge the
+# message as git does at commit time, then put the repository back.
+staged() {
+	local marked="$1" want="$2" what="$3" path="$4" text="${5:-}" rc=0
+	mkdir -p "$(dirname "$path")"
+	echo "x" >"$path"
+	git add -f -- "$path"
+	msg "$marked"
+	.githooks/commit-msg "$tmp/msg" >"$tmp/out" 2>&1 || rc=$?
+	verdict "commit-msg $what" "$rc" "$want" "$text"
+	git reset -q
+	rm -rf "${path%%/*}"
+	git checkout -q -- . 2>/dev/null || :
+}
+
+protected="03-fpl/03.01-features/draft1/spec.md 03-fpl/03.01-features/draft1/examples/a.fpl \
+	03-fpl/03.01-features/draft1/examples/a.expected 03-fpl/03.01-features/_template/spec.md 02-docs/02.01-design.md 02-docs/02.02-spec.md"
+free="03-fpl/03.01-features/notes.md fpl/eval.py 01-bootstrap/fpl/eval.py 02-docs/02.03-roadmap.md AGENTS.md \
+	01-bootstrap/tests/test_conformance.py"
+for p in $protected; do
+	staged unmarked 1 "refuses $p without [spec]" "$p" "protected spec file"
+	staged marked 0 "lets $p through with [spec]" "$p"
+done
+for p in $free; do
+	staged unmarked 0 "lets $p through unmarked" "$p"
+done
+
+# The same judgment of a commit that already exists, which is how commit-lint and the CI
+# workflow see it (a commit made with the hooks off).
+lint() {
+	local marked="$1" want="$2" what="$3" rc=0
+	mkdir -p 03-fpl/03.01-features/draft1/examples
+	echo "x" >03-fpl/03.01-features/draft1/examples/a.fpl
+	git add -f 03-fpl/03.01-features
+	msg "$marked"
+	git -c core.hooksPath=/dev/null commit -q -F "$tmp/msg"
+	FPL_LINT_COMMIT="$(git rev-parse HEAD)" .githooks/commit-msg "$tmp/msg" >"$tmp/out" 2>&1 || rc=$?
+	verdict "commit-msg (lint mode) $what" "$rc" "$want" "$([ "$want" -eq 1 ] && echo "protected spec file")"
+	git reset -q --hard HEAD~1
+}
+lint unmarked 1 "refuses a landed example without [spec]"
+lint marked 0 "lets a landed example through with [spec]"
+
+if [ "$fails" -ne 0 ]; then
+	echo "spec-guard self-test: $fails of $total checks failed" >&2
+	exit 1
+fi
+echo "spec-guard self-test: $total checks passed"

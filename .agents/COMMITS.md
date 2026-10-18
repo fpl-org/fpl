@@ -6,13 +6,13 @@ block is a [git trailer](https://git-scm.com/docs/git-interpret-trailers) list. 
 give a log that `git log --format`, `git interpret-trailers --parse`, and a changelog
 generator can all read, while staying legible for a human doing archaeology years later.
 
-`scripts/acommit` assembles a compliant message; `.githooks/commit-msg` validates every
+`.harness/scripts/acommit.sh` assembles a compliant message; `.githooks/commit-msg` validates every
 commit independently. Each rule below is marked **[gate]** (a hook rejects violations) or
 **[advisory]** (documented, not machine-checkable — a hook cannot reliably tell).
 
 The hook only sees a commit made with git, in a clone whose hooks are wired.
 `git commit --no-verify`, an unwired clone and `jj` (`.agents/JJ.md`) get past it. So the same
-gates run a second time where they cannot be skipped: `scripts/commit-lint <rev-range>` runs
+gates run a second time where they cannot be skipped: `.harness/scripts/commit-lint.sh <rev-range>` runs
 the hook over commits that already exist, and `.github/workflows/commit-lint.yml` does that
 for every commit of a pull request. `.githooks/pre-push` runs it too, over the commits a push
 adds to a branch, judged for the branch they arrive at: a commit moved since it was made
@@ -20,7 +20,7 @@ adds to a branch, judged for the branch they arrive at: a commit moved since it 
 and is refused before it reaches the forge. By hand, for a branch based on `main`:
 
 ```
-scripts/commit-lint -b "$(git branch --show-current)" github/main..HEAD
+.harness/scripts/commit-lint.sh -b "$(git branch --show-current)" github/main..HEAD
 ```
 
 For a branch based on a parent not merged yet, the base is that parent on the remote, so
@@ -29,7 +29,7 @@ them out. Set `PARENT` to the parent branch's name first:
 
 ```
 PARENT=agent/claude/stack/parent-name
-scripts/commit-lint -b "$(git branch --show-current)" "github/$PARENT..HEAD"
+.harness/scripts/commit-lint.sh -b "$(git branch --show-current)" "github/$PARENT..HEAD"
 ```
 
 The agent addresses it accepts beside `.git/agent-identity` come from one of two lists. In
@@ -37,7 +37,7 @@ CI the workflow sets `FPL_AGENT_EMAILS` inline, and that list is the only one tr
 checkout is the pull request's own tree, so a pull request could otherwise add its author to
 a file and pass. The file `.github/agent-emails` serves the local hooks (`commit-msg`,
 `pre-push`), which run with the variable unset, and must be a subset of the workflow's list;
-`scripts/commit-lint` refuses, naming the address, when the file lists one the variable
+`.harness/scripts/commit-lint.sh` refuses, naming the address, when the file lists one the variable
 lacks. Add an address to the workflow first (an agent's token cannot push
 `.github/workflows/`, so the owner does), then to the file.
 
@@ -64,14 +64,14 @@ amend, so an amend of a merge or revert is refused there, reworded or not: amend
 ## The rules file
 
 The type list, the scope and `Stack:` patterns, the length limits and the trailer order live in
-one file, `.githooks/commit-rules`, which `commit-msg`, `scripts/acommit` and the commit template
+one file, `.githooks/commit-rules`, which `commit-msg`, `.harness/scripts/acommit.sh` and the commit template
 all read. Names such as `COMMIT_TYPES` below are its variables; this document does not repeat
 their values, so there is one place to change a rule and no copy to forget.
 
 The two length limits are the exception to "in that file": `COMMIT_HEADER_MAX` and
 `COMMIT_BODY_MAX` are written once, in `lib.limits` in `flake.nix`, with the Python line length.
 `nix run .#gen-config` writes them to `.githooks/commit-limits`, which `commit-rules` sources,
-and writes `.editorconfig` and `quality/ruff-limits.toml` from the same numbers. The generated
+and writes `.editorconfig` and `.harness/quality/ruff-limits.toml` from the same numbers. The generated
 files stay committed, for a clone without Nix, and `make check` and `make gates` fail when one
 differs from the flake or is gone; the hooks refuse to run on a limits file that is missing or
 not a positive integer, naming `nix run .#gen-config`. To change a limit, change it in `flake.nix`
@@ -81,7 +81,7 @@ and run the generator.
 
 A plain `git commit` opens an editor on a message that is not empty: `.githooks/prepare-commit-msg`
 fills it with the header skeleton `<type>(<scope>): <summary>`, the trailers that can be known
-(`Stack:` from the branch, derived as `scripts/acommit` derives it, and `Human-Only: true` where
+(`Stack:` from the branch, derived as `.harness/scripts/acommit.sh` derives it, and `Human-Only: true` where
 no agent identity is set), and the rules above as comment lines, also under `git commit -v`
 (the diff below the scissors line is git's, not a message). The rules do not end up in the
 commit: they are written where git strips them, whatever `core.commentChar`, `core.commentString`
@@ -92,9 +92,9 @@ out the block `prepare-commit-msg` wrote and recorded for this commit, which end
 line with a random id; a quotation of the rules that you write is not that block, and stays.
 git's own status comments stay, as that mode keeps them, and a commit that also skips
 `commit-msg` (`--no-verify`) keeps the rules too.
-`scripts/setup` sets `commit.cleanup=scissors`. A header that is still the skeleton is refused
+`.harness/scripts/setup.sh` sets `commit.cleanup=scissors`. A header that is still the skeleton is refused
 (`skeleton`), spaces around a placeholder included. The hook acts only on an empty message: `-m`,
-`-F` (which `scripts/acommit` uses), a merge, a squash and an amend carry a message already and
+`-F` (which `.harness/scripts/acommit.sh` uses), a merge, a squash and an amend carry a message already and
 are left alone.
 
 **[gate]** `commit-msg` judges the message as git will store it, so it applies git's own cleanup
@@ -169,12 +169,12 @@ key, so landed history is not refused for case alone; a type or scope in the wro
   `Human-Only: true` line for a hand-made human commit, never both.
 - **[gate]** on a stack branch — `stack/<name>[/<part>]`, or the same under `agent/<id>/`
   (`.agents/BRANCHES.md`) — the message carries `Stack: <name>`; a message holds at most one
-  `Stack:`, and its value is always `[a-z0-9][a-z0-9._-]*`. `scripts/acommit` derives it
+  `Stack:`, and its value is always `[a-z0-9][a-z0-9._-]*`. `.harness/scripts/acommit.sh` derives it
   from the branch (`-K <name>` overrides). Stack refs are deleted after landing and a linear
   landing leaves no merge commit, so this trailer is the in-repo record of which commits formed
   one unit: `git log --grep='^Stack: typed-let$'` recovers the stack years later, forge or no
   forge.
-- `scripts/acommit` takes the session id from `-S <id>`, else `$FPL_SESSION_ID`, else
+- `.harness/scripts/acommit.sh` takes the session id from `-S <id>`, else `$FPL_SESSION_ID`, else
   `$CLAUDE_CODE_SESSION_ID`, and refuses to commit when none is set — any harness can
   export `FPL_SESSION_ID`. It never invents one: a made-up id is useless for forensics.
 - **[gate]** known trailers appear in the order of `COMMIT_TRAILER_ORDER`:
@@ -227,11 +227,11 @@ Two identities, deliberately kept apart.
 - Set up once per clone/worktree:
 
   ```
-  scripts/agent-identity set "NNNNN+psjg-claude@users.noreply.github.com"
+  .harness/scripts/agent-identity.sh set "NNNNN+psjg-claude@users.noreply.github.com"
   ```
 
   This writes `.git/agent-identity` (inside `.git/`, per-worktree, never committed).
-  `scripts/acommit` reads it and refuses to commit if it is unset.
+  `.harness/scripts/acommit.sh` reads it and refuses to commit if it is unset.
 
 ### 2. Forge-originated work — the Claude GitHub App
 
@@ -240,10 +240,10 @@ CI runs and `@claude` interactions on issues/PRs are authored by the **`claude[b
 email, independent identity — no collision, no impersonation either way.
 
 `.github/workflows/claude.yml` wires the hooks in the App's runner before it starts
-(`scripts/setup`, and `scripts/agent-identity set` with the bot's own address), so a commit
+(`.harness/scripts/setup.sh`, and `.harness/scripts/agent-identity.sh set` with the bot's own address), so a commit
 it makes there meets the same `commit-msg` as one made in a terminal. It commits with
-`scripts/acommit`: the author name carries its model, `Session-Id` is `gha-<run id>` and
-leads back to the Actions run. `scripts/commit-lint` holds its commits to every gate; the
+`.harness/scripts/acommit.sh`: the author name carries its model, `Session-Id` is `gha-<run id>` and
+leads back to the Actions run. `.harness/scripts/commit-lint.sh` holds its commits to every gate; the
 App's address is one of the accepted agent addresses (the workflow's list, mirrored in
 `.github/agent-emails`).
 

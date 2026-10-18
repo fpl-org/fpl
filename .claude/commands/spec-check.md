@@ -1,12 +1,12 @@
 ---
-description: Read-only check that the implementation matches every fpl/features/*/spec.md
+description: Read-only check that the implementation matches every 03-fpl/03.01-features/*/spec.md
 ---
 
 Report drift between the code and the maintainer-authored specs. **Read-only** — make no
 edits, open no PRs.
 
-1. For each `fpl/features/<name>/spec.md`: read it, then read the relevant parts of
-   `bootstrap/fpl/grammar.lark`, `bootstrap/fpl/desugar.py`, `bootstrap/fpl/eval.py`, `bootstrap/fpl/types.py`.
+1. For each `03-fpl/03.01-features/<name>/spec.md`: read it, then read the relevant parts of
+   `01-bootstrap/fpl/grammar.lark`, `01-bootstrap/fpl/desugar.py`, `01-bootstrap/fpl/eval.py`, `01-bootstrap/fpl/types.py`.
 2. For every claim in the spec (a syntax form, a desugaring, a semantic rule, an error),
    state: **matches** / **diverges** / **unimplemented**, each with a `file:line` anchor.
 3. Run `make check` and note any red.

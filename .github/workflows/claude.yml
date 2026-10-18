@@ -36,14 +36,14 @@ jobs:
       # is its own bot address, so its commits stay attributable to the forge.
       - name: Wire the harness for the App
         run: |
-          scripts/setup
-          scripts/agent-identity set "41898282+claude[bot]@users.noreply.github.com"
+          .harness/scripts/setup.sh
+          .harness/scripts/agent-identity.sh set "41898282+claude[bot]@users.noreply.github.com"
 
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@v1
         env:
-          # A session id that leads back to this run; scripts/acommit refuses without one.
+          # A session id that leads back to this run; .harness/scripts/acommit.sh refuses without one.
           FPL_SESSION_ID: gha-${{ github.run_id }}
           # A runner checkout is neither the root nor a worktree of docs/WORKTREES.md.
           FPL_BOUNDARY: "off"
@@ -61,5 +61,5 @@ jobs:
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
           # claude_args: '--allowed-tools Bash(gh pr *)'
-          claude_args: '--allowedTools "Bash(scripts/acommit:*)"'
+          claude_args: '--allowedTools "Bash(.harness/scripts/acommit.sh:*)"'
 

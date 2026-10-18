@@ -1,0 +1,62 @@
+project:
+  type: book
+  output-dir: .book
+book:
+  title: "FPL"
+  subtitle: "Read in the order of the three scopes"
+  author: "FPL"
+  chapters:
+    - index.qmd
+    - part: "1 Bootstrap"
+      chapters:
+        - 01-bootstrap/01.01-boundary/01.01.01-source.qmd
+        - 01-bootstrap/01.01-boundary/01.01.02-fon.qmd
+        - 01-bootstrap/01.01-boundary/01.01.03-pipe.qmd
+        - 01-bootstrap/01.01-boundary/01.01.04-render.qmd
+        - 01-bootstrap/01.02-pass/01.02.01-lex.qmd
+        - 01-bootstrap/01.02-pass/01.02.02-parse.qmd
+        - 01-bootstrap/01.02-pass/01.02.03-resolve.qmd
+        - 01-bootstrap/01.02-pass/01.02.04-expand.qmd
+        - 01-bootstrap/01.02-pass/01.02.05-desugar.qmd
+        - 01-bootstrap/01.02-pass/01.02.06-elaborate.qmd
+        - 01-bootstrap/01.02-pass/01.02.07-lower.qmd
+        - 01-bootstrap/01.02-pass/01.02.08-normalize.qmd
+        - 01-bootstrap/01.02-pass/01.02.09-optimize.qmd
+        - 01-bootstrap/01.02-pass/01.02.10-evaluate.qmd
+        - 01-bootstrap/01.02-pass/01.02.11-codegen.qmd
+        - 01-bootstrap/01.03-repr/01.03.01-source.qmd
+        - 01-bootstrap/01.03-repr/01.03.02-tokens.qmd
+        - 01-bootstrap/01.03-repr/01.03.03-syntax.qmd
+        - 01-bootstrap/01.03-repr/01.03.04-resolved.qmd
+        - 01-bootstrap/01.03-repr/01.03.05-expanded.qmd
+        - 01-bootstrap/01.03-repr/01.03.06-elaborated.qmd
+        - 01-bootstrap/01.03-repr/01.03.07-core.qmd
+        - 01-bootstrap/01.04-compose/01.04.01-pass.qmd
+        - 01-bootstrap/01.04-compose/01.04.02-run.qmd
+        - 01-bootstrap/01.04-compose/01.04.03-inspect.qmd
+        - 01-bootstrap/01.04-compose/01.04.04-build.qmd
+        - 01-bootstrap/01.05-labs/01.05.01-pipeline.qmd
+        - 01-bootstrap/01.06-nagini/01.06.01-advance.qmd
+    - part: "2 Docs"
+      chapters:
+        - 02-docs/02.01-design.md
+        - 02-docs/02.02-spec.md
+        - 02-docs/02.03-roadmap.md
+        - 02-docs/02.04-notes/02.04.01-issue-task-patch.md
+        - 02-docs/02.04-notes/02.04.02-sober.md
+        - 02-docs/02.04-notes/02.04.03-mediating-project.md
+    - part: "3.1 Features"
+      chapters:
+        - 03-fpl/03.01-features/draft1/spec.md
+        - 03-fpl/03.01-features/draft2/spec.md
+        - 03-fpl/03.01-features/draft3/spec.md
+        - 03-fpl/03.01-features/match/spec.md
+        - 03-fpl/03.01-features/server/spec.md
+        - 03-fpl/03.01-features/sketch/spec.md
+format:
+  pdf:
+    pdf-engine: lualatex
+    toc: true
+    include-in-header:
+      text: |
+        \renewenvironment{Shaded}{}{}

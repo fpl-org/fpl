@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+#
+# .harness/scripts/review.sh — render the diff of a branch as a page, with the whole file around it.
+#
+#   .harness/scripts/review.sh                  the current branch against main
+#   .harness/scripts/review.sh <branch>         that branch against main
+#   .harness/scripts/review.sh -b <base> …      against another base (the branch below, in a stack)
+#   .harness/scripts/review.sh -s               side by side instead of one column
+#   .harness/scripts/review.sh -o <file>        write the page there and do not open it
+#   .harness/scripts/review.sh --serve          stop a running page, import the open pull requests,
+#                                   and serve the Radicle patches with their comments and
+#                                   a page to add yours (.harness/scripts/review-serve --fresh)
+#
+# A forge shows a hunk and a few lines around it, and folds the rest away. A hunk is
+# not reviewable on its own: whether a variable already exists, whether `set -e` bites
+# here, whether the line above reverses the meaning — none of that is in the hunk. So
+# this renders every changed file whole, and opens it in the browser.
+#
+# It reads git refs and nothing else: no forge, no network, no account. It works on a
+# branch that was never pushed, and it keeps working if the forge changes.
+set -euo pipefail
+
+if [ "${1:-}" = --serve ]; then
+	shift
+	exec "$(dirname "$0")/review-serve" --fresh "$@"
+fi
+
+die() {
+	printf 'review: %s\n' "$*" >&2
+	exit 1
+}
+
+base=main style=line out=""
+while getopts "b:so:" opt; do
+	case "$opt" in
+	b) base="$OPTARG" ;;
+	s) style=side ;;
+	o) out="$OPTARG" ;;
+	*) die "usage: .harness/scripts/review.sh [-b <base>] [-s] [-o <file>] [<branch>]" ;;
+	esac
+done
+shift $((OPTIND - 1))
+
+branch="${1:-$(git branch --show-current)}"
+[ -n "$branch" ] || die "detached HEAD; name the branch to review"
+git rev-parse --verify --quiet "$branch^{commit}" >/dev/null || die "no such branch: $branch"
+git rev-parse --verify --quiet "$base^{commit}" >/dev/null || die "no such base: $base"
+
+# Three dots for the diff: what the branch adds since it left the base, which is what a
+# pull request shows. Two dots would also show what the base gained meanwhile.
+range="$base...$branch"
+# The count is two dots on purpose. A symmetric count is non-zero when only the base
+# moved, and the branch would then reach diff2html with an empty diff and fail there.
+[ "$(git rev-list --count "$base..$branch")" != 0 ] || die "$branch adds nothing to $base"
+
+command -v diff2html >/dev/null || die "diff2html not found; enter the dev shell (.agents/DEVSHELL.md)"
+
+# -U is the whole point: enough context to swallow any file we are likely to write.
+# Unchanged files stay out of the diff regardless, so this only pays for what changed.
+context="${FPL_REVIEW_CONTEXT:-9999}"
+
+[ -n "$out" ] || out="$(mktemp -t "fpl-review-XXXXXX").html"
+git diff --unified="$context" --find-renames "$range" |
+	diff2html --style "$style" --summary open --input stdin \
+		--title "$branch → $base" --file "$out" >/dev/null
+
+printf '%s\n' "$out"
+[ -n "${FPL_REVIEW_NO_OPEN:-}" ] && exit 0
+if command -v open >/dev/null; then
+	open "$out"
+elif command -v xdg-open >/dev/null; then
+	xdg-open "$out"
+fi

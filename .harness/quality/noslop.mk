@@ -1,0 +1,212 @@
+# .harness/quality/noslop.mk — the noslop harness's lanes. A project's Makefile is one line, `include
+# ../.harness/quality/noslop.mk` (01-bootstrap/Makefile); everything the gate runs, and how hard, lives
+# here, in the root's shared harness, so a project cannot loosen its own gate
+# (.agents/QUALITY.md). The lanes run in the project's directory, 01-bootstrap/, a child of the
+# root; the harness's .harness/quality/ and .harness/scripts/ and the one .venv are the root's. The root's
+# Makefile runs each lane there, and `make -f .harness/quality/noslop.mk gates` runs at the root.
+#
+#   make fix      rewrite what can be rewritten: ruff's safe fixes, then the formatter
+#   make quick    the inner loop, seconds: lint, format, and the tests, stopping at the first
+#   make check    the one gate; green here means done (AGENTS.md). It begins by refusing config
+#                 files that differ from what flake.nix's lib.limits generates, and its last
+#                 step runs one example from the root, through the entry a README points to
+#                 (make run)
+#   make harden   the long search: 20x the examples, CrossHair on every property and every
+#                 contract, mutants
+#   make ready    check + harden + gates + a known-vulnerability audit; before a PR leaves draft
+#   make gates    proof that each check still bites: the harness's own lint, its self-tests,
+#                 and a bad example each check refuses; also that the files generated from
+#                 flake.nix's lib.limits are current. Also what the root runs, where there
+#                 is no code to judge: make -f .harness/quality/noslop.mk gates
+#   make tools    the tooling beside the language: every .harness/tools/<name>/ that holds a
+#                 pyproject.toml, a uv project of its own, judged as strictly as the code.
+#                 Reached only by name, so no other lane waits on it
+#   make map      the map of the code, imports and classes, drawn into .noslop/map/ and never
+#                 committed; no other lane runs it (.harness/scripts/diagrams)
+
+.DEFAULT_GOAL := check
+.PHONY: fix quick check harden ready gates tools map venv ruff-limits config-fresh pristine clean-noslop rootrun
+
+# The root is where this file's directory sits one level down. It is read before anything
+# else is included, so it is this file's, wherever make runs and whatever includes it.
+ROOT     := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))..)
+Q        := $(ROOT)/quality
+S        := $(ROOT)/scripts
+VENV     := $(ROOT)/.venv
+BIN      := $(VENV)/bin
+# What the lanes leave behind, in the directory they run in (the root's .gitignore covers it).
+OUT      := .noslop
+# CPU seconds CrossHair spends looking for a counterexample to one contract (make harden).
+CONTRACT_SECONDS := 20
+export PYTHONPATH := $(Q):$(CURDIR)
+export UV_PROJECT_ENVIRONMENT := $(VENV)
+export UV_PYTHON_DOWNLOADS := never
+
+# ruff skips what a VCS ignore file hides, and a clone whose .git/info/exclude is block-first
+# (`*`) hides every source: ruff then lints nothing and passes. The lanes name their files, so
+# it is told to look at them whatever the ignore files say.
+RUFF_ALL := --no-respect-gitignore
+
+# The tools, at the versions .harness/quality/uv.lock pins, synced into the root's .venv. The stamp
+# makes it a no-op until the lock changes.
+$(BIN)/.synced: $(Q)/uv.lock $(Q)/pyproject.toml
+	uv sync --project $(Q) --frozen --python python3.12 --quiet
+	@touch $@
+
+# Every lane that runs ruff needs the venv, so the venv is where ruff's width is checked: an
+# empty .harness/quality/ruff-limits.toml is valid TOML and silently gives ruff its default of 88.
+ruff-limits: $(BIN)/.synced
+	$(BIN)/python $(S)/ruff-limits
+venv: $(BIN)/.synced ruff-limits
+
+# The files generated from lib.limits in flake.nix are what the flake says; the remedy, in the
+# message of a difference, is nix run .#gen-config, and to commit them. A lane that cannot run
+# the generator stops, never skips: a flake change without regeneration, or a deleted
+# generated file, fails the everyday lane as it fails the gates.
+config-fresh:
+	@command -v nix >/dev/null 2>&1 || { \
+	  echo "config-fresh: nix is not on PATH; the generated config files cannot be checked without it" >&2; \
+	  echo "       enter the dev shell (.agents/DEVSHELL.md)" >&2; \
+	  exit 1; }
+	nix run $(ROOT)#gen-config -- --check
+
+fix: venv
+	$(BIN)/ruff check --config $(Q)/ruff.toml $(RUFF_ALL) --fix fpl tests
+	$(BIN)/ruff format --config $(Q)/ruff.toml $(RUFF_ALL) fpl tests
+
+quick: venv
+	$(BIN)/ruff check --config $(Q)/ruff.toml $(RUFF_ALL) fpl tests
+	$(BIN)/ruff format --config $(Q)/ruff.toml $(RUFF_ALL) --check fpl tests
+	$(BIN)/pytest -x -q -n auto
+
+# A gate is only as strict as its policy files, and those sit in the worktree where an
+# edit is one keystroke away. So the gate runs only against the committed policy: an
+# uncommitted change to any of them stops it. Commit such a change first, with [policy].
+# The project's own are named from the root, as the directory these lanes run in.
+WALKER := $(notdir $(CURDIR))
+POLICY := quality scripts Makefile $(addprefix $(WALKER)/,Makefile pyproject.toml mutants.allow)
+pristine:
+	@dirty="$$(git -C $(ROOT) status --porcelain --untracked-files=all -- $(POLICY))" || { \
+	  echo "pristine: git could not read the policy files' state, so the gate does not run;" >&2; \
+	  echo "          run 'git -C $(ROOT) status -- $(POLICY)' to see why" >&2; \
+	  exit 1; \
+	}; \
+	if [ -n "$$dirty" ]; then \
+	  echo "check: the gate's policy files differ from what is committed:" >&2; \
+	  echo "$$dirty" | sed 's/^/         /' >&2; \
+	  echo "       the gate judges only committed policy; commit the change with [policy]," >&2; \
+	  echo "       in a harness commit for .harness/quality/ and .harness/scripts/ (.agents/WORKTREES.md)" >&2; \
+	  exit 1; \
+	fi
+
+# The walker's entry from the root, `make run` (the root's Makefile), run on one real example
+# and compared with its .expected, from the root and with the lanes' own PYTHONPATH taken away:
+# the lanes run inside 01-bootstrap/, where the package is found, so only this step notices that
+# the entry itself broke (it did, in the move to 01-bootstrap/). The root's own 03-fpl/ directory
+# (FPL's tree, with no __init__) sits beside the package 01-bootstrap/fpl, and the example lives in
+# it; the entry has to find the package past it. A missing example, or an empty .expected that
+# would match an entry that prints nothing, is refused.
+ROOT_EXAMPLE := 03-fpl/03.01-features/draft2/examples/01-frames
+
+rootrun:
+	@test -s $(ROOT)/$(ROOT_EXAMPLE).fpl -a -s $(ROOT)/$(ROOT_EXAMPLE).expected || { \
+	  echo "check: the example the root's entry is run on, $(ROOT_EXAMPLE), or its .expected is missing" >&2; \
+	  echo "       or empty; name another in ROOT_EXAMPLE (.harness/quality/noslop.mk)" >&2; exit 1; }
+	@cd $(ROOT) && env -u PYTHONPATH $(MAKE) --no-print-directory run FILE=$(ROOT_EXAMPLE).fpl \
+	  > $(CURDIR)/$(OUT)/rootrun.out 2> $(CURDIR)/$(OUT)/rootrun.err || { \
+	  echo "check: make run FILE=$(ROOT_EXAMPLE).fpl, run from the root, failed:" >&2; \
+	  sed 's/^/         /' $(CURDIR)/$(OUT)/rootrun.err >&2; exit 1; }
+	@diff -u $(ROOT)/$(ROOT_EXAMPLE).expected $(OUT)/rootrun.out || { \
+	  echo "check: make run FILE=$(ROOT_EXAMPLE).fpl, run from the root, printed other than its .expected" >&2; \
+	  exit 1; }
+
+check: venv pristine config-fresh
+	@mkdir -p $(OUT)
+	$(BIN)/ruff check --config $(Q)/ruff.toml $(RUFF_ALL) fpl tests
+	$(BIN)/ruff format --config $(Q)/ruff.toml $(RUFF_ALL) --check fpl tests
+	pyright --project $(Q)/pyright.json
+	$(BIN)/mypy --config-file $(Q)/mypy.ini fpl tests
+	$(BIN)/python $(S)/escapes fpl tests
+	$(BIN)/python $(S)/props --obligations $(Q)/obligations.toml
+	$(BIN)/coverage erase --rcfile=$(Q)/coveragerc
+	$(BIN)/coverage run --rcfile=$(Q)/coveragerc -m pytest -q
+	$(BIN)/coverage json --rcfile=$(Q)/coveragerc -q --fail-under=0
+	$(BIN)/python $(S)/crap --policy $(Q)/crap.toml
+	$(BIN)/coverage report --rcfile=$(Q)/coveragerc
+	$(BIN)/lint-imports --config $(Q)/importlinter.ini --no-cache
+	@! $(BIN)/deptry . --extend-exclude 'mutants' -v 2>&1 | grep -q '^Scanning 0 file' || { \
+	  echo "check: deptry scanned 0 files: a VCS ignore file (.gitignore, .git/info/exclude) hides the sources" >&2; \
+	  echo "       from it, and deptry has no switch to look anyway; allow fpl/ and tests/ there" >&2; \
+	  exit 1; }
+	$(BIN)/deptry . --extend-exclude 'mutants'
+	$(BIN)/vulture fpl tests --min-confidence 60
+	$(BIN)/pylint --rcfile=/dev/null --persistent=n --score=n --disable=all --enable=duplicate-code \
+	  --min-similarity-lines=6 --ignore-imports=yes --ignore-signatures=yes fpl
+	$(MAKE) --no-print-directory rootrun
+
+harden: check
+	@$(BIN)/python -c 'import z3' 2>/dev/null || { echo 'harden: z3 does not load, so CrossHair cannot run;' \
+	  'on Linux the dev shell puts libstdc++ on LD_LIBRARY_PATH (.agents/DEVSHELL.md)' >&2; exit 1; }
+	HYPOTHESIS_PROFILE=harden $(BIN)/pytest -q -n auto
+	HYPOTHESIS_PROFILE=symbolic $(BIN)/pytest -q -n auto
+	$(BIN)/crosshair check fpl --analysis_kind=icontract --per_condition_timeout=$(CONTRACT_SECONDS)
+	$(BIN)/python $(S)/mutants
+
+ready: harden gates
+	@mkdir -p $(OUT)
+	uv export --project $(Q) --frozen --quiet > $(OUT)/requirements.txt
+	$(BIN)/pip-audit --progress-spinner off --requirement $(OUT)/requirements.txt --disable-pip
+
+# The harness's own Python, judged by the same ruff it judges others with.
+HARNESS := $(addprefix $(S)/,crap props escapes mutants gates forward-only diagrams ruff-limits) \
+           $(Q)/noslop_pytest.py
+
+# config-fresh is a prerequisite, as it is of check; .harness/scripts/gen-config-self-test.sh is the proof
+# that it still bites, and .harness/scripts/ruff-limits --self-test that the width check does.
+gates: venv config-fresh
+	$(BIN)/ruff check --config $(Q)/ruff.toml $(HARNESS)
+	$(BIN)/ruff format --config $(Q)/ruff.toml --check $(HARNESS)
+	$(BIN)/python $(S)/crap --self-test
+	$(BIN)/python $(S)/props --self-test
+	$(BIN)/python $(S)/escapes --self-test
+	$(BIN)/python $(S)/forward-only --self-test
+	$(BIN)/python $(S)/mutants --self-test
+	$(BIN)/python $(S)/diagrams --self-test
+	$(BIN)/python $(S)/ruff-limits --self-test
+	$(S)/leak-check.sh --self-test
+	$(S)/pre-push-self-test.sh
+	$(S)/boundary-self-test.sh
+	$(S)/spec-guard-self-test.sh
+	$(S)/gen-config-self-test.sh
+	$(BIN)/python $(S)/gates
+
+# Each tool syncs its own locked environment into <tool>/.venv, so its dependencies never
+# enter the language's. The package a tool ships is named after its directory. escapes is
+# handed the package and the tests, never the tool's root, which holds the .venv.
+TOOLS := $(patsubst %/pyproject.toml,%,$(wildcard $(ROOT)/.harness/tools/*/pyproject.toml))
+
+tools: venv
+	$(BIN)/ruff check --config $(Q)/ruff.toml $(ROOT)/tools
+	$(BIN)/ruff format --config $(Q)/ruff.toml --check $(ROOT)/tools
+	@set -ex; for t in $(TOOLS); do \
+	  p=$$(basename $$t); \
+	  UV_PROJECT_ENVIRONMENT=$$t/.venv uv sync --project $$t --frozen --all-extras \
+	    --python python3.12 --quiet; \
+	  pyright --project $$t/pyright.json; \
+	  (cd $$t && .venv/bin/mypy --config-file $(Q)/mypy.ini $$p tests); \
+	  $(BIN)/python $(S)/escapes $$t/$$p $$t/tests; \
+	  mkdir -p $$t/.noslop; \
+	  (cd $$t && .venv/bin/coverage erase --rcfile=coveragerc \
+	    && .venv/bin/coverage run --rcfile=coveragerc -m pytest -q \
+	    && .venv/bin/coverage report --rcfile=coveragerc); \
+	done
+
+# A view of the code, not a check: computed from the code each time, so it cannot go stale,
+# and kept out of git, where it would. .github/workflows/map.yml draws it on every PR. It is
+# drawn from the root, where .harness/scripts/diagrams finds the package under its SOURCE, into the
+# root's .noslop/map, where that workflow reads it.
+map: venv
+	$(BIN)/python $(S)/diagrams --root $(ROOT) --out $(ROOT)/.noslop/map
+
+clean-noslop:
+	rm -rf $(OUT) $(ROOT)/.noslop/map mutants .hypothesis .import_linter_cache

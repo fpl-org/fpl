@@ -2,9 +2,9 @@
 
 Every branch name in this repository parses. A name says who is working (a human, or which
 agent), what kind of work it is, which stack it belongs to, and where in the stack it sits —
-without consulting the forge. `scripts/branch-lint` is the grammar as an executable and the
+without consulting the forge. `.harness/scripts/branch-lint.sh` is the grammar as an executable and the
 only parser; every gate below calls it, so this document and the gates cannot drift apart
-silently (`scripts/branch-lint --self-test`).
+silently (`.harness/scripts/branch-lint.sh --self-test`).
 
 ## Grammar
 
@@ -107,7 +107,7 @@ The numbered `part` has the same weakness in a milder form: after a reorder `2` 
 | Gate | Where | What it stops |
 | --- | --- | --- |
 | **[gate]** `reference-transaction` | local, `.githooks/` | *creating* a branch whose name does not parse (`git switch -c`, `git branch`, `git worktree add -b`, a fetch into `refs/heads/`). Git has no branch-creation hook; this is the hook that sees every ref update, and it cannot be skipped with `--no-verify`. Known gap: `git branch -m` (git 2.34 routes only the old name's deletion through the hook); the next two gates catch a renamed branch. |
-| **[gate]** `pre-push` | local, `.githooks/` | *pushing* to a remote branch whose name does not parse. The same hook first runs `scripts/forward-only`, which refuses a push over an approved pull request (`.agents/WORKFLOW.md`, rule 10); `FPL_BRANCH_GATE` does not switch that off. After it, `scripts/commit-lint -b <branch>` judges every commit the push adds, so a commit that carries another stack's `Stack:` is refused there too. |
+| **[gate]** `pre-push` | local, `.githooks/` | *pushing* to a remote branch whose name does not parse. The same hook first runs `.harness/scripts/forward-only`, which refuses a push over an approved pull request (`.agents/WORKFLOW.md`, rule 10); `FPL_BRANCH_GATE` does not switch that off. After it, `.harness/scripts/commit-lint.sh -b <branch>` judges every commit the push adds, so a commit that carries another stack's `Stack:` is refused there too. |
 | **[gate]** `commit-msg` | local, `.githooks/` | an agent commit (no `Human-Only: true`) on a branch outside the agent namespaces (`agent/<id>/…`, `<id>/…`). It does **not** compare the commit's model with the branch's `<id>` — see below. Human commits on agent branches stay legal; review fixups are normal. |
 | **[gate]** `branch-lint` workflow | forge, `.github/workflows/` | a pull request whose head branch does not parse; make it a required status check to harden it |
 
@@ -117,7 +117,7 @@ checkout, so a branch that predates a grammar change keeps working until it is p
 
 ## Changing the grammar
 
-Edit `scripts/branch-lint` (the patterns, the header comment, and the self-test table) and the
+Edit `.harness/scripts/branch-lint.sh` (the patterns, the header comment, and the self-test table) and the
 ABNF above in the same commit. A new agent is one more alternative in `id`; a new kind of work
 is one more alternative in `work`. Tool-imposed hierarchies that are not agent namespaces (a
 stacking tool's `gh/<user>/<n>/head`, say) are deliberately not admitted until the tool is

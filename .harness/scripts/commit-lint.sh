@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+#
+# .harness/scripts/commit-lint.sh — run the commit-msg gates over commits that already exist.
+#
+#   .harness/scripts/commit-lint.sh github/main..HEAD
+#   .harness/scripts/commit-lint.sh -b agent/claude/stack/x github/main..HEAD
+#   .harness/scripts/commit-lint.sh -b agent/claude/stack/x HEAD ^<sha> ^<sha>    (what pre-push hands it)
+#
+# .githooks/commit-msg judges a commit while it is being made, and only in a clone whose
+# hooks are wired, with a tool that runs hooks. `git commit --no-verify`, an unwired clone
+# and jj (.agents/JJ.md) all get past it. This runs the same hook, in its lint mode, over a
+# revision range, or any rev-list arguments, so the forge can judge every commit of a pull
+# request (.github/workflows/commit-lint.yml) and anyone can do the same before pushing.
+#
+# Each commit is also judged by .harness/scripts/boundary.sh: it changes harness paths or implementation
+# paths, never both (.agents/WORKTREES.md). Like the hook, the checker is this checkout's, never
+# the judged commit's, so a range from before .harness/scripts/boundary.sh existed is judged all the same.
+# Nothing switches it off. Merges are skipped (--no-merges), by both: main's ruleset requires
+# a linear history, so a merge commit cannot land, and the commits it brings are in the range.
+# A squash merge is the one landing no commit-lint sees (.agents/WORKTREES.md).
+#
+#   -b BRANCH   the branch the commits are headed for review on. With it, gate 8 wants
+#               the matching 'Stack:' trailer and gate 9 wants an agent branch for agent
+#               commits. Without it those two comparisons are skipped, which is what you
+#               want for a range of main.
+#
+# Agent commits may be authored by .git/agent-identity or by an accepted agent address.
+# Which addresses are accepted depends on who runs this:
+#   FPL_AGENT_EMAILS set (CI: the workflow sets it inline)   that list, space-separated, is
+#               the only one. .github/agent-emails comes from the tree under judgment, so a
+#               pull request could add its own author there; it is never read into the
+#               list. An address in it that the list lacks is refused, so drift shows.
+#   FPL_AGENT_EMAILS unset (local: commit-msg, pre-push)     .github/agent-emails.
+#
+# Each commit's own bytes are judged: git replace could put another commit's in their place.
+set -euo pipefail
+export GIT_NO_REPLACE_OBJECTS=1
+
+die() {
+	printf 'commit-lint: %s\n' "$*" >&2
+	exit 2
+}
+
+branch=""
+while getopts "b:" opt; do
+	case "$opt" in
+	b) branch="$OPTARG" ;;
+	*) die "usage: .harness/scripts/commit-lint.sh [-b <branch>] <rev-range>..." ;;
+	esac
+done
+shift $((OPTIND - 1))
+[ $# -ge 1 ] || die "usage: .harness/scripts/commit-lint.sh [-b <branch>] <rev-range>..."
+range="$*"
+
+top="$(git rev-parse --show-toplevel)"
+hook="$top/.githooks/commit-msg"
+[ -x "$hook" ] || die "no executable $hook"
+boundary="$top/.harness/scripts/boundary.sh"
+[ -x "$boundary" ] || die "no executable $boundary"
+commits="$(git rev-list --reverse --no-merges "$@")" || die "bad revision range: $range"
+[ -n "$commits" ] || die "no commits in $range"
+
+export FPL_LINT_BRANCH="$branch"
+listed="$top/.github/agent-emails"
+if [ -f "$listed" ]; then
+	file_emails="$(sed -e 's/#.*//' "$listed" | xargs)"
+	trusted_list="${FPL_AGENT_EMAILS:-}"
+	if [ -z "${trusted_list//[[:space:]]/}" ]; then
+		FPL_AGENT_EMAILS="$file_emails"
+	elif [ -n "$file_emails" ]; then
+		# Arrays, not unquoted strings: an address such as 41898282+claude[bot]@... would be
+		# globbed against the working directory.
+		read -r -a trusted <<<"$trusted_list"
+		read -r -a in_file <<<"$file_emails"
+		for a in "${in_file[@]}"; do
+			found=0
+			for t in "${trusted[@]}"; do
+				[ "$a" = "$t" ] && found=1
+			done
+			[ "$found" -eq 1 ] || die ".github/agent-emails lists '$a', which FPL_AGENT_EMAILS does not: the list the workflow sets is the trusted one, and a file in the tree under judgment cannot widen it"
+		done
+	fi
+fi
+export FPL_AGENT_EMAILS="${FPL_AGENT_EMAILS:-}"
+msg="$(mktemp)"
+trap 'rm -f "$msg"' EXIT
+
+bad=0 total=0 nl='
+'
+for c in $commits; do
+	total=$((total + 1))
+	git log -1 --format=%B "$c" >"$msg"
+	subject="$(git log -1 --format='%h %s' "$c")"
+	ok=1
+	out="$(FPL_LINT_COMMIT="$c" "$hook" "$msg" 2>&1)" || ok=0
+	sides="$("$boundary" "$c" "$branch" 2>&1)" || ok=0
+	[ -z "$sides" ] || out="$out${out:+$nl}$sides"
+	if [ "$ok" -eq 1 ]; then
+		printf 'ok    %s\n' "$subject"
+	else
+		bad=$((bad + 1))
+		printf 'FAIL  %s\n' "$subject"
+		printf '%s\n' "$out" | sed 's/^/        /'
+	fi
+done
+printf 'commit-lint: %d of %d commits failed\n' "$bad" "$total"
+[ "$bad" -eq 0 ]

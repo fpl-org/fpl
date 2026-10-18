@@ -13,13 +13,13 @@
 #      both; all trailers are read from the trailer block git reads (interpret-trailers)
 #   5. known trailers appear in canonical order
 #   6. unless Human-Only, the commit author email equals .git/agent-identity
-#   7. oracle guard: editing docs/DESIGN.md, docs/SPEC.md, fpl/features/*/spec.md or
-#      fpl/features/*/examples/* requires the literal marker [spec] in the message
-#  7b. policy guard: editing what sets how hard the gate judges (quality/, and the
-#      pyproject.toml, Makefile and mutants.allow of the root and of bootstrap/)
+#   7. oracle guard: editing 02-docs/02.01-design.md, 02-docs/02.02-spec.md, 03-fpl/03.01-features/*/spec.md or
+#      03-fpl/03.01-features/*/examples/* requires the literal marker [spec] in the message
+#  7b. policy guard: editing what sets how hard the gate judges (.harness/quality/, and the
+#      pyproject.toml, Makefile and mutants.allow of the root and of 01-bootstrap/)
 #      requires the literal marker [policy], and such a commit may not also touch
-#      the code or tests of a project (fpl/ or tests/, at the root or in bootstrap/)
-#   8. stack record: on a stack branch, human or agent (scripts/branch-lint),
+#      the code or tests of a project (fpl/ or tests/, at the root or in 01-bootstrap/)
+#   8. stack record: on a stack branch, human or agent (.harness/scripts/branch-lint.sh),
 #      the message carries 'Stack: <name>'; a message holds at most one Stack:, whose
 #      value always matches COMMIT_STACK_RE
 #   9. agent territory: a commit that is not Human-Only sits on an agent branch
@@ -31,13 +31,13 @@
 # change per commit, hunk-level staging.
 #
 # Leak gate (first, before any bypass: a merge message names branches): no private
-# term or secret in the message (scripts/leak-check; FPL_LEAK_GATE=warn overrides).
+# term or secret in the message (.harness/scripts/leak-check.sh; FPL_LEAK_GATE=warn overrides).
 #
 # Bypassed for a real merge, a real revert (see is_merge, is_revert) and, outside lint mode,
 # fixup!/squash!/amend! messages, which gates 7 and 7b still judge. A revert is real only when it holds the tree git revert
 # makes of the commit it names.
 #
-# Lint mode (scripts/commit-lint, CI): FPL_LINT_COMMIT=<sha> judges a commit that
+# Lint mode (.harness/scripts/commit-lint.sh, CI): FPL_LINT_COMMIT=<sha> judges a commit that
 # already exists instead of the one being made. The author and the changed files
 # then come from that commit, the branch from FPL_LINT_BRANCH (unset: gates 8
 # and 9 do not compare against a branch), FPL_AGENT_EMAILS adds accepted agent
@@ -84,7 +84,7 @@ fail() { # fail <rule id> <what is wrong> <what to do>
 
 # The private list is local, so there is nothing to judge a landed commit against in CI.
 if [ -z "$lint_commit" ]; then
-	"$repo_root/scripts/leak-check" --message "$given" || {
+	"$repo_root/.harness/scripts/leak-check.sh" --message "$given" || {
 		rc=$?
 		reuse_hint
 		exit "$rc"
@@ -199,17 +199,17 @@ first="$(sed -n '1p' "$msg_file")"
 # 7. oracle guard, 7b. policy guard -------------------------------------------
 # One pass over the paths the commit changes. They are read raw and NUL-separated: without
 # -z git quotes a name holding non-ASCII, quote, backslash or control characters, in quotes
-# and with escapes, so it starts with a quote and no pattern anchored at fpl/features/
-# or quality/ takes it. --no-renames: a rename would show its new name only, and a spec file
-# moved out of fpl/features/ would go unseen.
-protected='^(docs/DESIGN\.md|docs/SPEC\.md|fpl/features/[^/]+/spec\.md|fpl/features/[^/]+/examples/.+)$'
-policy='^(quality/.+|(bootstrap/)?(pyproject\.toml|Makefile|mutants\.allow))$'
-code='^(bootstrap/)?(fpl|tests)/'
+# and with escapes, so it starts with a quote and no pattern anchored at 03-fpl/03.01-features/
+# or .harness/quality/ takes it. --no-renames: a rename would show its new name only, and a spec file
+# moved out of 03-fpl/03.01-features/ would go unseen.
+protected='^(02-docs/02\.01-design\.md|02-docs/02\.02-spec\.md|03-fpl/03\.01-features/[^/]+/spec\.md|03-fpl/03\.01-features/[^/]+/examples/.+)$'
+policy='^(.harness/quality/.+|(01-bootstrap/)?(pyproject\.toml|Makefile|mutants\.allow))$'
+code='^(01-bootstrap/(fpl|tests)/|03-fpl/|tests/)'
 
 # judge_paths: NUL-separated paths on stdin. Sets
 #   touches_spec    1 if one is a protected spec file
 #   touches_policy  1 if one sets the gate's policy; policy_names holds the first three
-#   touches_code    1 if one is under fpl/ or tests/, at the root or in bootstrap/
+#   touches_code    1 if one is under fpl/ or tests/, at the root or in 01-bootstrap/
 # It reads every path: a match must stay a match however long the list is (grep -q stops at
 # the first one, the writer takes SIGPIPE, and under pipefail the match reads as none). It
 # matches bytes: in a UTF-8 locale a byte that is no UTF-8 is not a character that `.` or
@@ -251,7 +251,7 @@ guard_paths() {
 		grep -Fq '[policy]' "$msg_file" \
 			|| fail policy-guard "this commit changes the gate's policy ($policy_names)" "add the marker [policy] to the message if the change is intended"
 		if [ "$touches_code" -eq 1 ]; then
-			fail policy-split "a [policy] commit may not also change fpl/ or tests/ (or bootstrap/fpl/, bootstrap/tests/)" "split it: the policy change in one commit, the code in another"
+			fail policy-split "a [policy] commit may not also change fpl/ or tests/ (or 01-bootstrap/fpl/, 01-bootstrap/tests/)" "split it: the policy change in one commit, the code in another"
 		fi
 	fi
 }
@@ -503,7 +503,7 @@ canonical_keys() {
 # paragraph of such lines alone, spared whole: one of them, 2843d5b, keeps its trailers in the
 # paragraph above a lone Signed-off-by.
 # Not mapfile: bash 3.2, still /bin/bash on macOS, lacks it, and pre-push reaches this hook
-# through scripts/commit-lint wherever a push is made.
+# through .harness/scripts/commit-lint.sh wherever a push is made.
 lines=()
 while IFS= read -r line || [ -n "$line" ]; do lines+=("$line"); done <"$msg_file"
 n=${#lines[@]}
@@ -624,10 +624,10 @@ fi
 if [ "$human" -eq 0 ]; then
 	grep -Eq '^Assisted-By: [^[:space:]]' <<<"$trailers" \
 		|| fail provenance-assisted "missing 'Assisted-By:' trailer (or 'Human-Only: true')" \
-			"commit with scripts/acommit, or add the line 'Human-Only: true' to a commit you wrote yourself"
+			"commit with .harness/scripts/acommit.sh, or add the line 'Human-Only: true' to a commit you wrote yourself"
 	grep -Eq '^Session-Id: [^[:space:]]' <<<"$trailers" \
 		|| fail provenance-session "missing 'Session-Id:' trailer (or 'Human-Only: true')" \
-			"commit with scripts/acommit -S <session id>, or add 'Human-Only: true' to a commit you wrote yourself"
+			"commit with .harness/scripts/acommit.sh -S <session id>, or add 'Human-Only: true' to a commit you wrote yourself"
 
 	# 6. author identity ----------------------------------------------------
 	id_file="$(git rev-parse --git-dir)/agent-identity"
@@ -637,7 +637,7 @@ if [ "$human" -eq 0 ]; then
 	want="$(printf '%s' "$want" | xargs)" # trim
 	[ -n "$want" ] \
 		|| fail agent-identity-unset "agent identity unset" \
-			"run scripts/agent-identity set <email> (or commit with 'Human-Only: true')"
+			"run .harness/scripts/agent-identity.sh set <email> (or commit with 'Human-Only: true')"
 	known=0
 	# An array, not an unquoted $want: the shell would glob an address such as
 	# 41898282+claude[bot]@users.noreply.github.com against the working directory.
@@ -647,7 +647,7 @@ if [ "$human" -eq 0 ]; then
 	done
 	[ "$known" -eq 1 ] \
 		|| fail author-email "author email is '$author_email', expected the machine account '$want'" \
-			"commit with scripts/acommit, or -H for a human commit"
+			"commit with .harness/scripts/acommit.sh, or -H for a human commit"
 fi
 
 # 5. trailer order --------------------------------------------------------------
@@ -688,12 +688,12 @@ else
 	branch="$(git branch --show-current)"
 fi
 parsed=""
-[ -n "$branch" ] && parsed="$("$repo_root/scripts/branch-lint" --parse "$branch" 2>/dev/null || true)"
+[ -n "$branch" ] && parsed="$("$repo_root/.harness/scripts/branch-lint.sh" --parse "$branch" 2>/dev/null || true)"
 want_stack="$(printf '%s\n' "$parsed" | sed -n 's/^stack=//p')"
 if [ -n "$want_stack" ]; then
 	[ "$stack_val" = "$want_stack" ] \
 		|| fail stack-missing "on branch $branch the message needs 'Stack: $want_stack' (got '${stack_val:-none}')" \
-			"add the line 'Stack: $want_stack' to the trailers (scripts/acommit does)"
+			"add the line 'Stack: $want_stack' to the trailers (.harness/scripts/acommit.sh does)"
 fi
 
 # 9. agent territory ------------------------------------------------------------

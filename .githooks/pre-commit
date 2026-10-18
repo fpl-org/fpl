@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 #
 # .githooks/pre-commit — two symbolic gates on what a commit may hold:
-#   1. no private term or secret in the staged change (scripts/leak-check)
+#   1. no private term or secret in the staged change (.harness/scripts/leak-check.sh)
 #   2. no direct commits on main
 #
 # The harness/implementation boundary is not judged here. It is a rule on the commit, not on
 # the checkout (.agents/WORKTREES.md): any checkout may hold any work, and one commit stays on
-# one side. scripts/commit-lint judges it with scripts/boundary at push and in CI, which every
+# one side. .harness/scripts/commit-lint.sh judges it with .harness/scripts/boundary.sh at push and in CI, which every
 # commit reaches however it was made; a hook here would see a `git commit` only.
 
 set -euo pipefail
 
 # Gate 1 first: the repository is public.
 # FPL_LEAK_GATE = block (default) | warn | off, read by the script.
-"$(git rev-parse --show-toplevel)/scripts/leak-check" --staged
+"$(git rev-parse --show-toplevel)/.harness/scripts/leak-check.sh" --staged
 
 # Gate 2. .agents/WORKFLOW.md rule 6: everything lands on main through a GitHub PR. This is
 # the early, friendly half of that rule: it stops a `git commit` on main before

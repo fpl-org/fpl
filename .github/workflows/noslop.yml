@@ -33,13 +33,13 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/uv
-          key: uv-${{ runner.os }}-${{ hashFiles('quality/uv.lock') }}
+          key: uv-${{ runner.os }}-${{ hashFiles('.harness/quality/uv.lock') }}
       - name: The gate
         run: |
           if [ -f Makefile ]; then
             nix develop -c make check
           else
-            nix develop -c make -f quality/noslop.mk gates
+            nix develop -c make -f .harness/quality/noslop.mk gates
           fi
 
   ready:
@@ -53,11 +53,11 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/uv
-          key: uv-${{ runner.os }}-${{ hashFiles('quality/uv.lock') }}
+          key: uv-${{ runner.os }}-${{ hashFiles('.harness/quality/uv.lock') }}
       - name: The long search
         run: |
           if [ -f Makefile ]; then
             nix develop -c make ready
           else
-            nix develop -c make -f quality/noslop.mk gates
+            nix develop -c make -f .harness/quality/noslop.mk gates
           fi

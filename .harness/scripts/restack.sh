@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+#
+# .harness/scripts/restack.sh — rebase the current stack onto the latest base, moving every
+# branch ref in the stack with it.
+#
+# This is the whole "restack" step from .agents/WORKFLOW.md. It relies on
+# rebase.updateRefs=true (set by .harness/scripts/setup.sh) so intermediate branch refs that
+# point at commits in the stack are carried along instead of left behind.
+#
+# Usage:
+#   .harness/scripts/restack.sh              # fetch, rebase HEAD onto the upstream of <base>
+#   .harness/scripts/restack.sh <base>       # use a different base branch (default: main)
+#   .harness/scripts/restack.sh --continue   # after resolving conflicts
+#   .harness/scripts/restack.sh --abort
+
+set -euo pipefail
+
+case "${1:-}" in
+--continue) exec git rebase --continue ;;
+--abort)    exec git rebase --abort ;;
+esac
+
+base="${1:-main}"
+cur="$(git branch --show-current)"
+[ -n "$cur" ] || { echo "restack: detached HEAD; checkout your stack branch first" >&2; exit 1; }
+
+# Where the base lives is whatever the base branch tracks. Remotes are named after the place
+# (.agents/WORKFLOW.md, Setup), so no remote name is assumed here.
+upstream="$(git rev-parse --abbrev-ref --symbolic-full-name "$base@{upstream}" 2>/dev/null)" \
+	|| { echo "restack: '$base' tracks no upstream; git branch -u <remote>/$base $base" >&2; exit 1; }
+remote="$(git config "branch.$base.remote")"
+
+echo "==> git fetch $remote"
+git fetch "$remote"
+
+ahead="$(git rev-list --count "$upstream..HEAD")"
+behind="$(git rev-list --count "HEAD..$upstream")"
+echo "==> $cur is $ahead ahead / $behind behind $upstream"
+if [ "$behind" -eq 0 ]; then
+	echo "    already on top of $upstream; nothing to restack"
+	exit 0
+fi
+
+echo "==> git rebase --update-refs $upstream"
+git rebase --update-refs "$upstream"
+echo "==> done; refs in the stack moved with it:"
+git --no-pager log --oneline --decorate "$upstream..HEAD"

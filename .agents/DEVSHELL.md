@@ -34,12 +34,12 @@ started elsewhere does not: launch it from the repo directory, or wrap the comma
 
 | Tools | Why |
 | --- | --- |
-| `bash` 5, GNU `coreutils` `grep` `sed` `awk` | `scripts/` and `.githooks/` need bash ≥ 4 (`mapfile`) and were written against GNU userland; macOS ships bash 3.2 and BSD tools |
+| `bash` 5, GNU `coreutils` `grep` `sed` `awk` | `.harness/scripts/` and `.githooks/` need bash ≥ 4 (`mapfile`) and were written against GNU userland; macOS ships bash 3.2 and BSD tools |
 | `git`, `jj` | the workflow of `.agents/WORKFLOW.md`; `jj` is the optional one of `.agents/JJ.md` |
-| `gitleaks` | `scripts/leak-check`, which the hooks run on every commit and push (`.agents/WORKFLOW.md`, rule 9), so it cannot be an opt-in layer |
-| Python 3.12, `uv`, `ruff`, `pyright`, `make` | the implementation stack of `.agents/STACK.md` and the gate of `.agents/QUALITY.md`. `make` syncs Lark and the gate's Python tools into the worktree's `.venv` with `uv`, at the versions `quality/uv.lock` pins; several are not in nixpkgs. On Linux the shell also puts libstdc++ on `LD_LIBRARY_PATH`, which CrossHair's solver needs |
+| `gitleaks` | `.harness/scripts/leak-check.sh`, which the hooks run on every commit and push (`.agents/WORKFLOW.md`, rule 9), so it cannot be an opt-in layer |
+| Python 3.12, `uv`, `ruff`, `pyright`, `make` | the implementation stack of `.agents/STACK.md` and the gate of `.agents/QUALITY.md`. `make` syncs Lark and the gate's Python tools into the worktree's `.venv` with `uv`, at the versions `.harness/quality/uv.lock` pins; several are not in nixpkgs. On Linux the shell also puts libstdc++ on `LD_LIBRARY_PATH`, which CrossHair's solver needs |
 
-On first entry in a clone or worktree the shell runs `scripts/setup` (git hooks, stacked-commit
+On first entry in a clone or worktree the shell runs `.harness/scripts/setup.sh` (git hooks, stacked-commit
 config, identity report). It checks `core.hooksPath` first, so every later entry is silent.
 
 Not in the shell: credentials of any kind, and the `claude` CLI that the soft `atomic-check`
@@ -49,7 +49,7 @@ gate calls when it is present (the gate fails open without it, `.agents/COMMITS.
 
 The default shell has no forge client; the harness runs on git alone (`.agents/WORKFLOW.md`,
 rule 7). Forge clients are **layers**, declared as data in `layers` in `flake.nix`;
-`scripts/layer` lists them. Today: `github` (`gh`), `gitlab` (`glab`), `radicle` (`rad`,
+`.harness/scripts/layer.sh` lists them. Today: `github` (`gh`), `gitlab` (`glab`), `radicle` (`rad`,
 `radicle-node`, `git-remote-rad`), `radicleui`, which `extends` `radicle` with the desktop
 app for reviewing patches, and `forges`, which has no packages of its own and `extends` the
 three clients.
@@ -62,13 +62,13 @@ nix develop .#github -c gh pr create …
 nix develop .#github-gitlab
 ```
 
-With direnv, `scripts/layer` turns layers on and off for the checkout it is run in:
+With direnv, `.harness/scripts/layer.sh` turns layers on and off for the checkout it is run in:
 
 ```
-scripts/layer                    # list them; * marks the ones that are on here
-scripts/layer on github gitlab   # direnv loads .#github-gitlab at the next prompt
-scripts/layer off gitlab
-scripts/layer reset              # back to .#default
+.harness/scripts/layer.sh                    # list them; * marks the ones that are on here
+.harness/scripts/layer.sh on github gitlab   # direnv loads .#github-gitlab at the next prompt
+.harness/scripts/layer.sh off gitlab
+.harness/scripts/layer.sh reset              # back to .#default
 ```
 
 It stores the choice in `.fpl-shell`, one layer per line, after checking each name against
@@ -115,7 +115,7 @@ Update deliberately, as its own commit: `nix flake update`, then `make check` in
   with Nix 2.35.2 unpacked into a home directory and mounted at `/nix` through `bwrap`, since
   the VM gives no root. Every tool resolves from the Nix store, `lark` 1.3.1 imports, `ruff`,
   `pyright` and `pytest` run on a Lark snippet, `.#default` has no `gh`, `.#github-gitlab`
-  and `.#forges` have `gh` and `glab`, `scripts/layer` writes what direnv then loads.
+  and `.#forges` have `gh` and `glab`, `.harness/scripts/layer.sh` writes what direnv then loads.
   Intel Macs (`x86_64-darwin`) are not a target: nixpkgs 26.05 is the last release to support
   them.
 - **Layers** — on `x86_64-linux` with direnv 2.37.1. No `.fpl-shell` loads `.#default`,
@@ -126,14 +126,14 @@ Update deliberately, as its own commit: `nix flake update`, then `make check` in
   Blank lines, comments, a missing final newline and a repeated name are fine. An unknown name
   and a line of shell metacharacters are skipped with the error and execute nothing. In the
   flake, a cycle, an unknown name in `extends` and a `-` in a layer name each stop evaluation
-  with a message. `scripts/layer`: list, `on`, `off` and `reset` write what `.envrc` then
+  with a message. `.harness/scripts/layer.sh`: list, `on`, `off` and `reset` write what `.envrc` then
   loads; an unknown name and a name of shell metacharacters are refused before anything is
   stored; stray lines already in `.fpl-shell` are dropped at the next write.
 - **Layers on the maintainer's `aarch64-darwin` Mac** — with direnv, each at its own prompt:
   `gitlab` then `github` in `.fpl-shell` loaded `.#github-gitlab`, with `gh`, `glab` and
   `ruff` from the Nix store; `gitlab` alone loaded `.#gitlab`, with `glab` from the store and
   `gh` falling back to the system one; `forges` loaded `.#forges`, with both from the store.
-  The file was written by hand there; `scripts/layer` has not been run on that Mac.
+  The file was written by hand there; `.harness/scripts/layer.sh` has not been run on that Mac.
 - **"No `gh`" means none from this flake.** That Mac also has a `gh` in nix-darwin's system
   profile, so in the default shell `command -v gh` prints `/run/current-system/sw/bin/gh`. A
   dev shell prepends to `PATH`; it does not hide what the machine already has.

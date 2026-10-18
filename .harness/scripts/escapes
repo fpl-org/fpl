@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+""".harness/scripts/escapes — every way out of a check is named and says why.
+
+    .harness/scripts/escapes [path ...]            (default: 01-bootstrap/fpl 01-bootstrap/tests)
+    .harness/scripts/escapes --self-test
+
+Each gate has a comment that silences it for one line. Those are allowed only in the form
+that names the rule and gives a reason after ` -- `, so a reviewer, and the next agent, can
+see what was waived and judge whether it still holds:
+
+    # noqa: E731 -- <reason>
+    # pyright: ignore[reportUnknownMemberType] -- <reason>
+    # type: ignore[arg-type] -- <reason>
+    # pragma: no cover -- <reason>
+    # pragma: no mutate -- <reason>
+
+`# type: ignore` is mypy's; pyright is told not to honour it (.harness/quality/pyright.json), so each
+checker is waived only in its own form. A path that is not a directory is an error, never
+an empty scan: the defaults are the repository's, found from this file, wherever it runs.
+Exit 0: none bare; 1: some; 2: usage, or a path that is missing.
+"""
+
+import contextlib
+import io
+import os
+import re
+import sys
+import tempfile
+from pathlib import Path
+
+REPO = Path(os.path.abspath(__file__)).parent.parent
+DEFAULTS = [REPO / "bootstrap" / "fpl", REPO / "bootstrap" / "tests"]
+
+RULES = [
+    (
+        re.compile(r"#\s*type:\s*ignore(?P<rest>.*)"),
+        re.compile(r"^\[[\w-]+(,\s*[\w-]+)*\]\s+--\s+\S"),
+        "name the code and give a reason: '# type: ignore[<code>] -- <reason>'",
+    ),
+    (
+        re.compile(r"#\s*noqa\b(?P<rest>.*)"),
+        re.compile(r"^:\s*[A-Z]+\d+(,\s*[A-Z]+\d+)*\s+--\s+\S"),
+        "name the rule and give a reason: '# noqa: <RULE> -- <reason>'",
+    ),
+    (
+        re.compile(r"#\s*pyright:\s*ignore(?P<rest>.*)"),
+        re.compile(r"^\[\w+(,\s*\w+)*\]\s+--\s+\S"),
+        "name the rule and give a reason: '# pyright: ignore[<rule>] -- <reason>'",
+    ),
+    (
+        re.compile(r"#\s*pragma:\s*no\s+(?:cover|mutate)\b(?P<rest>.*)"),
+        re.compile(r"^\s+--\s+\S"),
+        "give a reason: '# pragma: no cover -- <reason>'",
+    ),
+]
+
+
+def findings(path: Path) -> list[str]:
+    out = []
+    for n, line in enumerate(path.read_text().splitlines(), 1):
+        for pattern, good, advice in RULES:
+            m = pattern.search(line)
+            if m and (good is None or not good.search(m.group("rest"))):
+                out.append(f"{path}:{n}: {line.strip()}\n    {advice}")
+    return out
+
+
+def main(argv: list[str]) -> int:
+    if argv == ["--self-test"]:
+        return self_test()
+    roots = [Path(a) for a in argv] or DEFAULTS
+    absent = [f"escapes: {r} is not a directory" for r in roots if not r.is_dir()]
+    if absent:
+        print("\n".join(absent), file=sys.stderr)
+        return 2
+    found = [f for root in roots for p in sorted(root.rglob("*.py")) for f in findings(p)]
+    for f in found:
+        print(f"escapes: {f}")
+    if not found:
+        print("escapes: every waiver names its rule and gives a reason")
+    return 1 if found else 0
+
+
+def self_test() -> int:
+    good = [
+        "x = f()  # noqa: E731 -- a local predicate",
+        "y = g()  # pyright: ignore[reportUnknownMemberType] -- lark types it loosely",
+        "if z:  # pragma: no cover -- only on Windows",
+        "w = 1  # pragma: no mutate -- the constant is the spec",
+        "y = g()  # type: ignore[arg-type] -- lark's stub takes str only",
+        "plain = 'no waiver here'",
+    ]
+    bad = [
+        "x = f()  # noqa",
+        "x = f()  # noqa: E731",
+        "y = g()  # type: ignore",
+        "y = g()  # type: ignore[arg-type]",
+        "y = g()  # pyright: ignore",
+        "y = g()  # pyright: ignore[reportAny]",
+        "if z:  # pragma: no cover",
+        "w = 1  # pragma: no mutate",
+    ]
+    checks: list[tuple[str, bool]] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for i, line in enumerate(good + bad):
+            p = Path(tmp) / f"f{i}.py"
+            p.write_text(line + "\n")
+            flagged = bool(findings(p))
+            checks.append(
+                (("refuses " if line in bad else "allows ") + line, flagged == (line in bad))
+            )
+    with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stderr(io.StringIO()):
+        checks.append(("a missing path is refused", main([str(Path(tmp) / "gone")]) == 2))
+    checks.append(("the defaults are directories", all(r.is_dir() for r in DEFAULTS)))
+    failed = [n for n, ok in checks if not ok]
+    for n in failed:
+        print(f"FAIL {n}", file=sys.stderr)
+    print(
+        f"escapes: self-test {'FAILED' if failed else 'ok'} "
+        f"({len(checks)} checks, {len(failed)} failed)"
+    )
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
