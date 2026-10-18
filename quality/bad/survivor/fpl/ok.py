@@ -1,4 +1,7 @@
-"""double without its contract: a contract would catch the mutants the test misses."""
+"""
+double without its contract: a contract would catch the mutants the test
+misses.
+"""
 
 
 def double(n: int) -> int:

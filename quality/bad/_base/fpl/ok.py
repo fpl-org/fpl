@@ -1,4 +1,7 @@
-"""The one piece of code the fixture holds, so every gate has something to pass."""
+"""
+The one piece of code the fixture holds, so every gate has something to
+pass.
+"""
 
 import icontract
 

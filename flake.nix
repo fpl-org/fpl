@@ -99,7 +99,12 @@
       # `make gates` fails when one differs from what this file says. A limit changes here, in
       # a harness commit, and `nix run .#gen-config` rewrites the rest.
       limits = {
-        python.lineLength = 100; # quality/ruff.toml: ruff's line-length, the formatter's width
+        # PEP 8: 79 for code, 72 for docstrings and comments. EditorConfig can state one
+        # width per file, so *.py shows 79; ruff gates the docstring width.
+        python = {
+          lineLength = 79;
+          docLength = 72;
+        };
         commit = {
           header = 72; # the whole title line, <type>(<scope>): <summary>
           body = 72; # every line below it, fenced code and the like aside (.agents/COMMITS.md)
@@ -128,15 +133,19 @@
             [COMMIT_EDITMSG]
             max_line_length = ${toString (nixpkgs.lib.min limits.commit.header limits.commit.body)}
 
-            # quality/ruff.toml extends quality/ruff-limits.toml, which holds line-length.
+            # quality/ruff.toml extends quality/ruff-limits.toml. EditorConfig has one
+            # width, the code limit. The docstring limit is in that ruff file.
             [*.py]
             max_line_length = ${toString limits.python.lineLength}
           '';
 
           # ruff reads this through `extend` in quality/ruff.toml, so that file stays
-          # hand-written and carries only this key from here.
+          # hand-written. line-length is the formatter and E501. max-doc-length is W505.
           "quality/ruff-limits.toml" = ''
             ${notice "#"}line-length = ${toString limits.python.lineLength}
+
+            [lint.pycodestyle]
+            max-doc-length = ${toString limits.python.docLength}
           '';
 
           # Sourced by .githooks/commit-rules, which stays hand-written.
@@ -219,6 +228,50 @@
               fi
               [ "$stale$unmarked" = 00 ] || exit 1
             fi
+          '';
+        };
+
+      # nix run .#marimo [-- ARGS]
+      #   (no argument)  open this checkout's README in Marimo
+      #   ARGS           passed to `marimo edit`, so --headless and --port work
+      # The walker is the tangled tree. PYTHONSAFEPATH keeps the feature tree fpl/ off the
+      # path, or `import fpl` would find that namespace instead of bootstrap/python/fpl.
+      marimoApp =
+        pkgs:
+        let
+          # narwhals ships with marimo, icontract with the walker. On aarch64-darwin
+          # neither is in the binary cache, and their install checks build polars, pyspark,
+          # z3 and django. The notebook does not use those, so the checks stay off.
+          python =
+            (pkgs.python312.override {
+              packageOverrides = _final: prev: {
+                narwhals = prev.narwhals.overrideAttrs (_old: {
+                  doInstallCheck = false;
+                });
+                icontract = prev.icontract.overrideAttrs (_old: {
+                  doInstallCheck = false;
+                });
+              };
+            }).withPackages
+              (ps: [
+                ps.marimo
+                ps.lark
+                ps.icontract
+                ps.click
+              ]);
+        in
+        pkgs.writeShellApplication {
+          name = "fpl-marimo";
+          runtimeInputs = [ pkgs.git ];
+          text = ''
+            top="$(git rev-parse --show-toplevel)"
+            cd "$top"
+            export PYTHONSAFEPATH=1
+            export PYTHONPATH="$top/bootstrap/python''${PYTHONPATH:+:$PYTHONPATH}"
+            if [ "$#" -eq 0 ]; then
+              exec ${python}/bin/marimo edit README.md
+            fi
+            exec ${python}/bin/marimo edit "$@"
           '';
         };
     in
@@ -311,6 +364,11 @@
           type = "app";
           program = "${genConfig pkgs}/bin/gen-config";
           meta.description = "Write the files generated from lib.limits (--check: only compare)";
+        };
+        marimo = {
+          type = "app";
+          program = "${marimoApp pkgs}/bin/fpl-marimo";
+          meta.description = "Open the checkout README in Marimo";
         };
       });
 
