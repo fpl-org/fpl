@@ -158,7 +158,7 @@ ready: harden gates
 	$(BIN)/pip-audit --progress-spinner off --requirement $(OUT)/requirements.txt --disable-pip
 
 # The harness's own Python, judged by the same ruff it judges others with.
-HARNESS := $(addprefix $(S)/,crap props escapes mutants gates forward-only diagrams ruff-limits \
+HARNESS := $(addprefix $(S)/,crap props escapes mutants gates forward-only diagrams stack-tree ruff-limits \
              wip-count brake-flip ruleset-check) \
            $(addprefix $(S)/,task rad-cob-dagtaak) $(Q)/noslop_pytest.py
 
@@ -176,6 +176,7 @@ gates: venv config-fresh
 	$(BIN)/python $(S)/forward-only --self-test
 	$(BIN)/python $(S)/mutants --self-test
 	$(BIN)/python $(S)/diagrams --self-test
+	$(BIN)/python $(S)/stack-tree --self-test
 	$(BIN)/python $(S)/ruff-limits --self-test
 	$(BIN)/python $(S)/wip-count --self-test
 	$(BIN)/python $(S)/brake-flip --self-test
