@@ -277,6 +277,9 @@ a forge in fixtures and a bare repository on disk.
   approved (`land/ancestor`): restack before approval, never after. A pull request that
   lands while a fix for a bug it carries waits further up names the bug under "Still
   waiting" in its "What merging this changes for FPL" section.
+  `scripts/stack-tree` draws the open pull requests as the tree their bases make; its roots,
+  those based on `main`, are what `scripts/land` takes, and a root it annotates needs the
+  retarget first.
 - **A pull request over `land/size` is split, not rewritten.** `land/size` refuses more than
   10 commits or 600 lines added plus removed. Pick a commit of the range where the subject
   changes and where both halves fit both limits (`git rev-list --count <base>..<cut>`,
