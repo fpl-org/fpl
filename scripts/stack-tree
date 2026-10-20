@@ -1,0 +1,517 @@
+#!/usr/bin/env python3
+# gates: $BIN/python $S/stack-tree --self-test
+"""scripts/stack-tree — the open pull requests as the tree their bases make, never committed.
+
+    scripts/stack-tree [--commits] [--mermaid] [--json FILE] [--repo OWNER/NAME]
+    scripts/stack-tree --self-test
+
+The maintainer stacks pull requests: one is based on the head branch of another. GitHub's list
+is flat, so the shape is invisible. This draws it, as a view like scripts/diagrams: computed on
+demand from the forge, never written into the repository. Native stacked pull requests are not
+used: they are a linear chain, and they land through merge methods that rewrite SHAs, which
+scripts/land (a fast-forward) refuses to depend on. The tree is computed here instead.
+
+The input is the JSON `gh pr list --state open --limit 300 --json number,title,headRefName,
+baseRefName,isDraft,isCrossRepository` prints, with a `commits` list of oid and messageHeadline
+per pull request when --commits asks for them. --json FILE (or `-` for stdin) reads it from
+there; without it the script asks the forge, read-only, like scripts/sweep: gh with the machine
+account's token (STACK_TREE_GH_USER, default psjg-claude) for STACK_TREE_REPO or --repo (default:
+the `github` remote). The commits come one `gh pr view` each, since one list with them exceeds
+GitHub's GraphQL node limit. Drawing needs python3 alone; gh is only the transport, and without
+it the remedy is `scripts/layer on github`. A token is never printed.
+
+The rule: a pull request hangs under the open pull request whose head branch is its base, and
+only a same-repository pull request can be a parent: a fork's branch may be named anything,
+`main` included. One whose base has no open parent is a root under that base branch. The roots
+based on `main` are what scripts/land takes; any other root is annotated, because it needs a
+retarget (or its base landed) first.
+
+    main
+    ├─ #179 a lone pull request
+    └─ #195 (draft) the bottom of a stack
+       └─ #190 the one above it
+
+--commits lists each pull request's own commits under it. --mermaid prints a fenced Mermaid
+block (`graph BT`, trunk at the bottom, drafts dashed) to paste into a comment or a run's
+$GITHUB_STEP_SUMMARY, where GitHub draws it. Node ids are p<number> and b<k>, never taken from
+a title. Titles, headlines and branch names are untrusted forge text: every character of
+Unicode category C (control, format such as a bidi override, surrogate, private use, and so
+newlines) is shown as `?`, in both outputs. The text is cut to the terminal's width only when
+stdout is a terminal.
+
+Refused, naming the rule and the remedy (exit 2): stack-tree/input (not the JSON above),
+stack-tree/ambiguous (two open same-repository pull requests share a head branch),
+stack-tree/cycle (pull requests that are each other's ancestors, which a walk from the roots
+would silently drop), stack-tree/limit (300 came back, so some may be missing),
+stack-tree/gh and stack-tree/forge (the forge could not be read), stack-tree/usage.
+
+Never: writes a file, calls the forge for more than a read, shows review or check state (it
+has none yet), or guesses at input it does not recognise.
+
+Exit 0: drawn (no open pull requests draws that), or the self-test passed; 1: the self-test
+failed; 2: refused.
+"""
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import unicodedata
+from dataclasses import dataclass
+from pathlib import Path
+
+MAIN = "main"
+ORPHAN = "(no open pull request on this branch: retarget or land first)"
+LIMIT = 300
+FIELDS = {
+    "number": int,
+    "title": str,
+    "headRefName": str,
+    "baseRefName": str,
+    "isDraft": bool,
+    "isCrossRepository": bool,
+}
+MERMAID_ESCAPES = str.maketrans({'"': "#quot;", "<": "#lt;", ">": "#gt;", "&": "#amp;"})
+INPUT_REMEDY = f"feed it `gh pr list --state open --limit {LIMIT} --json {','.join(FIELDS)}`"
+COMMITS_REMEDY = INPUT_REMEDY[:-1] + ",commits`, per pull request as `gh pr view` has it"
+
+
+class RefusalError(Exception):
+    """A refusal with its rule and remedy, ready to print."""
+
+
+def refuse(rule: str, what: str, remedy: str) -> RefusalError:
+    return RefusalError(f"{rule}: {what}\n    remedy: {remedy}")
+
+
+@dataclass(frozen=True)
+class Pr:
+    number: int
+    title: str
+    head: str
+    base: str
+    draft: bool
+    cross: bool
+    commits: tuple[tuple[str, str], ...]  # (7-char oid, headline), as the forge lists them
+
+
+@dataclass(frozen=True)
+class Forest:
+    roots: dict[str, list[int]]  # base branch -> its pull requests, by number
+    kids: dict[int, list[int]]  # number -> the pull requests based on its head, by number
+
+
+def clean(text: str) -> str:
+    """Show every character of Unicode category C as `?`: forge text is not trusted."""
+    return "".join("?" if unicodedata.category(c).startswith("C") else c for c in text)
+
+
+# --- the readers: data in, Pr out, nothing guessed -------------------------------------------
+
+
+def read_commit(raw: object, at: int) -> tuple[str, str]:
+    if not (
+        isinstance(raw, dict)
+        and type(raw.get("oid")) is str
+        and type(raw.get("messageHeadline")) is str
+    ):
+        raise refuse(
+            "stack-tree/input", f"entry {at}: a commit lacks oid or messageHeadline", INPUT_REMEDY
+        )
+    return raw["oid"][:7], raw["messageHeadline"]
+
+
+def read_pr(raw: object, at: int, with_commits: bool) -> Pr:
+    if not isinstance(raw, dict):
+        raise refuse("stack-tree/input", f"entry {at} is not an object", INPUT_REMEDY)
+    for key, kind in FIELDS.items():
+        if type(raw.get(key)) is not kind:
+            raise refuse(
+                "stack-tree/input", f"entry {at}: {key} is not a {kind.__name__}", INPUT_REMEDY
+            )
+    listed = raw.get("commits") if with_commits else ()
+    if type(listed) not in (list, tuple):
+        raise refuse("stack-tree/input", f"entry {at}: commits is not a list", COMMITS_REMEDY)
+    commits = tuple(read_commit(c, at) for c in listed)
+    return Pr(
+        raw["number"],
+        raw["title"],
+        raw["headRefName"],
+        raw["baseRefName"],
+        raw["isDraft"],
+        raw["isCrossRepository"],
+        commits,
+    )
+
+
+def read_prs(text: str, with_commits: bool = False) -> list[Pr]:
+    try:
+        raw = json.loads(text)
+    except ValueError as e:
+        raise refuse("stack-tree/input", f"not JSON ({e})", INPUT_REMEDY) from e
+    if not isinstance(raw, list):
+        raise refuse("stack-tree/input", "the top level is not a list", INPUT_REMEDY)
+    prs = [read_pr(r, i, with_commits) for i, r in enumerate(raw)]
+    numbers = [p.number for p in prs]
+    if len(set(numbers)) != len(numbers):
+        raise refuse("stack-tree/input", "a pull request number appears twice", INPUT_REMEDY)
+    return sorted(prs, key=lambda p: p.number)
+
+
+# --- the core: the tree, and its two drawings ------------------------------------------------
+
+
+def numbers(ns: list[int]) -> str:
+    return " and ".join(f"#{n}" for n in ns)
+
+
+def forest(prs: list[Pr]) -> Forest:
+    """Hang each pull request under the same-repository one its base names; refuse what a walk
+    from the roots would hide: two pull requests for one head, or a cycle."""
+    heads: dict[str, Pr] = {}
+    for p in (p for p in prs if not p.cross):
+        if p.head in heads:
+            raise refuse(
+                "stack-tree/ambiguous",
+                f"{numbers([heads[p.head].number, p.number])} are both open from branch {p.head!r}",
+                "close or retarget one of them, so each head branch has one pull request",
+            )
+        heads[p.head] = p
+    roots: dict[str, list[int]] = {}
+    kids: dict[int, list[int]] = {}
+    for p in prs:
+        parent = heads.get(p.base)
+        (
+            roots.setdefault(p.base, []) if parent is None else kids.setdefault(parent.number, [])
+        ).append(p.number)
+    seen: set[int] = set()
+    todo = [n for ns in roots.values() for n in ns]
+    while todo:
+        n = todo.pop()
+        if n not in seen:
+            seen.add(n)
+            todo += kids.get(n, [])
+    lost = [p.number for p in prs if p.number not in seen]
+    if lost:
+        raise refuse(
+            "stack-tree/cycle",
+            f"{numbers(lost)} are each other's ancestors, so none hangs under a root",
+            "retarget one of them onto main or onto a branch outside the cycle",
+        )
+    return Forest(roots, kids)
+
+
+def root_order(roots: dict[str, list[int]]) -> list[str]:
+    return sorted(roots, key=lambda b: (b != MAIN, b))
+
+
+def root_label(base: str) -> str:
+    return clean(base) + ("" if base == MAIN else " " + ORPHAN)
+
+
+def text_lines(prs: list[Pr], f: Forest, commits: bool) -> list[str]:
+    by = {p.number: p for p in prs}
+    out: list[str] = []
+
+    def draw(n: int, prefix: str, last: bool) -> None:
+        p, sub, sk = by[n], prefix + ("   " if last else "│  "), f.kids.get(n, [])
+        mark = " (draft)" if p.draft else ""
+        out.append(f"{prefix}{'└─ ' if last else '├─ '}#{n}{mark} {clean(p.title)}")
+        if commits:
+            out.extend(f"{sub}{'│' if sk else ' '}  {oid} {clean(h)}" for oid, h in p.commits)
+        for i, c in enumerate(sk):
+            draw(c, sub, i == len(sk) - 1)
+
+    for k, base in enumerate(root_order(f.roots)):
+        out += [""] * (k > 0) + [root_label(base)]
+        for i, n in enumerate(f.roots[base]):
+            draw(n, "", i == len(f.roots[base]) - 1)
+    return out
+
+
+def mermaid_lines(prs: list[Pr], f: Forest) -> list[str]:
+    def esc(text: str) -> str:
+        return clean(text).translate(MERMAID_ESCAPES)
+
+    out = ["```mermaid", "graph BT", "  classDef draft stroke-dasharray: 5 5"]
+    edges: list[str] = []
+    for k, base in enumerate(root_order(f.roots), 1):
+        out.append(f'  b{k}["{esc(root_label(base))}"]')
+        edges += [f"  p{n} --> b{k}" for n in f.roots[base]]
+    out += [f'  p{p.number}["{esc(f"#{p.number} {p.title}")}"]' for p in prs]
+    for parent, ns in sorted(f.kids.items()):
+        edges += [f"  p{n} --> p{parent}" for n in ns]
+    drafts = ",".join(f"p{p.number}" for p in prs if p.draft)
+    return [*out, *edges, *([f"  class {drafts} draft"] if drafts else []), "```"]
+
+
+def draw(prs: list[Pr], mermaid: bool, commits: bool) -> list[str]:
+    if not prs:
+        return ["no open pull requests"]
+    f = forest(prs)
+    return mermaid_lines(prs, f) if mermaid else text_lines(prs, f, commits)
+
+
+# --- the edge: the forge, argv, the terminal -------------------------------------------------
+
+
+def run(cmd: list[str], env: dict[str, str] | None = None) -> str:
+    try:
+        return subprocess.run(cmd, check=True, capture_output=True, text=True, env=env).stdout
+    except subprocess.CalledProcessError as e:
+        why = (e.stderr or "").strip().splitlines()[:1] or [f"exit {e.returncode}"]
+        raise refuse(
+            "stack-tree/forge",
+            f"`{' '.join(cmd[:3])} ...` failed: {why[0]}",
+            "check the repo name, the account and the network",
+        ) from e
+
+
+def default_repo() -> str:
+    url = subprocess.run(
+        ["git", "remote", "get-url", "github"], capture_output=True, text=True, check=False
+    ).stdout
+    m = re.search(r"github\.com[:/]([^/\s]+/[^/\s]+?)(?:\.git)?\s*$", url)
+    if not m:
+        raise refuse(
+            "stack-tree/usage",
+            "no `github` remote to take the repository from",
+            "pass --repo OWNER/NAME",
+        )
+    return m.group(1)
+
+
+def fetch(repo: str | None, with_commits: bool) -> str:
+    gh = shutil.which("gh")
+    if gh is None:
+        raise refuse("stack-tree/gh", "gh is not on PATH", "scripts/layer on github")
+    user = os.environ.get("STACK_TREE_GH_USER", "psjg-claude")
+    token = run([gh, "auth", "token", "--hostname", "github.com", "--user", user]).strip()
+    env = {**os.environ, "GH_TOKEN": token}
+    at = ["-R", f"github.com/{repo or os.environ.get('STACK_TREE_REPO') or default_repo()}"]
+    listed = run(
+        [
+            gh,
+            "pr",
+            "list",
+            *at,
+            "--state",
+            "open",
+            "--limit",
+            str(LIMIT),
+            "--json",
+            ",".join(FIELDS),
+        ],
+        env,
+    )
+    prs = json.loads(listed)
+    if len(prs) >= LIMIT:
+        raise refuse(
+            "stack-tree/limit",
+            f"{LIMIT} pull requests came back; some may be missing",
+            "raise LIMIT in scripts/stack-tree",
+        )
+    for raw in prs if with_commits else ():
+        view = run([gh, "pr", "view", str(raw["number"]), *at, "--json", "commits"], env)
+        raw["commits"] = json.loads(view)["commits"]
+    return json.dumps(prs)
+
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(prog="stack-tree", description="the open pull requests as a tree")
+    ap.add_argument("--commits", action="store_true", help="list each pull request's commits")
+    ap.add_argument("--mermaid", action="store_true", help="print a Mermaid block instead")
+    ap.add_argument("--json", metavar="FILE", help="read gh's JSON from FILE, or - for stdin")
+    ap.add_argument("--repo", metavar="OWNER/NAME", help="the repository to ask the forge about")
+    ap.add_argument("--self-test", action="store_true", help="prove the script on fixtures")
+    a = ap.parse_args(argv)
+    if a.self_test:
+        return self_test()
+    if a.mermaid and a.commits:
+        ap.error("--commits has no meaning with --mermaid")
+    try:
+        if a.json:
+            text = sys.stdin.read() if a.json == "-" else Path(a.json).read_text()
+        else:
+            text = fetch(a.repo, a.commits)
+        lines = draw(read_prs(text, a.commits), a.mermaid, a.commits)
+    except RefusalError as e:
+        print(
+            f"stack-tree: {clean(str(e).replace(chr(10), '\\n')).replace('\\n', chr(10))}",
+            file=sys.stderr,
+        )
+        return 2
+    if sys.stdout.isatty() and not a.mermaid:
+        width = shutil.get_terminal_size().columns
+        lines = [line[: width - 1] for line in lines]
+    print("\n".join(lines))
+    return 0
+
+
+# --- the proof: the script, as a process, on fixtures ----------------------------------------
+
+
+def pr(n: int, title: str, head: str, base: str, **kw: object) -> dict:
+    return {
+        "number": n,
+        "title": title,
+        "headRefName": head,
+        "baseRefName": base,
+        "isDraft": kw.get("draft", False),
+        "isCrossRepository": kw.get("cross", False),
+        "commits": [
+            {"oid": f"{n:03d}abcdef0123", "messageHeadline": h} for h in kw.get("commits", ())
+        ],
+    }
+
+
+STACK = [
+    pr(179, "alpha", "a", "main", commits=("feat: alpha",)),
+    pr(195, "gates", "g", "main", commits=("ci: gates", "docs: gates")),
+    pr(182, "proof", "p", "g"),
+    pr(190, "silence", "s", "g"),
+    pr(191, "stamp", "t", "s", draft=True, commits=("feat: stamp",)),
+]
+STACK_TEXT = """main
+├─ #179 alpha
+└─ #195 gates
+   ├─ #182 proof
+   └─ #190 silence
+      └─ #191 (draft) stamp"""
+STACK_COMMITS = """main
+├─ #179 alpha
+│     179abcd feat: alpha
+└─ #195 gates
+   │  195abcd ci: gates
+   │  195abcd docs: gates
+   ├─ #182 proof
+   └─ #190 silence
+      └─ #191 (draft) stamp
+            191abcd feat: stamp"""
+STACK_MERMAID = """```mermaid
+graph BT
+  classDef draft stroke-dasharray: 5 5
+  b1["main"]
+  p179["#179 alpha"]
+  p182["#182 proof"]
+  p190["#190 silence"]
+  p191["#191 stamp"]
+  p195["#195 gates"]
+  p179 --> b1
+  p195 --> b1
+  p191 --> p190
+  p182 --> p195
+  p190 --> p195
+  class p191 draft
+```"""
+FORK = [
+    pr(1, "one", "topic", "main"),
+    pr(2, "fork", "topic", "main", cross=True),
+    pr(3, "fork main", "main", "main", cross=True),
+    pr(4, "above one", "above", "topic"),
+]
+FORK_TEXT = """main
+├─ #1 one
+│  └─ #4 above one
+├─ #2 fork
+└─ #3 fork main"""
+ORPHANED = [pr(7, "late", "late", "release"), pr(8, "ok", "ok", "main")]
+ORPHANED_TEXT = f"""main
+└─ #8 ok
+
+release {ORPHAN}
+└─ #7 late"""
+HOSTILE = [
+    pr(1, "\x1b[31mred", "a", "main", commits=("x\ny",)),
+    pr(2, "a\nb \u202eevil", "b", "main"),
+    pr(3, 'q"uote <b>x</b> & ]]', "c", "main", draft=True),
+]
+HOSTILE_TEXT = """main
+├─ #1 ?[31mred
+│     001abcd x?y
+├─ #2 a?b ?evil
+└─ #3 (draft) q"uote <b>x</b> & ]]"""
+HOSTILE_MERMAID = """```mermaid
+graph BT
+  classDef draft stroke-dasharray: 5 5
+  b1["main"]
+  p1["#1 ?[31mred"]
+  p2["#2 a?b ?evil"]
+  p3["#3 q#quot;uote #lt;b#gt;x#lt;/b#gt; #amp; ]]"]
+  p1 --> b1
+  p2 --> b1
+  p3 --> b1
+  class p3 draft
+```"""
+NO_COMMITS = [{k: v for k, v in p.items() if k != "commits"} for p in STACK]
+CYCLE = [pr(1, "a", "a", "b"), pr(2, "b", "b", "a"), pr(3, "c", "c", "main")]
+AMBIGUOUS = [pr(1, "a", "x", "main"), pr(2, "b", "x", "main")]
+
+# (name, flags, input, exit, stdout, words the stderr must hold)
+CASES = [
+    ("tree", [], STACK, 0, STACK_TEXT, ()),
+    ("commits", ["--commits"], STACK, 0, STACK_COMMITS, ()),
+    ("mermaid", ["--mermaid"], STACK, 0, STACK_MERMAID, ()),
+    ("cross-repo head is no parent", [], FORK, 0, FORK_TEXT, ()),
+    ("root off main is annotated", [], ORPHANED, 0, ORPHANED_TEXT, ()),
+    ("hostile titles, text", ["--commits"], HOSTILE, 0, HOSTILE_TEXT, ()),
+    ("hostile titles, mermaid", ["--mermaid"], HOSTILE, 0, HOSTILE_MERMAID, ()),
+    ("cycle", [], CYCLE, 2, "", ("stack-tree/cycle", "#1 and #2", "remedy")),
+    ("ambiguous head", [], AMBIGUOUS, 2, "", ("stack-tree/ambiguous", "#1 and #2", "remedy")),
+    ("empty", [], [], 0, "no open pull requests", ()),
+    ("not a list", [], {}, 2, "", ("stack-tree/input", "remedy")),
+    ("missing field", [], [{"number": 1}], 2, "", ("stack-tree/input", "title")),
+    (
+        "commits asked, none given",
+        ["--commits"],
+        NO_COMMITS,
+        2,
+        "",
+        ("stack-tree/input", "commits"),
+    ),
+]
+
+
+def self_test() -> int:
+    """Run the script itself on each fixture, as a process: no network, no gh."""
+    failed = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for name, flags, data, code, out, words in CASES:
+            path = Path(tmp) / "prs.json"
+            path.write_text(json.dumps(data))
+            got = subprocess.run(
+                [sys.executable, __file__, *flags, "--json", str(path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            ok = (
+                got.returncode == code
+                and got.stdout.rstrip("\n") == out.rstrip("\n")
+                and all(w in got.stderr for w in words)
+            )
+            if not ok:
+                failed.append(name)
+                print(
+                    f"FAIL {name}: exit {got.returncode}\n{got.stdout}{got.stderr}", file=sys.stderr
+                )
+        piped = subprocess.run(
+            [sys.executable, __file__, "--json", "-"],
+            input="[]",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if piped.stdout != "no open pull requests\n":
+            failed.append("stdin")
+    verdict = "FAILED: " + ", ".join(failed) if failed else f"{len(CASES) + 1} cases ok"
+    print(f"stack-tree self-test: {verdict}")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
