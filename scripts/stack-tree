@@ -39,7 +39,8 @@ Unicode category C (control, format such as a bidi override, surrogate, private 
 newlines) is shown as `?`, in both outputs. The text is cut to the terminal's width only when
 stdout is a terminal.
 
-Refused, naming the rule and the remedy (exit 2): stack-tree/input (not the JSON above),
+Refused, naming the rule and the remedy (exit 2): stack-tree/input
+(not the JSON above, or a file that cannot be read),
 stack-tree/ambiguous (two open same-repository pull requests share a head branch),
 stack-tree/cycle (pull requests that are each other's ancestors, which a walk from the roots
 would silently drop), stack-tree/limit (300 came back, so some may be missing),
@@ -67,6 +68,7 @@ from pathlib import Path
 MAIN = "main"
 ORPHAN = "(no open pull request on this branch: retarget or land first)"
 LIMIT = 300
+GH_COMMITS = 100  # what `gh pr view --json commits` lists at most
 FIELDS = {
     "number": int,
     "title": str,
@@ -183,11 +185,14 @@ def forest(prs: list[Pr]) -> Forest:
         heads[p.head] = p
     roots: dict[str, list[int]] = {}
     kids: dict[int, list[int]] = {}
+    above: dict[int, int] = {}
     for p in prs:
-        parent = heads.get(p.base)
-        (
-            roots.setdefault(p.base, []) if parent is None else kids.setdefault(parent.number, [])
-        ).append(p.number)
+        parent = None if p.base == MAIN else heads.get(p.base)  # main is a root, never a parent
+        if parent is None:
+            roots.setdefault(p.base, []).append(p.number)
+        else:
+            kids.setdefault(parent.number, []).append(p.number)
+            above[p.number] = parent.number
     seen: set[int] = set()
     todo = [n for ns in roots.values() for n in ns]
     while todo:
@@ -197,12 +202,30 @@ def forest(prs: list[Pr]) -> Forest:
             todo += kids.get(n, [])
     lost = [p.number for p in prs if p.number not in seen]
     if lost:
-        raise refuse(
-            "stack-tree/cycle",
-            f"{numbers(lost)} are each other's ancestors, so none hangs under a root",
-            "retarget one of them onto main or onto a branch outside the cycle",
-        )
+        raise cycle_refusal(above, lost)
     return Forest(roots, kids)
+
+
+def cycle_refusal(above: dict[int, int], lost: list[int]) -> RefusalError:
+    """Name the pull requests that lie on a cycle (each is its own ancestor), and mention the
+    ones stacked above it, which are hidden with it."""
+
+    def on_cycle(n: int) -> bool:
+        x = n
+        for _ in lost:
+            x = above[x]
+            if x == n:
+                return True
+        return False
+
+    ring = [n for n in lost if on_cycle(n)]
+    rest = [n for n in lost if n not in ring]
+    also = f"; also hidden: {numbers(rest)}" if rest else ""
+    return refuse(
+        "stack-tree/cycle",
+        f"{numbers(ring)} are each other's ancestors, so none hangs under a root{also}",
+        "retarget one of the first onto main or onto a branch outside the cycle",
+    )
 
 
 def root_order(roots: dict[str, list[int]]) -> list[str]:
@@ -222,7 +245,10 @@ def text_lines(prs: list[Pr], f: Forest, commits: bool) -> list[str]:
         mark = " (draft)" if p.draft else ""
         out.append(f"{prefix}{'└─ ' if last else '├─ '}#{n}{mark} {clean(p.title)}")
         if commits:
-            out.extend(f"{sub}{'│' if sk else ' '}  {oid} {clean(h)}" for oid, h in p.commits)
+            bar = f"{sub}{'│' if sk else ' '}  "
+            out.extend(f"{bar}{oid} {clean(h)}" for oid, h in p.commits)
+            if len(p.commits) == GH_COMMITS:
+                out.append(f"{bar}… ({GH_COMMITS} shown: gh lists no more)")
         for i, c in enumerate(sk):
             draw(c, sub, i == len(sk) - 1)
 
@@ -271,18 +297,23 @@ def run(cmd: list[str], env: dict[str, str] | None = None) -> str:
         ) from e
 
 
+def repo_of(url: str) -> str | None:
+    """OWNER/NAME of a github remote url; the ssh host may be a `github.com-<alias>` alias."""
+    m = re.search(r"github\.com(?:-[^.:/\s]+)?[:/]([^/\s]+/[^/\s]+?)(?:\.git)?\s*$", url)
+    return m.group(1) if m else None
+
+
 def default_repo() -> str:
     url = subprocess.run(
         ["git", "remote", "get-url", "github"], capture_output=True, text=True, check=False
     ).stdout
-    m = re.search(r"github\.com[:/]([^/\s]+/[^/\s]+?)(?:\.git)?\s*$", url)
-    if not m:
+    if (name := repo_of(url)) is None:
         raise refuse(
             "stack-tree/usage",
             "no `github` remote to take the repository from",
             "pass --repo OWNER/NAME",
         )
-    return m.group(1)
+    return name
 
 
 def fetch(repo: str | None, with_commits: bool) -> str:
@@ -321,6 +352,15 @@ def fetch(repo: str | None, with_commits: bool) -> str:
     return json.dumps(prs)
 
 
+def read_source(name: str) -> str:
+    try:
+        return sys.stdin.read() if name == "-" else Path(name).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise refuse(
+            "stack-tree/input", f"cannot read {name!r} as UTF-8 text ({e})", INPUT_REMEDY
+        ) from e
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="stack-tree", description="the open pull requests as a tree")
     ap.add_argument("--commits", action="store_true", help="list each pull request's commits")
@@ -334,10 +374,7 @@ def main(argv: list[str]) -> int:
     if a.mermaid and a.commits:
         ap.error("--commits has no meaning with --mermaid")
     try:
-        if a.json:
-            text = sys.stdin.read() if a.json == "-" else Path(a.json).read_text()
-        else:
-            text = fetch(a.repo, a.commits)
+        text = read_source(a.json) if a.json else fetch(a.repo, a.commits)
         lines = draw(read_prs(text, a.commits), a.mermaid, a.commits)
     except RefusalError as e:
         print(
@@ -449,6 +486,13 @@ graph BT
 ```"""
 NO_COMMITS = [{k: v for k, v in p.items() if k != "commits"} for p in STACK]
 CYCLE = [pr(1, "a", "a", "b"), pr(2, "b", "b", "a"), pr(3, "c", "c", "main")]
+CYCLE_ABOVE = [*CYCLE[:2], pr(4, "d", "d", "a")]
+FORWARD = [pr(1, "forward", "main", "release"), pr(2, "x", "x", "main")]
+FORWARD_TEXT = f"""main
+└─ #2 x
+
+release {ORPHAN}
+└─ #1 forward"""
 AMBIGUOUS = [pr(1, "a", "x", "main"), pr(2, "b", "x", "main")]
 
 # (name, flags, input, exit, stdout, words the stderr must hold)
@@ -461,6 +505,15 @@ CASES = [
     ("hostile titles, text", ["--commits"], HOSTILE, 0, HOSTILE_TEXT, ()),
     ("hostile titles, mermaid", ["--mermaid"], HOSTILE, 0, HOSTILE_MERMAID, ()),
     ("cycle", [], CYCLE, 2, "", ("stack-tree/cycle", "#1 and #2", "remedy")),
+    (
+        "cycle names the ring, then what hangs above",
+        [],
+        CYCLE_ABOVE,
+        2,
+        "",
+        ("#1 and #2 are", "also hidden: #4"),
+    ),
+    ("a head named main is no parent of main's pull requests", [], FORWARD, 0, FORWARD_TEXT, ()),
     ("ambiguous head", [], AMBIGUOUS, 2, "", ("stack-tree/ambiguous", "#1 and #2", "remedy")),
     ("empty", [], [], 0, "no open pull requests", ()),
     ("not a list", [], {}, 2, "", ("stack-tree/input", "remedy")),
@@ -476,39 +529,65 @@ CASES = [
 ]
 
 
+def go(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, __file__, *args], input=stdin, capture_output=True, text=True, check=False
+    )
+
+
+def extra_cases(tmp: Path) -> list[str]:
+    """What the fixtures table cannot say: an unreadable input, the remote's spellings, the
+    cap on the commits gh lists. Returns the names that failed."""
+    (tmp / "latin1.json").write_bytes(b"[\xe9]")
+    (tmp / "many.json").write_text(
+        json.dumps([pr(1, "t", "t", "main", commits=("c",) * GH_COMMITS)])
+    )
+    gone, bad, many = (
+        go("--json", str(tmp / "gone.json")),
+        go("--json", str(tmp / "latin1.json")),
+        go("--json", str(tmp / "many.json"), "--commits"),
+    )
+    repos = [
+        repo_of(u)
+        for u in (
+            "git@github.com-bot:o/r.git",
+            "https://github.com/o/r",
+            "git@github.com:o/r.git",
+            "git@github.com-a.b:o/r",
+        )
+    ]
+    checks = {
+        "stdin": go("--json", "-", stdin="[]").stdout == "no open pull requests\n",
+        "missing file": gone.returncode == 2
+        and "stack-tree/input" in gone.stderr
+        and "gone.json" in gone.stderr,
+        "non-UTF-8 file": bad.returncode == 2
+        and "stack-tree/input" in bad.stderr
+        and "latin1.json" in bad.stderr,
+        "100 commits": many.stdout.endswith(f"… ({GH_COMMITS} shown: gh lists no more)\n"),
+        "remote urls": repos == ["o/r", "o/r", "o/r", None],
+    }
+    return [name for name, ok in checks.items() if not ok]
+
+
 def self_test() -> int:
     """Run the script itself on each fixture, as a process: no network, no gh."""
-    failed = []
     with tempfile.TemporaryDirectory() as tmp:
+        failed = []
         for name, flags, data, code, out, words in CASES:
-            path = Path(tmp) / "prs.json"
-            path.write_text(json.dumps(data))
-            got = subprocess.run(
-                [sys.executable, __file__, *flags, "--json", str(path)],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            ok = (
+            (Path(tmp) / "prs.json").write_text(json.dumps(data))
+            got = go(*flags, "--json", str(Path(tmp) / "prs.json"))
+            if not (
                 got.returncode == code
                 and got.stdout.rstrip("\n") == out.rstrip("\n")
                 and all(w in got.stderr for w in words)
-            )
-            if not ok:
+            ):
                 failed.append(name)
                 print(
                     f"FAIL {name}: exit {got.returncode}\n{got.stdout}{got.stderr}", file=sys.stderr
                 )
-        piped = subprocess.run(
-            [sys.executable, __file__, "--json", "-"],
-            input="[]",
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if piped.stdout != "no open pull requests\n":
-            failed.append("stdin")
-    verdict = "FAILED: " + ", ".join(failed) if failed else f"{len(CASES) + 1} cases ok"
+        failed += extra_cases(Path(tmp))
+    verdict = "FAILED: " + ", ".join(failed) if failed else "all cases ok"
     print(f"stack-tree self-test: {verdict}")
     return 1 if failed else 0
 
