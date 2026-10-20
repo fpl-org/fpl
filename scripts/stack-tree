@@ -22,14 +22,9 @@ it the remedy is `scripts/layer on github`. A token is never printed.
 
 The rule: a pull request hangs under the open pull request whose head branch is its base, and
 only a same-repository pull request can be a parent: a fork's branch may be named anything,
-`main` included. One whose base has no open parent is a root under that base branch. The roots
-based on `main` are what scripts/land takes; any other root is annotated, because it needs a
-retarget (or its base landed) first.
-
-    main
-    ├─ #179 a lone pull request
-    └─ #195 (draft) the bottom of a stack
-       └─ #190 the one above it
+`main` included; `main` itself is never a parent. One whose base has no open parent is a root
+under that base branch. The roots based on `main` are what scripts/land takes; any other root is
+annotated, because it needs a retarget (or its base landed) first.
 
 --commits lists each pull request's own commits under it. --mermaid prints a fenced Mermaid
 block (`graph BT`, trunk at the bottom, drafts dashed) to paste into a comment or a run's
@@ -45,9 +40,6 @@ stack-tree/ambiguous (two open same-repository pull requests share a head branch
 stack-tree/cycle (pull requests that are each other's ancestors, which a walk from the roots
 would silently drop), stack-tree/limit (300 came back, so some may be missing),
 stack-tree/gh and stack-tree/forge (the forge could not be read), stack-tree/usage.
-
-Never: writes a file, calls the forge for more than a read, shows review or check state (it
-has none yet), or guesses at input it does not recognise.
 
 Exit 0: drawn (no open pull requests draws that), or the self-test passed; 1: the self-test
 failed; 2: refused.
@@ -535,13 +527,16 @@ def go(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]
     )
 
 
+def refused(got: subprocess.CompletedProcess[str], name: str) -> bool:
+    return got.returncode == 2 and "stack-tree/input" in got.stderr and name in got.stderr
+
+
 def extra_cases(tmp: Path) -> list[str]:
     """What the fixtures table cannot say: an unreadable input, the remote's spellings, the
     cap on the commits gh lists. Returns the names that failed."""
     (tmp / "latin1.json").write_bytes(b"[\xe9]")
-    (tmp / "many.json").write_text(
-        json.dumps([pr(1, "t", "t", "main", commits=("c",) * GH_COMMITS)])
-    )
+    many_prs = [pr(1, "t", "t", "main", commits=("c",) * GH_COMMITS)]
+    (tmp / "many.json").write_text(json.dumps(many_prs))
     gone, bad, many = (
         go("--json", str(tmp / "gone.json")),
         go("--json", str(tmp / "latin1.json")),
@@ -558,12 +553,8 @@ def extra_cases(tmp: Path) -> list[str]:
     ]
     checks = {
         "stdin": go("--json", "-", stdin="[]").stdout == "no open pull requests\n",
-        "missing file": gone.returncode == 2
-        and "stack-tree/input" in gone.stderr
-        and "gone.json" in gone.stderr,
-        "non-UTF-8 file": bad.returncode == 2
-        and "stack-tree/input" in bad.stderr
-        and "latin1.json" in bad.stderr,
+        "missing file": refused(gone, "gone.json"),
+        "non-UTF-8 file": refused(bad, "latin1.json"),
         "100 commits": many.stdout.endswith(f"… ({GH_COMMITS} shown: gh lists no more)\n"),
         "remote urls": repos == ["o/r", "o/r", "o/r", None],
     }
