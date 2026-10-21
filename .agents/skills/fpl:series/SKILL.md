@@ -1,6 +1,6 @@
 ---
 name: fpl:series
-description: Give a series of commits the identity that outlives every rewrite, and prove it, with the series script in this skill's scripts/ (mint, stamp, check, manifest, digest, range, revert). Use when a branch is about to be pushed for review, presented, relocated or reverted; it runs the sub-skills stamp and manifest, and holds restack, range and revert.
+description: Give a series of commits the identity that outlives every rewrite, and prove it, with the series script in this skill's scripts/ (mint, stamp, check, manifest, digest, range, revert). Use when a branch is about to be pushed for review, presented, relocated or reverted; it runs the sub-skills stamp, manifest and present-check, and holds restack, range and revert.
 ---
 
 A branch name and a SHA change when a series is rebased, reordered or moved; the `Series-Id:`
@@ -18,6 +18,8 @@ The routine, on a work branch whose base is `<B>` (`github/main`, or the parent 
 2. **Stamp**: load `fpl:series:stamp`; `series stamp <B>..HEAD` puts one id on every commit.
 3. **Manifest**: load `fpl:series:manifest`; `series manifest <B>..HEAD` is what a reviewer
    and the lander compare, `digest` its one-line receipt, `check` the proof of one id.
+4. **Check**: load `fpl:series:present-check` for a presented series: tree equality, green
+   lemmas, commit-lint, one id.
 
 Moving the series on a moved base is `fpl:series:restack`; finding a landed series on `main`
 is `fpl:series:range`, undoing it whole is `fpl:series:revert`.
