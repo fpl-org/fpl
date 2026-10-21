@@ -2,7 +2,7 @@
 # gates: $BIN/python $S/stack-tree --self-test
 """scripts/stack-tree — the open pull requests as the tree their bases make, never committed.
 
-    scripts/stack-tree [--json FILE]
+    scripts/stack-tree [--json FILE] [--repo OWNER/NAME]
     scripts/stack-tree --self-test
 
 The maintainer stacks pull requests: one is based on the head branch of another. GitHub's list
@@ -12,8 +12,11 @@ used: they are a linear chain, and they land through merge methods that rewrite 
 scripts/land (a fast-forward) refuses to depend on. The tree is computed here instead.
 
 The input is the JSON `gh pr list --state open --limit 300 --json number,title,headRefName,
-baseRefName,isDraft,isCrossRepository` prints. --json FILE reads it from there; without it,
-or with `-`, it comes from stdin. Drawing needs python3 alone.
+baseRefName,isDraft,isCrossRepository` prints. --json FILE (or `-` for stdin) reads it from
+there; without it the script asks the forge, read-only, like scripts/sweep: gh with the machine
+account's token (STACK_TREE_GH_USER, default psjg-claude) for STACK_TREE_REPO or --repo (default:
+the `github` remote). Drawing needs python3 alone; gh is only the transport, and without it
+the remedy is `scripts/layer on github`. A token is never printed.
 
 The rule: a pull request hangs under the open pull request whose head branch is its base, and
 only a same-repository pull request can be a parent: a fork's branch may be named anything,
@@ -31,8 +34,10 @@ Refused, naming the rule and the remedy (exit 2): stack-tree/input
 stack-tree/ambiguous (two or more open same-repository pull requests share a head branch),
 stack-tree/cycle (pull requests that are each other's ancestors, which a walk from the roots
 would silently drop; each cycle is named, and what hangs above it),
-stack-tree/limit (300 pull requests, which is all gh lists: some may be missing),
-stack-tree/usage (the command line).
+stack-tree/limit (300 pull requests, which is all gh lists: some may be missing; so for a file
+as for the forge), stack-tree/gh and stack-tree/forge (the forge could not be read, or printed
+what is not the JSON above),
+stack-tree/usage (the command line, or no github remote).
 
 Exit 0: drawn (no open pull requests draws that), or the self-test passed; 1: the self-test
 failed; 2: refused.
@@ -40,6 +45,9 @@ failed; 2: refused.
 
 import argparse
 import json
+import os
+import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -61,6 +69,7 @@ FIELDS = {
     "isCrossRepository": bool,
 }
 INPUT_REMEDY = f"feed it `gh pr list --state open --limit {LIMIT} --json {','.join(FIELDS)}`"
+FORGE_REMEDY = "check the gh version and the repository"
 
 
 class RefusalError(Exception):
@@ -115,15 +124,15 @@ def read_pr(raw: object, at: int) -> Pr:
     )
 
 
-def load(text: str) -> list:
-    """The JSON list of pull requests in `text`, a stack-tree/input refusal if it is none: gh
-    lists at most LIMIT, so a list that long may have been cut short."""
+def load(text: str, rule: str = "stack-tree/input", remedy: str = INPUT_REMEDY) -> list:
+    """The JSON list of pull requests in `text`, a refusal under `rule` if it is none: gh lists
+    at most LIMIT, so a list that long may have been cut short, from the forge or from a file."""
     try:
         raw = json.loads(text)
     except (ValueError, RecursionError) as e:  # RecursionError: JSON nested thousands deep
-        raise refuse("stack-tree/input", f"not JSON ({e})", INPUT_REMEDY) from e
+        raise refuse(rule, f"not JSON ({e})", remedy) from e
     if not isinstance(raw, list):
-        raise refuse("stack-tree/input", "the top level is not a list", INPUT_REMEDY)
+        raise refuse(rule, "the top level is not a list", remedy)
     if len(raw) >= LIMIT:
         raise refuse(
             "stack-tree/limit",
@@ -253,7 +262,70 @@ def draw(prs: list[Pr]) -> list[str]:
     return text_lines(prs, f)
 
 
-# --- the edge: the input, argv, the terminal -------------------------------------------------
+# --- the edge: the forge, argv, the terminal -------------------------------------------------
+
+
+def run(cmd: list[str], env: dict[str, str] | None = None) -> str:
+    try:
+        return subprocess.run(cmd, check=True, capture_output=True, text=True, env=env).stdout
+    except subprocess.CalledProcessError as e:
+        why = (e.stderr or "").strip().splitlines()[:1] or [f"exit {e.returncode}"]
+        raise refuse(
+            "stack-tree/forge",
+            f"`{' '.join(cmd[:3])} ...` failed: {why[0]}",
+            "check the repo name, the account and the network",
+        ) from e
+
+
+def repo_of(url: str) -> str | None:
+    """OWNER/NAME of a github remote url, which must be github.com's whole: https, or ssh in
+    either spelling, where the host may be a `github.com-<alias>` alias."""
+    name = r"([^/\s]+/[^/\s]+?)(?:\.git)?"
+    host = r"git@github\.com(?:-[^.:/\s]+)?"
+    m = re.fullmatch(
+        rf"(?:https://(?:[^@/\s]+@)?github\.com/|{host}:|ssh://{host}/){name}", url.strip()
+    )
+    return m.group(1) if m else None
+
+
+def default_repo() -> str:
+    url = subprocess.run(
+        ["git", "remote", "get-url", "github"], capture_output=True, text=True, check=False
+    ).stdout
+    if (name := repo_of(url)) is None:
+        raise refuse(
+            "stack-tree/usage",
+            "no `github` remote to take the repository from",
+            "pass --repo OWNER/NAME",
+        )
+    return name
+
+
+def fetch(repo: str | None) -> str:
+    gh = shutil.which("gh")
+    if gh is None:
+        raise refuse("stack-tree/gh", "gh is not on PATH", "scripts/layer on github")
+    user = os.environ.get("STACK_TREE_GH_USER", "psjg-claude")
+    token = run([gh, "auth", "token", "--hostname", "github.com", "--user", user]).strip()
+    env = {**os.environ, "GH_TOKEN": token}
+    at = ["-R", f"github.com/{repo or os.environ.get('STACK_TREE_REPO') or default_repo()}"]
+    listed = run(
+        [
+            gh,
+            "pr",
+            "list",
+            *at,
+            "--state",
+            "open",
+            "--limit",
+            str(LIMIT),
+            "--json",
+            ",".join(FIELDS),
+        ],
+        env,
+    )
+    prs = load(listed, "stack-tree/forge", FORGE_REMEDY)
+    return json.dumps(prs)
 
 
 def read_source(name: str) -> str:
@@ -273,12 +345,13 @@ class Parser(argparse.ArgumentParser):
 def main(argv: list[str]) -> int:
     ap = Parser(prog="stack-tree", description="the open pull requests as a tree")
     ap.add_argument("--json", metavar="FILE", help="read gh's JSON from FILE, or - for stdin")
+    ap.add_argument("--repo", metavar="OWNER/NAME", help="the repository to ask the forge about")
     ap.add_argument("--self-test", action="store_true", help="prove the script on fixtures")
     try:
         a = ap.parse_args(argv)
         if a.self_test:
             return self_test()
-        text = read_source(a.json or "-")
+        text = read_source(a.json) if a.json else fetch(a.repo)
         lines = draw(read_prs(text))
     except RefusalError as e:
         print(f"stack-tree: {e}", file=sys.stderr)
@@ -389,14 +462,30 @@ CASES = [
 ]
 
 
-def go(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+def go(
+    *args: str, stdin: str | None = None, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, __file__, *args],
         input=stdin,
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
+
+
+def live(tmp: Path, listed: str, view: str, *flags: str) -> subprocess.CompletedProcess[str]:
+    """The live path against a stand-in gh, which prints `listed` for `pr list` and `view` for
+    `pr view`."""
+    gh = tmp / "bin" / "gh"
+    gh.parent.mkdir(exist_ok=True)
+    gh.write_text(
+        '#!/bin/sh\ncase "$2" in token) echo t;; list) echo "$L";; view) echo "$V";; esac\n'
+    )
+    gh.chmod(0o755)
+    env = {**os.environ, "PATH": f"{gh.parent}:{os.environ['PATH']}", "L": listed, "V": view}
+    return go("--repo", "o/r", *flags, env=env)
 
 
 def refused(got: subprocess.CompletedProcess[str], name: str) -> bool:
@@ -405,11 +494,13 @@ def refused(got: subprocess.CompletedProcess[str], name: str) -> bool:
 
 def extra_cases(tmp: Path) -> list[str]:
     """What the fixtures table cannot say: an unreadable input, a refusal built from hostile
-    text, a closed pipe. Returns the names that failed."""
+    text, a closed pipe, the remote's spellings. Returns the names that failed."""
     (tmp / "latin1.json").write_bytes(b"[\xe9]")
     (tmp / "head.json").write_text(json.dumps(HOSTILE_HEAD))
     (tmp / "deep.json").write_text("[" * 10000 + "]" * 10000)
     (tmp / "full.json").write_text(json.dumps([pr(n, "t", f"b{n}", "main") for n in range(LIMIT)]))
+    one = json.dumps([pr(1, "t", "t", "main")])
+    nojson = live(tmp, "NOT JSON", "")
     gone, bad, head, deep, full, usage = (
         go("--json", str(tmp / "gone.json")),
         go("--json", str(tmp / "latin1.json")),
@@ -428,6 +519,17 @@ def extra_cases(tmp: Path) -> list[str]:
     if closed.stdout is not None:
         closed.stdout.close()  # the reader is gone before the first byte is written
     _, closed_err = closed.communicate()
+    urls = {
+        "git@github.com-bot:o/r.git": "o/r",
+        "https://github.com/o/r": "o/r",
+        "git@github.com:o/r.git": "o/r",
+        "ssh://git@github.com-bot/o/r": "o/r",
+        "git@github.com-a.b:o/r": None,
+        "https://notgithub.com/o/r": None,
+        "https://github.com-bot/o/r": None,
+        "https://github.com.evil.net/o/r": None,
+        "git@gitlab.com:o/r": None,
+    }
     checks = {
         "stdin": go("--json", "-", stdin="[]").stdout == "no open pull requests\n",
         "missing file": refused(gone, "gone.json"),
@@ -437,10 +539,13 @@ def extra_cases(tmp: Path) -> list[str]:
         "bad option": usage.returncode == 2
         and "stack-tree/usage" in usage.stderr
         and "\x1b" not in usage.stderr,
+        "live: gh lists no JSON": nojson.returncode == 2 and "stack-tree/forge" in nojson.stderr,
+        "live: drawn": "#1 t" in live(tmp, one, "").stdout,
         "hostile text in a refusal": len(head.stderr.splitlines()) == 2
         and "'x?y\\nz?'" in head.stderr
         and "\x1b" not in head.stderr,
         "closed pipe": closed.returncode == -signal.SIGPIPE and closed_err == "",
+        "remote urls": [repo_of(u) for u in urls] == list(urls.values()),
     }
     return [name for name, ok in checks.items() if not ok]
 
