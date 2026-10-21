@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # noslop: skip predates the lint list: ruff finds 399 (339 E501) and would reformat it
-"""scripts/review-serve — review Radicle patches in the browser, with the whole file in view.
+""".agents/skills/fpl:review:serve/scripts/review-serve — review Radicle patches in the browser, with the whole file in view.
 
-    scripts/review --serve [--port <n>]     the usual way in: stop a running page, import
+    .agents/skills/fpl:review:page/scripts/review --serve [--port <n>]     the usual way in: stop a running page, import
                                             every open pull request, serve (= --fresh)
-    scripts/review-serve [--fresh] [--port <n>] [--no-open]
-    scripts/review-serve --self-test        run against a throwaway Radicle home
+    .agents/skills/fpl:review:serve/scripts/review-serve [--fresh] [--port <n>] [--no-open]
+    .agents/skills/fpl:review:serve/scripts/review-serve --self-test        run against a throwaway Radicle home
 
 Serves one page on 127.0.0.1 that reads the repository's Radicle patches and nothing else:
 the queue of open patches, head first, as one surface to read down, with the last few
@@ -22,7 +22,7 @@ What you write on the page goes into the patch, signed with your Radicle key, as
 Radicle CLI would write it: a line comment or a comment on the whole revision goes into
 your review of that revision, a reply goes into the thread it answers, and accept or
 reject is the verdict of your review. A comment in a review can be marked resolved.
-Comments imported from the forge (scripts/import-review) sit on the revision itself, where
+Comments imported from the forge (.agents/skills/fpl:review:import/scripts/import-review) sit on the revision itself, where
 Radicle has no resolve; they can be answered.
 
 The page lands nothing and writes nothing to the forge. When every hunk of a pull request
@@ -1216,7 +1216,7 @@ def mergebox_html(rev, hidden, status, num, below, total, done, refused, first, 
     elif refused and first is None:
         return (f'<div class="mergebox" id="{p}merge"><h3><span class="no-mark">✗</span> {refused} hunk{"s" * (refused != 1)} not approved</h3>'
                 f'<p class="mut" style="margin:0 0 12px">Everything is read. Send it back: this records your verdict on the revision as '
-                f'request changes, with the note below, and it reaches GitHub with scripts/export-review.</p>'
+                f'request changes, with the note below, and it reaches GitHub with .agents/skills/fpl:review:export/scripts/export-review.</p>'
                 f'<form method="post" action="/act">{hidden}<input type="hidden" name="kind" value="review">'
                 f'<input type="hidden" name="event" value="request_changes"><textarea name="body" placeholder="What should change"></textarea>'
                 f'<div class="actions"><button class="btn" style="border-color:var(--bad);color:var(--bad)">Request changes</button></div></form></div>')
@@ -1473,7 +1473,7 @@ def surface(repo, token):
         trays.append(tray)
         (tree_m if is_merged else tree_o).append(tree)
         prev = (sid, forge_number(p) or o[:7], p["title"])
-    empty = "" if order else '<p class="mut end">The queue is empty. <code>scripts/review --serve</code> imports what the forge has.</p>'
+    empty = "" if order else '<p class="mut end">The queue is empty. <code>.agents/skills/fpl:review:page/scripts/review --serve</code> imports what the forge has.</p>'
     stack = (f'<aside class="stack"><div class="sh"><h2>Queue</h2>'
              f'<button type="button" class="btn small" data-expand-all>Expand all</button></div>'
              f'<ol class="tree-q">{"".join(tree_m)}<li class="trunkline"><span class="node trunk"></span>main</li>'
@@ -1535,12 +1535,13 @@ def commit_view(repo, oid, sha):
 
 
 def import_pr(what, head=None, base=None):
-    """Run the sibling import-review for one pull request (or "--open" for all). Its only push
+    """Run import-review, the script of fpl:review:import, for one pull request (or "--open" for all). Its only push
     goes to rad, where the branch-name grammar of the pre-push hook does not apply, so the
     hook is told to warn."""
-    importer = os.path.join(os.path.dirname(os.path.abspath(__file__)), "import-review")
+    root = subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip()
+    importer = os.path.join(root, ".agents/skills/fpl:review:import/scripts/import-review")
     if not os.path.exists(importer):
-        return subprocess.CompletedProcess([importer], 1, "", "import-review is not next to review-serve")
+        return subprocess.CompletedProcess([importer], 1, "", "fpl:review:import has no import-review script")
     env = dict(os.environ, FPL_BRANCH_GATE="warn")
     if head:
         env.update(FPL_IMPORT_HEAD=head, FPL_IMPORT_BASE=base or "")
@@ -1705,7 +1706,7 @@ def serve(port, open_browser, announce=print):
             jar = http.cookies.SimpleCookie(self.headers.get("Cookie") or "")
             given = q.get("t", [""])[0]
             if not self.allowed() or token not in (given, jar["rs"].value if "rs" in jar else ""):
-                return self.send(403, "forbidden: use the address scripts/review-serve printed\n", "text/plain")
+                return self.send(403, "forbidden: use the address .agents/skills/fpl:review:serve/scripts/review-serve printed\n", "text/plain")
             if given and self.headers.get("Sec-Fetch-Mode") == "navigate":
                 # The token moves from the address into a cookie that only this page can send,
                 # and the address becomes the plain place: /31 for #31.
@@ -1807,7 +1808,7 @@ def main(argv):
             print(__doc__.split("\n\n")[1])
             return 0
         else:
-            print("usage: scripts/review-serve [--fresh] [--port <n>] [--no-open]", file=sys.stderr)
+            print("usage: .agents/skills/fpl:review:serve/scripts/review-serve [--fresh] [--port <n>] [--no-open]", file=sys.stderr)
             return 2
     say = lambda line: print(line, flush=True)
     stop_running(say)

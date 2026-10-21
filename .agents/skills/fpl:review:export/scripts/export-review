@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # noslop: skip predates the lint list: ruff finds 37 (19 E501) and would reformat it
-"""scripts/export-review — put what was written in the Radicle review on the pull request.
+""".agents/skills/fpl:review:export/scripts/export-review — put what was written in the Radicle review on the pull request.
 
-    scripts/export-review <number>...     those pull requests
-    scripts/export-review --open          every patch that came from an open pull request
-    scripts/export-review -n …            print what would be posted, post nothing
-    scripts/export-review --self-test     run against a throwaway Radicle home, offline
+    .agents/skills/fpl:review:export/scripts/export-review <number>...     those pull requests
+    .agents/skills/fpl:review:export/scripts/export-review --open          every patch that came from an open pull request
+    .agents/skills/fpl:review:export/scripts/export-review -n …            print what would be posted, post nothing
+    .agents/skills/fpl:review:export/scripts/export-review --self-test     run against a throwaway Radicle home, offline
 
-The other half of scripts/import-review. The review lives in the patch; people who found the
+The other half of .agents/skills/fpl:review:import/scripts/import-review. The review lives in the patch; people who found the
 project on the forge read the pull request. So what was written here and not imported from
 there goes there, once, posted by the machine account (.agents/WORKFLOW.md), whose token also
 does the import:
@@ -21,9 +21,9 @@ does the import:
                                 maintainer's own act (scripts/land, or the review page)
 
 The first line names who wrote it and the key that signed it, since the account that posts
-it is not theirs: the same claim with a pointer that scripts/import-review writes the other
+it is not theirs: the same claim with a pointer that .agents/skills/fpl:review:import/scripts/import-review writes the other
 way. The last line is an HTML comment carrying the Radicle id, invisible on the forge. It is
-how a second run knows a comment is out already, and how scripts/import-review knows not to
+how a second run knows a comment is out already, and how .agents/skills/fpl:review:import/scripts/import-review knows not to
 bring it back.
 """
 
@@ -60,7 +60,7 @@ def git(*args, ok=True):
     return run("git", *args, ok=ok)
 
 
-# The forge. The same lookups as scripts/import-review.
+# The forge. The same lookups as .agents/skills/fpl:review:import/scripts/import-review.
 
 
 def forge_remote():
@@ -127,6 +127,9 @@ class Forge:
         pr = f"/repos/{self.slug}/pulls/{number}"
         return {"review_comments": self.call(f"{pr}/comments?per_page=100"),
                 "comments": self.call(f"/repos/{self.slug}/issues/{number}/comments?per_page=100")}
+
+    def open_numbers(self):
+        return {p["number"] for p in self.call(f"/repos/{self.slug}/pulls?state=open&per_page=100")}
 
     def post(self, number, post):
         pr = f"/repos/{self.slug}/pulls/{number}"
@@ -258,10 +261,14 @@ def plan(repo, patch, slug, number, forge):
 
 
 def export(repo, forge, patches, numbers, dry):
+    """Post what the pull requests named in numbers lack; None (--open) names the ones the
+    forge lists as open, so a closed or merged pull request is left as it is."""
+    if numbers is None:
+        numbers = forge.open_numbers()
     done = 0
     for oid, patch in patches.items():
         slug, number = forge_number(patch)
-        if number is None or (numbers is not None and number not in numbers):
+        if number is None or number not in numbers:
             continue
         if slug != forge.slug:
             continue
@@ -294,7 +301,7 @@ def main(argv):
     elif all(a.lstrip("#").isdigit() for a in args):
         numbers = {int(a.lstrip("#")) for a in args}
     else:
-        die("usage: scripts/export-review [-n] <number>... | --open", 2)
+        die("usage: .agents/skills/fpl:review:export/scripts/export-review [-n] <number>... | --open", 2)
     remote = forge_remote()
     forge = Forge(slug_of(remote), token())
     repo = Repo()
@@ -310,6 +317,10 @@ class FakeForge(Forge):
     def __init__(self, slug, diff_lines):
         super().__init__(slug, "")
         self.review_comments, self.comments, self.diff_lines, self.next = [], [], diff_lines, 100
+        self.open = set()
+
+    def open_numbers(self):
+        return set(self.open)
 
     def state(self, number):
         return {"review_comments": list(self.review_comments), "comments": list(self.comments)}
@@ -399,7 +410,10 @@ def self_test():
         try:
             repo = Repo()
             forge = FakeForge("o/r", diff_lines={17, 18, 19, 20, 21, 22, 23})
-            export(repo, forge, repo.patches(), {7}, dry=False)
+            export(repo, forge, repo.patches(), None, dry=False)
+            closed = len(forge.review_comments) + len(forge.comments)
+            forge.open = {7}
+            export(repo, forge, repo.patches(), None, dry=False)
             first = (list(forge.review_comments), list(forge.comments))
             export(repo, forge, repo.patches(), {7}, dry=False)
         finally:
@@ -408,6 +422,7 @@ def self_test():
             os.environ.update(saved)
 
         rc, ic = first
+        check("--open leaves a pull request the forge does not list as open alone", closed == 0)
         body = lambda rad: next((c for c in rc + ic if f"<!-- rad:{rad} -->" in c["body"]), None)
         check("nothing imported goes back", not body(imported) and not body(issue_imp))
         check("a line comment in the diff is a review comment on those lines",
