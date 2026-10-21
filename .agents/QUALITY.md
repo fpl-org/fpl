@@ -246,17 +246,18 @@ Neither the lint set nor the self-tests are listed in `quality/noslop.mk`; `scri
 reads them from the files, so two series that each add a tool do not meet in a shared list.
 Add a self-test as a file, never as a line in `noslop.mk`:
 
-- an executable `scripts/<name>-self-test` runs as it is;
+- an executable `scripts/<name>-self-test`, or one in a skill's `scripts/`, runs as it is;
 - a tool whose proof is a flag or needs another shell says so in its own header, one line:
   `# gates: $BIN/python $S/<name> --self-test` (`$BIN` is the root's `.venv/bin`, `$S` is
   `scripts/`, `$ROOT` the root);
-- a file of `scripts/` that opens with `#!/usr/bin/env python3` is linted, as is every
-  `quality/*.py`; `# noslop: skip <reason>` in its header keeps one out, the reason required.
+- a file of `scripts/`, or of a skill's `scripts/`, that opens with `#!/usr/bin/env python3` is
+  linted, as is every `quality/*.py`; `# noslop: skip <reason>` in its header keeps one out,
+  the reason required.
 
-They run in the order of their file names, and `scripts/gates` last. `gates-list` refuses, by
-name, a self-test without its exec bit and a gates line it would not read, so a tool cannot
-drop out unseen; `scripts/gates-list-self-test` holds the commands the recipe ran before as a
-floor that must still be found.
+They run in the order of their paths from the root, a skill's first, and `scripts/gates` last.
+`gates-list` refuses, by name, a self-test without its exec bit and a gates line it would not
+read, so a tool cannot drop out unseen; `scripts/gates-list-self-test` holds the commands the
+recipe ran before as a floor that must still be found.
 
 Three tools are in neither set: `scripts/export-review`, `import-review` and `review-serve` each
 have a `--self-test` that needs a Radicle home and declare no gates line, and each carries a
