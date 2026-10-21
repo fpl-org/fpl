@@ -44,7 +44,7 @@ stack-tree/cycle (pull requests that are each other's ancestors, which a walk fr
 would silently drop; each cycle is named, and what hangs above it),
 stack-tree/limit (300 pull requests, or 100 commits of one, which is all gh lists: some may be
 missing; so for a file as for the forge), stack-tree/gh and stack-tree/forge (the forge could
-not be read, or a `gh pr view` printed no list of commits),
+not be read, or printed what is not the JSON above),
 stack-tree/usage (the command line, or no github remote).
 
 Exit 0: drawn (no open pull requests draws that), or the self-test passed; 1: the self-test
@@ -81,6 +81,7 @@ MERMAID_ESCAPES = str.maketrans(
     {"#": "#35;", '"': "#quot;", "<": "#lt;", ">": "#gt;", "&": "#amp;"}
 )
 INPUT_REMEDY = f"feed it `gh pr list --state open --limit {LIMIT} --json {','.join(FIELDS)}`"
+FORGE_REMEDY = "check the gh version and the repository"
 COMMITS_REMEDY = INPUT_REMEDY[:-1] + ",commits`, per pull request as `gh pr view` has it"
 
 
@@ -163,15 +164,15 @@ def read_pr(raw: object, at: int, with_commits: bool) -> Pr:
     )
 
 
-def load(text: str) -> list:
-    """The JSON list of pull requests in `text`: gh lists at most LIMIT, so a list that long may
-    have been cut short, whether it came from the forge or from a file."""
+def load(text: str, rule: str = "stack-tree/input", remedy: str = INPUT_REMEDY) -> list:
+    """The JSON list of pull requests in `text`, a refusal under `rule` if it is none: gh lists
+    at most LIMIT, so a list that long may have been cut short, from the forge or from a file."""
     try:
         raw = json.loads(text)
     except (ValueError, RecursionError) as e:  # RecursionError: JSON nested thousands deep
-        raise refuse("stack-tree/input", f"not JSON ({e})", INPUT_REMEDY) from e
+        raise refuse(rule, f"not JSON ({e})", remedy) from e
     if not isinstance(raw, list):
-        raise refuse("stack-tree/input", "the top level is not a list", INPUT_REMEDY)
+        raise refuse(rule, "the top level is not a list", remedy)
     if len(raw) >= LIMIT:
         raise refuse(
             "stack-tree/limit",
@@ -382,7 +383,7 @@ def fetch(repo: str | None, with_commits: bool) -> str:
         ],
         env,
     )
-    prs = load(listed)
+    prs = load(listed, "stack-tree/forge", FORGE_REMEDY)
     try:
         for raw in prs if with_commits else ():
             view = run([gh, "pr", "view", str(raw["number"]), *at, "--json", "commits"], env)
@@ -391,7 +392,7 @@ def fetch(repo: str | None, with_commits: bool) -> str:
         raise refuse(
             "stack-tree/forge",
             f"gh printed what is not a pull request ({e!r})",
-            "check the gh version and the repository",
+            FORGE_REMEDY,
         ) from e
     return json.dumps(prs)
 
@@ -588,10 +589,30 @@ CASES = [
 ]
 
 
-def go(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+def go(
+    *args: str, stdin: str | None = None, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, __file__, *args], input=stdin, capture_output=True, text=True, check=False
+        [sys.executable, __file__, *args],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
     )
+
+
+def live(tmp: Path, listed: str, view: str, *flags: str) -> subprocess.CompletedProcess[str]:
+    """The live path against a stand-in gh, which prints `listed` for `pr list` and `view` for
+    `pr view`."""
+    gh = tmp / "bin" / "gh"
+    gh.parent.mkdir(exist_ok=True)
+    gh.write_text(
+        '#!/bin/sh\ncase "$2" in token) echo t;; list) echo "$L";; view) echo "$V";; esac\n'
+    )
+    gh.chmod(0o755)
+    env = {**os.environ, "PATH": f"{gh.parent}:{os.environ['PATH']}", "L": listed, "V": view}
+    return go("--repo", "o/r", *flags, env=env)
 
 
 def refused(got: subprocess.CompletedProcess[str], name: str) -> bool:
@@ -613,6 +634,9 @@ def extra_cases(tmp: Path) -> list[str]:
     bad_oid["commits"][0]["oid"] = "\x1b[31mX"
     (tmp / "oid.json").write_text(json.dumps([bad_oid]))
     (tmp / "entity.json").write_text(json.dumps([pr(1, "#9829;", "a", "main")]))
+    one = json.dumps([{k: v for k, v in pr(1, "t", "t", "main").items() if k != "commits"}])
+    commit = '{"commits":[{"oid":"abcdef0123","messageHeadline":"h"}]}'
+    nojson = live(tmp, "NOT JSON", "")
     gone, bad, many, head, deep, full, oid, entity, usage = (
         go("--json", str(tmp / "gone.json")),
         go("--json", str(tmp / "latin1.json")),
@@ -651,12 +675,15 @@ def extra_cases(tmp: Path) -> list[str]:
         "non-UTF-8 file": refused(bad, "latin1.json"),
         "100 commits": many.returncode == 2 and "stack-tree/limit" in many.stderr,
         "300 pull requests in a file": full.returncode == 2 and "stack-tree/limit" in full.stderr,
-        "JSON nested too deep": refused(deep, "not JSON") and "Traceback" not in deep.stderr,
+        "JSON nested too deep": refused(deep, "remedy") and "Traceback" not in deep.stderr,
         "oid with an escape": refused(oid, "hex oid") and "\x1b" not in oid.stderr + oid.stdout,
         "# in a Mermaid title": 'p1["#1 #35;9829;"]' in entity.stdout,
         "bad option": usage.returncode == 2
         and "stack-tree/usage" in usage.stderr
         and "\x1b" not in usage.stderr,
+        "live: gh lists no JSON": nojson.returncode == 2 and "stack-tree/forge" in nojson.stderr,
+        "live: gh views no commits": "stack-tree/forge" in live(tmp, one, "{}", "--commits").stderr,
+        "live: drawn": "abcdef0 h" in live(tmp, one, commit, "--commits").stdout,
         "hostile text in a refusal": len(head.stderr.splitlines()) == 2
         and "'x?y\\nz?'" in head.stderr
         and "\x1b" not in head.stderr,
