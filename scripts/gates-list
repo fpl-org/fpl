@@ -14,8 +14,12 @@
 #   # gates: <command>          a line of the header of any other file in scripts/ names the
 #                               command that proves the tool, where that proof is a flag or
 #                               needs another interpreter: # gates: $BIN/python $S/crap --self-test
-#   #!/usr/bin/env python3      a file in scripts/ that opens so is the harness's Python, as is
-#                               every quality/*.py: ruff judges each one
+#   .agents/skills/<skill>/scripts/<name>
+#                               a skill's own tool, read by the same rules: a *-self-test there
+#                               runs as $ROOT/.agents/skills/<skill>/scripts/<name>-self-test,
+#                               and a gates line there is written with that prefix too
+#   #!/usr/bin/env python3      a tool that opens so is the harness's Python, as is every
+#                               quality/*.py: ruff judges each one
 #   # noslop: skip <reason>     a line of the header that keeps the file from ruff; the reason
 #                               is required, and says why the file is not held to the rules
 #
@@ -53,20 +57,20 @@ refuse() {
 	exit 1
 }
 
-for t in "$here"/*-self-test; do
+for t in "$root"/.agents/skills/*/scripts/*-self-test "$here"/*-self-test; do
 	[ -e "$t" ] || continue
 	[ -x "$t" ] || refuse GATES-NOT-EXECUTABLE "${t#"$root"/} is not executable, so it would never run" \
 		"chmod +x it, or rename it if it is not a self-test"
 done
 
-# One record per finding, tab-separated: `gate <name> <command>` or `py <path>`. A refusal is
-# the last line, `! <rule> <what> <remedy>`, and awk exits 1 after it.
+# One record per finding, tab-separated: `gate <path from the root> <command>` or `py <path>`.
+# A refusal is the last line, `! <rule> <what> <remedy>`, and awk exits 1 after it.
 files=()
-for f in "$here"/* "$root"/quality/*.py; do
+for f in "$root"/.agents/skills/*/scripts/* "$here"/* "$root"/quality/*.py; do
 	[ -f "$f" ] && files+=("$f")
 done
 status=0
-records="$(awk -v here="$here" '
+records="$(awk -v root="$root" '
 	function no(rule, what, fix) {
 		printf "!\t%s\t%s:%d: %s\t%s\n", rule, rel, FNR, what, fix
 		failed = 1
@@ -75,24 +79,23 @@ records="$(awk -v here="$here" '
 	function flush() { if (path != "" && py && !skip) print "py\t" path }
 	FNR == 1 {
 		flush()
-		path = FILENAME; name = FILENAME; sub(/.*\//, "", name)
-		inscripts = substr(path, 1, length(here) + 1) == here "/"
-		rel = (inscripts ? "scripts/" : "quality/") name
-		selftest = name ~ /-self-test$/
-		py = !inscripts || $0 == "#!/usr/bin/env python3"
+		path = FILENAME; rel = substr(path, length(root) + 2)
+		tool = rel ~ /^scripts\/[^\/]+$/ || rel ~ /^\.agents\/skills\/[^\/]+\/scripts\/[^\/]+$/
+		selftest = rel ~ /-self-test$/
+		py = !tool || $0 == "#!/usr/bin/env python3"
 		header = 1; gates = 0; skip = 0
 	}
 	header && !/^#/ { header = 0 }
 	/^# gates:/ {
 		if (!header) no("GATES-PAST-HEADER", "a gates line past the header is read by no one",
 			"move it into the run of # lines the file opens with")
-		if (!inscripts || selftest) no("GATES-WRONG-FILE", "a gates line outside a tool of scripts/",
-			"a *-self-test runs as it is, and only scripts/ holds tools; delete the line")
+		if (!tool || selftest) no("GATES-WRONG-FILE", "a gates line outside a tool",
+			"a *-self-test runs as it is, and only scripts/ and a skill\x27s scripts/ hold tools; delete the line")
 		if (gates++) no("GATES-TWICE", "a second gates line", "one command per tool; join them with &&")
 		cmd = substr($0, 9); sub(/^[ \t]+/, "", cmd); sub(/[ \t]+$/, "", cmd)
 		if (cmd == "") no("GATES-EMPTY", "a gates line without a command",
 			"name the command that proves the tool")
-		print "gate\t" name "\t" cmd
+		print "gate\t" rel "\t" cmd
 	}
 	/^# noslop: skip([ \t]|$)/ {
 		if (!header) no("SKIP-PAST-HEADER", "a skip marker past the header is read by no one",
@@ -119,15 +122,18 @@ fi
 
 list="$(
 	{
+		# shellcheck disable=SC2016 # $S and $ROOT are written for the recipe to expand
+		for t in "$root"/.agents/skills/*/scripts/*-self-test; do
+			[ -e "$t" ] || continue
+			printf '%s\t$ROOT/%s\n' "${t#"$root"/}" "${t#"$root"/}"
+		done
 		for t in "$here"/*-self-test; do
 			[ -e "$t" ] || continue
-			n="${t##*/}"
-			# shellcheck disable=SC2016 # $S is written for the recipe to expand
-			printf '%s\t$S/%s\n' "$n" "$n"
+			printf 'scripts/%s\t$S/%s\n' "${t##*/}" "${t##*/}"
 		done
 		printf '%s\n' "$records" | sed -n 's/^gate	//p'
 	} | sort -t $'\t' -k1,1 | cut -f2-
 )"
-[ -n "$list" ] || refuse GATES-NONE "no self-test and no gates line in scripts/" \
+[ -n "$list" ] || refuse GATES-NONE "no self-test and no gates line in scripts/ or a skill" \
 	"make gates would prove nothing; check that scripts/ is the harness's"
 printf '%s\n' "$list"
