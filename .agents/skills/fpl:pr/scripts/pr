@@ -16,8 +16,10 @@
 # And four things to do to a pull request that is open, by its number:
 #
 #   pr --update-body N FILE   replace its body with the file
-#   pr --ready N              take it out of draft, once the bots are quiet
-#   pr --reviewer N LOGIN     ask LOGIN to review it
+#   pr --ready N              take it out of draft, once the bots are quiet and answered:
+#                             refused while a review thread is unresolved
+#   pr --resolve N THREAD     resolve one review thread, once it is answered
+#   pr --reviewer N LOGIN     ask LOGIN to review it; refused while it is a draft
 #
 # The body, a file or generated, and a new body go through the leak gate first. --ready
 # looks at the head commit: it waits, up to FPL_PR_WAIT seconds (default 900, polling every
@@ -25,6 +27,14 @@
 # requested and unanswered, and otherwise stops and names what is still pending. A bot
 # that has not yet started a check is not pending to the forge: run it after a push has
 # had a minute to start its checks. No labels are set or read.
+#
+# Quiet is not enough: a bot that spoke leaves review threads, and the maintainer's reading
+# starts once every one is answered and resolved. So --ready refuses, at once rather than
+# waiting, while a review thread is unresolved (pr/threads; outdated ones included, as the
+# lander's land/threads counts them), naming each thread and the command that resolves it.
+# --resolve closes one thread; the answer itself is written on the forge, where he reads it.
+# --reviewer asks nobody to read a draft (pr/reviewer): Ready is the one door, and the forge
+# asks the owner itself when it opens (.github/CODEOWNERS).
 #
 # A call to the forge that gets no answer ends in an error, not a hang: each call may wait
 # FPL_PR_TIMEOUT seconds (default 30) for the forge to send, and during --ready no longer
@@ -56,7 +66,7 @@
 # It talks to the forge over its API, with python3 from the default dev shell, so the
 # github layer is not needed. The token is gh's if gh has one for the machine account,
 # else the one in .git/agent-credentials (.agents/WORKFLOW.md, which lists the permissions it
-# needs: --ready also reads check runs and commit statuses). FPL_API_URL names another
+# needs: --ready also reads check runs, commit statuses and review threads). FPL_API_URL names another
 # API for pr-self-test, its proof beside it; only this machine's loopback is accepted.
 set -euo pipefail
 
@@ -66,7 +76,8 @@ die() {
 }
 
 usage="usage: pr [-n] [--draft] [-t <title>] [-b <text>|--body-file <file>] [-B <parent>] [<branch>]
-       pr --update-body <number> <file> | --ready <number> | --reviewer <number> <login>"
+       pr --update-body <number> <file> | --ready <number> | --reviewer <number> <login>
+       pr --resolve <number> <thread>"
 base="" title="" body="" bodyfile="" dry=0 draft=0 mode=create num="" arg=""
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -74,7 +85,7 @@ while [ $# -gt 0 ]; do
 		[ $# -ge 2 ] || die "$1 needs a file; $usage"
 		bodyfile="$2" && shift 2
 		;;
-	--update-body | --reviewer)
+	--update-body | --reviewer | --resolve)
 		[ $# -ge 3 ] || die "$1 needs two values; $usage"
 		mode="${1#--}" num="$2" arg="$3" && shift 3
 		;;
@@ -188,6 +199,7 @@ read -r -d '' pysrc <<'PY' || true
 import json, os, socket, sys, time, urllib.error, urllib.request
 
 slug, login, token = os.environ["FPL_SLUG"], os.environ["FPL_LOGIN"], os.environ["FPL_TOKEN"]
+ME = ".agents/skills/fpl:pr/scripts/pr"  # how a remedy spells this command, from the root
 root = os.environ.get("FPL_API_URL", "https://api.github.com")
 cap = float(os.environ["FPL_PR_TIMEOUT"])
 deadline = None  # set by ready: the end of the wait the caller allowed
@@ -226,7 +238,7 @@ def api(path, payload=None, method=None, refused=""):
     seconds = bound()
     try:
         with urllib.request.urlopen(request, timeout=seconds) as response:
-            return json.load(response)
+            raw = response.read()
     except urllib.error.HTTPError as error:
         detail = json.loads(error.read() or b"{}")
         remedy = f"; {refused}" if refused and error.code == 403 else ""
@@ -236,6 +248,10 @@ def api(path, payload=None, method=None, refused=""):
         if isinstance(reason, socket.timeout):
             die(f"{path}: no answer in {seconds:.1f}s (FPL_PR_TIMEOUT, FPL_PR_WAIT)")
         die(f"{path}: {reason}")
+    try:
+        return json.loads(raw or b"{}")
+    except ValueError:
+        die(f"{path}: the forge's answer is not JSON: {raw[:120]!r}")
 
 
 def pages(path, key, refused=""):
@@ -254,15 +270,78 @@ def pages(path, key, refused=""):
         page += 1
 
 
+THREADS = """query($owner: String!, $name: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $name) { pullRequest(number: $number) {
+    reviewThreads(first: 100, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      nodes { id isResolved path line comments(first: 1) { nodes { url } } } } } } }"""
+
+
+def threads(number):
+    """Every review thread of the pull request, resolved or not, outdated or not. The REST
+    API does not say whether a thread is resolved, so this is GraphQL, page after page. An
+    answer that is no page of threads is a failure of the forge, not an empty list, and the
+    gate fails closed on it (pr/threads)."""
+    repo_owner, name = slug.split("/", 1)
+    found, after = [], None
+    while True:
+        variables = {"owner": repo_owner, "name": name, "number": int(number), "after": after}
+        got = api("/graphql", {"query": THREADS, "variables": variables})
+        try:
+            page = got["data"]["repository"]["pullRequest"]["reviewThreads"]
+            found += page["nodes"]
+            more, after = page["pageInfo"]["hasNextPage"], page["pageInfo"]["endCursor"]
+        except (KeyError, TypeError):
+            die(
+                f"pr/threads: the forge's answer is not a page of review threads of #{number}:"
+                f" {json.dumps(got)[:200]}; run this again, and if it keeps failing read the"
+                " threads on the forge yourself"
+            )
+        if not more:
+            return found
+
+
+def where(thread):
+    """A thread, for a human: the url of its first comment, else its path and line."""
+    first = thread["comments"]["nodes"]
+    return first[0]["url"] if first else f"{thread['path']}:{thread['line']}"
+
+
 def view(pull):
-    """What --ready judged a pull request by, and must find unchanged before it marks it."""
+    """What --ready judges a pull request by in the pull request itself."""
     return (
         pull["state"],
         pull["draft"],
         pull["head"]["sha"],
+        pull.get("updated_at"),
         sorted(u["login"] for u in pull["requested_reviewers"]),
         sorted(t["slug"] for t in pull["requested_teams"]),
     )
+
+
+def pin(number):
+    """The pull request and its review threads, read together, with the whole as one value:
+    found unchanged on a second read, nothing --ready judged moved between the judgment and
+    the mutation. The pull request is read first and last, so the threads between were read
+    of that head, under those requests, at that updated_at; found moved within one read, the
+    value equals no other."""
+    pull = api(f"/repos/{slug}/pulls/{number}")
+    found = threads(number)
+    after = api(f"/repos/{slug}/pulls/{number}")
+    if view(after) != view(pull):
+        return pull, found, object()
+    return pull, found, (view(pull), sorted((t["id"], t["isResolved"]) for t in found))
+
+
+def mutated(answer, *keys):
+    """The field a mutation answers with, and else why not: GitHub puts errors beside data,
+    and an empty or foreign answer is no success either."""
+    if answer.get("errors"):
+        return None, answer["errors"][0].get("message")
+    node = answer.get("data")
+    for key in keys:
+        node = node.get(key) if isinstance(node, dict) else None
+    return node, "the forge's answer is not the mutation's"
 
 
 def open_pull(branch):
@@ -291,6 +370,14 @@ elif command == "update-body":
     api(f"/repos/{slug}/pulls/{args[0]}", {"body": open(args[1]).read()}, "PATCH")
     print(f"pr: body of #{args[0]} replaced", file=sys.stderr)
 elif command == "reviewer":
+    # A draft asks nobody: Ready is the one door to the owner's reading, and the forge asks
+    # him itself when it opens (CODEOWNERS). A request on a draft would be that signal with
+    # the bots still speaking.
+    if api(f"/repos/{slug}/pulls/{args[0]}")["draft"]:
+        die(
+            f"pr/reviewer: #{args[0]} is a draft, and a draft asks nobody; {ME} --ready"
+            f" {args[0]} is the way out of it, and the forge asks the owner itself"
+        )
     api(f"/repos/{slug}/pulls/{args[0]}/requested_reviewers", {"reviewers": [args[1]]})
     print(f"pr: asked {args[1]} to review #{args[0]}", file=sys.stderr)
 elif command == "ready":
@@ -302,13 +389,22 @@ elif command == "ready":
         " (.agents/WORKFLOW.md, The agent's credential)"
     )
     while True:
-        pull = api(f"/repos/{slug}/pulls/{number}")
+        pull, found, seen = pin(number)
         if pull["state"] != "open":
             die(f"#{number} is {pull['state']}")
         if not pull["draft"]:
             print(f"pr: #{number} is ready already", file=sys.stderr)
             raise SystemExit(0)
         sha = pull["head"]["sha"]
+        # An unresolved thread is not pending, it is work: waiting would not resolve it.
+        loose = [t for t in found if not t["isResolved"]]
+        if loose:
+            die(
+                f"pr/threads: #{number} has {len(loose)} of {len(found)} review threads"
+                f" unresolved: {' '.join(where(t) for t in loose)}; answer each on the forge and"
+                f" resolve it with {ME} --resolve {number} <id>"
+                f" (ids: {' '.join(t['id'] for t in loose)})"
+            )
         pending = [f"review requested from {u['login']}" for u in pull["requested_reviewers"]]
         pending += [f"review requested from team {t['slug']}" for t in pull["requested_teams"]]
         runs = pages(f"/repos/{slug}/commits/{sha}/check-runs", "check_runs", unread)
@@ -316,19 +412,19 @@ elif command == "ready":
         statuses = pages(f"/repos/{slug}/commits/{sha}/status", "statuses", unread)
         pending += [f"status {s['context']} is pending" for s in statuses if s["state"] == "pending"]
         if not pending:
-            # Read the pull request again before the mutation: a push or a review request
-            # since the read above would have the mutation mark a head, or a request set,
-            # nobody checked. Anything that moved sends the loop round again, under the
-            # same deadline. One round trip between this read and the mutation remains:
+            # Read it all again before the mutation: a push, a review request or a thread
+            # since the read above would have the mutation mark a head, or a request set, or
+            # a thread, nobody checked. Anything that moved sends the loop round again, under
+            # the same deadline. One round trip between this read and the mutation remains:
             # GitHub's mutation takes no expected head to hold it to.
-            latest = api(f"/repos/{slug}/pulls/{number}")
-            if view(latest) == view(pull):
+            latest, _, again = pin(number)
+            if again == seen:
                 break
             if latest["state"] != "open" or not latest["draft"]:
                 continue  # the top of the loop says which
             pending = [
-                f"the head or the review requests changed while it was read ({sha[:7]} to"
-                f" {latest['head']['sha'][:7]})"
+                f"the head, the review requests or the threads changed while it was read"
+                f" ({sha[:7]} to {latest['head']['sha'][:7]})"
             ]
         if time.monotonic() >= deadline:
             die(f"#{number} at {sha[:7]} is not quiet after {wait:g}s: " + "; ".join(pending))
@@ -342,9 +438,32 @@ elif command == "ready":
             "variables": {"id": pull["node_id"]},
         },
     )
-    if marked.get("errors"):
-        die(f"#{number} stays a draft: {marked['errors'][0].get('message')}")
+    is_draft, why = mutated(marked, "markPullRequestReadyForReview", "pullRequest", "isDraft")
+    if is_draft is not False:
+        die(f"#{number} stays a draft: {why}")
     print(f"pr: #{number} is ready, the bots are quiet at {sha[:7]}", file=sys.stderr)
+elif command == "resolve":
+    # One thread, named by the id --ready printed, and only one of this pull request: an id
+    # from another would resolve a conversation nobody here answered.
+    number, thread = args
+    known = {t["id"]: t for t in threads(number)}
+    if thread not in known:
+        die(f"#{number} has no review thread {thread}; {ME} --ready {number} names the open ones")
+    if known[thread]["isResolved"]:
+        print(f"pr: thread {thread} of #{number} is resolved already", file=sys.stderr)
+        raise SystemExit(0)
+    done = api(
+        "/graphql",
+        {
+            "query": "mutation($id: ID!) { resolveReviewThread(input: {threadId: $id})"
+            " { thread { isResolved } } }",
+            "variables": {"id": thread},
+        },
+    )
+    is_resolved, why = mutated(done, "resolveReviewThread", "thread", "isResolved")
+    if is_resolved is not True:
+        die(f"thread {thread} of #{number} stays open: {why}")
+    print(f"pr: thread {thread} of #{number} resolved ({where(known[thread])})", file=sys.stderr)
 else:
     die(f"no command '{command}'")
 PY
@@ -373,6 +492,10 @@ ready)
 	;;
 reviewer)
 	pyapi reviewer "$num" "$arg"
+	exit 0
+	;;
+resolve)
+	pyapi resolve "$num" "$arg"
 	exit 0
 	;;
 esac

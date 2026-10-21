@@ -10,5 +10,6 @@ for a second reader, or for asking again once a push has answered what he said. 
 nothing while the bots still speak, and never on a draft: Ready is his signal.
 
 - **Exit 0**: `pr: asked <login> to review #<n>` on stderr.
-- **Exit 1**: the token is not the machine account's, the pull request is not open, or the
-  forge refused the login (an author cannot review their own pull request).
+- **Exit 1**: `pr/reviewer` on a draft; the token is not the machine account's, the pull
+  request is not open, or the forge refused the login (an author cannot review their own
+  pull request).
