@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# scripts/series-self-test — proof that the identity of a series still holds: the Series-Id
-# trailer is accepted once and in its place by .githooks/commit-msg, and scripts/series mints it
+# series-self-test — proof that the identity of a series still holds: the Series-Id trailer
+# is accepted once and in its place by .githooks/commit-msg, and the series script beside it mints it
 # deterministically, stamps it onto a range without changing a patch, refuses to stamp once the
 # maintainer has spoken, checks it, writes a byte-stable manifest and prints its digest alone,
 # finds a series on main and undoes it in one commit. Run by `make gates`.
@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-root="$(cd "$(dirname "$0")/.." && pwd)"
+root="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/series-self-test.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 : >"$tmp/gitconfig"
@@ -26,7 +26,7 @@ export GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home"
 unset FPL_BRANCH_GATE FPL_AGENT_EMAILS FPL_LINT_BRANCH FPL_LINT_COMMIT GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE
 mkdir -p "$HOME" "$XDG_CONFIG_HOME"
 
-# The forge: a stub gh that answers the GETs scripts/series makes from STUB_* variables.
+# The forge: a stub gh that answers the GETs series makes from STUB_* variables.
 cat >"$tmp/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"${STUB_LOG:-/dev/null}"
@@ -63,20 +63,22 @@ verdict() {
 		fails=$((fails + 1)); echo "self-test: $what: output lacks '$text'" >&2; sed 's/^/    /' "$tmp/out" >&2
 	fi
 }
-# sr <want> <what> <text> <args>...: scripts/series with these arguments; output in $tmp/out.
+# sr <want> <what> <text> <args>...: series with these arguments; output in $tmp/out.
 sr() {
 	local want="$1" what="$2" text="$3" rc=0
 	shift 3
-	"$BASH" scripts/series "$@" >"$tmp/out" 2>&1 || rc=$?
+	"$BASH" .agents/skills/fpl:series/scripts/series "$@" >"$tmp/out" 2>&1 || rc=$?
 	verdict "series $what" "$rc" "$want" "$text"
 }
 # same <what> <a> <b>: two values are equal.
 same() { printf '%s' "$2" >"$tmp/out"; verdict "$1" "$([ "$2" = "$3" ] && echo 0 || echo 1)" 0 ""; }
 differ() { printf '%s' "$2" >"$tmp/out"; verdict "$1" "$([ "$2" != "$3" ] && echo 0 || echo 1)" 0 ""; }
-# mk <file> <Series-Id or ->: a human commit on the branch adding <file>, with a Stack: and, where given, a Series-Id.
+# mk <file> <Series-Id or ->: a human commit on the branch adding <file>, with the branch's
+# Stack: and, where given, a Series-Id.
 mk() {
+	local b; b="$(git branch --show-current)"
 	echo "$1" >"$1"; git add "$1"
-	{ printf 'feat(demo): add %s\n\nBody of %s.\n# a comment-like line, kept verbatim\n\nStack: demo\n' "$1" "$1"; [ "$2" = - ] || echo "Series-Id: $2"; echo "Human-Only: true"; } >"$tmp/m"
+	{ printf 'feat(demo): add %s\n\nBody of %s.\n# a comment-like line, kept verbatim\n\nStack: %s\n' "$1" "$1" "${b##*/stack/}"; [ "$2" = - ] || echo "Series-Id: $2"; echo "Human-Only: true"; } >"$tmp/m"
 	git commit -q -F "$tmp/m"
 }
 patch_ids() { grep -o '"patch_id": [^,]*' "$tmp/out"; }
@@ -98,29 +100,29 @@ cp "$tmp/out" "$tmp/man0"
 sr 0 "manifest, again" "" manifest "$base0..HEAD"
 verdict "manifest is byte-stable" "$(cmp -s "$tmp/out" "$tmp/man0" && echo 0 || echo 1)" 0 ""
 # digest: the manifest's digest alone, one line, as scripts/land reads it for the fpl/series
-# receipt; and from a copy outside the tree, where the lander runs main's scripts/series.
+# receipt; and from a copy outside the tree, where the lander runs main's copy of it.
 d0="$(grep -o '"digest": "[0-9a-f]*"' "$tmp/man0" | cut -d'"' -f4)"
 sr 0 "digest" "$d0" digest "$base0..HEAD"
 cp "$tmp/out" "$tmp/dig" # same writes $tmp/out: read the answer from a copy
 same "digest prints the manifest's digest and nothing else" "$(cat "$tmp/dig")" "$d0"
 same "digest prints one line" "$(wc -l <"$tmp/dig" | tr -d ' ')" 1
-cp scripts/series "$tmp/series.copy"
+cp .agents/skills/fpl:series/scripts/series "$tmp/series.copy"
 "$BASH" "$tmp/series.copy" digest "$base0..HEAD" >"$tmp/out" 2>&1 && rc=0 || rc=$?
 verdict "digest from a copy outside the tree, as the lander runs it" "$rc" 0 "$d0"
 sr 1 "digest refuses an empty range" "range" digest "HEAD..HEAD"
-same "a refused digest prints nothing on stdout" "$("$BASH" scripts/series digest HEAD..HEAD 2>/dev/null || true)" ""
+same "a refused digest prints nothing on stdout" "$("$BASH" .agents/skills/fpl:series/scripts/series digest HEAD..HEAD 2>/dev/null || true)" ""
 
 # --- stamp: the forge's say first -----------------------------------------------------------------
 export STUB_PR=7 STUB_LOG="$tmp/gh.log"
 for kind in STUB_REVIEWS STUB_COMMENTS; do
-	env "$kind=psjg" "$BASH" scripts/series stamp "$base0..HEAD" >"$tmp/out" 2>&1 && rc=0 || rc=$?
+	env "$kind=psjg" "$BASH" .agents/skills/fpl:series/scripts/series stamp "$base0..HEAD" >"$tmp/out" 2>&1 && rc=0 || rc=$?
 	verdict "stamp refuses when the owner is in $kind" "$rc" 1 "owner-spoke"
 done
 # The owner is the first of a long answer (well over a pipe's buffer): the match must not leave early.
 awk 'BEGIN { print "psjg"; for (i = 0; i < 40000; i++) print "someone" }' >"$tmp/long"
-STUB_REVIEWS_FILE="$tmp/long" "$BASH" scripts/series stamp "$base0..HEAD" >"$tmp/out" 2>&1 && rc=0 || rc=$?
+STUB_REVIEWS_FILE="$tmp/long" "$BASH" .agents/skills/fpl:series/scripts/series stamp "$base0..HEAD" >"$tmp/out" 2>&1 && rc=0 || rc=$?
 verdict "stamp refuses when the owner heads a long answer" "$rc" 1 "owner-spoke"
-STUB_NOTOKEN=1 "$BASH" scripts/series stamp "$base0..HEAD" >"$tmp/out" 2>&1 && rc=0 || rc=$?
+STUB_NOTOKEN=1 "$BASH" .agents/skills/fpl:series/scripts/series stamp "$base0..HEAD" >"$tmp/out" 2>&1 && rc=0 || rc=$?
 verdict "stamp refuses blind (no token)" "$rc" 1 "forge-token"
 same "every forge call names github.com" "$(grep -vc -e '--hostname github.com' "$tmp/gh.log" || true)" 0
 same "every pull request discovery reads all pages" "$(grep -e 'pulls?state=all' "$tmp/gh.log" | grep -vc -e '--paginate' || true)" 0
@@ -129,7 +131,7 @@ same "the refused stamps left the branch alone" "$(git rev-parse HEAD)" "$tip0"
 # A boundary branch inside the range moves with the rebase (--update-refs): its pull request is
 # asked too, and the owner's word on it refuses the stamp although the tip's is silent.
 git branch agent/claude/stack/demo-1 HEAD~1
-STUB_PR_B=9 STUB_REVIEWS_9=psjg "$BASH" scripts/series stamp "$base0..HEAD" >"$tmp/out" 2>&1 && rc=0 || rc=$?
+STUB_PR_B=9 STUB_REVIEWS_9=psjg "$BASH" .agents/skills/fpl:series/scripts/series stamp "$base0..HEAD" >"$tmp/out" 2>&1 && rc=0 || rc=$?
 verdict "stamp refuses when the owner is on a boundary branch's pull request" "$rc" 1 "owner-spoke"
 same "the refused stamp left the tip alone" "$(git rev-parse HEAD)" "$tip0"
 same "the refused stamp left the boundary alone" "$(git rev-parse agent/claude/stack/demo-1)" "$(git rev-parse HEAD~1)"
@@ -165,6 +167,17 @@ same "no Patch-Id trailer anywhere" "$(git log --format=%B "$base0..HEAD" | grep
 tip1="$(git rev-parse HEAD)"
 STUB_REVIEWS=someone-else sr 0 "stamp again" "$id" stamp "$base0..HEAD"
 same "stamp is idempotent" "$(git rev-parse HEAD)" "$tip1"
+# A range in which the script arrives at its path late (the commit that moves it): the commits
+# before it lack the script there, and the stamp of every commit still runs.
+git switch -q -c agent/claude/stack/moved "$base0"
+mk f4 -
+mkdir -p moved && git mv .agents/skills/fpl:series/scripts/series moved/series
+mk f5 -
+STUB_REVIEWS=someone-else "$BASH" moved/series stamp "$base0..HEAD" >"$tmp/out" 2>&1 && rc=0 || rc=$?
+verdict "stamp from a path the range's first commit lacks" "$rc" 0 "moved-"
+same "both commits of the moved range are stamped" "$(git log --format=%B "$base0..HEAD" | grep -c '^Series-Id: moved-')" 2
+same "the stamp leaves no copy of the script behind" "$(find "$(git rev-parse --absolute-git-dir)" -maxdepth 1 -name 'series.*' | wc -l | tr -d ' ')" 0
+git switch -q agent/claude/stack/demo
 
 # --- the manifest is the landed history, whatever the clone's config and replacement refs say ------
 sr 0 "manifest to compare" "" manifest "$base0..HEAD"
@@ -187,7 +200,7 @@ differ "the fixture really is sensitive to the indent heuristic" "$pid_with" "$p
 sr 0 "manifest of the sliding change" "" manifest "$slide0..HEAD"
 man2="$(cat "$tmp/out")"
 for v in true false; do
-	GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.indentHeuristic GIT_CONFIG_VALUE_0=$v "$BASH" scripts/series manifest "$slide0..HEAD" >"$tmp/out" 2>&1
+	GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.indentHeuristic GIT_CONFIG_VALUE_0=$v "$BASH" .agents/skills/fpl:series/scripts/series manifest "$slide0..HEAD" >"$tmp/out" 2>&1
 	same "diff.indentHeuristic=$v does not change the manifest" "$(cat "$tmp/out")" "$man2"
 done
 # A blank context line: with diff.suppressBlankEmpty it loses its leading space, and the plain
@@ -203,7 +216,7 @@ pid_plain="$(git -c diff.suppressBlankEmpty=false diff-tree -p HEAD | git patch-
 differ "the fixture really is sensitive to diff.suppressBlankEmpty" "$pid_sbe" "$pid_plain"
 sr 0 "manifest of the blank-line change" "" manifest "$blank0..HEAD"
 man3="$(cat "$tmp/out")"
-GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.suppressBlankEmpty GIT_CONFIG_VALUE_0=true "$BASH" scripts/series manifest "$blank0..HEAD" >"$tmp/out" 2>&1
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.suppressBlankEmpty GIT_CONFIG_VALUE_0=true "$BASH" .agents/skills/fpl:series/scripts/series manifest "$blank0..HEAD" >"$tmp/out" 2>&1
 same "diff.suppressBlankEmpty=true does not change the manifest" "$(cat "$tmp/out")" "$man3"
 git switch -q agent/claude/stack/demo
 
@@ -280,7 +293,7 @@ sr 0 "revert's commit carries its id" "$rid" check "main..HEAD"
 
 # --- revert: what it must refuse, and leave no trace of ----------------------------------------
 # A bad SERIES_MAIN is an error, not a quiet other history.
-SERIES_MAIN=nowhere "$BASH" scripts/series range "$id" >"$tmp/out" 2>&1 && rc=0 || rc=$?
+SERIES_MAIN=nowhere "$BASH" .agents/skills/fpl:series/scripts/series range "$id" >"$tmp/out" 2>&1 && rc=0 || rc=$?
 verdict "range refuses an explicit main that is not there" "$rc" 1 "main-ref"
 # A series that spans harness and implementation cannot be undone as one commit.
 git switch -q main
@@ -335,7 +348,7 @@ refused_clean "the revert without a lead" '*revert-amend*'
 # A TERM while the hooks run (here: the commit of the undo) leaves no trace either.
 printf '#!/bin/sh\nif [ "$1" = commit ]; then kill -TERM "$(cat "%s")"; echo "fake git: TERM sent" >&2; exit 1; fi\nexec "%s" "$@"\n' "$tmp/pid" "$(command -v git)" >"$tmp/fakebin/git"
 rc=0
-PATH="$tmp/fakebin:$PATH" "$BASH" -c 'echo $$ >"$1"; shift; exec "$BASH" scripts/series "$@"' _ "$tmp/pid" revert amend-abcdef0 agent/claude/stack/revert-amend >"$tmp/out" 2>&1 || rc=$?
+PATH="$tmp/fakebin:$PATH" "$BASH" -c 'echo $$ >"$1"; shift; exec "$BASH" .agents/skills/fpl:series/scripts/series "$@"' _ "$tmp/pid" revert amend-abcdef0 agent/claude/stack/revert-amend >"$tmp/out" 2>&1 || rc=$?
 verdict "revert stopped by TERM" "$rc" 143 ""
 refused_clean "the revert stopped by TERM" '*revert-amend*'
 # A series that nets to nothing on main has nothing to undo.

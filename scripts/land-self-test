@@ -82,13 +82,13 @@ printf '* @psjg\ndocs/ @someone\n' >.github/CODEOWNERS
 git commit -q -am "owners by path"
 MC="$(git rev-parse HEAD)"
 git reset -q --hard "$M0"
-# For the rules on the range: MS, a main that holds scripts/series, HS above it with one
+# For the rules on the range: MS, a main that holds the series script, HS above it with one
 # Series-Id, HN with none, MF a main past MS that carries HS's id; MP a main that adds p,
 # HP above it that removes p and adds it again, the patch of MP; HW a head that touches a
 # workflow, HG one a GPT model assisted, HB eleven commits, HL 601 lines.
-mkdir scripts
-printf '#!/bin/sh\necho d1g3st\n' >scripts/series
-chmod +x scripts/series
+mkdir -p .agents/skills/fpl:series/scripts
+printf '#!/bin/sh\necho d1g3st\n' >.agents/skills/fpl:series/scripts/series
+chmod +x .agents/skills/fpl:series/scripts/series
 git add -A
 git commit -q -m "series"
 MS="$(git rev-parse HEAD)"
@@ -1167,9 +1167,9 @@ range_case() {
 }
 forge
 expect 0 "the range rules on an ordinary head" --dry-run 7
-says "ok  land/series             skipped: main has no scripts/series" "no series yet: a notice"
+says "ok  land/series             skipped: main has no .agents/skills/fpl:series/scripts/series" "no series yet: a notice"
 says "ok  land/card" "the card is there"
-range_case "$HS" "$MS" 0 "every commit carries Series-Id s-1" "one Series-Id on a main with scripts/series"
+range_case "$HS" "$MS" 0 "every commit carries Series-Id s-1" "one Series-Id on a main with the series script"
 range_case "$HN" "$MS" 1 "NO  land/series" "a commit without a Series-Id"
 range_case "$HS" "$MF" 1 "NO  land/series-fresh" "a Series-Id that is on main already"
 range_case "$HP" "$MP" 1 "NO  land/patch-fresh" "a patch that is on main already"
@@ -1378,7 +1378,7 @@ says "git push http.https://github.com/.extraheader AUTHORIZATION: basic $(print
 	"the push carries the token"
 first "-X PATCH repos/land-test/fpl/pulls/8" "--force-with-lease=refs/heads/$BR:$H :refs/heads/$BR" \
 	"a child is retargeted before its base is deleted"
-lacks "fpl/series" "no receipt without scripts/series on main"
+lacks "fpl/series" "no receipt without the series script on main"
 forge
 children '{"number": 8}'
 : >"$FORGE/refuse-PATCH"
@@ -1398,7 +1398,7 @@ git --git-dir="$REMOTE" update-ref refs/heads/main "$MS"
 GH_TOKEN=t expect 0 "--ci lands a series" --ci 7
 called
 says "-f name=fpl/series -f head_sha=$HS" "it writes the receipt on the head"
-says "series d1g3st" "with the digest scripts/series gives"
+says "series d1g3st" "with the digest series gives"
 at="$H" HEAD_SHA="$H"
 
 # Relocation. Siblings on M0: SA adds a, SB adds b, SC sits on SB and adds c, SX adds an a

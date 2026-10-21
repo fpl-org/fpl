@@ -80,7 +80,7 @@
 #   land/gpt                a commit whose Assisted-By names a GPT model is named by a line
 #                           gpt-ok: <sha> in a code owner's approval of the head, a prefix of
 #                           at least 7 hex digits that no other commit of the range shares
-#   land/series             once main holds scripts/series: one Series-Id on every commit
+#   land/series             once main holds the series script: one Series-Id on every commit
 #   land/series-fresh       and no commit on main carries it yet
 #   land/patch-fresh        no commit's `git patch-id --verbatim` is one on main already
 #   land/card               the body has the card's headings: What, What changes, How
@@ -102,8 +102,8 @@
 # cannot see that list, that the ruleset lets the token past always, and land/autodelete that
 # the repository does not delete a branch when its pull request merges: that would close the
 # pull requests stacked on it before they are retargeted. Before the push it
-# writes the fpl/series check run on the head, when main holds scripts/series, with the
-# digest `scripts/series digest <main>..<head>` prints; the push carries the token. Once
+# writes the fpl/series check run on the head, when main holds the series script, with the
+# digest `series digest <main>..<head>` prints; the push carries the token. Once
 # GitHub shows the merge it retargets to main each pull request based on the landed branch,
 # and only then deletes the branch, if it still is at the head that landed: deleting it
 # first closes them.
@@ -822,7 +822,7 @@ def trailers(revs, key):
 
 
 def pair(c):
-    """(patch id, SHA-256 of author and raw message) of commit c: the pair scripts/series
+    """(patch id, SHA-256 of author and raw message) of commit c: the pair series
     manifest prints, its diff pinned the same way against the caller's configuration."""
     diff = git("-c", "core.quotePath=true", "diff-tree", "-p", "--root", "--no-ext-diff",
                "--no-textconv", "--no-color", "--no-renames", "-U3", "--src-prefix=a/",
@@ -875,14 +875,18 @@ def derive(main, head):
     print("y", onto)
 
 
+# Where main keeps the series script: the home of fpl:series.
+SERIES = ".agents/skills/fpl:series/scripts/series"
+
+
 def judge_series(v, main, span):
-    """land/series and land/series-fresh, judged once main holds scripts/series: one
+    """land/series and land/series-fresh, judged once main holds the series script: one
     Series-Id on every commit, and no commit on main carries it yet."""
-    has = subprocess.run(("git", "cat-file", "-e", f"{main}:scripts/series"),
+    has = subprocess.run(("git", "cat-file", "-e", f"{main}:{SERIES}"),
                          capture_output=True).returncode == 0
     if not has:
         for rule in ("land/series", "land/series-fresh"):
-            v.ok(rule, "skipped: main has no scripts/series")
+            v.ok(rule, f"skipped: main has no {SERIES}")
         return
     rows = trailers(span, "Series-Id")
     ids = sorted({x for _, vals in rows for x in vals})
@@ -890,7 +894,7 @@ def judge_series(v, main, span):
     if odd or len(ids) != 1:
         v.no("land/series", f"Series-Id {' '.join(ids) or 'none'}; not exactly one on"
              f" {' '.join(odd) or 'every commit'}",
-             "scripts/series names the one series on every commit of the range")
+             "series stamp names the one series on every commit of the range")
         return
     v.ok("land/series", f"every commit carries Series-Id {ids[0]}")
     if any(ids[0] in vals for _, vals in trailers(main, "Series-Id")):
@@ -1513,11 +1517,12 @@ cp "$tmp/checks.json" "$tmp/checks.judged.json"
 cp "$tmp/statuses.json" "$tmp/statuses.judged.json"
 
 # fpl/series, with --ci: the receipt, written before the push so nothing lands without one.
-# Its digest is what main's scripts/series prints for `digest <main>..<head>`, one line:
-# the contract between the two scripts. Without scripts/series on main there is none.
-if [ "$ci" -eq 1 ] && git cat-file -e "$main:scripts/series" 2>/dev/null; then
-	git show "$main:scripts/series" >"$tmp/series" && chmod +x "$tmp/series"
-	digest="$("$tmp/series" digest "$span")" || die "scripts/series digest failed; nothing landed"
+# Its digest is what main's series script prints for `digest <main>..<head>`, one line:
+# the contract between the two scripts. Without the series script on main there is none.
+series_path=".agents/skills/fpl:series/scripts/series"
+if [ "$ci" -eq 1 ] && git cat-file -e "$main:$series_path" 2>/dev/null; then
+	git show "$main:$series_path" >"$tmp/series" && chmod +x "$tmp/series"
+	digest="$("$tmp/series" digest "$span")" || die "series digest failed; nothing landed"
 	api -X POST "repos/$slug/check-runs" -f name=fpl/series -f head_sha="$head" \
 		-f status=completed -f conclusion=success -f "output[title]=series $digest" \
 		-f "output[summary]=manifest digest $digest of $span, approved on $head" \

@@ -19,7 +19,6 @@ scripts/props -- not yet converted: unit S5 (fpl:quality:props)
 scripts/rad-cob-dagtaak -- not yet converted: unit S5 (fpl:task:load), internal to task
 scripts/review -- not yet converted: unit S6 (fpl:review:page)
 scripts/review-serve -- not yet converted: unit S6 (fpl:review:serve)
-scripts/series -- not yet converted: unit S3 (fpl:series:stamp)
 scripts/setup -- not yet converted: unit S4 (fpl:worktree:setup)
 scripts/stack-tree -- landed 2026-10-21, after the plan; unit S2 (fpl:pr) takes it as a sub-skill
 scripts/sweep -- not yet converted: unit S4 (fpl:worktree:sweep)
