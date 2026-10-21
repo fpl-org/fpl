@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # noslop: skip predates the lint list: ruff finds 30 (16 E501) and would reformat it
-"""scripts/import-review — bring a pull request and its review from the forge into Radicle.
+""".agents/skills/fpl:review:import/scripts/import-review — bring a pull request and its review from the forge into Radicle.
 
-    scripts/import-review <number>...        those pull requests
-    scripts/import-review --open             every open pull request
-    scripts/import-review --dump <number>    print what the forge has, as JSON, and stop
-    scripts/import-review --bundle <file>    import from such a dump instead of the forge
-    scripts/import-review --self-test        run against a throwaway Radicle home
+    .agents/skills/fpl:review:import/scripts/import-review <number>...        those pull requests
+    .agents/skills/fpl:review:import/scripts/import-review --open             every open pull request
+    .agents/skills/fpl:review:import/scripts/import-review --dump <number>    print what the forge has, as JSON, and stop
+    .agents/skills/fpl:review:import/scripts/import-review --bundle <file>    import from such a dump instead of the forge
+    .agents/skills/fpl:review:import/scripts/import-review --self-test        run against a throwaway Radicle home
 
 Review is meant to live in the repository, next to the code, as a Radicle patch: a
 signed object that replicates with the rest and stays readable when the forge is gone.
@@ -297,7 +297,7 @@ EXPORTED = re.compile(r"<!-- rad:([0-9a-f]{40}|verdict:[^ ]+) -->")
 
 def items(bundle):
     """The comments of a pull request in the order they were written, each with what it
-    needs to become a revision comment. What scripts/export-review put there came from the
+    needs to become a revision comment. What .agents/skills/fpl:review:export/scripts/export-review put there came from the
     patch, and stays out."""
     out = []
     for c in bundle["comments"]:
@@ -370,7 +370,7 @@ def import_one(repo, remote, bundle, patches):
             m = re.search(r"#discussion_r(\d+)", comment["body"].split("\n", 1)[0])
             if m:
                 ids[int(m.group(1))] = cid
-    # A forge comment that scripts/export-review posted stands for a Radicle one, so a reply
+    # A forge comment that .agents/skills/fpl:review:export/scripts/export-review posted stands for a Radicle one, so a reply
     # to it on the forge is a reply to that one here, in the thread it lives in.
     review_of = {cid: review["id"] for revision in patch["revisions"].values()
                  for review in revision["reviews"].values() for cid in review["comments"]["comments"]}
@@ -412,7 +412,7 @@ def main(argv):
         return 0 if argv else 2
     if argv[0] == "--bundle":
         if len(argv) != 2:
-            die("usage: scripts/import-review --bundle <file>", 2)
+            die("usage: .agents/skills/fpl:review:import/scripts/import-review --bundle <file>", 2)
         with open(argv[1]) as f:
             bundles = json.load(f)
         bundles = bundles if isinstance(bundles, list) else [bundles]
@@ -428,7 +428,7 @@ def main(argv):
     slug, secret = slug_of(remote), token()
     if argv[0] == "--dump":
         if len(argv) != 2 or not argv[1].isdigit():
-            die("usage: scripts/import-review --dump <number>", 2)
+            die("usage: .agents/skills/fpl:review:import/scripts/import-review --dump <number>", 2)
         json.dump(fetch(slug, int(argv[1]), secret), sys.stdout, indent=1)
         print()
         return 0
@@ -437,7 +437,7 @@ def main(argv):
     elif all(a.lstrip("#").isdigit() for a in argv):
         numbers = [int(a.lstrip("#")) for a in argv]
     else:
-        die("usage: scripts/import-review <number>... | --open", 2)
+        die("usage: .agents/skills/fpl:review:import/scripts/import-review <number>... | --open", 2)
     repo = Repo()
     patches = repo.patches()
     for n in numbers:
@@ -626,7 +626,7 @@ def self_test():
         p1 = next(p for p in patches().values() if p["title"] == "pr 1")
         check("a rebased head becomes a revision too", rebased in {r["oid"] for r in p1["revisions"].values()})
 
-        # A comment written in the review, put on the forge by scripts/export-review, and
+        # A comment written in the review, put on the forge by .agents/skills/fpl:review:export/scripts/export-review, and
         # answered there.
         rid = sh("rad", ".").stdout.strip()
         pid = next(o for o, p in patches().items() if p["title"] == "pr 1")
