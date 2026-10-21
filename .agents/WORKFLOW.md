@@ -2,7 +2,7 @@
 
 FPL uses a **stacked-commits** workflow (the Meta/Phabricator and Google model): a change is a
 short chain of small, individually reviewable commits, each depending on the one below. No
-extra tooling — plain git, one config flag, and `scripts/restack`. If you prefer `jj`, see
+extra tooling — plain git, one config flag, and `.agents/skills/fpl:series:restack/scripts/restack`. If you prefer `jj`, see
 `.agents/JJ.md`; it produces the same history.
 
 Vocabulary: **base** (the branch you'll land on, `main`) · **stack** (your ordered commits on
@@ -106,7 +106,7 @@ The repository is meant to live in more than one place (rule 7), and with two re
 git remote rename origin github
 ```
 
-The scripts assume no remote name: `scripts/restack` follows the upstream of the base
+The scripts assume no remote name: `.agents/skills/fpl:series:restack/scripts/restack` follows the upstream of the base
 branch, `scripts/pr` the remote the branch tracks. The recipes below spell `github`.
 
 ## Build a stack
@@ -140,11 +140,11 @@ around; only a real conflict with `main` asks for a rebase, and that is rule 10'
 exception.
 
 ```
-scripts/restack            # git fetch github && git rebase --update-refs github/main
+.agents/skills/fpl:series:restack/scripts/restack            # git fetch github && git rebase --update-refs github/main
 ```
 
 `--update-refs` moves every `stack/typed-let/*` ref that pointed into the stack along with the
-rebase, so the PR branches stay correct. Conflicts: resolve, then `scripts/restack --continue`
+rebase, so the PR branches stay correct. Conflicts: resolve, then `.agents/skills/fpl:series:restack/scripts/restack --continue`
 (or `--abort`). `rerere` replays the same resolution on the next restack.
 
 To amend a commit that isn't on top, before it is approved:
@@ -429,7 +429,7 @@ that check run is the lander's alone.
 
 **Relocate.** When another pull request landed first, `main` is no longer an ancestor of the
 head and `land/ancestor` refuses; the lander relocates such a head itself (Land, above). By
-hand: before an approval, restack and push (`scripts/restack`). After one, carry the commits
+hand: before an approval, restack and push (`.agents/skills/fpl:series:restack/scripts/restack`). After one, carry the commits
 over without changing them, compare each with its old self, and push under
 `FPL_FORWARD_ONLY_OVERRIDE="relocate: <Series-Id>"`, which `scripts/forward-only` lets
 through only when every commit kept its pair:
