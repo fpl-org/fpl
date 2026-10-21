@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-# gates: nix develop $ROOT#radicle -c python3 $S/task --self-test
+# gates: nix develop $ROOT#radicle -c python3 $ROOT/.agents/skills/fpl:task/scripts/task --self-test
 # (rad is only in the radicle layer of the dev shell; make gates needs nix already)
-"""scripts/task — FPL's task graph, kept in the repository as Radicle COBs.
+"""task — FPL's task graph, kept in the repository as Radicle COBs.
 
-    scripts/task new "<title>" [-d <description>] [-b <id>]... [-p <id>]   open a task
-    scripts/task list [--all]        open tasks; --all includes done and dropped
-    scripts/task ready               tasks nothing waits on (not lanes); exit 1 if a loop is left
-    scripts/task load [-n] <file>    create the tasks a file lists; a rerun creates nothing
-    scripts/task tree                every task under what it is part of, with what it waits on
-    scripts/task show <id>
-    scripts/task start|done|drop|reopen <id>
-    scripts/task block [-f] <id> <by>  <id> must wait for <by>;  unblock removes it
-    scripts/task part <id> <of>|none <id> is a part of <of> (a lane, a group); one parent
-    scripts/task assign <id> <did>|me|nobody
-    scripts/task edit <id> [-t <title>] [-d <description>]
+    task new "<title>" [-d <description>] [-b <id>]... [-p <id>]   open a task
+    task list [--all]        open tasks; --all includes done and dropped
+    task ready               tasks nothing waits on (not lanes); exit 1 if a loop is left
+    task load [-n] <file>    create the tasks a file lists; a rerun creates nothing
+    task tree                every task under what it is part of, with what it waits on
+    task show <id>
+    task start|done|drop|reopen <id>
+    task block [-f] <id> <by>  <id> must wait for <by>;  unblock removes it
+    task part <id> <of>|none <id> is a part of <of> (a lane, a group); one parent
+    task assign <id> <did>|me|nobody
+    task edit <id> [-t <title>] [-d <description>]
 
 Exit: 0 the answer, 1 an answer with a loop in it, 2 the command was refused.
 
@@ -40,6 +40,7 @@ TYPE = "nl.psjs.dagtaak"
 OPEN_STATES = ("todo", "doing")
 VERBS = {"start": "doing", "done": "done", "drop": "dropped", "reopen": "todo"}
 HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.abspath(os.path.join(HERE, *[os.pardir] * 4))
 
 
 def die(message):
@@ -52,8 +53,12 @@ def die(message):
 
 
 def rad(*args, stdin=None):
-    """Run rad with scripts/ on PATH, where it finds the rad-cob-dagtaak helper."""
-    env = dict(os.environ, PATH=HERE + os.pathsep + os.environ.get("PATH", ""))
+    """Run rad with the root's scripts/ on PATH, where it finds the rad-cob-dagtaak helper.
+
+    The helper stays there: PATH is split on colons, and this skill's directory has one."""
+    env = dict(
+        os.environ, PATH=os.path.join(ROOT, "scripts") + os.pathsep + os.environ.get("PATH", "")
+    )
     try:
         done = subprocess.run(
             ["rad", *args], env=env, input=stdin, capture_output=True, text=True, check=False
@@ -194,7 +199,7 @@ class Graph:
         if self.show(oid).get(field) != expected:
             die(
                 f"{oid[:7]}: not applied. Only the author, or the assignee for state and "
-                f"blockers, may do that (scripts/rad-cob-dagtaak)"
+                f"blockers, may do that (rad-cob-dagtaak)"
             )
 
 
@@ -272,7 +277,9 @@ def check_unit(path, names, unit):
 def reducer():
     """scripts/rad-cob-dagtaak's globals: its own `apply` and limits decide what a load may
     write, so they are written down once. runpy compiles it in memory, leaving no bytecode."""
-    return runpy.run_path(os.path.join(HERE, "rad-cob-dagtaak"), run_name="rad-cob-dagtaak")
+    return runpy.run_path(
+        os.path.join(ROOT, "scripts", "rad-cob-dagtaak"), run_name="rad-cob-dagtaak"
+    )
 
 
 def path(edges, src, dst):
@@ -320,8 +327,15 @@ def refuse_loops(graph, units, ids, plan):
             die(f"{loop}: each {kind} the next; a load closes no loop. Nothing written")
 
 
+def leak_check():
+    """The leak-check script: the leak skill's once it has moved there (unit S4), the root's
+    scripts/ until then. The repository root is four directories above this file."""
+    moved = os.path.join(ROOT, ".agents", "skills", "fpl:leak", "scripts", "leak-check")
+    return moved if os.path.exists(moved) else os.path.join(ROOT, "scripts", "leak-check")
+
+
 def leak_gate(units):
-    """Every title and brief through scripts/leak-check --text, before anything is written.
+    """Every title and brief through leak-check --text, before anything is written.
 
     A task is signed and replicated, and a COB cannot be taken back out of a peer's store,
     so a refusal here names the unit and nothing has been written yet. For the same reason
@@ -335,7 +349,7 @@ def leak_gate(units):
             handle.write(f"{title}\n\n{brief}\n")
             handle.flush()
             done = subprocess.run(
-                [os.path.join(HERE, "leak-check"), "--text", handle.name],
+                [leak_check(), "--text", handle.name],
                 env=dict(os.environ, FPL_LEAK_GATE="block"),
                 capture_output=True,
                 text=True,
@@ -513,7 +527,7 @@ def waits(graph, oid):
 
 def parser():
     """The command line, as the module's docstring gives it."""
-    top = argparse.ArgumentParser(prog="scripts/task", description=__doc__.split("\n\n")[0])
+    top = argparse.ArgumentParser(prog="task", description=__doc__.split("\n\n")[0])
     sub = top.add_subparsers(dest="cmd", required=True)
     new = sub.add_parser("new")
     new.add_argument("title")
@@ -772,13 +786,13 @@ class Fixture:
         return path
 
     def raw(self, oid, action):
-        """Write `action` on task `oid` with rad itself, past scripts/task's own checks, as
+        """Write `action` on task `oid` with rad itself, past task's own checks, as
         a peer could; rad finds the reducer on PATH."""
         self.sh(
             *("rad", "cob", "update", "--repo", self.sh("rad", ".").stdout.strip()),
             *("--type", TYPE, "--object", oid, "--message", "raw"),
             self.file("raw.jsonl", json.dumps(action) + "\n"),
-            extra={"PATH": HERE + os.pathsep + self.env.get("PATH", "")},
+            extra={"PATH": os.path.join(ROOT, "scripts") + os.pathsep + self.env.get("PATH", "")},
         )
 
     def init(self, untouched):
@@ -925,7 +939,7 @@ def loading_units(f):
         and "2 tasks are named" in shared.stderr
         and "  Q4" not in f.out("list"),
     )
-    redo = f.out("load", "-n", os.path.join(HERE, os.pardir, ".agents", "tasks", "redo.tsv"))
+    redo = f.out("load", "-n", os.path.join(ROOT, ".agents", "tasks", "redo.tsv"))
     f.check(
         "the repository's own units file passes every check of load",
         "(dry run, nothing written)" in redo and "  A5" not in f.out("list"),
