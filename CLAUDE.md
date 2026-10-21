@@ -12,9 +12,10 @@ Read it first. This file only covers Claude Code tooling that lives under `.clau
 - **Subagents** (`.claude/agents/`): `spec-guardian` (read-only code-vs-spec drift review),
   `feature-impl` (implements one feature to a green `make check`), `presenter` (rewrites a
   finished work branch into the series the maintainer reads, and writes its review card).
-- **Skill** (`.claude/skills/fpl-conventions/`): loads `AGENTS.md` + `.agents/CONVENTIONS.md` +
+- **Skills** (`.claude/skills/`): `fpl-conventions` loads `AGENTS.md` + `.agents/CONVENTIONS.md` +
   `.agents/COMMITS.md` + `.agents/WORKFLOW.md` for Claude. The docs are the source of truth; the
-  skill is just a trigger.
+  skill is just a trigger. `fpl:present:silent` and `fpl:present:stamp` are links to
+  `.agents/skills/`, the one source of the presenter's two calls.
 - **Hooks** (`.claude/settings.json`):
   - `PreToolUse(Edit|Write)` → `.claude/hooks/guard-specs.sh`: blocks edits to
     `fpl/features/*/spec.md` / `fpl/features/*/examples/*` / `docs/DESIGN.md` / `docs/SPEC.md`
