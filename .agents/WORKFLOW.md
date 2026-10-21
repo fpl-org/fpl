@@ -47,7 +47,7 @@ top of base) · **restack** (rebase the stack when base or a lower commit change
    [gitleaks](https://github.com/gitleaks/gitleaks) over the staged change
    (`.githooks/pre-commit`), the message (`.githooks/commit-msg`), every commit and ref
    name a push sends (`.githooks/pre-push`), and a pull request's title and body
-   (`scripts/pr`). It judges added lines, file names and messages against two sets of
+   (`fpl:pr`). It judges added lines, file names and messages against two sets of
    rules: gitleaks's defaults, which find keys and tokens, and a private list of terms.
    The list is local and per maintainer, never committed: one regular expression per line
    in Go's RE2 syntax (`\b`, not `\<`), matched regardless of case, `^` and `$` at line
@@ -58,7 +58,7 @@ top of base) · **restack** (rebase the stack when base or a lower commit change
    judges the branch's whole history. Its report names the rule, the list line and the
    place, never the match. With no list only the defaults run.
    `FPL_LEAK_GATE=block` (default) · `warn` (report, don't block) · `off`. It covers what
-   leaves through git and `scripts/pr`; the comments `scripts/export-review` posts, and
+   leaves through git and `fpl:pr`; the comments `scripts/export-review` posts, and
    anything written on the forge by hand, do not pass it.
 10. **An approved pull request is frozen; fix forward.** Until the maintainer approves a pull
     request, agents rewrite it freely, in this order: the machines first (`make check` and
@@ -107,7 +107,7 @@ git remote rename origin github
 ```
 
 The scripts assume no remote name: `scripts/restack` follows the upstream of the base
-branch, `scripts/pr` the remote the branch tracks. The recipes below spell `github`.
+branch, the `pr` of `fpl:pr` the remote the branch tracks. The recipes below spell `github`.
 
 ## Build a stack
 
@@ -179,51 +179,18 @@ gh pr create --base main              --head stack/typed-let/1
 gh pr create --base stack/typed-let/1 --head stack/typed-let/2
 ```
 
-For agent work there are two scripts, one for each side of the review:
+For agent work there are two scripts, one for each side of the review, and a skill tree
+that says when and how to run each: `fpl:pr` (the agent's side: file the branch as the
+machine account, the card as the body, Ready, a reviewer) and `fpl:land` (the maintainer's
+side: every check as a dry run, the fast-forward, the route by hand). The author of a pull
+request cannot approve it, which is why the two sides are two accounts.
 
-```
-scripts/pr [<branch>]          # the agent's side: file the branch as the machine account,
-                               # on main (-B <parent> stacks, --draft opens a draft)
-scripts/land [<number>]        # the maintainer's side: check, look, decide, fast-forward main
-scripts/land --dry-run <number>  # every check and the push it would make; changes nothing
-```
-
-`scripts/pr` refuses unless the token it uses belongs to the machine account of
-`.git/agent-identity` and the branch on the forge is the commit you have; it does not push.
-It files the pull request on `main`. `-B <parent>` stacks it on the branch of an open pull
-request instead, and refuses, with the rebase that fixes it, a branch that is not built on
-that parent or a parent that has no open pull request. It opens a ready pull request unless
-`--draft` says otherwise, so every bot starts at once. The generated body ends with the line
-`landing: fast-forward by the lander after review.`
-
-`scripts/land` lands by **fast-forward**: it pushes the pull request's head to `main`
-without force, `git push <url> <head>:refs/heads/main`, to the URL `land/remote` checked.
-The commits on `main` are the commits that were reviewed, SHAs, committer and all, and
-GitHub shows the pull request as merged once its head is on its base. Before it asks
-anything it refuses, naming the rule and the remedy, unless the pull request is open, not a
-draft and based on `main`; the head the forge reports is the commit it fetched; the active
-gh account did not write it; a user account, not an App under its own identity, opened it
-where a rule on `main` asks an extra approval for unattributed changes (`land/attributed`);
-a code owner's standing verdict approves that exact head (or
-you are the code owner, and it approves the head for you after the keypress); nobody's
-standing verdict requests changes; every review thread is resolved; every check the rulesets
-on `main` require concluded success on the head, judged by its latest run; `main` is an
-ancestor of the head, and no merge commit lies between them; every rule on `main` is one it
-judges; and you may push past the rulesets on `main`. Before it reads anything it refuses,
-as `land/remote`, a remote that pushes anywhere but where it fetches from (a `pushurl`, a
-second URL, a `url.<base>.pushInsteadOf`), or that git sends anywhere but the GitHub
-repository it names, on GitHub or off it (a `url.<base>.insteadOf`). A GitHub repository's
-URL is one of GitHub's spellings, `https://github.com/<owner>/<name>`,
-`ssh://git@github.com/<owner>/<name>` or `git@github.com:<owner>/<name>`, with `.git` or
-without; over ssh the host may be an ssh config alias, `github.com-<alias>` with no dot in
-the alias (a dotted host is a DNS name), where ssh decides where it leads. Any other scheme, host or user is refused. Every fetch and the push
-name that URL, not the remote, and git would rewrite even that, so a `url.<base>.insteadOf`
-or `pushInsteadOf` that matches the URL itself, or a remote section named by it, is refused
-too; the check is made again right before the push. Then it prints the conversation, opens
-the diff in the browser and waits for Enter; after it, it checks everything again, pushes,
-prints the command that retargets to `main` each pull request based on the landed branch,
-and then checks that `main` is the head and that GitHub shows the merge. The author of a
-pull request cannot approve it, which is why the two sides are two accounts.
+A landing is a **fast-forward**: the pull request's head is pushed to `main` without force,
+`git push <url> <head>:refs/heads/main`. The commits on `main` are the commits that were
+reviewed, SHAs, committer and all, and GitHub shows the pull request as merged once its head
+is on its base. The rules the lander judges before it pushes, `land/open` to `land/remote`,
+and what each wants, are the header of `scripts/land`; each refusal names its rule and the
+remedy.
 
 **What a landing guarantees, and what it does not.** The push names the head's SHA, so what
 lands is exactly the commit that was judged, approved and looked at, and it goes to the URL
@@ -261,11 +228,6 @@ Bypass list > Repository admin > **Always**, not "For pull requests only".
 refuses for it gets the same remedy. With it an admin's push skips the rulesets entirely,
 force included, so the checks the rulesets made are the ones `scripts/land` makes before it
 pushes, and it never forces. Pushing `main` by hand stays what rule 6 forbids.
-
-`scripts/land` needs `gh`, which is not in the default dev shell: `scripts/layer on github`
-(`.agents/DEVSHELL.md`, "Forge tools are opt-in"). `scripts/pr` needs neither: it calls the API
-with python3 from the default shell. `scripts/land-self-test` (`make gates`) runs it against
-a forge in fixtures and a bare repository on disk.
 
 - **A stack lands bottom first, one pull request at a time.** Land the bottom one, run the
   printed retarget for the one above it, land that, and so on. Nothing above a landed pull
@@ -553,7 +515,7 @@ no other page in the browser can write to it.
 https://<machine account>:<token>@github.com
 ```
 
-That is git's credential-store format, so the same file serves a push and `scripts/pr`:
+That is git's credential-store format, so the same file serves a push and `fpl:pr`:
 
 ```
 git -c credential.helper="store --file=$PWD/.git/agent-credentials" push origin <branch>
@@ -564,22 +526,16 @@ personal access token of the machine account, scoped to this repository alone, w
 and Pull requests read/write, and Metadata, Checks and Commit statuses read — and no
 Workflows. Rule 8 is then a property of the credential rather than of anyone's discipline:
 the push is refused, not remembered to be avoided. Checks and Commit statuses are for
-`scripts/pr --ready`, which reads the check runs and commit statuses of the head; a private
+`fpl:pr:ready`, which reads the check runs and commit statuses of the head; a private
 repository refuses both (403) to a token without them.
 
 The maintainer creates it (the account's settings, then approve the request as an owner of
 the organisation) and writes the file. It expires; a push then fails with 403 and a new token
 is made the same way. Agents read it through git and never print it.
 
-Which account a push uses is not always the one meant. One Mac can hold three identities that
-write to GitHub: git's credential helper, the active `gh` account and the ssh key. When the
-owner's admin account is any of them, a push from an agent's worktree goes out under it.
-`scripts/whoami-check` prints all three (username, gh, ssh) and a NAG line with the remedy when
-one is an admin account: push with the machine account token URL
-(`TOKEN=$(gh auth token --user <machine account>)`) or log the admin account out. It always
-exits 0, and `.githooks/pre-push` runs it first as a message, never as a refusal. The hook hands
-it the destination URL, so only the identity that transport uses is judged: a push to an https
-URL that carries its own credentials, as the remedy does, is not nagged.
+Which account a push uses is not always the one meant: one Mac can hold three identities that
+write to GitHub, and when the owner's admin account is any of them, a push from an agent's
+worktree goes out under it. `fpl:pr:whoami` is the question, asked before every push.
 
 ## Why this and not a feature branch
 
