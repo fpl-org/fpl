@@ -43,7 +43,7 @@ top of base) · **restack** (rebase the stack when base or a lower commit change
    every use (a Secure Enclave key; checked, it asks each time, twice in a row too). No key
    that works without him is registered for the account on a machine where agents run.
 9. **Nothing private reaches the repository.** It is public, and so is whatever a commit,
-   a push or a pull request carries. **[gate]** `scripts/leak-check` runs
+   a push or a pull request carries. **[gate]** the leak-check of `fpl:leak` runs
    [gitleaks](https://github.com/gitleaks/gitleaks) over the staged change
    (`.githooks/pre-commit`), the message (`.githooks/commit-msg`), every commit and ref
    name a push sends (`.githooks/pre-push`), and a pull request's title and body
@@ -319,7 +319,7 @@ What changes, How checked, Limits, Verdict), which `land/card` wants.
 
 ```
 git -c credential.helper= push "https://x-access-token:$TOKEN@github.com/<o>/<n>.git" HEAD:refs/heads/<branch>
-scripts/leak-check --text card.md        # nothing private in a public body
+.agents/skills/fpl:leak/scripts/leak-check --text card.md   # nothing private in a public body
 GH_TOKEN="$TOKEN" gh pr create --repo github.com/<o>/<n> --draft --base main \
   --head <branch> --title "<conventional title>" --body-file card.md
 ```
