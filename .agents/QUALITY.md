@@ -15,17 +15,9 @@ Python tools for the same jobs.
 
 ## The lanes
 
-```
-make fix      ruff's safe fixes, then the formatter
-make quick    lint, format, tests; stops at the first failure. Seconds. The inner loop.
-make check    the one gate. Green means done.
-make harden   check, then the long search: 20x the examples, CrossHair on every property
-              and every contract, mutation testing
-make ready    harden, then gates, then a known-vulnerability audit of the pinned tools
-make gates    proof that each check still refuses a bad example, and the harness's own lint
-make tools    the tooling beside the language, tools/<name>/, judged as strictly (see Tools)
-make map      the map of the code, never committed (below); no other lane runs it
-```
+`fix`, `quick`, `check`, `harden`, `ready`, `gates`, `tools` and `map`: which to run when, in
+what order, and what each exit means is the skill `fpl:quality`, with one sub-skill per tool
+of the harness's own. This file keeps why each check is in the gate.
 
 Beside the lanes, the root's `Makefile` has the walker's entry, which is not a gate:
 
@@ -45,16 +37,13 @@ harness-only branch, which has no code to judge, runs `make gates` from the root
 `make -f quality/noslop.mk gates`. The runner enters the dev shell of `flake.nix`, so it judges
 with the tools a laptop has.
 
-`make map` is a view, not a check. `scripts/diagrams` draws the import graph of the root
-package `quality/importlinter.ini` names, found in the directory the script's `SOURCE`
-names, with import-linter's own verdict on each contract of that file, the verdict
-lint-imports gives in `make check`, and a class diagram per module, as Mermaid, into
-`.noslop/map/`.
-Its output is never committed: computed from the code each time, it cannot go stale.
+`make map` is a view, not a check (`fpl:quality:diagrams`): the import graph with
+import-linter's verdict on each contract, and a class diagram per module, as Mermaid. Its
+output is never committed: computed from the code each time, it cannot go stale.
 `.github/workflows/map.yml` draws the head and the base of every pull request into the run's
-summary, with the difference between the two. Each checkout is drawn where its own
-`scripts/diagrams` says its package lies, read without running it, so the base of a pull
-request that moves the package is drawn where the package was.
+summary, with the difference between the two; each checkout is drawn where its own copy of
+the script says its package lies, so the base of a pull request that moves the package is
+drawn where the package was.
 
 `make check` runs, in order:
 
@@ -66,10 +55,10 @@ request that moves the package is drawn where the package was.
 | `ruff check`, `ruff format --check` | lint findings, including cyclomatic complexity over 8 (`quality/ruff.toml`); unformatted code |
 | `pyright`, strict | anything strict mode refuses, and a `match` that misses a case (`quality/pyright.json`) |
 | `mypy`, strict | the same code as the reference implementation of the typing PEPs reads it, with unreachable code and unused ignores as errors (`quality/mypy.ini`) |
-| `scripts/escapes` | a waiver that does not name its rule and give a reason |
-| `scripts/props` | a module with code that no property test imports |
+| `fpl:quality:escapes` | a waiver that does not name its rule and give a reason |
+| `fpl:quality:props` | a module with code that no property test imports |
 | `pytest` under `coverage` | a failing test; less than 100% line and branch coverage (`quality/coveragerc`) |
-| `scripts/crap` | a function whose CRAP score is over 8 (`quality/crap.toml`) |
+| `fpl:quality:crap` | a function whose CRAP score is over 8 (`quality/crap.toml`) |
 | `lint-imports` | an import that crosses the layering of CONVENTIONS.md (`quality/importlinter.ini`) |
 | `deptry` | an import of a package `pyproject.toml` does not declare, or a declared one nobody imports |
 | `vulture` | code nothing uses |
@@ -87,7 +76,7 @@ cut FPL source say, lives under `tools/<name>/`: each a uv project of its own, w
 environment the language is judged in. `make tools` (from the root, `make -f
 quality/noslop.mk tools`) judges every such directory with the gate's own strictness: ruff
 under `quality/ruff.toml`, pyright strict, mypy under `quality/mypy.ini`, the waiver check of
-`scripts/escapes`, and its tests, with the harness's Hypothesis profiles, at 100% line and
+`fpl:quality:escapes`, and its tests, with the harness's Hypothesis profiles, at 100% line and
 branch coverage.
 
 It is a lane apart. `check`, `quick`, `harden`, `ready` and `gates` do not depend on it, and
@@ -98,7 +87,7 @@ tool's environment or reads a tool's imports. On the forge it runs from
 ## CRAP
 
 CRAP(m) = C²(1 − p)³ + C, with C the cyclomatic complexity of function m and p the share of its
-lines and branches the tests run. `scripts/crap` computes it from radon's complexity and
+lines and branches the tests run. `fpl:quality:crap` computes it from radon's complexity and
 coverage.py's branch data, counting only a function's body, since its `def` line runs on
 import. A function over 8 fails, and so does one the coverage report does not know.
 
@@ -106,7 +95,7 @@ With coverage at 100% CRAP equals C, so in practice the limit is a complexity li
 ruff also enforces. The CRAP gate matters when coverage slips, and even then it is lenient:
 complexity 5 with four of its branches untested scores 7.6 and passes. Coverage at 100% is what
 bites first. Martin found that a hard complexity limit makes an agent split functions into
-pieces that only pass their arguments along; `scripts/crap` counts those one-call wrappers in
+pieces that only pass their arguments along; the script counts those one-call wrappers in
 its report, and does not refuse them.
 
 ## Properties
@@ -156,7 +145,7 @@ tested through the callers that satisfy it.
 A language has properties its implementation must keep. They are stated as properties, under
 Hypothesis in `make check` and CrossHair in `make harden`, and each is due from the moment
 the module it concerns has code. `quality/obligations.toml` lists them per module;
-`scripts/props` fails a module with code whose obligation no property test pays, and a test
+`fpl:quality:props` fails a module with code whose obligation no property test pays, and a test
 pays one by naming it:
 
 ```python
@@ -184,33 +173,20 @@ file and not owed by anyone until it does.
 
 ## Mutants
 
-`scripts/mutants` runs mutmut: it changes the code one small way at a time (`<` to `<=`, a
-string to another, an argument to `None`) and runs the tests against each change. A mutant the
-tests do not catch has survived: the line it changed runs, but nothing checks what it does.
-Every mutant that is not killed fails `make harden`, unless `bootstrap/mutants.allow` names
-it with a reason:
-
-```
-fpl.parse.x_where__mutmut_3 -- equivalent: column 0 and column 1 print the same caret
-```
-
-The file is for equivalent mutants, which no test can kill. An entry without a reason is
+`fpl:quality:mutants` runs mutmut: it changes the code one small way at a time (`<` to `<=`,
+a string to another, an argument to `None`) and runs the tests against each change. A mutant
+the tests do not catch has survived: the line it changed runs, but nothing checks what it
+does. Every mutant that is not killed fails `make harden`, unless `bootstrap/mutants.allow`
+names it with a reason. The file is for equivalent mutants, which no test can kill. An entry without a reason is
 refused; one whose mutant no longer lives is reported. A run that lists no mutants at all fails.
 
 ## Waivers
 
-Every way out of a check names what it waives and says why, after ` -- `:
-
-```
-# noqa: E731 -- <reason>
-# pyright: ignore[reportUnknownMemberType] -- <reason>
-# type: ignore[arg-type] -- <reason>
-# pragma: no cover -- <reason>
-```
-
-`# type: ignore` is mypy's form and waives mypy alone: pyright is configured not to honour it
-(`enableTypeIgnoreComments: false`), so a line that both checkers refuse carries two waivers,
-each with its reason. A bare `# type: ignore` is refused.
+A waiver is a way out of a check, and a quiet one hides what the check found. So every
+waiver names the rule it waives and gives its reason, and `fpl:quality:escapes`, which holds
+the forms, refuses one that does not. pyright is configured not to honour mypy's
+`# type: ignore` (`enableTypeIgnoreComments: false`), so that form waives mypy alone, and a
+line both checkers refuse carries two waivers.
 
 ## Policy
 
@@ -224,8 +200,9 @@ the same commit as its code can make any code pass. So:
   `bootstrap/`, are policy. A commit that changes one carries the marker `[policy]` in its
   message and touches no code or tests (the `fpl` package and its tests, at the root or in
   `bootstrap/`; `.githooks/commit-msg`), so the change is reviewed on its own.
-- The gate judges only committed policy: `make check` stops when any policy file, or
-  `scripts/`, differs from what is committed, and also when git cannot say.
+- The gate judges only committed policy: `make check` stops when any policy file,
+  `scripts/` or `.agents/skills/` differs from what is committed, and also when git cannot
+  say.
 - The examples under `fpl/features/*/examples/` are oracle, like `spec.md`: `[spec]` and the
   `guard-specs` hook (AGENTS.md, "The oracle rule").
 
@@ -236,24 +213,16 @@ root's `.venv` with `uv sync --frozen` the first time and whenever the lock chan
 
 A check that passes everything looks the same as a check that found nothing. `make gates` first
 holds the harness's own Python to the ruff rules it holds others to, then runs the self-test of
-every tool that declares one (below), then `scripts/gates`: for each case in `quality/bad/`, the check runs
+every tool that declares one, then `fpl:quality:gates`: for each case in `quality/bad/`, the check runs
 on a small fixture of the repository (the harness at its root, a project in `bootstrap/`), where
 it must pass, and then with the case's bad example laid over it, where it must fail with a
 given message. The first run is the control; without it, a check that fails for an unrelated
 reason would count as having caught something. Adding a check means adding its case.
 
 Neither the lint set nor the self-tests are listed in `quality/noslop.mk`; `scripts/gates-list`
-reads them from the files, so two series that each add a tool do not meet in a shared list.
-Add a self-test as a file, never as a line in `noslop.mk`:
-
-- an executable `scripts/<name>-self-test` runs as it is;
-- a tool whose proof is a flag or needs another shell says so in its own header, one line:
-  `# gates: $BIN/python $S/<name> --self-test` (`$BIN` is the root's `.venv/bin`, `$S` is
-  `scripts/`, `$ROOT` the root);
-- a file of `scripts/` that opens with `#!/usr/bin/env python3` is linted, as is every
-  `quality/*.py`; `# noslop: skip <reason>` in its header keeps one out, the reason required.
-
-They run in the order of their file names, and `scripts/gates` last. `gates-list` refuses, by
+reads them from the files, so two series that each add a tool do not meet in a shared list;
+a self-test is added as a file, never as a line in `noslop.mk` (how: `fpl:quality:gates`).
+They run in the order of their file names, and `fpl:quality:gates` last. `gates-list` refuses, by
 name, a self-test without its exec bit and a gates line it would not read, so a tool cannot
 drop out unseen; `scripts/gates-list-self-test` holds the commands the recipe ran before as a
 floor that must still be found.

@@ -11,25 +11,11 @@ repository, and who opened, moved or blocked a task is part of the record, per a
 exists and the maintainer's key is the one that signs. The maintainer's clone holds the units of
 the harness redo (29 tasks, loaded from `.agents/tasks/redo.tsv`, below); the Radicle node is
 not running and nothing has been pushed to the `rad` remote, so no other clone has them. Needs
-`rad`: `scripts/layer on radicle`.
+`rad`: `layer on radicle`. The commands, their arguments and exit codes are the skill
+`fpl:task` and its sub-skills `fpl:task:ready`, `fpl:task:tree` and `fpl:task:load`; this
+file keeps the model they work.
 
-```
-scripts/task new "parser: integer expressions" -b <id>    # -b: blocked by; repeatable
-scripts/task ready                                       # what can be picked up now; 1 on a loop
-scripts/task tree                                        # every task under its lane, ready or waiting
-scripts/task new "…" -p <lane>                           # -p: part of; also: task part <id> <of>|none
-scripts/task load [-n] <file>                            # create the tasks a unit file lists
-scripts/task list [--all]
-scripts/task start|done|drop|reopen <id>
-scripts/task block|unblock <id> <by>                     # block -f records a loop anyway
-scripts/task assign <id> <did>|me|nobody
-scripts/task edit <id> [-t <title>] [-d <description>]
-scripts/task show <id>                                   # the full state, as JSON
-```
-
-An `<id>` is the first word of a title (`A6a` for "A6a lander-core"; this wins when it and an
-object id prefix would both match) or any unambiguous prefix of the object id. A task is `todo`, `doing`, `done` or `dropped`. It is
-*ready* when it is open and every task in its `blockedBy` is done or dropped; a blocker this
+A task is `todo`, `doing`, `done` or `dropped`. It is *ready* when it is open and every task in its `blockedBy` is done or dropped; a blocker this
 clone does not know counts as open.
 
 ## Lanes and the units file
@@ -44,24 +30,11 @@ does for blockers. A parent this clone has not received is drawn as a root marke
 its parts under it, also with exit 1. `partOf` was added to the reducer when the store was still empty: operations
 written before it replay unchanged.
 
-`task load FILE` creates the tasks of a units file, five tab-separated columns (label, partOf,
-blockedBy, name, brief; the title is `<label> <name>`). `.agents/tasks/redo.tsv` is the
-harness redo's DAG: ids and short English briefs, no owner steps. A tasks store is not part of
-a clone, so the file is how a reviewer sees what was loaded, in a diff. The loader:
-
-- refuses, naming the unit and before the first write, whatever it could not take back
-  afterwards: a task is signed and replicated, and a COB cannot be taken back out of a peer's
-  store. That is a label that is not one word or ends in `:`, two labels that differ only in
-  case, a reference to a label the file lacks, a row the reducer would not open (title over
-  200, brief over 10 000 characters), a label two tasks of the store share, a link to a task
-  this identity may not link, more than 64 blockers on a task, a new link that closes a loop
-  of blockers or parents with the store's own, and a title or brief that
-  `scripts/leak-check --text` flags (always in block mode, whatever `FPL_LEAK_GATE` says);
-- reads back every task it opens and every link it writes, and stops at the first one the
-  reducer did not apply;
-- is idempotent: a unit whose label already is the first word of a task, in any case, is not
-  created again;
-- takes `-n` to say what it would create and link, writing nothing.
+`task load` (`fpl:task:load`) creates the tasks of a units file. `.agents/tasks/redo.tsv` is
+the harness redo's DAG: ids and short English briefs, no owner steps. A tasks store is not
+part of a clone, so the file is how a reviewer sees what was loaded, in a diff. The loader
+refuses, before its first write, whatever it could not take back afterwards: a task is
+signed and replicated, and a COB cannot be taken back out of a peer's store.
 
 ## Loops
 
@@ -74,7 +47,7 @@ So `block` stops rather than refuses. A block that would close a loop prints the
 what it costs, and `block --force` records it anyway:
 
 ```
-$ scripts/task block 1234567 89abcde
+$ task block 1234567 89abcde
 task: that makes a loop: 1234567 -> 89abcde -> 1234567
      nothing in it would be ready. See whether one of them splits into
      the part the other needs; to record the loop anyway, block --force.
@@ -85,7 +58,7 @@ line — may not go quiet. It keeps every task in it out of `ready`, and `ready`
 and exits 1:
 
 ```
-$ scripts/task ready
+$ task ready
 5ff0a21  todo     lexer: integer literals
 # waiting on each other, nothing here can start: 1234567 -> 89abcde -> 1234567
 $ echo $?
@@ -93,20 +66,19 @@ $ echo $?
 ```
 
 The notice goes on stdout rather than stderr, because an agent's harness may drop that stream
-or show it only when a command fails, and this is the one thing that must not go unseen. `#`
-is the usual skip marker, so `grep -v '^#'` leaves a list of tasks. The exit code answers
-rather than complains, the way `git diff --exit-code` does; write `|| true` where the answer
-does not matter.
+or show it only when a command fails, and this is the one thing that must not go unseen. It
+opens with `#`, the usual skip marker, so the list stays a list; the exit code answers rather
+than complains, the way `git diff --exit-code` does (how to read both: `fpl:task:ready`).
 
 Which leaves stderr for what it is good at. A refusal — an unknown id, a `block` that would
-close a loop, no `rad` on the path — goes there and exits **2**. So the three codes divide
-the way `grep` divides them:
+close a loop, no `rad` on the path — goes there and exits **2**, and so does a `rad` that
+fails. So the three codes divide the way `grep` divides them:
 
 | | |
 |---|---|
 | **0** | the answer: here is what can be picked up |
 | **1** | an answer with bad news in it: a loop, and nothing in it can start |
-| **2** | the command was refused and did nothing |
+| **2** | refused, before any write; or failed, and `load` keeps the rows it wrote first |
 
 A harness can act on the code alone, without reading either stream. (`sysexits(3)` was the
 other candidate and is not used: FreeBSD's own manual now says the interface "has been
@@ -141,8 +113,9 @@ record shows that it did. Repository delegates are not consulted.
 `rad` knows issues and patches. For any other type it runs a helper, named after the last
 segment of the type name, once per operation: the state so far and the operation in, the new
 state out, as JSON (`radicle::cob::external`). The type is `nl.psjs.dagtaak`, so the helper
-is `rad-cob-dagtaak`; `scripts/task` puts `scripts/` on `PATH` for the `rad` it runs. With plain
-`rad cob …` do the same: `PATH="$PWD/scripts:$PATH" rad cob show …`.
+is `rad-cob-dagtaak`; `task` puts `scripts/` on `PATH` for the `rad` it runs (`fpl:task` says how
+to do the same with plain `rad cob`). The helper cannot move into the skill's directory: `PATH`
+splits on colons, and that directory's name holds one.
 
 The name is settled. It is a reversed domain the maintainer owns, and it carries no project:
 the graph is meant to outlive this repository, so a task written here reads the same in
@@ -162,7 +135,7 @@ Two properties of that protocol shape the helper (checked with `rad` 1.10.3):
 
 - `scripts/rad-cob-dagtaak --self-test`: the reducer alone, no `rad` needed. Order of `open`,
   the three kinds of actor, junk and oversized input, and that nothing raises.
-- `scripts/task --self-test`: every command against a real `rad` in a throwaway home,
+- `task --self-test`: every command against a real `rad` in a throwaway home,
   including a two-task loop: the second `block` is refused and says how to go on, `--force`
   records it, both stay out of `ready`, `ready` names them, and dropping one frees the other.
 - Two `radicle-node`s on an isolated test network on one x86_64-linux machine, two keys:

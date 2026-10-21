@@ -1,3 +1,3 @@
 why = "a test that runs the code without checking what it returns lets a mutant live"
-run = "python ../scripts/mutants"
+run = "python ../.agents/skills/fpl:quality:mutants/scripts/mutants"
 expect = "survived"

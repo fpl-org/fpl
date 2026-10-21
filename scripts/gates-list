@@ -13,7 +13,8 @@
 #                               $S/<name>-self-test
 #   # gates: <command>          a line of the header of any other file in scripts/ names the
 #                               command that proves the tool, where that proof is a flag or
-#                               needs another interpreter: # gates: $BIN/python $S/crap --self-test
+#                               needs another interpreter:
+#                               # gates: $BIN/python $S/escapes --self-test
 #   .agents/skills/<skill>/scripts/<name>
 #                               a skill's own tool, read by the same rules: a *-self-test there
 #                               runs as $ROOT/.agents/skills/<skill>/scripts/<name>-self-test,
@@ -27,8 +28,8 @@
 # included. A command is printed as written: $BIN (the root's .venv/bin), $S (scripts/) and
 # $ROOT are for the recipe to set and expand (quality/noslop.mk evals each line). The
 # commands come in the order of their files' names under LC_ALL=C, so every machine runs them
-# in the same order. scripts/gates is not a tool's self-test and declares none; the recipe
-# runs it last, once every tool is proven.
+# in the same order. The script of fpl:quality:gates is not a tool's self-test and declares
+# none; the recipe runs it last, once every tool is proven.
 #
 # Refused, exit 1, naming the rule and the remedy: a *-self-test that is not executable (it
 # would not run, and nothing would say so), a gates line or skip marker past the header (no

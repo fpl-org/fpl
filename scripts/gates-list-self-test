@@ -116,15 +116,15 @@ done
 # The floor: the recipe's lines as quality/noslop.mk held them before discovery, written
 # here with make's $(X) as the shell's $X. One spelling differs: the recipe ran
 # `$(S)/leak-check --self-test`, which execs scripts/leak-check-self-test (line 83 of
-# scripts/leak-check), so the floor names that file. scripts/gates stays in the recipe.
+# scripts/leak-check), so the floor names that file. The gates skill's script stays in the recipe.
 while IFS= read -r want; do
 	grep -qxF "$want" <<<"$("$here/gates-list")" || fail "the floor: no longer found: $want"
 done <<'EOF'
-$BIN/python $S/crap --self-test
-$BIN/python $S/props --self-test
+$BIN/python $ROOT/.agents/skills/fpl:quality:crap/scripts/crap --self-test
+$BIN/python $ROOT/.agents/skills/fpl:quality:props/scripts/props --self-test
 $BIN/python $S/escapes --self-test
 $BIN/python $S/forward-only --self-test
-$BIN/python $S/mutants --self-test
+$BIN/python $ROOT/.agents/skills/fpl:quality:mutants/scripts/mutants --self-test
 $BIN/python $S/diagrams --self-test
 $BIN/python $S/ruff-limits --self-test
 $BIN/python $S/wip-count --self-test
@@ -141,7 +141,7 @@ $S/land-self-test
 $S/series-self-test
 $S/present-check-self-test
 $BIN/python $S/rad-cob-dagtaak --self-test
-nix develop $ROOT#radicle -c python3 $S/task --self-test
+nix develop $ROOT#radicle -c python3 $ROOT/.agents/skills/fpl:task/scripts/task --self-test
 $S/ruleset-check-self-test
 EOF
 
