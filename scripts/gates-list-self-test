@@ -116,7 +116,8 @@ done
 # The floor: the recipe's lines as quality/noslop.mk held them before discovery, written
 # here with make's $(X) as the shell's $X. One spelling differs: the recipe ran
 # `$(S)/leak-check --self-test`, which execs scripts/leak-check-self-test (line 83 of
-# scripts/leak-check), so the floor names that file. scripts/gates stays in the recipe.
+# scripts/leak-check), so the floor names that file. scripts/gates stays in the recipe. A
+# self-test that moved into a skill's scripts/ is the same gate, named at its new path.
 while IFS= read -r want; do
 	grep -qxF "$want" <<<"$("$here/gates-list")" || fail "the floor: no longer found: $want"
 done <<'EOF'
@@ -132,7 +133,7 @@ $BIN/python $S/brake-flip --self-test
 $S/leak-check-self-test
 $S/pre-push-self-test
 $S/whoami-check-self-test
-$S/boundary-self-test
+$ROOT/.agents/skills/fpl:commit:boundary/scripts/boundary-self-test
 $S/sweep-self-test
 $S/spec-guard-self-test
 $S/gen-config-self-test

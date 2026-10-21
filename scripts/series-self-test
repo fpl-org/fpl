@@ -44,7 +44,7 @@ chmod +x "$tmp/gh"
 repo="$tmp/repo"
 git init -q -b main "$repo"
 cd "$repo"
-cp -R "$root/.githooks" "$root/scripts" .
+cp -R "$root/.githooks" "$root/scripts" . && mkdir -p .agents && cp -R "$root/.agents/skills" .agents/
 git add -A
 git -c core.hooksPath=/dev/null commit -q -m "chore(harness): base" -m "Human-Only: true"
 scripts/agent-identity set bot@example.invalid >/dev/null

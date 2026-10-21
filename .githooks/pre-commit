@@ -6,8 +6,8 @@
 #
 # The harness/implementation boundary is not judged here. It is a rule on the commit, not on
 # the checkout (.agents/WORKTREES.md): any checkout may hold any work, and one commit stays on
-# one side. scripts/commit-lint judges it with scripts/boundary at push and in CI, which every
-# commit reaches however it was made; a hook here would see a `git commit` only.
+# one side. scripts/commit-lint judges it with the checker of fpl:commit:boundary at push and in
+# CI, which every commit reaches however it was made; a hook here would see a `git commit` only.
 
 set -euo pipefail
 
