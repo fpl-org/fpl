@@ -13,7 +13,7 @@ scripts/land (a fast-forward) refuses to depend on. The tree is computed here in
 
 The input is the JSON `gh pr list --state open --limit 300 --json number,title,headRefName,
 baseRefName,isDraft,isCrossRepository` prints. --json FILE (or `-` for stdin) reads it from
-there; without it the script asks the forge, read-only, like the sweep of fpl:worktree:sweep: gh with the machine
+there; without it the script asks the forge, read-only, like fpl:worktree:sweep: gh with the machine
 account's token (STACK_TREE_GH_USER, default psjg-claude) for STACK_TREE_REPO or --repo (default:
 the `github` remote). Drawing needs python3 alone; gh is only the transport, and without it
 the remedy is `.agents/skills/fpl:worktree:layer/scripts/layer on github`. A token is never printed.
