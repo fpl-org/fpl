@@ -27,10 +27,15 @@ under that base branch. The roots based on `main` are what scripts/land takes; a
 annotated, because it needs a retarget (or its base landed) first.
 
 --commits lists each pull request's own commits under it; --mermaid, which draws none, ignores
-it. --mermaid prints a fenced Mermaid block (`graph TB`: a pull request above the one it is
-based on, the trunk at the bottom, drafts dashed) to paste into a comment or a run's
-$GITHUB_STEP_SUMMARY, where GitHub draws it. Node ids are p<number> and b<k>, never taken from
-a title, and a `#` in a title is escaped, which Mermaid would read as an entity. Titles,
+it. --mermaid prints a fenced Mermaid block (`graph LR`: the trunk on the left, an arrow from a
+branch to each pull request based on it, so a stack reads in the order it lands; drafts dashed)
+to paste into a comment or a run's $GITHUB_STEP_SUMMARY, where GitHub draws it. Left to right,
+not top down, as a pull request's title is wider than tall: the open ones of 2026-10-21 drew
+811 px wide that way and 1906 px top down, which GitHub shrinks to its column. Node ids are
+p<number> and b<k>, never taken from a title; in a label `#`, `"`, `<`, `>`, `&` and a backtick
+are written as entities, as Mermaid reads them as an entity, the label's end, markup or a
+Markdown label. Mermaid draws an error past MERMAID_MAX characters, so titles are cut, longest
+first, until the block fits. Titles,
 headlines and branch names are untrusted forge text: every character of Unicode category C
 (control, format such as a bidi override, surrogate, private use, and so newlines) is shown as
 `?`, in both outputs and in every refusal. A line is never cut to the terminal's width. A reader
@@ -54,6 +59,7 @@ failed; 2: refused.
 import argparse
 import json
 import os
+import random
 import re
 import shutil
 import signal
@@ -78,8 +84,10 @@ FIELDS = {
     "isCrossRepository": bool,
 }
 MERMAID_ESCAPES = str.maketrans(
-    {"#": "#35;", '"': "#quot;", "<": "#lt;", ">": "#gt;", "&": "#amp;"}
+    {"#": "#35;", '"': "#quot;", "<": "#lt;", ">": "#gt;", "&": "#amp;", "`": "#96;"}
 )
+MERMAID_MAX = 50_000  # Mermaid's maxTextSize, which GitHub's renderer keeps from diagrams
+CUTS = (None, 120, 80, 50, 30, 15, 0)  # the title lengths --mermaid tries, longest first
 INPUT_REMEDY = f"feed it `gh pr list --state open --limit {LIMIT} --json {','.join(FIELDS)}`"
 FORGE_REMEDY = "check the gh version and the repository"
 COMMITS_REMEDY = INPUT_REMEDY[:-1] + ",commits`, per pull request as `gh pr view` has it"
@@ -298,27 +306,52 @@ def text_lines(prs: list[Pr], f: Forest, commits: bool) -> list[str]:
     return out
 
 
-def mermaid_lines(prs: list[Pr], f: Forest) -> list[str]:
-    def esc(text: str) -> str:
-        return clean(text).translate(MERMAID_ESCAPES)
+def js_len(text: str) -> int:
+    """The length JavaScript gives `text`, which Mermaid compares with MERMAID_MAX: UTF-16 units."""
+    return len(text.encode("utf-16-le")) // 2
 
-    out = ["```mermaid", "graph TB", "  classDef draft stroke-dasharray: 5 5"]
+
+def mermaid_lines(prs: list[Pr], f: Forest, cut: int | None) -> list[str]:
+    """The diagram, unfenced: the trunk on the left, an edge from a branch to each pull request
+    based on it, so a stack reads left to right in the order it lands; titles cut to `cut`."""
+
+    def esc(text: str) -> str:
+        return text.translate(MERMAID_ESCAPES)
+
+    def title(p: Pr) -> str:
+        t = clean(p.title)
+        return t if cut is None or len(t) <= cut else t[:cut] + "…"
+
+    out = ["graph LR", "  classDef draft stroke-dasharray: 5 5"]
     edges: list[str] = []
     for k, base in enumerate(root_order(f.roots), 1):
         out.append(f'  b{k}["{esc(root_label(base))}"]')
-        edges += [f"  p{n} --> b{k}" for n in f.roots[base]]
-    out += [f'  p{p.number}["#{p.number} {esc(p.title)}"]' for p in prs]
+        edges += [f"  b{k} --> p{n}" for n in f.roots[base]]
+    out += [f'  p{p.number}["#{p.number} {esc(title(p))}"]' for p in prs]
     for parent, ns in sorted(f.kids.items()):
-        edges += [f"  p{n} --> p{parent}" for n in ns]
+        edges += [f"  p{parent} --> p{n}" for n in ns]
     drafts = ",".join(f"p{p.number}" for p in prs if p.draft)
-    return [*out, *edges, *([f"  class {drafts} draft"] if drafts else []), "```"]
+    return [*out, *edges, *([f"  class {drafts} draft"] if drafts else [])]
+
+
+def mermaid_block(prs: list[Pr], f: Forest) -> list[str]:
+    """The fenced diagram with the longest titles that keep it within MERMAID_MAX, past which
+    Mermaid draws an error instead."""
+    for cut in CUTS:
+        if js_len("\n".join(lines := mermaid_lines(prs, f, cut))) <= MERMAID_MAX:
+            return ["```mermaid", *lines, "```"]
+    raise refuse(
+        "stack-tree/limit",
+        f"the Mermaid of {len(prs)} pull requests exceeds {MERMAID_MAX} characters untitled",
+        "draw them as text: run without --mermaid",
+    )
 
 
 def draw(prs: list[Pr], mermaid: bool, commits: bool) -> list[str]:
     if not prs:
         return ["no open pull requests"]
     f = forest(prs)
-    return mermaid_lines(prs, f) if mermaid else text_lines(prs, f, commits)
+    return mermaid_block(prs, f) if mermaid else text_lines(prs, f, commits)
 
 
 # --- the edge: the forge, argv, the terminal -------------------------------------------------
@@ -473,7 +506,7 @@ STACK_COMMITS = """main
       └─ #191 (draft) stamp
             191abcd feat: stamp"""
 STACK_MERMAID = """```mermaid
-graph TB
+graph LR
   classDef draft stroke-dasharray: 5 5
   b1["main"]
   p179["#179 alpha"]
@@ -481,11 +514,11 @@ graph TB
   p190["#190 silence"]
   p191["#191 stamp"]
   p195["#195 gates"]
-  p179 --> b1
-  p195 --> b1
-  p191 --> p190
-  p182 --> p195
-  p190 --> p195
+  b1 --> p179
+  b1 --> p195
+  p190 --> p191
+  p195 --> p182
+  p195 --> p190
   class p191 draft
 ```"""
 FORK = [
@@ -509,22 +542,26 @@ HOSTILE = [
     pr(1, "\x1b[31mred", "a", "main", commits=("x\ny",)),
     pr(2, "a\nb \u202eevil", "b", "main"),
     pr(3, 'q"uote <b>x</b> & ]]', "c", "main", draft=True),
+    pr(4, "`tick` %%;|", "d", "main"),
 ]
 HOSTILE_TEXT = """main
 ├─ #1 ?[31mred
 │     001abcd x?y
 ├─ #2 a?b ?evil
-└─ #3 (draft) q"uote <b>x</b> & ]]"""
+├─ #3 (draft) q"uote <b>x</b> & ]]
+└─ #4 `tick` %%;|"""
 HOSTILE_MERMAID = """```mermaid
-graph TB
+graph LR
   classDef draft stroke-dasharray: 5 5
   b1["main"]
   p1["#1 ?[31mred"]
   p2["#2 a?b ?evil"]
   p3["#3 q#quot;uote #lt;b#gt;x#lt;/b#gt; #amp; ]]"]
-  p1 --> b1
-  p2 --> b1
-  p3 --> b1
+  p4["#4 #96;tick#96; %%;|"]
+  b1 --> p1
+  b1 --> p2
+  b1 --> p3
+  b1 --> p4
   class p3 draft
 ```"""
 NO_COMMITS = [{k: v for k, v in p.items() if k != "commits"} for p in STACK]
@@ -545,6 +582,31 @@ TWO_CYCLES = [
     pr(4, "d", "d", "e"),
 ]
 TWO_CYCLES += [pr(5, "e", "e", "c"), pr(6, "f", "f", "main"), pr(7, "g", "g", "g")]
+# what fuzz() builds titles and branch names of: Mermaid's syntax, entities, markup, and text
+# that is wide, astral, right-to-left, combining or invisible
+PIECES = (*"\"#;%|()[]{}<>&`\\:-~*_=!?'/@$^ \t", "\n%% x", "\\n", "e\u0301", "\u200d", "\U0001f333")
+PIECES += ("end", "graph LR", "click p1 href", "-->", "|x|", "#9829;", "&amp;", "<script>", "]]")
+PIECES += ('"]', "語", "שלום", ":::draft", "style p1 fill:red", "%%{init: {}}%%")
+# what Mermaid parses inside the fence: one of these, line by line
+MERMAID_LINE = re.compile(
+    r'graph LR|  (?:classDef draft stroke-dasharray: 5 5|[pb]\d+\["[^"]*"\]|[pb]\d+ --> p\d+'
+    r'|class p\d+(?:,p\d+)* draft|click p\d+ href "https?://[\w.:/-]+")'
+)
+
+
+def fuzz(seed: int, n: int = 40) -> list[dict]:
+    """n pull requests with titles and orphan bases drawn from PIECES, stacked at random."""
+    rnd = random.Random(seed)
+
+    def text() -> str:
+        return "".join(rnd.choice(PIECES) for _ in range(rnd.randint(1, 60)))[:256]
+
+    bases = [rnd.choice(["main", text(), *(f"h{j}" for j in range(i))]) for i in range(n)]
+    return [pr(i + 1, text(), f"h{i}", b, draft=rnd.random() < 0.3) for i, b in enumerate(bases)]
+
+
+# 299 pull requests in one chain, each title 256 quotes: 1536 characters once escaped
+BIG = [pr(i, '"' * 256, f"h{i}", f"h{i - 1}" if i else "main") for i in range(LIMIT - 1)]
 
 # (name, flags, input, exit, stdout, words the stderr must hold)
 CASES = [
@@ -615,6 +677,55 @@ def live(tmp: Path, listed: str, view: str, *flags: str) -> subprocess.Completed
     return go("--repo", "o/r", *flags, env=env)
 
 
+def mermaid_ok(lines: list[str]) -> bool:
+    """The block is fenced, every line is one Mermaid parses, and it fits MERMAID_MAX."""
+    inner = lines[1:-1]
+    return (
+        lines[0] == "```mermaid"
+        and lines[-1] == "```"
+        and all(MERMAID_LINE.fullmatch(line) for line in inner)
+        and js_len("\n".join(inner)) <= MERMAID_MAX
+    )
+
+
+def mmdc(tmp: Path, blocks: list[str]) -> list[str]:
+    """Render every block with mermaid-cli, the parser GitHub's renderer runs: the names of
+    what failed. Without mmdc, or a browser for it, it says so on stderr and checks nothing; a
+    broken diagram it renders would make it a check that cannot fail, so that is a failure."""
+    tool = shutil.which("mmdc")
+    (tmp / "mmdc.json").write_text('{"securityLevel": "antiscript"}')
+    (tmp / "broken.md").write_text('```mermaid\ngraph LR\n  a["x"y"]\n```\n')
+    (tmp / "all.md").write_text("\n\n".join(blocks) + "\n")
+
+    def render(name: str) -> subprocess.CompletedProcess[str]:
+        args = [
+            "-q",
+            "-c",
+            str(tmp / "mmdc.json"),
+            "-i",
+            str(tmp / name),
+            "-o",
+            str(tmp / "out.md"),
+        ]
+        return subprocess.run([str(tool), *args], capture_output=True, text=True, check=False)
+
+    if tool is None or "Parse error" not in (probe := render("broken.md")).stderr:
+        why = "not on PATH" if tool is None else "cannot render (no browser?)"
+        print(
+            f"stack-tree self-test: SKIP Mermaid parse: mmdc {why}; remedy: nix shell"
+            " nixpkgs#mermaid-cli, with PUPPETEER_EXECUTABLE_PATH naming a Chrome",
+            file=sys.stderr,
+        )
+        return [] if tool is None or probe.returncode else ["mmdc renders a broken diagram"]
+    got = render("all.md")
+    svgs = "".join(f.read_text() for f in tmp.glob("out-*.svg"))
+    if got.returncode or "Maximum text size" in svgs:
+        print(f"FAIL mmdc: {got.stderr[:2000]}", file=sys.stderr)
+        return ["mmdc parses every block"]
+    print(f"stack-tree self-test: mmdc rendered {len(blocks)} blocks", file=sys.stderr)
+    return []
+
+
 def refused(got: subprocess.CompletedProcess[str], name: str) -> bool:
     return got.returncode == 2 and "stack-tree/input" in got.stderr and name in got.stderr
 
@@ -669,7 +780,20 @@ def extra_cases(tmp: Path) -> list[str]:
         "https://github.com.evil.net/o/r": None,
         "git@gitlab.com:o/r": None,
     }
+    blocks = []
+    for name, data in [
+        ("hostile", HOSTILE),
+        ("big", BIG),
+        *((f"fuzz{k}", fuzz(k)) for k in range(8)),
+    ]:
+        (tmp / f"{name}.json").write_text(json.dumps(data))
+        blocks.append(go("--json", str(tmp / f"{name}.json"), "--mermaid").stdout.rstrip("\n"))
     checks = {
+        "fuzz: every block is lines Mermaid parses, within MERMAID_MAX": all(
+            mermaid_ok(b.splitlines()) for b in blocks
+        ),
+        "big: titles cut to fit": "…" in blocks[1]
+        and max(map(len, blocks[1].splitlines())) < 6 * 256,  # an uncut title escapes to that
         "stdin": go("--json", "-", stdin="[]").stdout == "no open pull requests\n",
         "missing file": refused(gone, "gone.json"),
         "non-UTF-8 file": refused(bad, "latin1.json"),
@@ -692,7 +816,7 @@ def extra_cases(tmp: Path) -> list[str]:
         "closed pipe": closed.returncode == -signal.SIGPIPE and closed_err == "",
         "remote urls": [repo_of(u) for u in urls] == list(urls.values()),
     }
-    return [name for name, ok in checks.items() if not ok]
+    return [name for name, ok in checks.items() if not ok] + mmdc(tmp, blocks)
 
 
 def self_test() -> int:
