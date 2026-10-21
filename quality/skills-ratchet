@@ -13,7 +13,6 @@ scripts/export-review -- not yet converted: unit S6 (fpl:review:export)
 scripts/forward-only -- a check of .githooks/pre-push and the forge, never run by hand; no skill planned
 scripts/gates -- not yet converted: unit S5 (fpl:quality:gates)
 scripts/import-review -- not yet converted: unit S6 (fpl:review:import)
-scripts/land -- not yet converted: unit S2 (fpl:land:land)
 scripts/layer -- not yet converted: unit S4 (fpl:worktree:layer)
 scripts/leak-check -- not yet converted: unit S4 (fpl:leak)
 scripts/mutants -- not yet converted: unit S5 (fpl:quality:mutants)
