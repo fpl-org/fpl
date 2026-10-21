@@ -28,6 +28,10 @@ that closes the pipe early ends the script quietly, as for any filter.
 
 Refused, naming the rule and the remedy (exit 2): stack-tree/input
 (not the JSON above, nested too deep to read, or a file that cannot be read),
+stack-tree/ambiguous (two or more open same-repository pull requests share a head branch),
+stack-tree/cycle (pull requests that are each other's ancestors, which a walk from the roots
+would silently drop; each cycle is named, and what hangs above it),
+stack-tree/limit (300 pull requests, which is all gh lists: some may be missing),
 stack-tree/usage (the command line).
 
 Exit 0: drawn (no open pull requests draws that), or the self-test passed; 1: the self-test
@@ -112,13 +116,20 @@ def read_pr(raw: object, at: int) -> Pr:
 
 
 def load(text: str) -> list:
-    """The JSON list of pull requests in `text`, a stack-tree/input refusal if it is none."""
+    """The JSON list of pull requests in `text`, a stack-tree/input refusal if it is none: gh
+    lists at most LIMIT, so a list that long may have been cut short."""
     try:
         raw = json.loads(text)
     except (ValueError, RecursionError) as e:  # RecursionError: JSON nested thousands deep
         raise refuse("stack-tree/input", f"not JSON ({e})", INPUT_REMEDY) from e
     if not isinstance(raw, list):
         raise refuse("stack-tree/input", "the top level is not a list", INPUT_REMEDY)
+    if len(raw) >= LIMIT:
+        raise refuse(
+            "stack-tree/limit",
+            f"{len(raw)} pull requests, as many as the {LIMIT} gh lists; some may be missing",
+            "close or land some, or raise LIMIT in scripts/stack-tree",
+        )
     return raw
 
 
@@ -134,18 +145,79 @@ def read_prs(text: str) -> list[Pr]:
 # --- the core: the tree, and its drawing -----------------------------------------------------
 
 
+def numbers(ns: list[int]) -> str:
+    """#1, #2 and #3"""
+    return ", ".join(f"#{n}" for n in ns[:-1]) + (" and " if len(ns) > 1 else "") + f"#{ns[-1]}"
+
+
 def forest(prs: list[Pr]) -> Forest:
-    """Hang each pull request under the same-repository one its base names."""
-    heads = {p.head: p for p in prs if not p.cross}
+    """Hang each pull request under the same-repository one its base names; refuse what a walk
+    from the roots would hide: two pull requests for one head, or a cycle."""
+    shared: dict[str, list[Pr]] = {}
+    for p in (p for p in prs if not p.cross):
+        shared.setdefault(p.head, []).append(p)
+    if dups := {h: ps for h, ps in shared.items() if len(ps) > 1}:
+        groups = "; ".join(
+            f"{numbers([p.number for p in ps])} from branch '{h}'" for h, ps in dups.items()
+        )
+        raise refuse(
+            "stack-tree/ambiguous",
+            f"these are open together: {groups}",
+            "close or retarget all but one of each group, so each head branch has one pull request",
+        )
+    heads = {h: ps[0] for h, ps in shared.items()}
     roots: dict[str, list[int]] = {}
     kids: dict[int, list[int]] = {}
+    above: dict[int, int] = {}
     for p in prs:
         parent = None if p.base == MAIN else heads.get(p.base)  # main is a root, never a parent
         if parent is None:
             roots.setdefault(p.base, []).append(p.number)
         else:
             kids.setdefault(parent.number, []).append(p.number)
+            above[p.number] = parent.number
+    seen: set[int] = set()
+    todo = [n for ns in roots.values() for n in ns]
+    while todo:
+        n = todo.pop()
+        if n not in seen:
+            seen.add(n)
+            todo += kids.get(n, [])
+    lost = [p.number for p in prs if p.number not in seen]
+    if lost:
+        raise cycle_refusal(above, lost)
     return Forest(roots, kids)
+
+
+def cycles(above: dict[int, int], lost: list[int]) -> list[list[int]]:
+    """The cycles among the lost pull requests, each as its sorted members. Every pull request
+    has one parent, so a walk up from any lost one ends in exactly one cycle."""
+    found: list[list[int]] = []
+    for start in lost:
+        path, n = [], start
+        while n not in path:
+            path.append(n)
+            n = above[n]
+        if (ring := sorted(path[path.index(n) :])) not in found:
+            found.append(ring)
+    return found
+
+
+def cycle_refusal(above: dict[int, int], lost: list[int]) -> RefusalError:
+    """Name each cycle, and the pull requests stacked above one, which are hidden with it."""
+    rings = cycles(above, lost)
+    members = {n for ring in rings for n in ring}
+    clauses = "; ".join(
+        f"{numbers(r)} are each other's ancestors" if len(r) > 1 else f"#{r[0]} is based on itself"
+        for r in rings
+    )
+    rest = [n for n in lost if n not in members]
+    also = f"; also hidden: {numbers(rest)}" if rest else ""
+    return refuse(
+        "stack-tree/cycle",
+        f"{clauses}, so none hangs under a root{also}",
+        "retarget one pull request of each cycle onto main or onto a branch outside it",
+    )
 
 
 def root_order(roots: dict[str, list[int]]) -> list[str]:
@@ -268,12 +340,23 @@ HOSTILE_TEXT = """main
 ├─ #1 ?[31mred
 ├─ #2 a?b ?evil
 └─ #3 (draft) q"uote <b>x</b> & ]]"""
+CYCLE = [pr(1, "a", "a", "b"), pr(2, "b", "b", "a"), pr(3, "c", "c", "main")]
+CYCLE_ABOVE = [*CYCLE[:2], pr(4, "d", "d", "a")]
 FORWARD = [pr(1, "forward", "main", "release"), pr(2, "x", "x", "main")]
 FORWARD_TEXT = f"""main
 └─ #2 x
 
 release {ORPHAN}
 └─ #1 forward"""
+AMBIGUOUS = [pr(1, "a", "x", "main"), pr(2, "b", "x", "main"), pr(3, "c", "x", "main")]
+HOSTILE_HEAD = [pr(n, "t", "x\ny\\nz\x1b", "main") for n in (1, 2)]
+TWO_CYCLES = [
+    pr(1, "a", "a", "b"),
+    pr(2, "b", "b", "a"),
+    pr(3, "c", "c", "d"),
+    pr(4, "d", "d", "e"),
+]
+TWO_CYCLES += [pr(5, "e", "e", "c"), pr(6, "f", "f", "main"), pr(7, "g", "g", "g")]
 
 # (name, flags, input, exit, stdout, words the stderr must hold)
 CASES = [
@@ -281,7 +364,25 @@ CASES = [
     ("cross-repo head is no parent", [], FORK, 0, FORK_TEXT, ()),
     ("root off main is annotated", [], ORPHANED, 0, ORPHANED_TEXT, ()),
     ("hostile titles, text", [], HOSTILE, 0, HOSTILE_TEXT, ()),
+    ("cycle", [], CYCLE, 2, "", ("stack-tree/cycle", "#1 and #2", "remedy")),
+    (
+        "each cycle is named, one retarget per cycle",
+        [],
+        TWO_CYCLES,
+        2,
+        "",
+        ("#1 and #2 are each other's", "#3, #4 and #5 are", "#7 is based on itself", "each cycle"),
+    ),
+    (
+        "cycle names the ring, then what hangs above",
+        [],
+        CYCLE_ABOVE,
+        2,
+        "",
+        ("#1 and #2 are", "also hidden: #4"),
+    ),
     ("a head named main is no parent of main's pull requests", [], FORWARD, 0, FORWARD_TEXT, ()),
+    ("ambiguous head", [], AMBIGUOUS, 2, "", ("stack-tree/ambiguous", "#1, #2 and #3", "remedy")),
     ("empty", [], [], 0, "no open pull requests", ()),
     ("not a list", [], {}, 2, "", ("stack-tree/input", "remedy")),
     ("missing field", [], [{"number": 1}], 2, "", ("stack-tree/input", "title")),
@@ -303,14 +404,18 @@ def refused(got: subprocess.CompletedProcess[str], name: str) -> bool:
 
 
 def extra_cases(tmp: Path) -> list[str]:
-    """What the fixtures table cannot say: an unreadable input, a closed pipe. Returns the
-    names that failed."""
+    """What the fixtures table cannot say: an unreadable input, a refusal built from hostile
+    text, a closed pipe. Returns the names that failed."""
     (tmp / "latin1.json").write_bytes(b"[\xe9]")
+    (tmp / "head.json").write_text(json.dumps(HOSTILE_HEAD))
     (tmp / "deep.json").write_text("[" * 10000 + "]" * 10000)
-    gone, bad, deep, usage = (
+    (tmp / "full.json").write_text(json.dumps([pr(n, "t", f"b{n}", "main") for n in range(LIMIT)]))
+    gone, bad, head, deep, full, usage = (
         go("--json", str(tmp / "gone.json")),
         go("--json", str(tmp / "latin1.json")),
+        go("--json", str(tmp / "head.json")),
         go("--json", str(tmp / "deep.json")),
+        go("--json", str(tmp / "full.json")),
         go("--bad\x1b[31m"),
     )
     (tmp / "empty.json").write_text("[]")
@@ -327,10 +432,14 @@ def extra_cases(tmp: Path) -> list[str]:
         "stdin": go("--json", "-", stdin="[]").stdout == "no open pull requests\n",
         "missing file": refused(gone, "gone.json"),
         "non-UTF-8 file": refused(bad, "latin1.json"),
+        "300 pull requests in a file": full.returncode == 2 and "stack-tree/limit" in full.stderr,
         "JSON nested too deep": refused(deep, "remedy") and "Traceback" not in deep.stderr,
         "bad option": usage.returncode == 2
         and "stack-tree/usage" in usage.stderr
         and "\x1b" not in usage.stderr,
+        "hostile text in a refusal": len(head.stderr.splitlines()) == 2
+        and "'x?y\\nz?'" in head.stderr
+        and "\x1b" not in head.stderr,
         "closed pipe": closed.returncode == -signal.SIGPIPE and closed_err == "",
     }
     return [name for name, ok in checks.items() if not ok]
