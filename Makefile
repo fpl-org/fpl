@@ -12,11 +12,13 @@
 #   make <lane>       fix quick check harden ready gates tools map venv pristine clean-noslop
 #   make run FILE=f   run the file f, a path from the root:    make run FILE=path/to/p.fpl
 #   make repl ARGS=a  the REPL, with its arguments a:          make repl ARGS='-e "1 + 2"'
+#   make smoke        the walker through `nix run` on this checkout; FLAKE=github:fpl-org/fpl asks
+#                     the forge's main (scripts/smoke)
 #   make image        the dev shell as an OCI image, ./result-oci (.agents/DEVSHELL.md)
 #   make image-quick  make quick inside the loaded image, on this checkout
 .DEFAULT_GOAL := check
 LANES := fix quick check harden ready gates tools map venv pristine clean-noslop
-.PHONY: $(LANES) run repl image image-quick
+.PHONY: $(LANES) run repl smoke image image-quick
 
 $(LANES):
 	@$(MAKE) --no-print-directory -C bootstrap $@
@@ -38,6 +40,11 @@ run:
 repl:
 	$(VENV)
 	@$(FPLPY) -m fpl.repl $(ARGS)
+
+# The walker as a reader gets it, the package of flake.nix through `nix run`, where run and repl
+# take the .venv's. Outside quick and check: every call pays nix's evaluation of the flake.
+smoke:
+	@scripts/smoke $(FLAKE)
 
 # The dev shell as an OCI image (packages.<linux system>.oci in flake.nix). dockerTools builds
 # for Linux only, so on a Mac the system is the Linux one of the same architecture, and Nix
