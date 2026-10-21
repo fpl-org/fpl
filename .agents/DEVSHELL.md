@@ -34,7 +34,7 @@ started elsewhere does not: launch it from the repo directory, or wrap the comma
 
 | Tools | Why |
 | --- | --- |
-| `bash` 5, GNU `coreutils` `grep` `sed` `awk` | `scripts/` and `.githooks/` need bash ≥ 4 (`mapfile`) and were written against GNU userland; macOS ships bash 3.2 and BSD tools |
+| `bash` 5, GNU `coreutils` `grep` `sed` `awk` | the hooks and the scripts they reach run under bash 3.2 (`/bin/bash` on a Mac) and bash 5 both, with no `mapfile` and no associative arrays (`.githooks/commit-rules`); the rest of `scripts/` was written against GNU userland, and macOS ships BSD tools |
 | `git`, `jj` | the workflow of `.agents/WORKFLOW.md`; `jj` is the optional one of `.agents/JJ.md` |
 | `gitleaks` | the leak-check of `fpl:leak`, which the hooks run on every commit and push (`.agents/WORKFLOW.md`, rule 9), so it cannot be an opt-in layer |
 | Python 3.12, `uv`, `ruff`, `pyright`, `make` | the implementation stack of `.agents/STACK.md` and the gate of `.agents/QUALITY.md`. `make` syncs Lark and the gate's Python tools into the worktree's `.venv` with `uv`, at the versions `quality/uv.lock` pins; several are not in nixpkgs. On Linux the shell also puts libstdc++ on `LD_LIBRARY_PATH`, which CrossHair's solver needs |
