@@ -2,7 +2,7 @@
 
 FPL uses a **stacked-commits** workflow (the Meta/Phabricator and Google model): a change is a
 short chain of small, individually reviewable commits, each depending on the one below. No
-extra tooling — plain git, one config flag, and `scripts/restack`. If you prefer `jj`, see
+extra tooling — plain git, one config flag, and `fpl:series:restack`. If you prefer `jj`, see
 `.agents/JJ.md`; it produces the same history.
 
 Vocabulary: **base** (the branch you'll land on, `main`) · **stack** (your ordered commits on
@@ -106,7 +106,7 @@ The repository is meant to live in more than one place (rule 7), and with two re
 git remote rename origin github
 ```
 
-The scripts assume no remote name: `scripts/restack` follows the upstream of the base
+The scripts assume no remote name: `fpl:series:restack` follows the upstream of the base
 branch, `scripts/pr` the remote the branch tracks. The recipes below spell `github`.
 
 ## Build a stack
@@ -137,21 +137,7 @@ above the commit it changes, so a change under an approved pull request would re
 one too: fix it forward instead. Above the highest approved pull request the stack is still
 yours to rewrite, with that branch as the base. A frozen stack does not follow `main`
 around; only a real conflict with `main` asks for a rebase, and that is rule 10's declared
-exception.
-
-```
-scripts/restack            # git fetch github && git rebase --update-refs github/main
-```
-
-`--update-refs` moves every `stack/typed-let/*` ref that pointed into the stack along with the
-rebase, so the PR branches stay correct. Conflicts: resolve, then `scripts/restack --continue`
-(or `--abort`). `rerere` replays the same resolution on the next restack.
-
-To amend a commit that isn't on top, before it is approved:
-
-```
-git rebase -i --update-refs github/main    # mark the target 'edit', amend, continue
-```
+exception. How to restack, and how to amend a commit that is not on top: `fpl:series:restack`.
 
 ## Read the diff with the file around it
 
@@ -336,7 +322,7 @@ branch: `scripts/setup` turns `rebase.updateRefs` on, and a branch pointing into
 being rewritten would move with it, leaving the proof to compare P with P.
 
 ```
-scripts/series stamp github/main..<branch>              # one Series-Id on every commit of W
+# one Series-Id on every commit of W first: fpl:series:stamp
 git tag unpresented/<series> <branch>                   # W, kept so anyone can repeat the proof
 # … rewrite <branch> into P: git rebase -i, or reset and recommit …
 git diff --quiet unpresented/<series> <branch>          # exit 0: tree(W) == tree(P)
@@ -345,26 +331,15 @@ git -c credential.helper= push --force-with-lease=<branch>:<old head> \
   "https://x-access-token:$TOKEN@github.com/<o>/<n>.git" <branch>:refs/heads/<branch>
 ```
 
-`scripts/present-check -B github/main unpresented/<series> <branch>` makes both proofs in one
-run, and the checks its header names besides.
+`fpl:series:present-check` makes both proofs in one run, and the checks its header names
+besides.
 
 **Manifest.** The manifest of a range is one pair per commit, the `git patch-id --verbatim`
 of its diff and a hash of its author and raw message, and a digest of the lines. `--verbatim`
 because `--stable` gave one id to a diff and its re-indented copy. Two ranges with the same
-manifest are the same review. `scripts/series manifest <range>` prints it and
-`scripts/series digest <range>` the digest alone; by hand, the same definition, with the diff
-options pinned so that no configuration of the caller's changes an id:
-
-```
-for c in $(git rev-list --reverse github/main..<head>); do
-  p=$(git -c core.quotePath=true -c diff.suppressBlankEmpty=false diff-tree -p --root \
-    --no-ext-diff --no-textconv --no-color --no-renames -U3 --src-prefix=a/ --dst-prefix=b/ \
-    --diff-algorithm=myers --indent-heuristic "$c" | git patch-id --verbatim | cut -d' ' -f1)
-  m=$({ git cat-file commit "$c" | sed -n '/^$/q; s/^author \(.*\) [0-9]* [-+][0-9]*$/\1/p'
-        git cat-file commit "$c" | sed '1,/^$/d'; } | shasum -a 256 | cut -d' ' -f1)
-  echo "$p $m"
-done | tee manifest | shasum -a 256                      # the digest
-```
+manifest are the same review. `fpl:series:manifest` prints it, and the digest alone, with
+the diff options pinned so that no configuration of the caller's changes an id; the script
+is the one definition.
 
 **Ready and approve.** The pull request is ready when the review bots have said what they
 will and their findings are dealt with: `gh pr ready <number> --repo github.com/<o>/<n>`, or
@@ -424,7 +399,7 @@ that check run is the lander's alone.
 
 **Relocate.** When another pull request landed first, `main` is no longer an ancestor of the
 head and `land/ancestor` refuses; the lander relocates such a head itself (Land, above). By
-hand: before an approval, restack and push (`scripts/restack`). After one, carry the commits
+hand: before an approval, restack and push (`fpl:series:restack`). After one, carry the commits
 over without changing them, compare each with its old self, and push under
 `FPL_FORWARD_ONLY_OVERRIDE="relocate: <Series-Id>"`, which `scripts/forward-only` lets
 through only when every commit kept its pair:
@@ -438,19 +413,13 @@ git range-diff "$old..$was" github/main..<branch>      # every pair '=': nothing
 Every pair `=` and the same manifest means the new head is the old review: the owner
 approves it again. A pair `!` is a commit whose diff changed; it needs reading, not carrying.
 
-**Revert a series.** One commit that undoes the contiguous range, then the usual route:
-
-```
-git switch -c agent/<id>/stack/revert-<series> github/main
-git revert -n <first>^..<last>
-scripts/acommit -t revert -s <scope> -m "<what the series did>" -r "series <series>"
-```
-
-A series is the commits that share a Series-Id (`git log --grep='^Series-Id: <id>$'`); one
-that landed before `scripts/series` carries only its `Stack:` trailer
-(`git log --grep='^Stack: <name>$'`). The range must be contiguous on `main`: a commit of
-another series in between is reverted by its own pull request first. The revert takes a
-Series-Id of its own (`scripts/series stamp`).
+**Revert a series.** One commit that undoes the contiguous range, then the usual route
+(`fpl:series:revert`, by the script or by hand). A series is the commits that share a
+Series-Id (`git log --grep='^Series-Id: <id>$'`); one that landed before the trailer existed
+carries only its `Stack:` trailer (`git log --grep='^Stack: <name>$'`). The range must be
+contiguous on `main` for the script; with a commit of another series in between, revert the
+series' own commits by hand: reverting the other series leaves its commit in the run. The
+revert takes a Series-Id of its own.
 
 ## The cap
 
