@@ -1,5 +1,5 @@
 ---
-name: fpl-run
+name: fpl:run
 description: Run FPL with the walker - start the REPL, evaluate one expression, or run a .fpl file. Use when asked to run, try or demo FPL, to launch the app, or to see what an expression evaluates to.
 ---
 
