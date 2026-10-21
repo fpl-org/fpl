@@ -1,0 +1,363 @@
+#!/usr/bin/env python3
+# gates: $BIN/python $S/stack-tree --self-test
+"""scripts/stack-tree — the open pull requests as the tree their bases make, never committed.
+
+    scripts/stack-tree [--json FILE]
+    scripts/stack-tree --self-test
+
+The maintainer stacks pull requests: one is based on the head branch of another. GitHub's list
+is flat, so the shape is invisible. This draws it, as a view like scripts/diagrams: computed on
+demand from the forge, never written into the repository. Native stacked pull requests are not
+used: they are a linear chain, and they land through merge methods that rewrite SHAs, which
+scripts/land (a fast-forward) refuses to depend on. The tree is computed here instead.
+
+The input is the JSON `gh pr list --state open --limit 300 --json number,title,headRefName,
+baseRefName,isDraft,isCrossRepository` prints. --json FILE reads it from there; without it,
+or with `-`, it comes from stdin. Drawing needs python3 alone.
+
+The rule: a pull request hangs under the open pull request whose head branch is its base, and
+only a same-repository pull request can be a parent: a fork's branch may be named anything,
+`main` included; `main` itself is never a parent. One whose base has no open parent is a root
+under that base branch. The roots based on `main` are what scripts/land takes; any other root is
+annotated, because it needs a retarget (or its base landed) first.
+
+Titles and branch names are untrusted forge text: every character of Unicode category C
+(control, format such as a bidi override, surrogate, private use, and so newlines) is shown as
+`?`, in the tree and in every refusal. A line is never cut to the terminal's width. A reader
+that closes the pipe early ends the script quietly, as for any filter.
+
+Refused, naming the rule and the remedy (exit 2): stack-tree/input
+(not the JSON above, nested too deep to read, or a file that cannot be read),
+stack-tree/usage (the command line).
+
+Exit 0: drawn (no open pull requests draws that), or the self-test passed; 1: the self-test
+failed; 2: refused.
+"""
+
+import argparse
+import json
+import signal
+import subprocess
+import sys
+import tempfile
+import unicodedata
+from dataclasses import dataclass
+from pathlib import Path
+from typing import NoReturn
+
+MAIN = "main"
+ORPHAN = "(no open pull request on this branch: retarget or land first)"
+LIMIT = 300
+FIELDS = {
+    "number": int,
+    "title": str,
+    "headRefName": str,
+    "baseRefName": str,
+    "isDraft": bool,
+    "isCrossRepository": bool,
+}
+INPUT_REMEDY = f"feed it `gh pr list --state open --limit {LIMIT} --json {','.join(FIELDS)}`"
+
+
+class RefusalError(Exception):
+    """A refusal with its rule and remedy, ready to print."""
+
+
+def clean(text: str) -> str:
+    """Show every character of Unicode category C as `?`: forge text is not trusted."""
+    return "".join("?" if unicodedata.category(c).startswith("C") else c for c in text)
+
+
+def refuse(rule: str, what: str, remedy: str) -> RefusalError:
+    """The refusal, ready to print: its parts are cleaned, then joined by the one newline that
+    is its own."""
+    return RefusalError(f"{rule}: {clean(what)}\n    remedy: {clean(remedy)}")
+
+
+@dataclass(frozen=True)
+class Pr:
+    number: int
+    title: str
+    head: str
+    base: str
+    draft: bool
+    cross: bool
+
+
+@dataclass(frozen=True)
+class Forest:
+    roots: dict[str, list[int]]  # base branch -> its pull requests, by number
+    kids: dict[int, list[int]]  # number -> the pull requests based on its head, by number
+
+
+# --- the readers: data in, Pr out, nothing guessed -------------------------------------------
+
+
+def read_pr(raw: object, at: int) -> Pr:
+    if not isinstance(raw, dict):
+        raise refuse("stack-tree/input", f"entry {at} is not an object", INPUT_REMEDY)
+    for key, kind in FIELDS.items():
+        if type(raw.get(key)) is not kind:
+            raise refuse(
+                "stack-tree/input", f"entry {at}: {key} is not a {kind.__name__}", INPUT_REMEDY
+            )
+    return Pr(
+        raw["number"],
+        raw["title"],
+        raw["headRefName"],
+        raw["baseRefName"],
+        raw["isDraft"],
+        raw["isCrossRepository"],
+    )
+
+
+def load(text: str) -> list:
+    """The JSON list of pull requests in `text`, a stack-tree/input refusal if it is none."""
+    try:
+        raw = json.loads(text)
+    except (ValueError, RecursionError) as e:  # RecursionError: JSON nested thousands deep
+        raise refuse("stack-tree/input", f"not JSON ({e})", INPUT_REMEDY) from e
+    if not isinstance(raw, list):
+        raise refuse("stack-tree/input", "the top level is not a list", INPUT_REMEDY)
+    return raw
+
+
+def read_prs(text: str) -> list[Pr]:
+    raw = load(text)
+    prs = [read_pr(r, i) for i, r in enumerate(raw)]
+    numbers = [p.number for p in prs]
+    if len(set(numbers)) != len(numbers):
+        raise refuse("stack-tree/input", "a pull request number appears twice", INPUT_REMEDY)
+    return sorted(prs, key=lambda p: p.number)
+
+
+# --- the core: the tree, and its drawing -----------------------------------------------------
+
+
+def forest(prs: list[Pr]) -> Forest:
+    """Hang each pull request under the same-repository one its base names."""
+    heads = {p.head: p for p in prs if not p.cross}
+    roots: dict[str, list[int]] = {}
+    kids: dict[int, list[int]] = {}
+    for p in prs:
+        parent = None if p.base == MAIN else heads.get(p.base)  # main is a root, never a parent
+        if parent is None:
+            roots.setdefault(p.base, []).append(p.number)
+        else:
+            kids.setdefault(parent.number, []).append(p.number)
+    return Forest(roots, kids)
+
+
+def root_order(roots: dict[str, list[int]]) -> list[str]:
+    return sorted(roots, key=lambda b: (b != MAIN, b))
+
+
+def root_label(base: str) -> str:
+    return clean(base) + ("" if base == MAIN else " " + ORPHAN)
+
+
+def text_lines(prs: list[Pr], f: Forest) -> list[str]:
+    by = {p.number: p for p in prs}
+    out: list[str] = []
+
+    def draw(n: int, prefix: str, last: bool) -> None:
+        p, sub, sk = by[n], prefix + ("   " if last else "│  "), f.kids.get(n, [])
+        mark = " (draft)" if p.draft else ""
+        out.append(f"{prefix}{'└─ ' if last else '├─ '}#{n}{mark} {clean(p.title)}")
+        for i, c in enumerate(sk):
+            draw(c, sub, i == len(sk) - 1)
+
+    for k, base in enumerate(root_order(f.roots)):
+        out += [""] * (k > 0) + [root_label(base)]
+        for i, n in enumerate(f.roots[base]):
+            draw(n, "", i == len(f.roots[base]) - 1)
+    return out
+
+
+def draw(prs: list[Pr]) -> list[str]:
+    if not prs:
+        return ["no open pull requests"]
+    f = forest(prs)
+    return text_lines(prs, f)
+
+
+# --- the edge: the input, argv, the terminal -------------------------------------------------
+
+
+def read_source(name: str) -> str:
+    try:
+        return sys.stdin.read() if name == "-" else Path(name).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise refuse(
+            "stack-tree/input", f"cannot read {name!r} as UTF-8 text ({e})", INPUT_REMEDY
+        ) from e
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message: str) -> NoReturn:
+        raise refuse("stack-tree/usage", message, "see scripts/stack-tree --help")
+
+
+def main(argv: list[str]) -> int:
+    ap = Parser(prog="stack-tree", description="the open pull requests as a tree")
+    ap.add_argument("--json", metavar="FILE", help="read gh's JSON from FILE, or - for stdin")
+    ap.add_argument("--self-test", action="store_true", help="prove the script on fixtures")
+    try:
+        a = ap.parse_args(argv)
+        if a.self_test:
+            return self_test()
+        text = read_source(a.json or "-")
+        lines = draw(read_prs(text))
+    except RefusalError as e:
+        print(f"stack-tree: {e}", file=sys.stderr)
+        return 2
+    print("\n".join(lines))
+    return 0
+
+
+# --- the proof: the script, as a process, on fixtures ----------------------------------------
+
+
+def pr(n: int, title: str, head: str, base: str, **kw: object) -> dict:
+    return {
+        "number": n,
+        "title": title,
+        "headRefName": head,
+        "baseRefName": base,
+        "isDraft": kw.get("draft", False),
+        "isCrossRepository": kw.get("cross", False),
+    }
+
+
+STACK = [
+    pr(179, "alpha", "a", "main"),
+    pr(195, "gates", "g", "main"),
+    pr(182, "proof", "p", "g"),
+    pr(190, "silence", "s", "g"),
+    pr(191, "stamp", "t", "s", draft=True),
+]
+STACK_TEXT = """main
+├─ #179 alpha
+└─ #195 gates
+   ├─ #182 proof
+   └─ #190 silence
+      └─ #191 (draft) stamp"""
+FORK = [
+    pr(1, "one", "topic", "main"),
+    pr(2, "fork", "topic", "main", cross=True),
+    pr(3, "fork main", "main", "main", cross=True),
+    pr(4, "above one", "above", "topic"),
+]
+FORK_TEXT = """main
+├─ #1 one
+│  └─ #4 above one
+├─ #2 fork
+└─ #3 fork main"""
+ORPHANED = [pr(7, "late", "late", "release"), pr(8, "ok", "ok", "main")]
+ORPHANED_TEXT = f"""main
+└─ #8 ok
+
+release {ORPHAN}
+└─ #7 late"""
+HOSTILE = [
+    pr(1, "\x1b[31mred", "a", "main"),
+    pr(2, "a\nb \u202eevil", "b", "main"),
+    pr(3, 'q"uote <b>x</b> & ]]', "c", "main", draft=True),
+]
+HOSTILE_TEXT = """main
+├─ #1 ?[31mred
+├─ #2 a?b ?evil
+└─ #3 (draft) q"uote <b>x</b> & ]]"""
+FORWARD = [pr(1, "forward", "main", "release"), pr(2, "x", "x", "main")]
+FORWARD_TEXT = f"""main
+└─ #2 x
+
+release {ORPHAN}
+└─ #1 forward"""
+
+# (name, flags, input, exit, stdout, words the stderr must hold)
+CASES = [
+    ("tree", [], STACK, 0, STACK_TEXT, ()),
+    ("cross-repo head is no parent", [], FORK, 0, FORK_TEXT, ()),
+    ("root off main is annotated", [], ORPHANED, 0, ORPHANED_TEXT, ()),
+    ("hostile titles, text", [], HOSTILE, 0, HOSTILE_TEXT, ()),
+    ("a head named main is no parent of main's pull requests", [], FORWARD, 0, FORWARD_TEXT, ()),
+    ("empty", [], [], 0, "no open pull requests", ()),
+    ("not a list", [], {}, 2, "", ("stack-tree/input", "remedy")),
+    ("missing field", [], [{"number": 1}], 2, "", ("stack-tree/input", "title")),
+]
+
+
+def go(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, __file__, *args],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def refused(got: subprocess.CompletedProcess[str], name: str) -> bool:
+    return got.returncode == 2 and "stack-tree/input" in got.stderr and name in got.stderr
+
+
+def extra_cases(tmp: Path) -> list[str]:
+    """What the fixtures table cannot say: an unreadable input, a closed pipe. Returns the
+    names that failed."""
+    (tmp / "latin1.json").write_bytes(b"[\xe9]")
+    (tmp / "deep.json").write_text("[" * 10000 + "]" * 10000)
+    gone, bad, deep, usage = (
+        go("--json", str(tmp / "gone.json")),
+        go("--json", str(tmp / "latin1.json")),
+        go("--json", str(tmp / "deep.json")),
+        go("--bad\x1b[31m"),
+    )
+    (tmp / "empty.json").write_text("[]")
+    closed = subprocess.Popen(
+        [sys.executable, __file__, "--json", str(tmp / "empty.json")],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if closed.stdout is not None:
+        closed.stdout.close()  # the reader is gone before the first byte is written
+    _, closed_err = closed.communicate()
+    checks = {
+        "stdin": go("--json", "-", stdin="[]").stdout == "no open pull requests\n",
+        "missing file": refused(gone, "gone.json"),
+        "non-UTF-8 file": refused(bad, "latin1.json"),
+        "JSON nested too deep": refused(deep, "remedy") and "Traceback" not in deep.stderr,
+        "bad option": usage.returncode == 2
+        and "stack-tree/usage" in usage.stderr
+        and "\x1b" not in usage.stderr,
+        "closed pipe": closed.returncode == -signal.SIGPIPE and closed_err == "",
+    }
+    return [name for name, ok in checks.items() if not ok]
+
+
+def self_test() -> int:
+    """Run the script itself on each fixture, as a process: no network, no gh."""
+    with tempfile.TemporaryDirectory() as tmp:
+        failed = []
+        for name, flags, data, code, out, words in CASES:
+            (Path(tmp) / "prs.json").write_text(json.dumps(data))
+            got = go(*flags, "--json", str(Path(tmp) / "prs.json"))
+            if not (
+                got.returncode == code
+                and got.stdout.rstrip("\n") == out.rstrip("\n")
+                and (all(w in got.stderr for w in words) if code else got.stderr == "")
+            ):
+                failed.append(name)
+                print(
+                    f"FAIL {name}: exit {got.returncode}\n{got.stdout}{got.stderr}", file=sys.stderr
+                )
+        failed += extra_cases(Path(tmp))
+    verdict = "FAILED: " + ", ".join(failed) if failed else "all cases ok"
+    print(f"stack-tree self-test: {verdict}")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)  # a closed pipe ends us quietly, as it ends cat
+    sys.exit(main(sys.argv[1:]))
