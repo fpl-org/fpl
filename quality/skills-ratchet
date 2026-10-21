@@ -1,11 +1,6 @@
 # Scripts the prose names and no skill names yet: <path> -- <reason>. Judged by
 # .agents/skills/fpl:quality:skills/scripts/skills-cover; a line for a script a skill names,
 # or that is gone, is refused, so this list only shrinks. The units are .agents/tasks/redo.tsv.
-scripts/acommit -- not yet converted: unit S3 (fpl:commit:acommit)
-scripts/agent-identity -- not yet converted: unit S3 (fpl:commit:identity)
-scripts/boundary -- not yet converted: unit S3 (fpl:commit:boundary)
-scripts/branch-lint -- not yet converted: unit S3 (fpl:commit:branch)
-scripts/commit-lint -- not yet converted: unit S3 (fpl:commit:lint)
 scripts/crap -- not yet converted: unit S5 (fpl:quality:crap)
 scripts/diagrams -- not yet converted: unit S5 (fpl:quality:diagrams)
 scripts/escapes -- not yet converted: unit S5 (fpl:quality:escapes)

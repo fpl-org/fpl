@@ -121,7 +121,8 @@ scripts/acommit -t feat -s eval -m "evaluate let-bindings"     # commit 2
 git branch stack/typed-let/2
 ```
 
-Now open PRs bottom-up: `…/1` → `main`, `…/2` → `…/1`.
+Each `acommit` line is a commit as `fpl:commit` makes it; what the example shows is where the
+boundary refs go. Now open PRs bottom-up: `…/1` → `main`, `…/2` → `…/1`.
 
 Ref names: a stack is `stack/<name>` when it will be a single PR, or `stack/<name>/tip` plus
 numbered boundary refs when it will be several. Never both for one `<name>` — git stores refs

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# scripts/boundary-self-test — proof that scripts/boundary judges one commit by its own paths,
+# boundary-self-test — proof that the boundary checker beside it judges one commit by its own paths,
 # and that scripts/commit-lint, and so pre-push, applies it to every commit however it was
 # made. Run by `make gates`.
 #
@@ -27,7 +27,7 @@
 #   warns             notes on rewritten commits are named and not copied; a commit a
 #                     remote-tracking ref holds is called published, in the refusal and in the
 #                     split, which still runs
-#   commit-lint       a range that starts before scripts/boundary existed
+#   commit-lint       a range that starts before the checker existed
 #   pre-push          a mixed commit made by commit (no gate at commit time), --no-verify,
 #                     cherry-pick and commit --amend is refused, as is a name that is not
 #                     UTF-8 pushed under a UTF-8 locale; pure ones go; the remedy
@@ -44,7 +44,7 @@
 
 set -euo pipefail
 
-root="$(cd "$(dirname "$0")/.." && pwd)"
+root="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 
 # --- the driver -----------------------------------------------------------------------------
 if [ -z "${BOUNDARY_SELF_TEST_RUN:-}" ]; then
@@ -100,7 +100,7 @@ unset FPL_BRANCH_GATE FPL_MAIN_GATE FPL_AGENT_EMAILS FPL_LINT_BRANCH FPL_LINT_CO
 # shellcheck disable=SC2046 # one variable name per line, no spaces
 unset $(git rev-parse --local-env-vars)
 mkdir -p "$HOME" "$XDG_CONFIG_HOME"
-checker="$root/scripts/boundary"
+checker="$root/.agents/skills/fpl:commit:boundary/scripts/boundary"
 nl='
 '
 
@@ -115,7 +115,7 @@ says() {
 	total=$((total + 1))
 	grep -Fq -- "$1" "$tmp/out" || fail "$2: output lacks '$1'"
 }
-# judge <pure|mixed> <description> [<commit>]: scripts/boundary on the commit (HEAD), output
+# judge <pure|mixed> <description> [<commit>]: the checker on the commit (HEAD), output
 # in $tmp/out. A pure commit passes silently; a mixed one is refused with BOUNDARY-MIXED.
 judge() {
 	local rc=0
@@ -133,7 +133,7 @@ judge() {
 		fi
 	fi
 }
-# tool <description> [<arguments>...]: scripts/boundary fails closed, with BOUNDARY-TOOL.
+# tool <description> [<arguments>...]: the checker fails closed, with BOUNDARY-TOOL.
 tool() {
 	local what="$1" rc=0
 	shift
@@ -649,7 +649,7 @@ change README.md
 [ "$rc" -eq 0 ] && [ "$(git rev-list --count t)" -eq 2 ] || fail "a --split of a one-sided commit: exit $rc, or t moved"
 says "nothing to split" "a --split of a one-sided commit says so"
 
-# --- commit-lint over a range from before scripts/boundary ----------------------------------
+# --- commit-lint over a range from before the checker -----------------------------------------
 early="$tmp/early"
 git init -q -b main "$early"
 cd "$early"
@@ -661,7 +661,7 @@ echo a >fpl/a
 echo b >docs/b
 git add -A
 git commit -q -m "feat(x): mixed, before the checker" -m "Human-Only: true"
-cp -R "$root/.githooks" "$root/scripts" "$root/.github" .
+cp -R "$root/.githooks" "$root/scripts" "$root/.github" . && mkdir -p .agents && cp -R "$root/.agents/skills" .agents/
 git add -A
 git commit -q -m "chore(harness): the checker arrives" -m "Human-Only: true"
 total=$((total + 1)) pure=$((pure + 2)) mixed=$((mixed + 1)) rc=0
@@ -708,7 +708,7 @@ git init -q --bare -b main "$remote"
 repo="$tmp/repo"
 git init -q -b main "$repo"
 cd "$repo"
-cp -R "$root/.githooks" "$root/scripts" "$root/.github" .
+cp -R "$root/.githooks" "$root/scripts" "$root/.github" . && mkdir -p .agents && cp -R "$root/.agents/skills" .agents/
 git add -A
 git -c core.hooksPath=/dev/null commit -q -m "chore(harness): base" -m "Human-Only: true"
 git remote add origin "$remote"

@@ -332,9 +332,9 @@ cmd_revert() { # revert <id> [branch]
 	# leaves nothing to undo; an empty undo commit would claim a change that is not there.
 	! git diff --cached --quiet "$main" -- \
 		|| die revert-empty "undoing $range changes nothing on $main" "nothing to revert: the tree of $main already lacks the series"
-	# One commit holds one side (scripts/boundary), and the hooks do not judge that at commit
+	# One commit holds one side (fpl:commit:boundary), and the hooks do not judge that at commit
 	# time but commit-lint does at push: judge the inverse now, as a loose commit nothing refers to.
-	if ! err="$("$repo_root/scripts/boundary" "$(git commit-tree -p "$main" -m probe "$(git write-tree)")" 2>&1)"; then
+	if ! err="$("$repo_root/.agents/skills/fpl:commit:boundary/scripts/boundary" "$(git commit-tree -p "$main" -m probe "$(git write-tree)")" 2>&1)"; then
 		printf '%s\n' "$err" >&2
 		die revert-mixed "the series spans harness and implementation paths, so its undo cannot be one commit" "undo the harness commits and the implementation commits apart, by hand"
 	fi

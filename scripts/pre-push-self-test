@@ -49,6 +49,7 @@ repo="$tmp/repo"
 git init -q -b main "$repo"
 cd "$repo"
 cp -R "$root/.githooks" "$root/scripts" "$root/.github" .
+mkdir .agents && cp -R "$root/.agents/skills" .agents/ # commit-lint's boundary checker lives in a skill
 commit() { git -c core.hooksPath=/dev/null commit -q --allow-empty "$@"; }
 git add -A
 commit -m "chore(harness): base" -m "Human-Only: true"
