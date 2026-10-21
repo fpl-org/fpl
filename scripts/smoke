@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# gates: $S/smoke
+#
+# scripts/smoke — the walker as a user meets it: `nix run` on the flake answers.
+#
+#   scripts/smoke [flake]    default: this checkout. github:fpl-org/fpl asks the forge's main,
+#                            github:fpl-org/fpl/<sha> one commit of it
+#
+# Every call goes through `nix run <flake>`, the command a reader types, never a store path:
+# the app, the package and the Python environment are judged together, as a reader gets them.
+#   - smoke/expr:  -e '2 | 3 +' prints 5 and exits 0,
+#   - smoke/loop:  the lines of the frames example (fpl/features/draft2/examples/01-frames),
+#                  fed to the loop, print its .expected and exit 0: the loop reads a stream
+#                  that is not a terminal without prompts,
+#   - smoke/quit:  :quit leaves the loop at once, printing nothing, exit 0,
+#   - smoke/usage: an argument the walker does not take exits 2 with its usage line.
+# The example comes from this checkout, whatever flake is named. Nothing is written: the loop
+# keeps its log in memory without --session. make gates runs it on the checkout (the gates line
+# above), so make ready does, on every ready pull request and push to main. Needs nix; runs
+# under bash 3.2 and 5.
+# Exit 0: every check held; 1: one did not, named; 2: no nix.
+
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+flake="${1:-$root}"
+example="$root/fpl/features/draft2/examples/01-frames"
+command -v nix >/dev/null 2>&1 || {
+	echo "smoke: nix is not on PATH; the walker's package is a flake output (flake.nix)" >&2
+	exit 2
+}
+
+out="$(mktemp -d)"
+trap 'rm -rf "$out"' EXIT
+fails=0
+
+# fpl <name> <stdin> <args...>: the walker of the flake on <stdin>, its streams and status
+# kept under <name>.
+fpl() {
+	local name="$1" input="$2"
+	shift 2
+	set +e
+	nix run "$flake#" -- "$@" <"$input" >"$out/$name.out" 2>"$out/$name.err"
+	echo $? >"$out/$name.code"
+	set -e
+}
+
+# judge <rule> <name> <code> <expected stdout file> [<text the stderr must hold>]
+judge() {
+	local rule="$1" name="$2" want="$3" expect="$4" says="${5:-}" got
+	got="$(cat "$out/$name.code")"
+	if [ "$got" = "$want" ] && cmp -s "$expect" "$out/$name.out" &&
+		{ [ -z "$says" ] || grep -q -F -- "$says" "$out/$name.err"; }; then
+		echo "ok   $rule"
+		return
+	fi
+	fails=$((fails + 1))
+	echo "FAIL $rule: nix run $flake# exited $got (want $want); stdout, then stderr:" >&2
+	diff -u "$expect" "$out/$name.out" | sed 's/^/     /' >&2 || true
+	sed 's/^/     /' "$out/$name.err" >&2
+}
+
+printf '5\n' >"$out/five"
+: >"$out/nothing"
+printf ':quit\n' >"$out/quit.in"
+
+fpl expr /dev/null -e '2 | 3 +'
+judge smoke/expr expr 0 "$out/five"
+fpl loop "$example.fpl"
+judge smoke/loop loop 0 "$example.expected"
+fpl quit "$out/quit.in"
+judge smoke/quit quit 0 "$out/nothing"
+fpl usage /dev/null --no-such-flag
+judge smoke/usage usage 2 "$out/nothing" "usage:"
+
+[ "$fails" -eq 0 ] || {
+	echo "smoke: $fails check(s) failed against $flake" >&2
+	echo "    remedy: run its line by hand (nix run $flake# -- ...); fix flake.nix or the walker" >&2
+	exit 1
+}
+echo "smoke: the walker of $flake answers"
