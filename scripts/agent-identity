@@ -10,15 +10,64 @@
 # that is running, so `git shortlog -sn` distinguishes "Claude Sonnet 5" from
 # "Claude Opus 5" while both link to one GitHub machine account via the email.
 #
+# The committer is the machine account too, by its login (`326980220+psjg-claude@…` is
+# psjg-claude): the owner's part in a commit is his approving review, not a field written in
+# his name by the git config the worktree inherits (.agents/COMMITS.md, "Authorship"). So in
+# a linked worktree `set` also writes committer.name and committer.email into that
+# worktree's own config (config.worktree, turning on extensions.worktreeConfig where it is
+# off, after moving a shared core.bare or core.worktree into the main worktree's own config,
+# as git does), and every commit made there has the machine committer: an acommit, a -H
+# commit, an amend, a rebase, a cherry-pick, a series stamp. The author of a plain `git
+# commit` stays the person's. The main worktree is the owner's checkout and is left alone;
+# scripts/acommit sets the committer per commit there.
+#
 # Usage:
 #   scripts/agent-identity show           # print the email, exit 1 if unset
-#   scripts/agent-identity set <email>    # store the email
+#   scripts/agent-identity set <email>    # store the email; bind the committer (above)
+#   scripts/agent-identity login          # print the account's login, from the email
 #   scripts/agent-identity path           # print the file path
 
 set -euo pipefail
 
 git_dir="$(git rev-parse --git-dir)"
 id_file="$git_dir/agent-identity"
+
+# login <email>: the account a GitHub noreply address names (<id>+<login>@users.noreply…,
+# or <login>@users.noreply…); for any other address, its local part.
+login() {
+	local l="${1%@*}"
+	case "$1" in *@users.noreply.github.com) l="${l#*+}" ;; esac
+	printf '%s\n' "$l"
+}
+
+# bind <email>: the machine account as the committer of every commit in this worktree, a
+# linked one; in the main worktree nothing, and it says so.
+bind() {
+	local common
+	common="$(cd "$(git rev-parse --git-common-dir)" && pwd -P)"
+	if [ "$(cd "$git_dir" && pwd -P)" = "$common" ]; then
+		echo "agent-identity: the main worktree is the owner's: committer left to git config" \
+			"(scripts/acommit sets it per commit)"
+		return 0
+	fi
+	# Once the extension is on, core.bare=true and core.worktree in the shared config reach every
+	# linked worktree: a bare repository's would make this one bare, the main checkout's would
+	# make it the main checkout. They move into the main worktree's own config first, as git
+	# does when it turns the extension on itself (init_worktree_config).
+	if [ "$(git config --bool extensions.worktreeConfig || :)" != true ]; then
+		local bare tree
+		bare="$(git config --file "$common/config" --bool core.bare || :)"
+		tree="$(git config --file "$common/config" core.worktree || :)"
+		[ "$bare" != true ] || git config --file "$common/config.worktree" core.bare true
+		[ -z "$tree" ] || git config --file "$common/config.worktree" core.worktree "$tree"
+		git config --local extensions.worktreeConfig true
+		[ "$bare" != true ] || git config --file "$common/config" --unset core.bare
+		[ -z "$tree" ] || git config --file "$common/config" --unset core.worktree
+	fi
+	git config --worktree committer.name "$(login "$1")"
+	git config --worktree committer.email "$1"
+	echo "agent-identity: committer: $(login "$1") <$1> (this worktree's config)"
+}
 
 cmd="${1:-show}"
 case "$cmd" in
@@ -34,12 +83,17 @@ set)
 	esac
 	printf '%s\n' "$email" >"$id_file"
 	echo "agent-identity: set to $email"
+	bind "$email"
+	;;
+login)
+	email="$("$0" show)"
+	login "$email"
 	;;
 path)
 	echo "$id_file"
 	;;
 *)
-	echo "usage: agent-identity {show|set <email>|path}" >&2
+	echo "usage: agent-identity {show|set <email>|login|path}" >&2
 	exit 2
 	;;
 esac
