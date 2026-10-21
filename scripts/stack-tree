@@ -2,7 +2,8 @@
 # gates: $BIN/python $S/stack-tree --self-test
 """scripts/stack-tree — the open pull requests as the tree their bases make, never committed.
 
-    scripts/stack-tree [--json FILE] [--repo OWNER/NAME]
+    scripts/stack-tree [--commits] [--mermaid | --markdown] [--urls] [--json FILE]
+                       [--repo OWNER/NAME] [--forge URL]
     scripts/stack-tree --self-test
 
 The maintainer stacks pull requests: one is based on the head branch of another. GitHub's list
@@ -12,11 +13,13 @@ used: they are a linear chain, and they land through merge methods that rewrite 
 scripts/land (a fast-forward) refuses to depend on. The tree is computed here instead.
 
 The input is the JSON `gh pr list --state open --limit 300 --json number,title,headRefName,
-baseRefName,isDraft,isCrossRepository` prints. --json FILE (or `-` for stdin) reads it from
+baseRefName,isDraft,isCrossRepository` prints, with a `commits` list of oid and messageHeadline
+per pull request when --commits asks for them. --json FILE (or `-` for stdin) reads it from
 there; without it the script asks the forge, read-only, like scripts/sweep: gh with the machine
 account's token (STACK_TREE_GH_USER, default psjg-claude) for STACK_TREE_REPO or --repo (default:
-the `github` remote). Drawing needs python3 alone; gh is only the transport, and without it
-the remedy is `scripts/layer on github`. A token is never printed.
+the `github` remote). The commits come one `gh pr view` each, since one list with them exceeds
+GitHub's GraphQL node limit. Drawing needs python3 alone; gh is only the transport, and without
+it the remedy is `scripts/layer on github`. A token is never printed.
 
 The rule: a pull request hangs under the open pull request whose head branch is its base, and
 only a same-repository pull request can be a parent: a fork's branch may be named anything,
@@ -24,20 +27,47 @@ only a same-repository pull request can be a parent: a fork's branch may be name
 under that base branch. The roots based on `main` are what scripts/land takes; any other root is
 annotated, because it needs a retarget (or its base landed) first.
 
-Titles and branch names are untrusted forge text: every character of Unicode category C
+--commits lists each pull request's own commits under it; --mermaid, which draws none, ignores
+it. --mermaid prints a fenced Mermaid block (`graph LR`: the trunk on the left, an arrow from a
+branch to each pull request based on it, so a stack reads in the order it lands; drafts dashed)
+to paste into a comment or a run's $GITHUB_STEP_SUMMARY, where GitHub draws it. Left to right,
+not top down, as a pull request's title is wider than tall: the open ones of 2026-10-21 drew
+811 px wide that way and 1906 px top down, which GitHub shrinks to its column. Node ids are
+p<number> and b<k>, never taken from a title; in a label `#`, `"`, `<`, `>`, `&` and a backtick
+are written as entities, as Mermaid reads them as an entity, the label's end, markup or a
+Markdown label. Mermaid draws an error past MERMAID_MAX characters, so titles are cut, longest
+first, until the block fits. --markdown, for a pull request's body, prints that block and then
+its source, fence and all, in a collapsed <details> as a code block: GitHub's own button on a
+drawn block copies the source without its fence, and Obsidian draws a ```mermaid block as
+pasted. No line of the block starts with a backtick but its fences, so a fence of four holds it.
+Titles,
+headlines and branch names are untrusted forge text: every character of Unicode category C
 (control, format such as a bidi override, surrogate, private use, and so newlines) is shown as
-`?`, in the tree and in every refusal. A line is never cut to the terminal's width. A reader
+`?`, in both outputs and in every refusal. A line is never cut to the terminal's width. A reader
 that closes the pipe early ends the script quietly, as for any filter.
 
 Refused, naming the rule and the remedy (exit 2): stack-tree/input
-(not the JSON above, nested too deep to read, or a file that cannot be read),
+(not the JSON above, nested too deep to read, a commit oid that is not hex, or a file that
+cannot be read),
 stack-tree/ambiguous (two or more open same-repository pull requests share a head branch),
 stack-tree/cycle (pull requests that are each other's ancestors, which a walk from the roots
 would silently drop; each cycle is named, and what hangs above it),
-stack-tree/limit (300 pull requests, which is all gh lists: some may be missing; so for a file
-as for the forge), stack-tree/gh and stack-tree/forge (the forge could not be read, or printed
-what is not the JSON above),
+stack-tree/limit (300 pull requests, or 100 commits of one, which is all gh lists: some may be
+missing; so for a file as for the forge), stack-tree/gh and stack-tree/forge (the forge could
+not be read, or printed what is not the JSON above),
 stack-tree/usage (the command line, or no github remote).
+
+Each pull request links to its page on the forge: on a terminal its number is an OSC 8
+hyperlink, with --urls its address follows the title (for a pipe, which gets no escapes), and in
+--mermaid a click on its node opens it. The address comes from a
+remote's url, any spelling git takes: --forge URL, else https://github.com/OWNER/NAME when the
+repository is named (gh reads it there), else the `github` remote. The host names the forge's
+kind, which names the path to a request (PR_PATHS): /pull/N on GitHub, /-/merge_requests/N on
+GitLab, /pulls/N on Gitea, Forgejo and Codeberg; github.com, gitlab.com and codeberg.org, or a
+host whose first label is the kind, as gitlab.example.org, in any case. An ssh alias such as
+github.com-bot names one of those three; past them an alias cannot be told from a host, so a
+host without a dot over ssh, or whose last label is not shaped as a top-level domain's, gets no
+links, as does any other host.
 
 Exit 0: drawn (no open pull requests draws that), or the self-test passed; 1: the self-test
 failed; 2: refused.
@@ -46,7 +76,9 @@ failed; 2: refused.
 import argparse
 import json
 import os
+import random
 import re
+import select
 import shutil
 import signal
 import subprocess
@@ -58,8 +90,12 @@ from pathlib import Path
 from typing import NoReturn
 
 MAIN = "main"
+GH_HOST = "github.com"  # where gh reads from; links follow the remote, any forge
+PR_PATHS = {"github": "/pull/", "gitlab": "/-/merge_requests/", "gitea": "/pulls/"}
+PR_PATHS |= {"forgejo": "/pulls/", "codeberg": "/pulls/"}  # the path to a request, by kind
 ORPHAN = "(no open pull request on this branch: retarget or land first)"
 LIMIT = 300
+GH_COMMITS = 100  # what `gh pr view --json commits` lists at most
 FIELDS = {
     "number": int,
     "title": str,
@@ -68,8 +104,14 @@ FIELDS = {
     "isDraft": bool,
     "isCrossRepository": bool,
 }
+MERMAID_ESCAPES = str.maketrans(
+    {"#": "#35;", '"': "#quot;", "<": "#lt;", ">": "#gt;", "&": "#amp;", "`": "#96;"}
+)
+MERMAID_MAX = 50_000  # Mermaid's maxTextSize, which GitHub's renderer keeps from diagrams
+CUTS = (None, 120, 80, 50, 30, 15, 0)  # the title lengths --mermaid tries, longest first
 INPUT_REMEDY = f"feed it `gh pr list --state open --limit {LIMIT} --json {','.join(FIELDS)}`"
 FORGE_REMEDY = "check the gh version and the repository"
+COMMITS_REMEDY = INPUT_REMEDY[:-1] + ",commits`, per pull request as `gh pr view` has it"
 
 
 class RefusalError(Exception):
@@ -95,6 +137,7 @@ class Pr:
     base: str
     draft: bool
     cross: bool
+    commits: tuple[tuple[str, str], ...]  # (7-char oid, headline), as the forge lists them
 
 
 @dataclass(frozen=True)
@@ -106,7 +149,22 @@ class Forest:
 # --- the readers: data in, Pr out, nothing guessed -------------------------------------------
 
 
-def read_pr(raw: object, at: int) -> Pr:
+def read_commit(raw: object, at: int) -> tuple[str, str]:
+    if not (
+        isinstance(raw, dict)
+        and type(raw.get("oid")) is str
+        and re.fullmatch(r"[0-9a-f]{7,64}", raw["oid"])
+        and type(raw.get("messageHeadline")) is str
+    ):
+        raise refuse(
+            "stack-tree/input",
+            f"entry {at}: a commit lacks a hex oid or a messageHeadline",
+            COMMITS_REMEDY,
+        )
+    return raw["oid"][:7], raw["messageHeadline"]
+
+
+def read_pr(raw: object, at: int, with_commits: bool) -> Pr:
     if not isinstance(raw, dict):
         raise refuse("stack-tree/input", f"entry {at} is not an object", INPUT_REMEDY)
     for key, kind in FIELDS.items():
@@ -114,6 +172,16 @@ def read_pr(raw: object, at: int) -> Pr:
             raise refuse(
                 "stack-tree/input", f"entry {at}: {key} is not a {kind.__name__}", INPUT_REMEDY
             )
+    listed = raw.get("commits") if with_commits else ()
+    if type(listed) not in (list, tuple):
+        raise refuse("stack-tree/input", f"entry {at}: commits is not a list", COMMITS_REMEDY)
+    if len(listed) >= GH_COMMITS:
+        raise refuse(
+            "stack-tree/limit",
+            f"#{raw['number']} has {len(listed)} commits, as many as gh lists; some may be missing",
+            "run without --commits, or read that pull request's commits on the forge",
+        )
+    commits = tuple(read_commit(c, at) for c in listed)
     return Pr(
         raw["number"],
         raw["title"],
@@ -121,6 +189,7 @@ def read_pr(raw: object, at: int) -> Pr:
         raw["baseRefName"],
         raw["isDraft"],
         raw["isCrossRepository"],
+        commits,
     )
 
 
@@ -142,16 +211,16 @@ def load(text: str, rule: str = "stack-tree/input", remedy: str = INPUT_REMEDY) 
     return raw
 
 
-def read_prs(text: str) -> list[Pr]:
+def read_prs(text: str, with_commits: bool = False) -> list[Pr]:
     raw = load(text)
-    prs = [read_pr(r, i) for i, r in enumerate(raw)]
+    prs = [read_pr(r, i, with_commits) for i, r in enumerate(raw)]
     numbers = [p.number for p in prs]
     if len(set(numbers)) != len(numbers):
         raise refuse("stack-tree/input", "a pull request number appears twice", INPUT_REMEDY)
     return sorted(prs, key=lambda p: p.number)
 
 
-# --- the core: the tree, and its drawing -----------------------------------------------------
+# --- the core: the tree, and its two drawings ------------------------------------------------
 
 
 def numbers(ns: list[int]) -> str:
@@ -237,14 +306,21 @@ def root_label(base: str) -> str:
     return clean(base) + ("" if base == MAIN else " " + ORPHAN)
 
 
-def text_lines(prs: list[Pr], f: Forest) -> list[str]:
+def text_lines(prs: list[Pr], f: Forest, commits: bool, link: str | None, how: str) -> list[str]:
+    """The tree; with a `link`, each number is an OSC 8 hyperlink if `how` is "osc8", or the
+    title is followed by its address if it is "url"."""
     by = {p.number: p for p in prs}
     out: list[str] = []
 
     def draw(n: int, prefix: str, last: bool) -> None:
         p, sub, sk = by[n], prefix + ("   " if last else "│  "), f.kids.get(n, [])
         mark = " (draft)" if p.draft else ""
-        out.append(f"{prefix}{'└─ ' if last else '├─ '}#{n}{mark} {clean(p.title)}")
+        num = f"\x1b]8;;{link}{n}\x1b\\#{n}\x1b]8;;\x1b\\" if link and how == "osc8" else f"#{n}"
+        url = f" <{link}{n}>" if link and how == "url" else ""
+        out.append(f"{prefix}{'└─ ' if last else '├─ '}{num}{mark} {clean(p.title)}{url}")
+        if commits:
+            bar = f"{sub}{'│' if sk else ' '}  "
+            out.extend(f"{bar}{oid} {clean(h)}" for oid, h in p.commits)
         for i, c in enumerate(sk):
             draw(c, sub, i == len(sk) - 1)
 
@@ -255,11 +331,62 @@ def text_lines(prs: list[Pr], f: Forest) -> list[str]:
     return out
 
 
-def draw(prs: list[Pr]) -> list[str]:
+def js_len(text: str) -> int:
+    """The length JavaScript gives `text`, which Mermaid compares with MERMAID_MAX: UTF-16 units."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def mermaid_lines(prs: list[Pr], f: Forest, cut: int | None, link: str | None) -> list[str]:
+    """The diagram, unfenced: the trunk on the left, an edge from a branch to each pull request
+    based on it, so a stack reads left to right in the order it lands; titles cut to `cut`, and
+    a click on a node opens `link` and its number."""
+
+    def esc(text: str) -> str:
+        return text.translate(MERMAID_ESCAPES)
+
+    def title(p: Pr) -> str:
+        t = clean(p.title)
+        return t if cut is None or len(t) <= cut else t[:cut] + "…"
+
+    out = ["graph LR", "  classDef draft stroke-dasharray: 5 5"]
+    edges: list[str] = []
+    for k, base in enumerate(root_order(f.roots), 1):
+        out.append(f'  b{k}["{esc(root_label(base))}"]')
+        edges += [f"  b{k} --> p{n}" for n in f.roots[base]]
+    out += [f'  p{p.number}["#{p.number} {esc(title(p))}"]' for p in prs]
+    for parent, ns in sorted(f.kids.items()):
+        edges += [f"  p{parent} --> p{n}" for n in ns]
+    drafts = ",".join(f"p{p.number}" for p in prs if p.draft)
+    clicks = [f'  click p{p.number} href "{link}{p.number}"' for p in prs if link]
+    return [*out, *edges, *([f"  class {drafts} draft"] if drafts else []), *clicks]
+
+
+def mermaid_block(prs: list[Pr], f: Forest, link: str | None) -> list[str]:
+    """The fenced diagram with the longest titles that keep it within MERMAID_MAX, past which
+    Mermaid draws an error instead."""
+    for cut in CUTS:
+        if js_len("\n".join(lines := mermaid_lines(prs, f, cut, link))) <= MERMAID_MAX:
+            return ["```mermaid", *lines, "```"]
+    raise refuse(
+        "stack-tree/limit",
+        f"the Mermaid of {len(prs)} pull requests exceeds {MERMAID_MAX} characters untitled",
+        "draw them as text: run without --mermaid",
+    )
+
+
+def markdown_lines(block: list[str]) -> list[str]:
+    """The block GitHub draws, then its source in a fence of four backticks, which holds the
+    three of the block whole and is shown as code, with the copy button GitHub gives code. Its
+    own button on a drawn block copies the source without its fence."""
+    details = "<details><summary>Mermaid source, to copy</summary>"
+    return [*block, "", details, "", "````text", *block, "````", "", "</details>"]
+
+
+def draw(prs: list[Pr], mermaid: bool, commits: bool, link: str | None, how: str) -> list[str]:
     if not prs:
         return ["no open pull requests"]
     f = forest(prs)
-    return text_lines(prs, f)
+    return mermaid_block(prs, f, link) if mermaid else text_lines(prs, f, commits, link, how)
 
 
 # --- the edge: the forge, argv, the terminal -------------------------------------------------
@@ -288,11 +415,47 @@ def repo_of(url: str) -> str | None:
     return m.group(1) if m else None
 
 
+def forge_link(url: str) -> str | None:
+    """What a pull request's number is appended to, to address it: from a remote's url in any
+    spelling git takes (https, ssh:// or [user@]host:path, where github.com-<alias> and the like
+    are ssh aliases of github.com, gitlab.com and codeberg.org), on a host of a kind in PR_PATHS:
+    github.com, gitlab.com, codeberg.org, or one whose first label names its kind, as
+    gitlab.example.org, in any case. None for any other, and for an ssh host that may be an alias
+    of another: one without a dot, or whose last label is not shaped as a top-level domain's."""
+    m = re.fullmatch(
+        r"(?:(?P<scheme>https?)://(?:[^@/\s]+@)?(?P<web>[\w.-]+(?::\d+)?)/"
+        r"|ssh://(?:[^@/\s:]+@)?(?P<ssh>[\w.-]+)(?::\d+)?/|(?:[^@/\s:]+@)?(?P<scp>[\w.-]+):)"
+        r"(?P<path>[\w.-]+(?:/[\w.-]+)+)/?",
+        url.strip(),
+        re.ASCII,
+    )
+    if m is None:
+        return None
+    alias = r"(?i)^(github\.com|gitlab\.com|codeberg\.org)-[\w-]+$"
+    host = m["web"] or re.sub(alias, r"\1", m["ssh"] or m["scp"])
+    name = host.split(":")[0].lower()
+    if not re.fullmatch(r"[a-z]+|xn--[a-z0-9-]+", name.rsplit(".", 1)[-1]) or not (
+        m["web"] or "." in name
+    ):
+        return None
+    kind = {GH_HOST: "github", "gitlab.com": "gitlab"}.get(name, name.split(".")[0])
+    pr_path = PR_PATHS.get(kind)
+    path = m["path"].removesuffix(".git")
+    return pr_path and f"{m['scheme'] or 'https'}://{host}/{path}{pr_path}"
+
+
+def remote_url() -> str:
+    """The url of the `github` remote, the one the forge is read from; empty without one, or
+    without git: drawing needs python3 alone."""
+    try:
+        cmd = ["git", "remote", "get-url", "github"]
+        return subprocess.run(cmd, capture_output=True, text=True, check=False).stdout
+    except OSError:
+        return ""
+
+
 def default_repo() -> str:
-    url = subprocess.run(
-        ["git", "remote", "get-url", "github"], capture_output=True, text=True, check=False
-    ).stdout
-    if (name := repo_of(url)) is None:
+    if (name := repo_of(remote_url())) is None:
         raise refuse(
             "stack-tree/usage",
             "no `github` remote to take the repository from",
@@ -301,14 +464,14 @@ def default_repo() -> str:
     return name
 
 
-def fetch(repo: str | None) -> str:
+def fetch(repo: str | None, with_commits: bool) -> str:
     gh = shutil.which("gh")
     if gh is None:
         raise refuse("stack-tree/gh", "gh is not on PATH", "scripts/layer on github")
     user = os.environ.get("STACK_TREE_GH_USER", "psjg-claude")
     token = run([gh, "auth", "token", "--hostname", "github.com", "--user", user]).strip()
     env = {**os.environ, "GH_TOKEN": token}
-    at = ["-R", f"github.com/{repo or os.environ.get('STACK_TREE_REPO') or default_repo()}"]
+    at = ["-R", f"{GH_HOST}/{repo or default_repo()}"]
     listed = run(
         [
             gh,
@@ -325,6 +488,16 @@ def fetch(repo: str | None) -> str:
         env,
     )
     prs = load(listed, "stack-tree/forge", FORGE_REMEDY)
+    try:
+        for raw in prs if with_commits else ():
+            view = run([gh, "pr", "view", str(raw["number"]), *at, "--json", "commits"], env)
+            raw["commits"] = json.loads(view)["commits"]
+    except (ValueError, RecursionError, KeyError, TypeError) as e:
+        raise refuse(
+            "stack-tree/forge",
+            f"gh printed what is not a pull request ({e!r})",
+            FORGE_REMEDY,
+        ) from e
     return json.dumps(prs)
 
 
@@ -344,19 +517,30 @@ class Parser(argparse.ArgumentParser):
 
 def main(argv: list[str]) -> int:
     ap = Parser(prog="stack-tree", description="the open pull requests as a tree")
+    ap.add_argument("--commits", action="store_true", help="list each pull request's commits")
+    ap.add_argument("--mermaid", action="store_true", help="print a Mermaid block instead")
+    ap.add_argument("--markdown", action="store_true", help="--mermaid, and its source to copy")
     ap.add_argument("--json", metavar="FILE", help="read gh's JSON from FILE, or - for stdin")
     ap.add_argument("--repo", metavar="OWNER/NAME", help="the repository to ask the forge about")
+    ap.add_argument("--forge", metavar="URL", help="link to this remote's pull requests")
+    ap.add_argument("--urls", action="store_true", help="print each pull request's address")
     ap.add_argument("--self-test", action="store_true", help="prove the script on fixtures")
     try:
         a = ap.parse_args(argv)
         if a.self_test:
             return self_test()
-        text = read_source(a.json) if a.json else fetch(a.repo)
-        lines = draw(read_prs(text))
+        a.mermaid |= a.markdown
+        commits = a.commits and not a.mermaid
+        repo = a.repo or os.environ.get("STACK_TREE_REPO")
+        text = read_source(a.json) if a.json else fetch(repo, commits)
+        forge = a.forge or (f"https://{GH_HOST}/{repo}" if repo else remote_url())
+        how = "url" if a.urls else "osc8" if sys.stdout.isatty() else ""
+        prs = read_prs(text, commits)
+        lines = draw(prs, a.mermaid, commits, forge_link(forge), how)
     except RefusalError as e:
         print(f"stack-tree: {e}", file=sys.stderr)
         return 2
-    print("\n".join(lines))
+    print("\n".join(markdown_lines(lines) if a.markdown and prs else lines))
     return 0
 
 
@@ -371,15 +555,18 @@ def pr(n: int, title: str, head: str, base: str, **kw: object) -> dict:
         "baseRefName": base,
         "isDraft": kw.get("draft", False),
         "isCrossRepository": kw.get("cross", False),
+        "commits": [
+            {"oid": f"{n:03d}abcdef0123", "messageHeadline": h} for h in kw.get("commits", ())
+        ],
     }
 
 
 STACK = [
-    pr(179, "alpha", "a", "main"),
-    pr(195, "gates", "g", "main"),
+    pr(179, "alpha", "a", "main", commits=("feat: alpha",)),
+    pr(195, "gates", "g", "main", commits=("ci: gates", "docs: gates")),
     pr(182, "proof", "p", "g"),
     pr(190, "silence", "s", "g"),
-    pr(191, "stamp", "t", "s", draft=True),
+    pr(191, "stamp", "t", "s", draft=True, commits=("feat: stamp",)),
 ]
 STACK_TEXT = """main
 ├─ #179 alpha
@@ -387,6 +574,47 @@ STACK_TEXT = """main
    ├─ #182 proof
    └─ #190 silence
       └─ #191 (draft) stamp"""
+STACK_COMMITS = """main
+├─ #179 alpha
+│     179abcd feat: alpha
+└─ #195 gates
+   │  195abcd ci: gates
+   │  195abcd docs: gates
+   ├─ #182 proof
+   └─ #190 silence
+      └─ #191 (draft) stamp
+            191abcd feat: stamp"""
+STACK_MERMAID = """```mermaid
+graph LR
+  classDef draft stroke-dasharray: 5 5
+  b1["main"]
+  p179["#179 alpha"]
+  p182["#182 proof"]
+  p190["#190 silence"]
+  p191["#191 stamp"]
+  p195["#195 gates"]
+  b1 --> p179
+  b1 --> p195
+  p190 --> p191
+  p195 --> p182
+  p195 --> p190
+  class p191 draft
+```"""
+GH = "https://github.com/o/r/pull/"
+STACK_LINKED = (
+    STACK_MERMAID[:-3]
+    + "".join(f'  click p{n} href "{GH}{n}"\n' for n in (179, 182, 190, 191, 195))
+    + "```"
+)
+STACK_MARKDOWN = f"""{STACK_MERMAID}
+
+<details><summary>Mermaid source, to copy</summary>
+
+````text
+{STACK_MERMAID}
+````
+
+</details>"""
 FORK = [
     pr(1, "one", "topic", "main"),
     pr(2, "fork", "topic", "main", cross=True),
@@ -404,15 +632,39 @@ ORPHANED_TEXT = f"""main
 
 release {ORPHAN}
 └─ #7 late"""
+LAB = "https://gitlab.example.org/g/s/r/-/merge_requests/"
+ORPHANED_URLS = f"""main
+└─ #8 ok <{LAB}8>
+
+release {ORPHAN}
+└─ #7 late <{LAB}7>"""
 HOSTILE = [
-    pr(1, "\x1b[31mred", "a", "main"),
+    pr(1, "\x1b[31mred", "a", "main", commits=("x\ny",)),
     pr(2, "a\nb \u202eevil", "b", "main"),
     pr(3, 'q"uote <b>x</b> & ]]', "c", "main", draft=True),
+    pr(4, "`tick` %%;|", "d", "main"),
 ]
 HOSTILE_TEXT = """main
 ├─ #1 ?[31mred
+│     001abcd x?y
 ├─ #2 a?b ?evil
-└─ #3 (draft) q"uote <b>x</b> & ]]"""
+├─ #3 (draft) q"uote <b>x</b> & ]]
+└─ #4 `tick` %%;|"""
+HOSTILE_MERMAID = """```mermaid
+graph LR
+  classDef draft stroke-dasharray: 5 5
+  b1["main"]
+  p1["#1 ?[31mred"]
+  p2["#2 a?b ?evil"]
+  p3["#3 q#quot;uote #lt;b#gt;x#lt;/b#gt; #amp; ]]"]
+  p4["#4 #96;tick#96; %%;|"]
+  b1 --> p1
+  b1 --> p2
+  b1 --> p3
+  b1 --> p4
+  class p3 draft
+```"""
+NO_COMMITS = [{k: v for k, v in p.items() if k != "commits"} for p in STACK]
 CYCLE = [pr(1, "a", "a", "b"), pr(2, "b", "b", "a"), pr(3, "c", "c", "main")]
 CYCLE_ABOVE = [*CYCLE[:2], pr(4, "d", "d", "a")]
 FORWARD = [pr(1, "forward", "main", "release"), pr(2, "x", "x", "main")]
@@ -430,13 +682,65 @@ TWO_CYCLES = [
     pr(4, "d", "d", "e"),
 ]
 TWO_CYCLES += [pr(5, "e", "e", "c"), pr(6, "f", "f", "main"), pr(7, "g", "g", "g")]
+# what fuzz() builds titles and branch names of: Mermaid's syntax, entities, markup, and text
+# that is wide, astral, right-to-left, combining or invisible
+PIECES = (*"\"#;%|()[]{}<>&`\\:-~*_=!?'/@$^ \t", "\n%% x", "\\n", "e\u0301", "\u200d", "\U0001f333")
+PIECES += ("end", "graph LR", "click p1 href", "-->", "|x|", "#9829;", "&amp;", "<script>", "]]")
+PIECES += ('"]', "語", "שלום", ":::draft", "style p1 fill:red", "%%{init: {}}%%")
+# what Mermaid parses inside the fence: one of these, line by line
+MERMAID_LINE = re.compile(
+    r'graph LR|  (?:classDef draft stroke-dasharray: 5 5|[pb]\d+\["[^"]*"\]|[pb]\d+ --> p\d+'
+    r'|class p\d+(?:,p\d+)* draft|click p\d+ href "https?://[\w.:/-]+")'
+)
+
+
+def fuzz(seed: int, n: int = 40) -> list[dict]:
+    """n pull requests with titles and orphan bases drawn from PIECES, stacked at random."""
+    rnd = random.Random(seed)
+
+    def text() -> str:
+        return "".join(rnd.choice(PIECES) for _ in range(rnd.randint(1, 60)))[:256]
+
+    bases = [rnd.choice(["main", text(), *(f"h{j}" for j in range(i))]) for i in range(n)]
+    return [pr(i + 1, text(), f"h{i}", b, draft=rnd.random() < 0.3) for i, b in enumerate(bases)]
+
+
+# 299 pull requests in one chain, each title 256 quotes: 1536 characters once escaped
+BIG = [pr(i, '"' * 256, f"h{i}", f"h{i - 1}" if i else "main") for i in range(LIMIT - 1)]
 
 # (name, flags, input, exit, stdout, words the stderr must hold)
 CASES = [
     ("tree", [], STACK, 0, STACK_TEXT, ()),
+    ("commits", ["--commits"], STACK, 0, STACK_COMMITS, ()),
+    ("mermaid", ["--mermaid"], STACK, 0, STACK_MERMAID, ()),
+    (
+        "links: GitHub",
+        ["--mermaid", "--forge", "git@github.com-bot:o/r.git"],
+        STACK,
+        0,
+        STACK_LINKED,
+        (),
+    ),
+    (
+        "links: unknown host",
+        ["--mermaid", "--forge", "https://example.org/o/r"],
+        STACK,
+        0,
+        STACK_MERMAID,
+        (),
+    ),
+    (
+        "--urls",
+        ["--urls", "--forge", "ssh://git@gitlab.example.org:22/g/s/r"],
+        ORPHANED,
+        0,
+        ORPHANED_URLS,
+        (),
+    ),
     ("cross-repo head is no parent", [], FORK, 0, FORK_TEXT, ()),
     ("root off main is annotated", [], ORPHANED, 0, ORPHANED_TEXT, ()),
-    ("hostile titles, text", [], HOSTILE, 0, HOSTILE_TEXT, ()),
+    ("hostile titles, text", ["--commits"], HOSTILE, 0, HOSTILE_TEXT, ()),
+    ("hostile titles, mermaid", ["--mermaid"], HOSTILE, 0, HOSTILE_MERMAID, ()),
     ("cycle", [], CYCLE, 2, "", ("stack-tree/cycle", "#1 and #2", "remedy")),
     (
         "each cycle is named, one retarget per cycle",
@@ -456,23 +760,48 @@ CASES = [
     ),
     ("a head named main is no parent of main's pull requests", [], FORWARD, 0, FORWARD_TEXT, ()),
     ("ambiguous head", [], AMBIGUOUS, 2, "", ("stack-tree/ambiguous", "#1, #2 and #3", "remedy")),
+    ("markdown", ["--markdown"], STACK, 0, STACK_MARKDOWN, ()),
+    ("--mermaid ignores --commits", ["--mermaid", "--commits"], NO_COMMITS, 0, STACK_MERMAID, ()),
     ("empty", [], [], 0, "no open pull requests", ()),
     ("not a list", [], {}, 2, "", ("stack-tree/input", "remedy")),
     ("missing field", [], [{"number": 1}], 2, "", ("stack-tree/input", "title")),
+    (
+        "commits asked, none given",
+        ["--commits"],
+        NO_COMMITS,
+        2,
+        "",
+        ("stack-tree/input", "commits"),
+    ),
 ]
 
 
 def go(
-    *args: str, stdin: str | None = None, env: dict[str, str] | None = None
+    *args: str, stdin: str | None = None, env: dict[str, str] | None = None, cwd: Path | None = None
 ) -> subprocess.CompletedProcess[str]:
+    """The script as a process; outside a git repository unless `env` says otherwise, so no
+    remote of the checkout it runs from adds links."""
     return subprocess.run(
-        [sys.executable, __file__, *args],
+        [sys.executable, str(Path(__file__).resolve()), *args],
         input=stdin,
         capture_output=True,
         text=True,
         check=False,
-        env=env,
+        env=env or {**os.environ, "GIT_DIR": os.devnull},
+        cwd=cwd,
     )
+
+
+def tty(*args: str) -> str:
+    """What the script writes to a terminal. The terminal stays open here until it is read to
+    its end: macOS drops what is unread once the last writer closes it."""
+    lead, follow = os.openpty()
+    proc, out = subprocess.Popen([sys.executable, __file__, *args], stdout=follow), b""
+    while select.select([lead], [], [], 0.1)[0] or proc.poll() is None:
+        out += os.read(lead, 65536) if select.select([lead], [], [], 0)[0] else b""
+    os.close(follow)
+    os.close(lead)
+    return out.decode()
 
 
 def live(tmp: Path, listed: str, view: str, *flags: str) -> subprocess.CompletedProcess[str]:
@@ -485,7 +814,74 @@ def live(tmp: Path, listed: str, view: str, *flags: str) -> subprocess.Completed
     )
     gh.chmod(0o755)
     env = {**os.environ, "PATH": f"{gh.parent}:{os.environ['PATH']}", "L": listed, "V": view}
+    env["GIT_DIR"] = os.devnull
     return go("--repo", "o/r", *flags, env=env)
+
+
+def mermaid_ok(lines: list[str]) -> bool:
+    """The block is fenced, every line is one Mermaid parses, and it fits MERMAID_MAX."""
+    inner = lines[1:-1]
+    return (
+        lines[0] == "```mermaid"
+        and lines[-1] == "```"
+        and all(MERMAID_LINE.fullmatch(line) for line in inner)
+        and js_len("\n".join(inner)) <= MERMAID_MAX
+    )
+
+
+def mmdc(tmp: Path, blocks: list[str]) -> list[str]:
+    """Render every block with mermaid-cli, the parser GitHub's renderer runs: the names of
+    what failed. Without mmdc, or a browser for it, it says so on stderr and checks nothing; a
+    broken diagram it renders would make it a check that cannot fail, so that is a failure."""
+    tool = shutil.which("mmdc")
+    (tmp / "mmdc.json").write_text('{"securityLevel": "antiscript"}')
+    (tmp / "broken.md").write_text('```mermaid\ngraph LR\n  a["x"y"]\n```\n')
+    (tmp / "all.md").write_text("\n\n".join(blocks) + "\n")
+
+    def render(name: str) -> subprocess.CompletedProcess[str]:
+        args = [
+            "-q",
+            "-c",
+            str(tmp / "mmdc.json"),
+            "-i",
+            str(tmp / name),
+            "-o",
+            str(tmp / "out.md"),
+        ]
+        return subprocess.run([str(tool), *args], capture_output=True, text=True, check=False)
+
+    if tool is None or "Parse error" not in (probe := render("broken.md")).stderr:
+        why = "not on PATH" if tool is None else "cannot render (no browser?)"
+        print(
+            f"stack-tree self-test: SKIP Mermaid parse: mmdc {why}; remedy: nix shell"
+            " nixpkgs#mermaid-cli, with PUPPETEER_EXECUTABLE_PATH naming a Chrome",
+            file=sys.stderr,
+        )
+        return [] if tool is None or probe.returncode else ["mmdc renders a broken diagram"]
+    got = render("all.md")
+    svgs = "".join(f.read_text() for f in tmp.glob("out-*.svg"))
+    if got.returncode or "Maximum text size" in svgs:
+        print(f"FAIL mmdc: {got.stderr[:2000]}", file=sys.stderr)
+        return ["mmdc parses every block"]
+    print(f"stack-tree self-test: mmdc rendered {len(blocks)} blocks", file=sys.stderr)
+    return []
+
+
+def markdown_ok(text: str) -> list[str]:
+    """Parse --markdown's output as CommonMark, which GitHub's Markdown extends: it must be the
+    Mermaid fence, then the details around a text fence holding that fence whole. Without
+    markdown-it it says so on stderr and checks nothing."""
+    try:
+        from markdown_it import MarkdownIt  # noqa: PLC0415 - optional, so not at the top
+    except ImportError:
+        print("stack-tree self-test: SKIP CommonMark parse: no markdown-it", file=sys.stderr)
+        return []
+    block = text[: text.index("\n\n<details>")]
+    tokens = [t for t in MarkdownIt("commonmark").parse(text) if t.type != "paragraph_open"]
+    fences = [(t.info, t.content) for t in tokens if t.type == "fence"]
+    src = block.removeprefix("```mermaid\n").removesuffix("```")
+    html = [t.type for t in tokens].count("html_block")
+    return [] if fences == [("mermaid", src), ("text", block + "\n")] and html == 2 else ["md"]
 
 
 def refused(got: subprocess.CompletedProcess[str], name: str) -> bool:
@@ -493,20 +889,32 @@ def refused(got: subprocess.CompletedProcess[str], name: str) -> bool:
 
 
 def extra_cases(tmp: Path) -> list[str]:
-    """What the fixtures table cannot say: an unreadable input, a refusal built from hostile
-    text, a closed pipe, the remote's spellings. Returns the names that failed."""
+    """What the fixtures table cannot say: an unreadable input, the cap on the commits gh lists,
+    a refusal built from hostile text, a closed pipe, the remote's spellings. Returns the names
+    that failed."""
     (tmp / "latin1.json").write_bytes(b"[\xe9]")
+    (tmp / "many.json").write_text(
+        json.dumps([pr(1, "t", "t", "main", commits=("c",) * GH_COMMITS)])
+    )
     (tmp / "head.json").write_text(json.dumps(HOSTILE_HEAD))
     (tmp / "deep.json").write_text("[" * 10000 + "]" * 10000)
     (tmp / "full.json").write_text(json.dumps([pr(n, "t", f"b{n}", "main") for n in range(LIMIT)]))
-    one = json.dumps([pr(1, "t", "t", "main")])
+    bad_oid = pr(1, "t", "t", "main", commits=("c",))
+    bad_oid["commits"][0]["oid"] = "\x1b[31mX"
+    (tmp / "oid.json").write_text(json.dumps([bad_oid]))
+    (tmp / "entity.json").write_text(json.dumps([pr(1, "#9829;", "a", "main")]))
+    one = json.dumps([{k: v for k, v in pr(1, "t", "t", "main").items() if k != "commits"}])
+    commit = '{"commits":[{"oid":"abcdef0123","messageHeadline":"h"}]}'
     nojson = live(tmp, "NOT JSON", "")
-    gone, bad, head, deep, full, usage = (
+    gone, bad, many, head, deep, full, oid, entity, usage = (
         go("--json", str(tmp / "gone.json")),
         go("--json", str(tmp / "latin1.json")),
+        go("--json", str(tmp / "many.json"), "--commits"),
         go("--json", str(tmp / "head.json")),
         go("--json", str(tmp / "deep.json")),
         go("--json", str(tmp / "full.json")),
+        go("--json", str(tmp / "oid.json"), "--commits"),
+        go("--json", str(tmp / "entity.json"), "--mermaid"),
         go("--bad\x1b[31m"),
     )
     (tmp / "empty.json").write_text("[]")
@@ -530,24 +938,80 @@ def extra_cases(tmp: Path) -> list[str]:
         "https://github.com.evil.net/o/r": None,
         "git@gitlab.com:o/r": None,
     }
+    blocks = []
+    for name, data in [
+        ("hostile", HOSTILE),
+        ("big", BIG),
+        *((f"fuzz{k}", fuzz(k)) for k in range(8)),
+    ]:
+        (tmp / f"{name}.json").write_text(json.dumps(data))
+        got = go(
+            "--json", str(tmp / f"{name}.json"), "--mermaid", "--forge", "https://github.com/o/r"
+        )
+        blocks.append(got.stdout.rstrip("\n"))
+    repo = tmp / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "github", LAB[:-18]], check=True)
+    (tmp / "orphaned.json").write_text(json.dumps(ORPHANED))
+    (tmp / "stack.json").write_text(json.dumps(STACK))
+    remote = go("--json", str(tmp / "orphaned.json"), "--urls", env=dict(os.environ), cwd=repo)
+    remotes = {
+        "https://github.com/o/r.git": GH,
+        "git@github.com-bot:o/r": GH,
+        "http://forgejo.lan:3000/o/r/": "http://forgejo.lan:3000/o/r/pulls/",
+        "git@codeberg.org:o/r.git": "https://codeberg.org/o/r/pulls/",
+        "ssh://git@gitlab.example.org:2222/g/s/r.git": LAB,
+        "https://gitea.example.net/o/r": "https://gitea.example.net/o/r/pulls/",
+        "https://git.example.org/o/r": None,
+        "github.com:o/r.git": GH,
+        "https://GitHub.com/o/r": "https://GitHub.com/o/r/pull/",
+        "git@GitHub.com-bot:o/r": "https://GitHub.com/o/r/pull/",
+        "ssh://git@gitlab.example-host/g/r.git": None,
+        "git@gitlab.example.org-bot:g/r": None,
+        "srv/git/r.git": None,
+        "git@gitlab:o/r.git": None,
+        "rad://zKCzLFSuTB5BCmisbSBu6SsSokJc": None,
+        "/srv/git/r.git": None,
+        'https://github.com/o/r"x': None,
+    }
     checks = {
-        "stdin": go("--json", "-", stdin="[]").stdout == "no open pull requests\n",
+        "remotes to links": [forge_link(u) for u in remotes] == list(remotes.values()),
+        "links on a terminal": f"\x1b]8;;{GH}179\x1b\\#179\x1b]8;;\x1b\\"
+        in tty("--json", str(tmp / "stack.json"), "--forge", "https://github.com/o/r"),
+        "links from the github remote": remote.stdout.rstrip("\n") == ORPHANED_URLS,
+        "fuzz: every block is lines Mermaid parses, within MERMAID_MAX": all(
+            mermaid_ok(b.splitlines()) for b in blocks
+        ),
+        "big: titles cut to fit": "…" in blocks[1]
+        and max(map(len, blocks[1].splitlines())) < 6 * 256,  # an uncut title escapes to that
+        "stdin, with no git on PATH": go(
+            "--json", "-", stdin="[]", env={**os.environ, "GIT_DIR": os.devnull, "PATH": ""}
+        ).stdout
+        == "no open pull requests\n",
         "missing file": refused(gone, "gone.json"),
         "non-UTF-8 file": refused(bad, "latin1.json"),
+        "100 commits": many.returncode == 2 and "stack-tree/limit" in many.stderr,
         "300 pull requests in a file": full.returncode == 2 and "stack-tree/limit" in full.stderr,
         "JSON nested too deep": refused(deep, "remedy") and "Traceback" not in deep.stderr,
+        "oid with an escape": refused(oid, "hex oid")
+        and "gh pr view" in oid.stderr
+        and "\x1b" not in oid.stderr + oid.stdout,
+        "# in a Mermaid title": 'p1["#1 #35;9829;"]' in entity.stdout,
         "bad option": usage.returncode == 2
         and "stack-tree/usage" in usage.stderr
         and "\x1b" not in usage.stderr,
         "live: gh lists no JSON": nojson.returncode == 2 and "stack-tree/forge" in nojson.stderr,
-        "live: drawn": "#1 t" in live(tmp, one, "").stdout,
+        "live: gh views no commits": "stack-tree/forge" in live(tmp, one, "{}", "--commits").stderr,
+        "live: drawn": "abcdef0 h" in live(tmp, one, commit, "--commits").stdout,
         "hostile text in a refusal": len(head.stderr.splitlines()) == 2
         and "'x?y\\nz?'" in head.stderr
         and "\x1b" not in head.stderr,
         "closed pipe": closed.returncode == -signal.SIGPIPE and closed_err == "",
         "remote urls": [repo_of(u) for u in urls] == list(urls.values()),
     }
-    return [name for name, ok in checks.items() if not ok]
+    md = go("--json", str(tmp / "fuzz0.json"), "--markdown", "--forge", "https://github.com/o/r")
+    failed = [name for name, ok in checks.items() if not ok] + mmdc(tmp, blocks)
+    return failed + markdown_ok(md.stdout)
 
 
 def self_test() -> int:
