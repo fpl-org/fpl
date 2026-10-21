@@ -26,7 +26,6 @@ scripts/review-serve -- not yet converted: unit S6 (fpl:review:serve)
 scripts/series -- not yet converted: unit S3 (fpl:series:stamp)
 scripts/setup -- not yet converted: unit S4 (fpl:worktree:setup)
 scripts/stack-tree -- landed 2026-10-21, after the plan; unit S2 (fpl:pr) takes it as a sub-skill
-scripts/sweep -- not yet converted: unit S4 (fpl:worktree:sweep)
 scripts/task -- not yet converted: unit S5 (fpl:task:load)
 scripts/whoami-check -- not yet converted: unit S2 (fpl:pr:whoami)
 scripts/wip-count -- the brake's count, run by .github/workflows/brake.yml; owner-only, no skill planned

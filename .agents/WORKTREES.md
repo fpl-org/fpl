@@ -68,10 +68,9 @@ git worktree prune
 `scripts/new-worktree` is the vendor-neutral entry point; `.claude/commands/new-worktree.md`
 is a thin wrapper over it.
 
-`scripts/sweep` tables every worktree and unattached branch (merged, commits `main` lacks by
-patch, dirty files, pull request, owner) with a proposal: keep, review or archive. A dry run is
-the default; `SWEEP_OWNER_YES=1 scripts/sweep --apply`, run from the main checkout, tags what it
-removes and saves dirty files under `harness/sweep-archive/` there.
+Nothing removes a worktree or a branch without the owner's yes: an agent runs the sweep's
+dry run and reports, and a removed worktree's dirty files are saved as patches under
+`harness/sweep-archive/` in the main checkout, git-ignored, before it goes.
 
 ## The two sides
 

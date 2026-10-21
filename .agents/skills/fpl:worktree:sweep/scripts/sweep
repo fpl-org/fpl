@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# scripts/sweep — an inventory of the worktrees and local branches, and the one clean-up it
+# sweep (skill fpl:worktree:sweep) — an inventory of the worktrees and local branches, and the one clean-up it
 # proposes: remove what is finished, after saving what it held.
 #
-#   scripts/sweep [--dry-run]            the table, nothing changed (the default)
-#   scripts/sweep --apply [name ...]     remove the rows proposed "archive" (all, or those named)
-#   scripts/sweep --self-test            scripts/sweep-self-test
+#   sweep [--dry-run]            the table, nothing changed (the default)
+#   sweep --apply [name ...]     remove the rows proposed "archive" (all, or those named)
+#   sweep --self-test            sweep-self-test, beside it
 #
 # One tab-separated row per linked worktree (the root checkout is where this runs, not a row)
 # and per local branch no worktree holds, aligned on a terminal. '#' lines are the footer.
@@ -82,7 +82,7 @@ die() {
 
 mode=dry names=""
 case "${1:-}" in
-"" | --dry-run) [ $# -le 1 ] || die "usage: scripts/sweep [--dry-run | --apply [name ...]]" ;;
+"" | --dry-run) [ $# -le 1 ] || die "usage: sweep [--dry-run | --apply [name ...]]" ;;
 --apply)
 	mode=apply
 	shift
@@ -93,12 +93,12 @@ case "${1:-}" in
 	done
 	;;
 --self-test) exec "$here/sweep-self-test" ;;
-*) die "usage: scripts/sweep [--dry-run | --apply [name ...]]" ;;
+*) die "usage: sweep [--dry-run | --apply [name ...]]" ;;
 esac
 
 if [ "$mode" = apply ] && [ "${SWEEP_OWNER_YES:-}" != 1 ]; then
 	printf 'sweep: --apply removes worktrees and branches; it runs only when the owner says yes.\n' >&2
-	printf 'sweep: nothing was changed. Look at the table (scripts/sweep), then SWEEP_OWNER_YES=1 scripts/sweep --apply\n' >&2
+	printf 'sweep: nothing was changed. Look at the table (sweep), then SWEEP_OWNER_YES=1 sweep --apply\n' >&2
 	exit 2
 fi
 
@@ -119,7 +119,7 @@ self="$(git rev-parse --show-toplevel)"
 if [ "$mode" = apply ] &&
 	[ "$(git rev-parse --absolute-git-dir)" != "$(git rev-parse --path-format=absolute --git-common-dir)" ]; then
 	die "[apply/root] --apply runs only in the main checkout ($root), not in a linked worktree;" \
-		"nothing was changed. Remedy: run scripts/sweep --apply from the main checkout"
+		"nothing was changed. Remedy: run sweep --apply from the main checkout"
 fi
 tab="$(printf '\t')"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/sweep.XXXXXX")"
