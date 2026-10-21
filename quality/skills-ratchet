@@ -1,0 +1,34 @@
+# Scripts the prose names and no skill names yet: <path> -- <reason>. Judged by
+# .agents/skills/fpl:quality:skills/scripts/skills-cover; a line for a script a skill names,
+# or that is gone, is refused, so this list only shrinks. The units are .agents/tasks/redo.tsv.
+scripts/acommit -- not yet converted: unit S3 (fpl:commit:acommit)
+scripts/agent-identity -- not yet converted: unit S3 (fpl:commit:identity)
+scripts/boundary -- not yet converted: unit S3 (fpl:commit:boundary)
+scripts/branch-lint -- not yet converted: unit S3 (fpl:commit:branch)
+scripts/commit-lint -- not yet converted: unit S3 (fpl:commit:lint)
+scripts/crap -- not yet converted: unit S5 (fpl:quality:crap)
+scripts/diagrams -- not yet converted: unit S5 (fpl:quality:diagrams)
+scripts/escapes -- not yet converted: unit S5 (fpl:quality:escapes)
+scripts/export-review -- not yet converted: unit S6 (fpl:review:export)
+scripts/forward-only -- a check of .githooks/pre-push and the forge, never run by hand; no skill planned
+scripts/gates -- not yet converted: unit S5 (fpl:quality:gates)
+scripts/import-review -- not yet converted: unit S6 (fpl:review:import)
+scripts/land -- not yet converted: unit S2 (fpl:land:land)
+scripts/layer -- not yet converted: unit S4 (fpl:worktree:layer)
+scripts/leak-check -- not yet converted: unit S4 (fpl:leak)
+scripts/mutants -- not yet converted: unit S5 (fpl:quality:mutants)
+scripts/new-worktree -- not yet converted: unit S4 (fpl:worktree:new)
+scripts/pr -- not yet converted: unit S2 (fpl:pr:open)
+scripts/present-check -- not yet converted: unit S3 (fpl:series:present-check)
+scripts/props -- not yet converted: unit S5 (fpl:quality:props)
+scripts/rad-cob-dagtaak -- not yet converted: unit S5 (fpl:task:load), internal to task
+scripts/restack -- not yet converted: unit S3 (fpl:series:restack)
+scripts/review -- not yet converted: unit S6 (fpl:review:page)
+scripts/review-serve -- not yet converted: unit S6 (fpl:review:serve)
+scripts/series -- not yet converted: unit S3 (fpl:series:stamp)
+scripts/setup -- not yet converted: unit S4 (fpl:worktree:setup)
+scripts/stack-tree -- landed 2026-10-21, after the plan; unit S2 (fpl:pr) takes it as a sub-skill
+scripts/sweep -- not yet converted: unit S4 (fpl:worktree:sweep)
+scripts/task -- not yet converted: unit S5 (fpl:task:load)
+scripts/whoami-check -- not yet converted: unit S2 (fpl:pr:whoami)
+scripts/wip-count -- the brake's count, run by .github/workflows/brake.yml; owner-only, no skill planned

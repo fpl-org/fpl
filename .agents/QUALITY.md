@@ -262,11 +262,11 @@ Three tools are in neither set: `scripts/export-review`, `import-review` and `re
 have a `--self-test` that needs a Radicle home and declare no gates line, and each carries a
 `# noslop: skip` marker that keeps it from ruff. A green `make gates` says nothing about them.
 
-## Skills cover the scripts (planned)
+## Skills cover the scripts
 
 A procedure that lives in prose and not in a skill is one no harness loads on its own, and the
-prose grew that way: every script got a paragraph. The gate `skills-cover`, planned as unit S1b
-(`.agents/tasks/redo.tsv`) under `.agents/skills/fpl:quality:skills/scripts/`, refuses a script
+prose grew that way: every script got a paragraph. The gate `skills-cover`, the skill
+`fpl:quality:skills` under `.agents/skills/fpl:quality:skills/scripts/`, refuses a script
 under `scripts/` or `.agents/skills/*/scripts/` that prose names and no `SKILL.md` names
 (`SKILLS-UNCOVERED`), unless `quality/skills-ratchet` lists it with a reason; a ratchet line
 without a reason, or for a script now covered or gone, is refused too (`SKILLS-RATCHET-REASON`,
@@ -277,4 +277,7 @@ equal to its directory and of the form `fpl:<module>[:<skill>[:<sub>]]` (`SKILLS
 once `scripts/present` generates its own flow, the Mermaid block in `fpl:present/SKILL.md`
 equal to what the script prints (`SKILLS-GRAPH`). It scans `AGENTS.md`, `.agents/*.md`,
 `.claude/agents/*.md` and `.claude/commands/*.md`; `make gates` finds its self-test through
-`scripts/gates-list` once that reads the skills' `scripts/` too.
+`scripts/gates-list`, which reads the skills' `scripts/` as it reads `scripts/`. The self-test
+replays the gate over the open pull requests' tips, with this tree's skills and ratchet laid
+over each, and prints what each must add once it lands on the gate. The ratchet is generated
+(`skills-cover --uncovered`); the reasons are written by hand, never by the tool.
