@@ -15,8 +15,9 @@
 # And four things to do to a pull request that is open, by its number:
 #
 #   scripts/pr --update-body N FILE   replace its body with the file
+#   scripts/pr --quiet N              say whether every bot is quiet on its head; reads only
 #   scripts/pr --ready N              take it out of draft, once the bots are quiet
-#   scripts/pr --reviewer N LOGIN     ask LOGIN to review it
+#   scripts/pr --reviewer N LOGIN     ask LOGIN to review it, once the bots are quiet
 #
 # The body, a file or generated, and a new body go through the leak gate first. --ready
 # looks at the head commit: it waits, up to FPL_PR_WAIT seconds (default 900, polling every
@@ -24,6 +25,29 @@
 # requested and unanswered, and otherwise stops and names what is still pending. A bot
 # that has not yet started a check is not pending to the forge: run it after a push has
 # had a minute to start its checks. No labels are set or read.
+#
+# Quiet on the head H is measured, not assumed from silence, and --quiet and --reviewer judge
+# it by every rule below; --ready by all but pr/codex, as Codex reviews no draft
+# (codex-review.yml). Each rule that fails prints its name, what it saw and the remedy, and
+# nothing is asked or marked:
+#
+#   pr/threads    no review thread is unresolved, outdated ones included, whoever opened it:
+#                 a bot or a person, the maintainer too. The message names who opened each.
+#   pr/codex      Codex's own state comment (codex-review-state:v1, which it edits in place)
+#                 says its review of H completed, with no unresolved finding flagged or none
+#                 of its threads open (the threads decide). Every other state refuses, and the
+#                 message names it from what followed the last "@codex review": its usage
+#                 limit, an ask from an account without Codex, a 👀 and no review, a review
+#                 running since a time, or no answer yet. The verdict rests on the state's
+#                 fields; a wrong reading of that prose changes the message, never the verdict.
+#   pr/coderabbit the CodeRabbit commit status on H is not pending (a skipped review is done).
+#   pr/claude     no check run on H whose name starts with "claude" is still running.
+#   pr/reviewer   --reviewer asks nobody to read a draft: --ready first.
+#
+# --reviewer and --quiet judge once. --ready waits, under FPL_PR_WAIT, on what time alone can
+# clear (a review running) and refuses at once on the rest. Right before its mutation each
+# reads the pull request and judges again: a push or a review request since (pr/moved), or a
+# new thread, refuses. One round trip remains: GitHub's mutations take no expected state.
 #
 # A call to the forge that gets no answer ends in an error, not a hang: each call may wait
 # FPL_PR_TIMEOUT seconds (default 30) for the forge to send, and during --ready no longer
@@ -65,7 +89,8 @@ die() {
 }
 
 usage="usage: scripts/pr [-n] [--draft] [-t <title>] [-b <text>|--body-file <file>] [-B <parent>] [<branch>]
-       scripts/pr --update-body <number> <file> | --ready <number> | --reviewer <number> <login>"
+       scripts/pr --update-body <number> <file> | --quiet <number> | --ready <number>
+       scripts/pr --reviewer <number> <login>"
 base="" title="" body="" bodyfile="" dry=0 draft=0 mode=create num="" arg=""
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -77,9 +102,9 @@ while [ $# -gt 0 ]; do
 		[ $# -ge 3 ] || die "$1 needs two values; $usage"
 		mode="${1#--}" num="$2" arg="$3" && shift 3
 		;;
-	--ready)
+	--ready | --quiet)
 		[ $# -ge 2 ] || die "$1 needs a number; $usage"
-		mode=ready num="$2" && shift 2
+		mode="${1#--}" num="$2" && shift 2
 		;;
 	-t | -b | -B)
 		[ $# -ge 2 ] || die "$1 needs a value; $usage"
@@ -184,7 +209,7 @@ esac
 # The forge side, one python program for every call: pyapi <command> <argument>...
 # It first checks that the token is the machine account's, whichever command follows.
 read -r -d '' pysrc <<'PY' || true
-import json, os, socket, sys, time, urllib.error, urllib.request
+import json, os, re, socket, sys, time, urllib.error, urllib.request
 
 slug, login, token = os.environ["FPL_SLUG"], os.environ["FPL_LOGIN"], os.environ["FPL_TOKEN"]
 root = os.environ.get("FPL_API_URL", "https://api.github.com")
@@ -210,7 +235,9 @@ def bound():
     return min(cap, max(deadline - time.monotonic(), 1.0))
 
 
-def api(path, payload=None, method=None, refused=""):
+def api(path, payload=None, method=None, refused="", absent=None):
+    """One call to the forge; the answer as JSON. `refused` is added to a 403: the permission
+    the token lacks. `absent`, when given, is the answer to a 404 instead of a stop."""
     request = urllib.request.Request(
         root + path,
         data=None if payload is None else json.dumps(payload).encode(),
@@ -227,6 +254,8 @@ def api(path, payload=None, method=None, refused=""):
         with urllib.request.urlopen(request, timeout=seconds) as response:
             return json.load(response)
     except urllib.error.HTTPError as error:
+        if error.code == 404 and absent is not None:
+            return absent
         detail = json.loads(error.read() or b"{}")
         remedy = f"; {refused}" if refused and error.code == 403 else ""
         die(f"{path}: {error.code} {detail.get('message', error.reason)}{remedy}")
@@ -251,6 +280,178 @@ def pages(path, key, refused=""):
         if not got[key] or (len(items) >= total if total is not None else len(got[key]) < 100):
             return items
         page += 1
+
+
+def listing(path):
+    """Every item of a list the forge serves bare, with no total_count (reviews, comments,
+    reactions): page after page until one comes back short."""
+    items, page, got = [], 1, [None] * 100
+    while len(got) == 100:
+        got = api(f"{path}?per_page=100&page={page}")
+        items, page = items + got, page + 1
+    return items
+
+
+THREADS = """query($owner: String!, $name: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $name) { pullRequest(number: $number) {
+    reviewThreads(first: 100, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      nodes { id isResolved isOutdated path line comments(first: 100) { nodes {
+        databaseId url body author { __typename login } originalCommit { oid } } } } } } } }"""
+
+
+def threads(number):
+    """Every review thread of the pull request, over GraphQL (REST does not say whether one is
+    resolved), page after page. An answer that is no page fails pr/threads closed."""
+    owner, name = slug.split("/", 1)
+    found, after = [], None
+    while True:
+        variables = {"owner": owner, "name": name, "number": int(number), "after": after}
+        got = api("/graphql", {"query": THREADS, "variables": variables})
+        try:
+            page = got["data"]["repository"]["pullRequest"]["reviewThreads"]
+            found += page["nodes"]
+            more, after = page["pageInfo"]["hasNextPage"], page["pageInfo"]["endCursor"]
+        except (KeyError, TypeError):
+            die(f"pr/threads: the forge's answer is not a page of review threads of #{number}:"
+                f" {json.dumps(got)[:200]}; run this again, or read the threads on the forge")
+        if not more:
+            return found
+
+
+CODEX = "chatgpt-codex-connector"  # GraphQL's spelling of the login; REST adds [bot]
+STATE = re.compile(r"<!-- codex-review-state:v1 (\{.*?\}) -->", re.S)
+SINCE = re.compile(r'since <relative-time datetime="([^"]+)"')
+
+
+def who(user):
+    """The login of a REST user or a GraphQL author, without the [bot] REST gives an App."""
+    return ((user or {}).get("login") or "").removesuffix("[bot]")
+
+
+def first(thread):
+    nodes = thread["comments"]["nodes"]
+    return nodes[0] if nodes else {}
+
+
+def where(thread):
+    """A thread, for a human: the url of its first comment, else its path and line."""
+    return first(thread).get("url") or f"{thread['path']}:{thread['line']}"
+
+
+def seen(number):
+    """What the pull request holds: its review threads, its comments, and Codex's among them."""
+    found = threads(number)
+    said = listing(f"/repos/{slug}/issues/{number}/comments")
+    mine = [c for c in said if who(c["user"]) == CODEX]
+    return found, said, mine
+
+
+def judge_threads(found):
+    """pr/threads, as the header has it."""
+    loose = [t for t in found if not t["isResolved"]]
+    if not loose:
+        return []
+    what = f"{len(loose)} of {len(found)} review threads unresolved, outdated ones included"
+    named = [f"{where(t)} (by {who(first(t).get('author')) or 'nobody known'})" for t in loose]
+    fix = "fix each and push, or answer it and resolve it"
+    return [("pr/threads", False, f"{what}: {' '.join(named)}", fix)]
+
+
+def silence(said, mine, short, rerun):
+    """pr/codex where Codex has no finished or running review of the head: which silence it
+    is, read from what followed the last "@codex review". Only the message depends on it."""
+    asks = [c for c in said if c["body"].strip() == "@codex review"]
+    ask = asks[-1] if asks else None
+    after = [c["body"] for c in mine if ask and c["created_at"] >= ask["created_at"]]
+    after = [b for b in after if not STATE.search(b)]
+    wait = f"wait and run this again; if no review comes, {rerun}"
+    if any("usage limits" in b for b in after):
+        return False, "Codex answered the last ask with its usage limit", f"once it resets, {rerun}"
+    if any("create a Codex account" in b for b in after):
+        what = "Codex refused the last ask as an ask from an account without Codex"
+        return False, what, f"{rerun}; an ask from the machine account is refused"
+    eyes = listing(f"/repos/{slug}/issues/comments/{ask['id']}/reactions") if ask else []
+    if any(who(r["user"]) == CODEX and r["content"] == "eyes" for r in eyes):
+        return True, f"Codex took the last ask (eyes) and has posted no review of {short}", wait
+    if ask:
+        return True, f"Codex was asked at {ask['created_at']} and has not reviewed {short}", wait
+    what = f"Codex has not been asked to review {short}"
+    return True, what, f"codex-review.yml asks on each push; {rerun}"
+
+
+def judge_codex(sha, found, said, mine):
+    """pr/codex, from Codex's state comment: one comment it edits in place, the newest edit."""
+    short = sha[:7]
+    rerun = f"re-run the codex-review job of {short}, which asks as the owner"
+    states = [c for c in mine if STATE.search(c["body"])]
+    latest = max(states, key=lambda c: c.get("updated_at") or "") if states else None
+    state = json.loads(STATE.search(latest["body"]).group(1)) if latest else {}
+    state = state.get("code_review") or {}
+    status = state.get("status") if state.get("commit_sha") == sha else None
+    if status == "completed":
+        mine = [t for t in found if not t["isResolved"] and who(first(t).get("author")) == CODEX]
+        if state.get("has_unresolved_findings") and mine:
+            what = f"Codex finished {short} with findings unresolved"
+            return [("pr/codex", False, what, "see pr/threads")]
+        return []
+    if status == "running":
+        since = SINCE.search(latest["body"])
+        what = f"Codex is reviewing {short}, running since {since and since.group(1)}"
+        stalled = f"wait and run this again; a review running for an hour has stalled: {rerun}"
+        return [("pr/codex", True, what, stalled)]
+    wait, what, remedy = silence(said, mine, short, rerun)
+    if status:  # a review of the head that neither runs nor completed
+        wait, what = False, f"{what} (its review of {short} is {status})"
+    return [("pr/codex", wait, what, remedy)]
+
+
+def judge_others(sha):
+    """pr/coderabbit and pr/claude: the reviews that show as a status or a check run."""
+    out, short = [], sha[:7]
+    for s in pages(f"/repos/{slug}/commits/{sha}/status", "statuses"):
+        if s["context"] == "CodeRabbit" and s["state"] == "pending":
+            what = f"CodeRabbit is reviewing {short} ({s.get('description')})"
+            out.append(("pr/coderabbit", True, what, "wait and run this again"))
+    for r in pages(f"/repos/{slug}/commits/{sha}/check-runs", "check_runs"):
+        if r["name"].startswith("claude") and r["status"] != "completed":
+            what = f"{r['name']} is {r['status']} on {short}"
+            out.append(("pr/claude", True, what, "wait and run this again"))
+    return out
+
+
+def quiet(number, pull, bots=None, codex=True):
+    """The refusals of the header's rules on the head, pr/codex only where `codex`: a list of
+    (rule, wait, what, remedy), empty when quiet; `wait` where time alone may clear it."""
+    sha = pull["head"]["sha"]
+    found, said, mine = bots or seen(number)
+    codex = judge_codex(sha, found, said, mine) if codex else []
+    return judge_threads(found) + codex + judge_others(sha)
+
+
+def again(number, pull, codex=True):
+    """The judgment once more, right before a mutation: the pull request read again, unchanged,
+    and its bots judged again, so a push, a request or a thread since `pull` was judged refuses."""
+    latest = api(f"/repos/{slug}/pulls/{number}")
+    if view(latest) != view(pull):
+        moved = f"{pull['head']['sha'][:7]} to {latest['head']['sha'][:7]}"
+        what = f"the head or the review requests changed while it was read ({moved})"
+        return [("pr/moved", True, what, "run this again")]
+    return quiet(number, latest, codex=codex)
+
+
+def failed(got, name, key):
+    """Why `got` is no answer of mutation `name` holding `key` (errors, {}, data null), or None."""
+    if got.get("errors"):
+        return got["errors"][0].get("message")
+    if not ((got.get("data") or {}).get(name) or {}).get(key):
+        return f"the forge's answer is not the mutation's: {json.dumps(got)[:200]}"
+    return None
+
+
+def told(refusals):
+    """The refusals, one line each, for a human: the rule, what it saw, the remedy."""
+    return "\n".join(f"pr: {rule}: {what}; {remedy}" for rule, _, what, remedy in refusals)
 
 
 def view(pull):
@@ -289,7 +490,20 @@ elif command == "create":
 elif command == "update-body":
     api(f"/repos/{slug}/pulls/{args[0]}", {"body": open(args[1]).read()}, "PATCH")
     print(f"pr: body of #{args[0]} replaced", file=sys.stderr)
+elif command == "quiet":
+    pull = api(f"/repos/{slug}/pulls/{args[0]}")
+    refusals = quiet(args[0], pull)
+    if refusals:
+        die(f"#{args[0]} at {pull['head']['sha'][:7]} is not quiet:\n{told(refusals)}")
+    print(f"pr: every bot is quiet at {pull['head']['sha'][:7]} on #{args[0]}", file=sys.stderr)
 elif command == "reviewer":
+    pull = api(f"/repos/{slug}/pulls/{args[0]}")
+    if pull["draft"]:
+        die(f"pr/reviewer: #{args[0]} is a draft, so nobody was asked; scripts/pr --ready it first")
+    refusals = quiet(args[0], pull) or again(args[0], pull)
+    if refusals:
+        sha = pull["head"]["sha"][:7]
+        die(f"#{args[0]} at {sha} is not quiet, so nobody was asked:\n{told(refusals)}")
     api(f"/repos/{slug}/pulls/{args[0]}/requested_reviewers", {"reviewers": [args[1]]})
     print(f"pr: asked {args[1]} to review #{args[0]}", file=sys.stderr)
 elif command == "ready":
@@ -308,27 +522,21 @@ elif command == "ready":
             print(f"pr: #{number} is ready already", file=sys.stderr)
             raise SystemExit(0)
         sha = pull["head"]["sha"]
-        pending = [f"review requested from {u['login']}" for u in pull["requested_reviewers"]]
+        refusals = quiet(number, pull, codex=False)
+        work = [r for r in refusals if not r[1]]
+        if work:  # waiting would not clear these
+            die(f"#{number} at {sha[:7]} is not quiet, so it stays a draft:\n{told(work)}")
+        pending = [f"{rule}: {what}" for rule, _, what, _ in refusals]
+        pending += [f"review requested from {u['login']}" for u in pull["requested_reviewers"]]
         pending += [f"review requested from team {t['slug']}" for t in pull["requested_teams"]]
         runs = pages(f"/repos/{slug}/commits/{sha}/check-runs", "check_runs", unread)
         pending += [f"check {r['name']} is {r['status']}" for r in runs if r["status"] != "completed"]
         statuses = pages(f"/repos/{slug}/commits/{sha}/status", "statuses", unread)
         pending += [f"status {s['context']} is pending" for s in statuses if s["state"] == "pending"]
-        if not pending:
-            # Read the pull request again before the mutation: a push or a review request
-            # since the read above would have the mutation mark a head, or a request set,
-            # nobody checked. Anything that moved sends the loop round again, under the
-            # same deadline. One round trip between this read and the mutation remains:
-            # GitHub's mutation takes no expected head to hold it to.
-            latest = api(f"/repos/{slug}/pulls/{number}")
-            if view(latest) == view(pull):
+        if not pending:  # anything that moved sends the loop round again, same deadline
+            pending = [f"{rule}: {what}" for rule, _, what, _ in again(number, pull, codex=False)]
+            if not pending:
                 break
-            if latest["state"] != "open" or not latest["draft"]:
-                continue  # the top of the loop says which
-            pending = [
-                f"the head or the review requests changed while it was read ({sha[:7]} to"
-                f" {latest['head']['sha'][:7]})"
-            ]
         if time.monotonic() >= deadline:
             die(f"#{number} at {sha[:7]} is not quiet after {wait:g}s: " + "; ".join(pending))
         time.sleep(min(poll, max(deadline - time.monotonic(), 0)))
@@ -341,8 +549,9 @@ elif command == "ready":
             "variables": {"id": pull["node_id"]},
         },
     )
-    if marked.get("errors"):
-        die(f"#{number} stays a draft: {marked['errors'][0].get('message')}")
+    why = failed(marked, "markPullRequestReadyForReview", "pullRequest")
+    if why:
+        die(f"#{number} stays a draft: {why}")
     print(f"pr: #{number} is ready, the bots are quiet at {sha[:7]}", file=sys.stderr)
 else:
     die(f"no command '{command}'")
@@ -366,8 +575,8 @@ update-body)
 	pyapi update-body "$num" "$said/body"
 	exit 0
 	;;
-ready)
-	pyapi ready "$num"
+ready | quiet)
+	pyapi "$mode" "$num"
 	exit 0
 	;;
 reviewer)

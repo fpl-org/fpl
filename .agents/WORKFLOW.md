@@ -88,6 +88,14 @@ top of base) · **restack** (rebase the stack when base or a lower commit change
     (`.agents/JJ.md`) skip it, and `git push --mirror` deletes a branch this clone lacks
     without handing pre-push a line for it; that leaves only the tripwire, where it is on.
 
+    **[gate]** "The bots are quiet" is measured, not read off a silence: `scripts/pr --quiet N`
+    judges the head and reads only, `--reviewer` refuses on it and on a draft, and `--ready` on
+    all of it but Codex, which reviews no draft. Quiet is: no review thread open, anyone's, the
+    maintainer's own included; Codex's review of the head completed; CodeRabbit and the Claude
+    job done. Each refusal names its rule and remedy (the script's header has them all). A pull
+    request opens ready and CODEOWNERS asks the maintainer at once, so the gate holds the asks
+    that go through `scripts/pr`, not that first one.
+
 ## Setup (once per clone/worktree)
 
 ```
@@ -369,8 +377,9 @@ done | tee manifest | shasum -a 256                      # the digest
 pull request once it is ready (`codex-review.yml` runs only on a pull request that is not a
 draft; `claude-code-review.yml` runs on `opened` and again on `ready_for_review`). So: when
 the findings on the draft are dealt with, mark it ready,
-`gh pr ready <number> --repo github.com/<o>/<n>` or the button; wait for the reviews that
-starts and deal with their findings; only then ask the maintainer. His approval freezes the
+`scripts/pr --ready <number>` or the button; wait for the reviews that starts and deal with
+their findings; only then ask the maintainer, `scripts/pr --reviewer <number> psjg`, which
+refuses until every bot is quiet on the head (rule 10). His approval freezes the
 branch (rule 10), and a finding after it is a new pull request. The maintainer reads the Commits tab commit by commit and approves in the UI:
 Files changed, Review changes, Approve, Submit. That approves the head the page loaded, so
 reload if the branch moved; `land/approved` reads the SHA the approval names. Check it:
