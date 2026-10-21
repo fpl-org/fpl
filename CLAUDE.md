@@ -15,6 +15,8 @@ Read it first. This file only covers Claude Code tooling that lives under `.clau
 - **Skill** (`.claude/skills/fpl-conventions/`): loads `AGENTS.md` + `.agents/CONVENTIONS.md` +
   `.agents/COMMITS.md` + `.agents/WORKFLOW.md` for Claude. The docs are the source of truth; the
   skill is just a trigger.
+- **Skill** (`.claude/skills/fpl-run/`): the commands that start the walker, `make repl` and
+  `nix run`, for an agent asked to run or try FPL.
 - **Hooks** (`.claude/settings.json`):
   - `PreToolUse(Edit|Write)` → `.claude/hooks/guard-specs.sh`: blocks edits to
     `fpl/features/*/spec.md` / `fpl/features/*/examples/*` / `docs/DESIGN.md` / `docs/SPEC.md`

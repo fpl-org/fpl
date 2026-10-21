@@ -31,7 +31,7 @@ Keep talk about the vision sober, and the harness small: `docs/notes/2026-09-19-
                       fpl/features/, the conformance suite: the maintainer's specs and examples
   Makefile            runs the noslop lanes (make check, ...) in bootstrap/, and the walker from
                       the root: make run FILE=<file.fpl>, make repl
-  .claude/            Claude Code commands, subagents, skill, hooks
+  .claude/            Claude Code commands, subagents, skills, hooks
   scripts/            acommit, commit-lint, restack, setup, agent-identity, new-worktree,
                       branch-lint, forward-only, layer, pr, review, land, task,
                       rad-cob-dagtaak;
