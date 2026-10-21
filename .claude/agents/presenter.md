@@ -78,7 +78,9 @@ lander reads `Assisted-By`). Who proposed what goes on the card: it is the ackno
    `--ready N` once the draft bots are quiet, then `--reviewer N psjg`, which refuses until every
    bot is quiet on the head (`scripts/pr --quiet N` says why not). When Codex answers on the
    ready pull request, apply its findings (a lemma, or a fold into one), present again from
-   step 3, and only then ask for the review.
+   step 3, and only then ask for the review. After three Codex rounds, stop folding:
+   `scripts/pr --defer N <follow-up branch>` moves the bots' open findings, all of them, to one
+   issue and a fix-forward series after landing (`.agents/WORKFLOW.md`, rule 10).
 
 **Worked example: #163, pijul-remove.** W is one commit, `chore(scripts): remove the pijul mirror
 scripts`: five files, -324 lines. Presented as three lemmas:
