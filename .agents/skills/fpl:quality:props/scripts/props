@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-# gates: $BIN/python $S/props --self-test
-"""scripts/props — every module with code has a property test, and pays its obligations.
+# gates: $BIN/python $ROOT/.agents/skills/fpl:quality:props/scripts/props --self-test
+"""props — every module with code has a property test, and pays its obligations.
 
-    scripts/props [--source DIR] [--tests DIR] [--obligations FILE]
-    scripts/props --self-test
+    .agents/skills/fpl:quality:props/scripts/props [--source DIR] [--tests DIR] [--obligations FILE]
+    .agents/skills/fpl:quality:props/scripts/props --self-test
 
 A module of the fpl package that defines anything (a function, a class, an assignment) needs
 at least one test file that imports it and holds a Hypothesis test: a function decorated with
@@ -38,9 +38,9 @@ from pathlib import Path
 
 # The repository's own inputs, found from this file, so the check means the same from the root,
 # from bootstrap/, or from anywhere else. Symlinks are not followed: a copy of the harness whose
-# scripts/ links back here (scripts/gates) judges its own bootstrap/. A caller that names a
-# path is relative to its cwd.
-REPO = Path(os.path.abspath(__file__)).parent.parent
+# .agents/skills links back here (fpl:quality:gates) judges its own bootstrap/. A caller that
+# names a path is relative to its cwd.
+REPO = Path(os.path.abspath(__file__)).parents[4]
 DEFAULTS = {
     "--source": str(REPO / "bootstrap" / "fpl"),
     "--tests": str(REPO / "bootstrap" / "tests"),
