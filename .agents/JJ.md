@@ -59,7 +59,7 @@ On a stack branch the message also needs `Stack: <name>`; add that line yourself
 | commit current work | `scripts/acommit …` | `jj commit -m "<message>"` |
 | new change on top | edit + `acommit` | `jj new` then edit |
 | amend a lower change | `git rebase -i --update-refs` | `jj edit <rev>`, edit, `jj new`; or `jj squash --into <rev>` |
-| restack on moved base | `scripts/restack` | `jj rebase -d main` (descendants follow) |
+| restack on moved base | `restack` (`fpl:series:restack`) | `jj rebase -d main` (descendants follow) |
 | name a reviewable boundary | `git branch stack/x/1` | `jj bookmark set stack/x/1 -r @-` |
 | view the stack | `git log --oneline --decorate main..HEAD` | `jj log` |
 | push branches | `git push` | `jj git push` |

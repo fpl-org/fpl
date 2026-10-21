@@ -184,13 +184,11 @@ key, so landed history is not refused for case alone; a type or scope in the wro
 `Stack:` is the readable name of a stack and stays so. `Series-Id:` is its identity: minted once,
 `<topic>-<7 hex digits of the tip it was minted at>`, and carried by every commit of the series
 through every rebase, reorder and move, which a branch name and a SHA are not. At most one a
-commit, in the form `COMMIT_SERIES_RE` fixes (`series-many`, `series-value`). `scripts/series`
-holds the tooling: `mint` the id, `stamp` it onto a range (refused once the maintainer has
-reviewed or commented on the pull request of the branch, or of any branch the rebase moves with
-it), `check` that a range carries exactly one,
-`manifest` a range as JSON, `digest` to print the manifest's digest alone (the receipt
-the lander writes as the `fpl/series` check run), `range` to find a series on main, `revert` a
-whole series at once.
+commit, in the form `COMMIT_SERIES_RE` fixes (`series-many`, `series-value`). A stamp is
+refused once the maintainer has reviewed or commented on the pull request of the branch, or of
+any branch the rebase moves with it: a rewrite after that is a question to him. Minting,
+stamping, the manifest and its digest (the receipt the lander writes as the `fpl/series` check
+run), finding a landed series and reverting one whole: the `fpl:series` skill and its sub-skills.
 
 There is no `Patch-Id:` trailer, on purpose: a patch id stored in a message goes stale as soon
 as a move shifts the context lines, and a stale identity is a false one. The manifest computes

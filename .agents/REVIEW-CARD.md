@@ -31,8 +31,8 @@ lines. Otherwise drop this paragraph.>
 ## Verdict
 <One line: merge, merge after <x>, or do not merge, and why.>
 
-Series-Id: <id, or n/a until scripts/series is on main>
-Digest: <the digest of scripts/series manifest base..head, or n/a>
+Series-Id: <id, from fpl:series:stamp>
+Digest: <the digest of fpl:series:manifest over base..head>
 <Presented again: "Re-presented <date>; superseded head <W sha>; bot threads older than that
 refer to superseded commits." Else drop the line.>
 | # | commit | lemma |

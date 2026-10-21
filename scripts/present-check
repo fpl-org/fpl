@@ -16,8 +16,9 @@
 #   merge-base  both fork from `base` at the same commit
 #   commit-lint scripts/commit-lint over base..P, judged for the branch when P is a local
 #               branch or -b names one (else its Stack: and agent-branch gates are left out)
-#   Series-Id   when scripts/series exists in P's tree, every commit of base..P carries a
-#               Series-Id trailer and the range holds exactly one distinct value
+#   Series-Id   when the series script is in P's tree (in fpl:series, or at scripts/series in a
+#               tip from before it moved), every commit of base..P has a Series-Id trailer
+#               and the range holds exactly one distinct value
 #   rules       every commit of base..P reads as finished work (below)
 #   each lemma  `make quick` in a detached worktree of the commit and, when it touches
 #               scripts/, .githooks/, harness/ or .github/workflows/, the self-tests that
@@ -239,7 +240,9 @@ echo "ok    commit-lint ($(tail -n 1 "$lint_out"))"
 commits="$(git rev-list --reverse --no-merges "$base..$p")"
 [ -n "$commits" ] || die "no commits in $base..$p"
 
-if git cat-file -e "$p:scripts/series" 2>/dev/null; then
+# A tip from before the series script moved into fpl:series holds it at scripts/series.
+if git cat-file -e "$p:.agents/skills/fpl:series/scripts/series" 2>/dev/null ||
+	git cat-file -e "$p:scripts/series" 2>/dev/null; then
 	ids="" c=""
 	for c in $commits; do
 		v="$(git log -1 --format='%(trailers:key=Series-Id,valueonly,unfold)' "$c" | sed '/^$/d')"
@@ -252,7 +255,7 @@ if git cat-file -e "$p:scripts/series" 2>/dev/null; then
 		red "the range holds more than one Series-Id: $(printf '%s' "$ids" | sort -u | tr '\n' ' ')"
 	echo "ok    Series-Id ($(printf '%s' "$ids" | sort -u))"
 else
-	echo "skip  Series-Id (no scripts/series in $(short "$p"))"
+	echo "skip  Series-Id (no series script in $(short "$p"))"
 fi
 check_rules "$p"
 
@@ -278,7 +281,6 @@ selftests() {
 		scripts/*-self-test | .agents/skills/*/scripts/*-self-test) [ -x "$1/$f" ] && echo "$f" ;;
 		scripts/commit-lint | scripts/acommit | scripts/agent-identity) echo scripts/pre-push-self-test ;;
 		.agents/skills/*/scripts/*) [ -x "$1/$f-self-test" ] && echo "$f-self-test" ;;
-		scripts/restack) echo scripts/land-self-test ;;
 		scripts/import-pr) echo scripts/mirror-self-test ;;
 		scripts/*)
 			if [ -x "$1/$f-self-test" ]; then

@@ -139,7 +139,7 @@ $S/spec-guard-self-test
 $S/gen-config-self-test
 $S/image-self-test
 $S/land-self-test
-$S/series-self-test
+$ROOT/.agents/skills/fpl:series/scripts/series-self-test
 $S/present-check-self-test
 $BIN/python $S/rad-cob-dagtaak --self-test
 nix develop $ROOT#radicle -c python3 $S/task --self-test

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# scripts/series — the identity of a series of commits, and what follows from having one.
+# series — the identity of a series of commits, and what follows from having one.
 #
 # A branch name and a SHA both change when a series is rebased, reordered or moved; the
 # Series-Id: trailer (.agents/COMMITS.md) does not. It is minted once and carried by every
@@ -183,7 +183,7 @@ forge_silent() {
 cmd_mint() { [ -n "${1:-}" ] || die usage "a branch is needed" "series mint <branch>"; mint_of "$1"; }
 
 cmd_stamp() { # stamp <base>..HEAD [id]
-	local range="${1:-}" base branch ids n id exec_cmd c err list sha name
+	local range="${1:-}" base branch ids n id exec_cmd c err list sha name copy
 	[[ "$range" == *..* && "$range" != *...* ]] || die range "stamp wants <base>..HEAD, not '$range'" "series stamp <base>..HEAD"
 	base="${range%%..*}"
 	branch="$(git branch --show-current)"
@@ -211,14 +211,20 @@ cmd_stamp() { # stamp <base>..HEAD [id]
 	[ "$n" -le 1 ] || die series-mixed "the range carries $n different Series-Ids" "a series has one id; fix the stray commit"
 	id="${ids:-${2:-$(mint_of "$branch")}}"
 	printf '%s' "$id" | grep -Eq "^${COMMIT_SERIES_RE}\$" || die series-value "'$id' is not a Series-Id ($COMMIT_SERIES_RE)" "series mint <branch>"
-	printf -v exec_cmd '%q %q _amend %q' "$BASH" "$self" "$id"
+	# The exec runs this script at every commit of the range, from a copy outside the tree: a
+	# commit of the range may lack the script at this path (the one that adds or moves it).
+	copy="$(mktemp "$(git rev-parse --absolute-git-dir)/series.XXXXXX")" || die tool "no scratch file in the git directory" "make it writable"
+	cp "$self" "$copy"
+	printf -v exec_cmd '%q %q _amend %q' "$BASH" "$copy" "$id"
 	# commit.cleanup is pinned for the picks too: under strip, the replay of the commits after the
 	# first one cut their comment-like lines (measured), not only the amend does.
 	err="$(GIT_SEQUENCE_EDITOR=: git -c commit.cleanup=verbatim rebase -q --update-refs --exec "$exec_cmd" "$base" 2>&1)" || {
 		printf '%s\n' "$err" >&2
+		rm -f "$copy"
 		git rebase --abort >/dev/null 2>&1 || true
 		die rebase "the rebase that adds the id was refused, and is undone" "fix what the message above names, then stamp again"
 	}
+	rm -f "$copy"
 	printf '%s\n' "$id"
 }
 
@@ -367,5 +373,5 @@ cmd_revert() { # revert <id> [branch]
 
 case "${1:-}" in
 mint | stamp | check | manifest | digest | range | revert | _amend) c="cmd_${1}"; shift; "$c" "$@" ;;
-*) die usage "series {mint|stamp|check|manifest|digest|range|revert} ..." "see the header of scripts/series" ;;
+*) die usage "series {mint|stamp|check|manifest|digest|range|revert} ..." "see the header of the script" ;;
 esac
