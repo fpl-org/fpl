@@ -84,6 +84,11 @@
 #   land/gpt                a commit whose Assisted-By names a GPT model is named by a line
 #                           gpt-ok: <sha> in a code owner's approval of the head, a prefix of
 #                           at least 7 hex digits that no other commit of the range shares
+#   land/committer          once main holds .github/agent-emails: no commit an agent wrote
+#                           (its author is an address of that list) names anyone else as its
+#                           committer, from COMMIT_COMMITTER_SINCE in main's
+#                           .githooks/commit-rules on: the lander keeps the field on main for
+#                           good, and the owner's part is the approval, not a commit in his name
 #   land/series             once main holds scripts/series: one Series-Id on every commit
 #   land/series-fresh       and no commit on main carries it yet
 #   land/patch-fresh        no commit's `git patch-id --verbatim` is one on main already,
@@ -221,7 +226,7 @@ PAD = " " * 28
 RULES = ("land/remote", "land/open", "land/base", "land/head", "land/author",
          "land/autodelete", "land/changes-requested", "land/codeowners", "land/approved", "land/threads",
          "land/checks", "land/ancestor", "land/linear", "land/size", "land/workflows",
-         "land/gpt", "land/series", "land/series-fresh", "land/patch-fresh", "land/card",
+         "land/gpt", "land/committer", "land/series", "land/series-fresh", "land/patch-fresh", "land/card",
          "land/attributed", "land/rules", "land/bypass")
 # The rule --ci alone judges (its paragraph above): its table holds it after the others.
 CI_RULES = ("land/ci",)
@@ -923,6 +928,34 @@ def judge_series(v, main, span):
         v.ok("land/series-fresh", f"Series-Id {ids[0]} is not on main yet")
 
 
+def judge_committer(v, main, span):
+    """land/committer, judged once main holds .github/agent-emails: an agent's commit (its
+    author an address of main's list, not the pull request's) has an agent for committer too,
+    unless it was committed before COMMIT_COMMITTER_SINCE in main's .githooks/commit-rules."""
+    shown = subprocess.run(("git", "show", f"{main}:.github/agent-emails"), capture_output=True)
+    if shown.returncode:
+        v.ok("land/committer", "skipped: main has no .github/agent-emails")
+        return
+    agents = {x.strip() for x in shown.stdout.decode().splitlines()
+              if x.strip() and not x.startswith("#")}
+    rules = subprocess.run(("git", "show", f"{main}:.githooks/commit-rules"),
+                           capture_output=True).stdout.decode()
+    m = re.search(r"^COMMIT_COMMITTER_SINCE=(\d+)", rules, re.M)
+    since = int(m[1]) if m else 0
+    bad = []
+    for row in git("log", "--format=%H%x1f%ae%x1f%cn%x1f%ce%x1f%ct", span).decode().splitlines():
+        c, ae, cn, ce, ct = row.split("\x1f")
+        if ae in agents and ce not in agents and int(ct) >= since:
+            bad.append(f"{c[:12]} by {ae}, committed by {cn} <{ce}>")
+    if bad:
+        v.no("land/committer", "; ".join(bad),
+             "the presenter remakes it in a worktree whose committer is the machine account"
+             " (scripts/agent-identity set <email> binds it): git rebase --force-rebase"
+             " <base> there, then the owner approves the new head")
+    else:
+        v.ok("land/committer", "every commit an agent wrote names an agent as its committer")
+
+
 CARD = ("What", "What changes", "How checked", "Limits", "Verdict")
 MOST = (10, 600)  # land/size: commits, and lines added plus removed
 
@@ -944,10 +977,10 @@ def own(main, head):
 
 
 def judge_range(v, pr, main, head, bodies, repo, base=None):  # noqa: PLR0913, PLR0917
-    """land/size, land/workflows, land/gpt, land/series, land/series-fresh, land/patch-fresh
-    and land/card: the commits base..head (base: below the range a relocation picks, else
-    where the head's own work starts), judged fresh against main, and the pull request's
-    body. land/size counts the lines of `git diff --numstat base head`, the sum
+    """land/size, land/workflows, land/gpt, land/committer, land/series, land/series-fresh,
+    land/patch-fresh and land/card: the commits base..head (base: below the range a
+    relocation picks, else where the head's own work starts), judged fresh against main, and
+    the pull request's body. land/size counts the lines of `git diff --numstat base head`, the sum
     `--shortstat` prints."""
     base = base or own(main, head)
     span, h = f"{base}..{head}", head[:12]
@@ -982,6 +1015,7 @@ def judge_range(v, pr, main, head, bodies, repo, base=None):  # noqa: PLR0913, P
              " a prefix no other commit of the range shares")
     else:
         v.ok("land/gpt", "no commit a GPT model assisted lacks the owner's gpt-ok")
+    judge_committer(v, main, span)
     judge_series(v, main, span)
     known = set(patch_ids(main).values())
     dup = [c[:12] for c, p in patch_ids(span).items() if p in known]
