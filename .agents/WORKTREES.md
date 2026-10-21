@@ -42,7 +42,9 @@ worktrees/
 
 ## Recipes
 
-Making one, wired and with the agent identity, is `fpl:worktree:new`. What git itself does:
+Making one, wired and with the agent identity, is `fpl:worktree:new`; wiring a checkout made
+another way is `fpl:worktree:setup`; the inventory, and the one clean-up it proposes, is
+`fpl:worktree:sweep` (the routine: `fpl:worktree`). What git itself does:
 
 ```
 # by hand
