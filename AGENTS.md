@@ -33,7 +33,7 @@ These are authorization-shaped, so they live here and nowhere else (Codex trusts
 - Commit only with `scripts/acommit` (the author is the machine account, the trailers carry the
   model and session; `.agents/COMMITS.md`). `.githooks/commit-msg` refuses a commit without
   those trailers or that author.
-- One commit changes harness paths or implementation paths, never both (`scripts/boundary`).
+- One commit changes harness paths or implementation paths, never both (`fpl:commit:boundary`).
 - Land only through a pull request, with `scripts/land`: a fast-forward of `main` to the approved
   head; never the merge button, never a local merge. An approved pull request is frozen.
 - Never edit `.github/workflows/`, the rulesets or the brake: the owner's paths.

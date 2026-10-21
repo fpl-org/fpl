@@ -90,7 +90,7 @@ stack wants. A commit is compared with its parent (a root commit with the empty 
 rename detection, and both paths of a rename count: `fpl/x` to `bootstrap/fpl/x` stays on one
 side, `docs/x` to `bootstrap/x` is mixed.
 
-**[gate]** `scripts/boundary <commit>` judges one non-merge commit. `scripts/commit-lint` runs
+**[gate]** `.agents/skills/fpl:commit:boundary/scripts/boundary <commit>` judges one non-merge commit. `scripts/commit-lint` runs
 it on every commit of its range, with the checker of the checkout that runs it, so a range
 from before the checker existed is judged too. commit-lint runs in `pre-push` and in CI (the
 `commit-lint` workflow), so the rule binds every commit however it was made: `git commit`,
@@ -110,7 +110,7 @@ A mixed commit is refused as `BOUNDARY-MIXED`, with a few paths of each side, th
 the command that splits it, for a commit `<c>` on `<branch>`:
 
 ```
-scripts/boundary --split <c> <branch>
+.agents/skills/fpl:commit:boundary/scripts/boundary --split <c> <branch>
 ```
 
 It makes a harness commit (the commit's tree with its parent's implementation paths, so the
@@ -139,7 +139,7 @@ pull request (`.agents/WORKFLOW.md`, rule 5).
 If a git command fails inside the checker it refuses too (`BOUNDARY-TOOL`, with the command,
 git's words and a remedy line): a gate that cannot look does not pass. It judges the commit's own
 bytes, never a replacement object's (`GIT_NO_REPLACE_OBJECTS=1`, in commit-lint too), and
-switches off a `nocasematch` the caller hands down. `scripts/boundary-self-test` proves
+switches off a `nocasematch` the caller hands down. `.agents/skills/fpl:commit:boundary/scripts/boundary-self-test` proves
 the cases under bash 5 and, on a Mac, `/bin/bash` 3.2; `make gates` runs it.
 
 ## Current state

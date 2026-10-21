@@ -84,7 +84,7 @@ quick: venv
 # uncommitted change to any of them stops it. Commit such a change first, with [policy].
 # The project's own are named from the root, as the directory these lanes run in.
 WALKER := $(notdir $(CURDIR))
-POLICY := quality scripts Makefile $(addprefix $(WALKER)/,Makefile pyproject.toml mutants.allow)
+POLICY := quality scripts .agents/skills Makefile $(addprefix $(WALKER)/,Makefile pyproject.toml mutants.allow)
 pristine:
 	@dirty="$$(git -C $(ROOT) status --porcelain --untracked-files=all -- $(POLICY))" || { \
 	  echo "pristine: git could not read the policy files' state, so the gate does not run;" >&2; \
@@ -95,7 +95,7 @@ pristine:
 	  echo "check: the gate's policy files differ from what is committed:" >&2; \
 	  echo "$$dirty" | sed 's/^/         /' >&2; \
 	  echo "       the gate judges only committed policy; commit the change with [policy]," >&2; \
-	  echo "       in a harness commit for quality/ and scripts/ (.agents/WORKTREES.md)" >&2; \
+	  echo "       in a harness commit for quality/, scripts/ and .agents/skills/ (.agents/WORKTREES.md)" >&2; \
 	  exit 1; \
 	fi
 
