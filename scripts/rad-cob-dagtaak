@@ -44,7 +44,7 @@ Actions (the JSONL lines given to `rad cob create|update`):
 
 Who may act is decided here, because an external COB has no other authorisation: the
 author may do anything, the assignee may move the task and its blockers, anybody else is
-ignored. scripts/task is the command-line front end; `--self-test` needs no rad.
+ignored. The command-line front end is fpl:task's `task`; `--self-test` needs no rad.
 """
 
 import json
@@ -119,7 +119,7 @@ def moved(task, action):
 
 def parted(task, action):
     """One parent, set or cleared. The reducer sees one task at a time, so it cannot tell
-    a part-of loop from a tree; scripts/task refuses to close one and `tree` reports one
+    a part-of loop from a tree; `task part` refuses to close one and `tree` reports one
     that arrives anyway, as `ready` does for blockers."""
     of = action.get("of")
     if of is not None and not (isinstance(of, str) and OID.match(of)):

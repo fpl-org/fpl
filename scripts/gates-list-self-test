@@ -141,7 +141,7 @@ $S/land-self-test
 $S/series-self-test
 $S/present-check-self-test
 $BIN/python $S/rad-cob-dagtaak --self-test
-nix develop $ROOT#radicle -c python3 $S/task --self-test
+nix develop $ROOT#radicle -c python3 $ROOT/.agents/skills/fpl:task/scripts/task --self-test
 $S/ruleset-check-self-test
 EOF
 
