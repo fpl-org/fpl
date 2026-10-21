@@ -55,7 +55,7 @@ A routine loads its sub-skills by name. A row marked *planned* has no skill yet 
 | `fpl:land` (`:dry-run`, `:land`, `:by-hand`) | landing an approved head on `main` | `land`; planned (S2), `.agents/WORKFLOW.md` |
 | `fpl:worktree` (`:setup`, `:new`, `:layer`, `:sweep`) | a new checkout, its hooks, the forge layer | `setup`, `new-worktree`, `layer`, `sweep`; planned (S4), `.agents/WORKTREES.md` |
 | `fpl:leak` | text or a range before it leaves the machine | `leak-check`; planned (S4), `.agents/WORKFLOW.md` |
-| `fpl:quality` (`:crap`, `:props`, `:escapes`, `:mutants`, `:gates`, `:diagrams`, `:skills`) | the gate's lanes, their proofs, the map | `crap`, `props`, `escapes`, `mutants`, `gates`, `diagrams`, `skills-cover`; planned (S1b, S5), `.agents/QUALITY.md` |
+| `fpl:quality` (`:crap`, `:props`, `:escapes`, `:mutants`, `:gates`, `:diagrams`, `:skills`) | the gate's lanes, their proofs, the map | `crap`, `props`, `escapes`, `mutants`, `gates`, `diagrams`, `skills-cover`; `fpl:quality:skills` exists, the rest planned (S5), `.agents/QUALITY.md` |
 | `fpl:task` (`:load`, `:tree`, `:ready`) | the task graph in the repository | `task`; planned (S5), `.agents/TASKS.md` |
 | `fpl:review` (`:page`, `:serve`, `:export`, `:import`) | the Radicle review page | `review`, `review-serve`, `export-review`, `import-review`; planned (S6), `.agents/WORKFLOW.md` |
 | `fpl:run` | running the walker: REPL, one expression, a file | `make repl`, `make run`, `nix run`; planned (pull request 192) |
