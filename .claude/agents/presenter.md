@@ -75,10 +75,10 @@ lander reads `Assisted-By`). Who proposed what goes on the card: it is the ackno
    the branch, not the comments. Any URL printed or query failing: stop, push nothing. Then
    `git push --force-with-lease=refs/heads/<branch>:<W sha> <token URL> P:refs/heads/<branch>`.
 9. The card as the body and the review request: `scripts/pr --update-body N <card>`, then
-   `--ready N` once the draft bots are quiet, then `--reviewer N psjg`; where `scripts/pr` lacks
-   these flags, the forge wrapper your orchestrator names. When Codex answers on the ready pull
-   request, apply its findings (a lemma, or a fold into one), present again from step 3, and only
-   then ask for the review.
+   `--ready N` once the draft bots are quiet, then `--reviewer N psjg`, which refuses until every
+   bot is quiet on the head (`scripts/pr --quiet N` says why not). When Codex answers on the
+   ready pull request, apply its findings (a lemma, or a fold into one), present again from
+   step 3, and only then ask for the review.
 
 **Worked example: #163, pijul-remove.** W is one commit, `chore(scripts): remove the pijul mirror
 scripts`: five files, -324 lines. Presented as three lemmas:
