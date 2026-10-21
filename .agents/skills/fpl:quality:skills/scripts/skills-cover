@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+#
+# skills-cover — every script the prose names has a skill, and the skill tree is whole.
+#
+#   skills-cover [--ratchet <file> | --no-ratchet] [<root>]   judge the tree; exit 0 clean,
+#                                                             1 refused, 2 usage, 3 a tool broke
+#   skills-cover --uncovered [<root>]                         print the ratchet the tree needs
+#
+# A procedure that lives in prose and not in a skill is one no harness loads on its own
+# (.agents/skills/README.md). The prose is AGENTS.md, .agents/*.md (not below), .claude/agents/*.md
+# and .claude/commands/*.md. A script is named when `scripts/<x>` or `.agents/skills/<s>/scripts/<x>`
+# stands in that prose and the file exists; a *-self-test is a proof, not a procedure, and is not
+# counted. A SKILL.md covers a script by naming it the same way; its bare `scripts/<x>` means the
+# skill's own scripts/<x> when that exists, else the root's. The ratchet, quality/skills-ratchet,
+# lists `<path> -- <reason>` for what has no skill yet, and can only shrink. The rules:
+#
+#   SKILLS-UNCOVERED       a named script no SKILL.md covers and the ratchet does not list
+#   SKILLS-RATCHET-STALE   a ratchet line for a script that is covered now, or is gone
+#   SKILLS-RATCHET-REASON  a ratchet line without ` -- <reason>`
+#   SKILLS-NAME            a skill directory without SKILL.md, or whose `name:` is not the
+#                          directory, or not fpl:<module>[:<skill>[:<sub>]] in [a-z0-9-]
+#   SKILLS-LINK            .claude/skills is not a symbolic link to ../.agents/skills
+#   SKILLS-SUB             a SKILL.md names a skill fpl:... that has no directory
+#   SKILLS-SCREEN          AGENTS.md is over 80 lines
+#
+# Every refusal is printed, with its rule, what, and the remedy, before exit 1. Without <root>
+# the root is git's top level, and a git that fails is exit 3 naming the cause: nothing is judged
+# on a guess. Plain bash 3.2: no mapfile, no associative arrays. --uncovered prints one ratchet
+# line per uncovered script, with the reason the current ratchet gives it, else none after ` --`:
+# the reason is yours to write, never generated.
+
+set -euo pipefail
+export LC_ALL=C
+
+mode=judge ratchet='' root=''
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--uncovered) mode=uncovered ;;
+	--no-ratchet) ratchet=/dev/null ;;
+	--ratchet)
+		[ $# -ge 2 ] || { echo "usage: skills-cover --ratchet <file>" >&2; exit 2; }
+		ratchet="$2"; shift ;;
+	-*) echo "usage: skills-cover [--uncovered] [--ratchet <file> | --no-ratchet] [<root>]" >&2; exit 2 ;;
+	*) [ -z "$root" ] || { echo "usage: skills-cover takes one root" >&2; exit 2; }; root="$1" ;;
+	esac
+	shift
+done
+if [ -z "$root" ]; then
+	status=0
+	root="$(git rev-parse --show-toplevel 2>&1)" || status=$?
+	[ "$status" -eq 0 ] || { printf 'skills-cover: SKILLS-TOOL: git rev-parse --show-toplevel failed (exit %s): %s\n    remedy: run it from a checkout, or name the root\n' "$status" "$root" >&2; exit 3; }
+fi
+root="${root%/}"
+[ -d "$root" ] || { echo "skills-cover: no such directory: $root" >&2; exit 2; }
+[ -n "$ratchet" ] || ratchet="$root/quality/skills-ratchet"
+[ -e "$ratchet" ] || ratchet=/dev/null
+
+fails=0
+# refuse <rule> <what> <remedy>
+refuse() {
+	printf 'skills-cover: %s: %s\n    remedy: %s\n' "$1" "$2" "$3" >&2
+	fails=$((fails + 1))
+}
+# paths <file>...: every scripts/<x> or .agents/skills/<s>/scripts/<x> token in the files, one a line.
+paths() {
+	cat "$@" 2>/dev/null | grep -oE '(\.agents/skills/[A-Za-z0-9_:.-]+/)?scripts/[A-Za-z0-9_-]+' || true
+}
+# is_script <path>: the path is a script that counts, judged against the root.
+is_script() {
+	case "$1" in *-self-test) return 1 ;; esac
+	[ -f "$root/$1" ]
+}
+
+# What the prose names, sorted and unique.
+prose=()
+for f in "$root"/AGENTS.md "$root"/.agents/*.md "$root"/.claude/agents/*.md "$root"/.claude/commands/*.md; do
+	[ -f "$f" ] && prose+=("$f")
+done
+named="$(for p in $(paths "${prose[@]}" | sort -u); do is_script "$p" && echo "$p"; done || true)"
+
+# What the skills cover, and whether the tree of skills is whole.
+covered=''
+skills=''
+for d in "$root"/.agents/skills/*/; do
+	[ -d "$d" ] || continue
+	d="${d%/}"; s="${d##*/}"
+	skills="$skills $s "
+done
+for d in "$root"/.agents/skills/*/; do
+	[ -d "$d" ] || continue
+	d="${d%/}"; s="${d##*/}"
+	if [ ! -f "$d/SKILL.md" ]; then
+		[ "$mode" = judge ] && refuse SKILLS-NAME ".agents/skills/$s has no SKILL.md, so no harness loads it" \
+			"write .agents/skills/$s/SKILL.md, or remove the directory"
+		continue
+	fi
+	name="$(awk 'NR == 1 && $0 != "---" { exit } NR > 1 && /^---$/ { exit } /^name:/ { sub(/^name:[ \t]*/, ""); sub(/[ \t]+$/, ""); print; exit }' "$d/SKILL.md")"
+	if [ "$mode" = judge ]; then
+		if [ "$name" != "$s" ]; then
+			refuse SKILLS-NAME ".agents/skills/$s/SKILL.md says name: '$name', not the directory's name" \
+				"make the frontmatter name and the directory the same"
+		elif ! printf '%s\n' "$s" | grep -qE '^fpl:[a-z0-9-]+(:[a-z0-9-]+){0,2}$'; then
+			refuse SKILLS-NAME "'$s' is not of the form fpl:<module>[:<skill>[:<sub>]] in [a-z0-9-]" \
+				"rename the skill and its directory (.agents/skills/README.md)"
+		fi
+		for sub in $(grep -oE '[A-Za-z0-9_:-]*fpl:[a-z0-9-]+(:[a-z0-9-]+)*' "$d/SKILL.md" | sort -u); do
+			case "$sub" in fpl:*) ;; *) continue ;; esac
+			[ "$sub" = "$s" ] || [ "$sub" = "$name" ] && continue
+			case "$skills" in *" $sub "*) ;; *)
+				refuse SKILLS-SUB ".agents/skills/$s/SKILL.md names $sub, which has no directory" \
+					"write .agents/skills/$sub/SKILL.md, or name a skill that exists" ;;
+			esac
+		done
+	fi
+	for p in $(paths "$d/SKILL.md" | sort -u); do
+		case "$p" in
+		scripts/*) [ -f "$d/$p" ] && p=".agents/skills/$s/$p" ;;
+		esac
+		covered="$covered"$'\n'"$p"
+	done
+done
+covered="$(printf '%s\n' "$covered" | sed '/^$/d' | sort -u)"
+# in_covered <path>
+in_covered() { printf '%s\n' "$covered" | grep -qxF "$1"; }
+
+if [ "$mode" = uncovered ]; then
+	for p in $named; do
+		in_covered "$p" && continue
+		reason="$(sed -n "s|^$p -- ||p" "$ratchet" | head -n 1)"
+		printf '%s --%s\n' "$p" "${reason:+ $reason}"
+	done
+	exit 0
+fi
+
+# The ratchet: each line a path and a reason, for a script that still has no skill.
+listed=''
+n=0
+while IFS= read -r line || [ -n "$line" ]; do
+	n=$((n + 1))
+	case "$line" in '' | '#'*) continue ;; esac
+	case "$line" in
+	*' -- '*) p="${line%% -- *}"; reason="${line#* -- }" ;;
+	*) p="${line% --}"; reason='' ;;
+	esac
+	if [ -z "$reason" ] || [ "$p" = "$line" ]; then
+		refuse SKILLS-RATCHET-REASON "${ratchet#"$root"/}:$n: no reason: $line" \
+			"say why the script has no skill yet: $p -- <reason>"
+		continue
+	fi
+	if ! is_script "$p"; then
+		refuse SKILLS-RATCHET-STALE "${ratchet#"$root"/}:$n: $p is gone, or is a self-test" \
+			"delete the line; the ratchet only shrinks"
+	elif in_covered "$p"; then
+		refuse SKILLS-RATCHET-STALE "${ratchet#"$root"/}:$n: $p has a skill now" \
+			"delete the line; the ratchet only shrinks"
+	fi
+	listed="$listed $p "
+done <"$ratchet"
+
+for p in $named; do
+	in_covered "$p" && continue
+	case "$listed" in *" $p "*) continue ;; esac
+	refuse SKILLS-UNCOVERED "$p is named in prose and no SKILL.md names it" \
+		"write .agents/skills/<name>/SKILL.md that names it, or add '$p -- <reason>' to quality/skills-ratchet"
+done
+
+link="$root/.claude/skills"
+if [ ! -L "$link" ] || [ "$(readlink "$link")" != ../.agents/skills ]; then
+	refuse SKILLS-LINK ".claude/skills is not a symbolic link to ../.agents/skills" \
+		"ln -sfn ../.agents/skills .claude/skills (a directory there hides the skills from Claude Code)"
+fi
+
+if [ -f "$root/AGENTS.md" ]; then
+	lines="$(wc -l <"$root/AGENTS.md" | tr -d ' ')"
+	[ "$lines" -le 80 ] || refuse SKILLS-SCREEN "AGENTS.md is $lines lines, over the screen of 80" \
+		"move procedure into a skill and rationale into .agents/*.md; keep the pointer"
+fi
+
+[ "$fails" -eq 0 ] || { echo "skills-cover: $fails refused" >&2; exit 1; }
