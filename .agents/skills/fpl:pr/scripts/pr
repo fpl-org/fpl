@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
 #
-# scripts/pr — open the pull request for an agent branch, as the machine account.
+# pr — open the pull request for an agent branch, as the machine account. It lives in
+# .agents/skills/fpl:pr/scripts/, the skill fpl:pr says when; here "pr" is that path.
 #
-#   scripts/pr                     the current branch, on main; title and body from its
-#                                  first commit, and with more than one commit the body
-#                                  also lists every subject
-#   scripts/pr <branch>            that branch, without checking it out
-#   scripts/pr -t <title> -b <text>
-#   scripts/pr -B <parent>         stack on the branch of an open pull request (below)
-#   scripts/pr --draft             open it as a draft
-#   scripts/pr --body-file FILE    the body from a file, not generated
-#   scripts/pr -n                  dry run: print what would be sent
+#   pr                     the current branch, on main; title and body from its
+#                          first commit, and with more than one commit the body
+#                          also lists every subject
+#   pr <branch>            that branch, without checking it out
+#   pr -t <title> -b <text>
+#   pr -B <parent>         stack on the branch of an open pull request (below)
+#   pr --draft             open it as a draft
+#   pr --body-file FILE    the body from a file, not generated
+#   pr -n                  dry run: print what would be sent
 #
 # And four things to do to a pull request that is open, by its number:
 #
-#   scripts/pr --update-body N FILE   replace its body with the file
-#   scripts/pr --ready N              take it out of draft, once the bots are quiet
-#   scripts/pr --reviewer N LOGIN     ask LOGIN to review it
+#   pr --update-body N FILE   replace its body with the file
+#   pr --ready N              take it out of draft, once the bots are quiet
+#   pr --reviewer N LOGIN     ask LOGIN to review it
 #
 # The body, a file or generated, and a new body go through the leak gate first. --ready
 # looks at the head commit: it waits, up to FPL_PR_WAIT seconds (default 900, polling every
@@ -56,7 +57,7 @@
 # github layer is not needed. The token is gh's if gh has one for the machine account,
 # else the one in .git/agent-credentials (.agents/WORKFLOW.md, which lists the permissions it
 # needs: --ready also reads check runs and commit statuses). FPL_API_URL names another
-# API for scripts/pr-self-test; only this machine's loopback is accepted.
+# API for pr-self-test, its proof beside it; only this machine's loopback is accepted.
 set -euo pipefail
 
 die() {
@@ -64,8 +65,8 @@ die() {
 	exit 1
 }
 
-usage="usage: scripts/pr [-n] [--draft] [-t <title>] [-b <text>|--body-file <file>] [-B <parent>] [<branch>]
-       scripts/pr --update-body <number> <file> | --ready <number> | --reviewer <number> <login>"
+usage="usage: pr [-n] [--draft] [-t <title>] [-b <text>|--body-file <file>] [-B <parent>] [<branch>]
+       pr --update-body <number> <file> | --ready <number> | --reviewer <number> <login>"
 base="" title="" body="" bodyfile="" dry=0 draft=0 mode=create num="" arg=""
 while [ $# -gt 0 ]; do
 	case "$1" in
