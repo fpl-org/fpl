@@ -17,7 +17,6 @@ scripts/pr -- not yet converted: unit S2 (fpl:pr:open)
 scripts/present-check -- not yet converted: unit S3 (fpl:series:present-check)
 scripts/props -- not yet converted: unit S5 (fpl:quality:props)
 scripts/rad-cob-dagtaak -- not yet converted: unit S5 (fpl:task:load), internal to task
-scripts/restack -- not yet converted: unit S3 (fpl:series:restack)
 scripts/review -- not yet converted: unit S6 (fpl:review:page)
 scripts/review-serve -- not yet converted: unit S6 (fpl:review:serve)
 scripts/series -- not yet converted: unit S3 (fpl:series:stamp)

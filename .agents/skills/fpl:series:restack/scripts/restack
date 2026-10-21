@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 #
-# scripts/restack — rebase the current stack onto the latest base, moving every
+# restack — rebase the current stack onto the latest base, moving every
 # branch ref in the stack with it.
 #
-# This is the whole "restack" step from .agents/WORKFLOW.md. It relies on
-# rebase.updateRefs=true (set by scripts/setup) so intermediate branch refs that
+# This is the whole "restack" step of fpl:series:restack (the rules: .agents/WORKFLOW.md). It
+# relies on rebase.updateRefs=true (set by scripts/setup) so intermediate branch refs that
 # point at commits in the stack are carried along instead of left behind.
 #
 # Usage:
-#   scripts/restack              # fetch, rebase HEAD onto the upstream of <base>
-#   scripts/restack <base>       # use a different base branch (default: main)
-#   scripts/restack --continue   # after resolving conflicts
-#   scripts/restack --abort
+#   restack              # fetch, rebase HEAD onto the upstream of <base>
+#   restack <base>       # use a different base branch (default: main)
+#   restack --continue   # after resolving conflicts
+#   restack --abort
 
 set -euo pipefail
 

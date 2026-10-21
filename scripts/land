@@ -602,7 +602,7 @@ def judge_history(v, main, head, ancestor, merges, start=None):
     else:
         v.no("land/ancestor", f"main {main[:12]} is not an ancestor of {h}",
              "restack before approval, never after: when it is approved, the owner first"
-             " dismisses the approval (.agents/WORKFLOW.md rule 10); then scripts/restack, push,"
+             " dismisses the approval (.agents/WORKFLOW.md rule 10); then restack, push,"
              " and approve the new head")
     if merges == "0":
         v.ok("land/linear", f"no merge commit between main and {h}")
