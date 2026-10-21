@@ -70,7 +70,7 @@ lander reads `Assisted-By`). Who proposed what goes on the card: it is the ackno
 5. `scripts/present-check -B <B> W P` when it is on main; else by hand: `git diff --quiet W P`,
    `git rebase -x 'make quick' <B>` on P, `scripts/commit-lint -b <branch> <B>..P`. Red: fix P, not W.
 6. `scripts/series manifest <B>..P`, when present: it hashes the final messages.
-7. The card from `.agents/REVIEW-CARD.md`, through `scripts/leak-check --text`.
+7. The card from `.agents/REVIEW-CARD.md`, through the leak-check of `fpl:leak`.
 8. Run the silence check again, now: his word may have come while you built, and the lease guards
    the branch, not the comments. Any URL printed or query failing: stop, push nothing. Then
    `git push --force-with-lease=refs/heads/<branch>:<W sha> <token URL> P:refs/heads/<branch>`.

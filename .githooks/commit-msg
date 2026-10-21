@@ -31,7 +31,7 @@
 # change per commit, hunk-level staging.
 #
 # Leak gate (first, before any bypass: a merge message names branches): no private
-# term or secret in the message (scripts/leak-check; FPL_LEAK_GATE=warn overrides).
+# term or secret in the message (skill fpl:leak; FPL_LEAK_GATE=warn overrides).
 #
 # Bypassed for a real merge, a real revert (see is_merge, is_revert) and, outside lint mode,
 # fixup!/squash!/amend! messages, which gates 7 and 7b still judge. A revert is real only when it holds the tree git revert
@@ -84,7 +84,7 @@ fail() { # fail <rule id> <what is wrong> <what to do>
 
 # The private list is local, so there is nothing to judge a landed commit against in CI.
 if [ -z "$lint_commit" ]; then
-	"$repo_root/scripts/leak-check" --message "$given" || {
+	"$repo_root/.agents/skills/fpl:leak/scripts/leak-check" --message "$given" || {
 		rc=$?
 		reuse_hint
 		exit "$rc"

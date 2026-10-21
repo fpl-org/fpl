@@ -13,10 +13,10 @@ scripts/land (a fast-forward) refuses to depend on. The tree is computed here in
 
 The input is the JSON `gh pr list --state open --limit 300 --json number,title,headRefName,
 baseRefName,isDraft,isCrossRepository` prints. --json FILE (or `-` for stdin) reads it from
-there; without it the script asks the forge, read-only, like scripts/sweep: gh with the machine
+there; without it the script asks the forge, read-only, like the sweep of fpl:worktree:sweep: gh with the machine
 account's token (STACK_TREE_GH_USER, default psjg-claude) for STACK_TREE_REPO or --repo (default:
 the `github` remote). Drawing needs python3 alone; gh is only the transport, and without it
-the remedy is `scripts/layer on github`. A token is never printed.
+the remedy is `.agents/skills/fpl:worktree:layer/scripts/layer on github`. A token is never printed.
 
 The rule: a pull request hangs under the open pull request whose head branch is its base, and
 only a same-repository pull request can be a parent: a fork's branch may be named anything,
@@ -304,7 +304,7 @@ def default_repo() -> str:
 def fetch(repo: str | None) -> str:
     gh = shutil.which("gh")
     if gh is None:
-        raise refuse("stack-tree/gh", "gh is not on PATH", "scripts/layer on github")
+        raise refuse("stack-tree/gh", "gh is not on PATH", ".agents/skills/fpl:worktree:layer/scripts/layer on github")
     user = os.environ.get("STACK_TREE_GH_USER", "psjg-claude")
     token = run([gh, "auth", "token", "--hostname", "github.com", "--user", user]).strip()
     env = {**os.environ, "GH_TOKEN": token}

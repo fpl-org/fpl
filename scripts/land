@@ -170,7 +170,7 @@
 # this script's own.
 #
 # The repository is the one --remote (default github) points at; its configured URL must be
-# on GitHub. The forge is read and written with `gh api` only (scripts/layer on github), so
+# on GitHub. The forge is read and written with `gh api` only (.agents/skills/fpl:worktree:layer/scripts/layer on github), so
 # scripts/land-self-test serves it from fixtures with a gh of its own first on PATH, and
 # git's fetches and pushes from a bare repository with a git of its own. Every gh call names
 # github.com, whatever GH_HOST or gh's configuration names, so the pull request, its
@@ -1239,7 +1239,7 @@ else
 	[ "$dry" -eq 1 ] || { [ -t 0 ] && [ -t 1 ]; } ||
 		die "needs a terminal: landing is a person's decision (--dry-run and --ci need none)"
 fi
-command -v gh >/dev/null || die "gh not found; scripts/layer on github"
+command -v gh >/dev/null || die "gh not found; .agents/skills/fpl:worktree:layer/scripts/layer on github"
 command -v python3 >/dev/null || die "python3 not found"
 # api: gh api on github.com, where destination() says git pushes. A call that names no host
 # goes to the one GH_HOST or gh's configuration names, which may be another forge, whose

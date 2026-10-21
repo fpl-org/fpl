@@ -3,7 +3,7 @@
 # .githooks/pre-push — four gates on what reaches a remote, after a message (scripts/whoami-check)
 # naming the account the push goes out as:
 #
-#   1. No private term or secret in what is pushed (scripts/leak-check --push): the
+#   1. No private term or secret in what is pushed (leak-check --push, skill fpl:leak): the
 #      patches, file names, identities and messages of every commit the remote does not
 #      have yet, the names of the refs pushed, and annotated tags. A branch new to the
 #      remote is judged by the commits that none of the refs at the URL pushed to ($2,
@@ -60,7 +60,7 @@ updates="$(cat)"
 # 1. leak gate -------------------------------------------------------------------------
 # It is handed the URL ($2), not the remote's name ($1): ls-remote of a name lists the
 # fetch url, which may hold what the pushurl does not.
-"$top/scripts/leak-check" --push "${2:-}" <<<"$updates" ||
+"$top/.agents/skills/fpl:leak/scripts/leak-check" --push "${2:-}" <<<"$updates" ||
 	{ echo "pre-push: nothing was pushed." >&2; exit 1; }
 
 # 2. forward only ----------------------------------------------------------------------

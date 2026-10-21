@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# scripts/sweep-self-test — proof that scripts/sweep reads a repository without touching it
+# sweep-self-test (skill fpl:worktree:sweep) — proof that sweep reads a repository without touching it
 # (every file checksums the same after a dry run), proposes only what is finished, and removes
 # it only when the owner says yes, with what it held saved first: a tag, and the dirty files
 # (tracked, staged, untracked) as a patch that gives the worktree back. The fixture has merged,
@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-root="$(cd "$(dirname "$0")/.." && pwd)"
+here="$(cd "$(dirname "$0")" && pwd)"
 
 # --- the driver -----------------------------------------------------------------------------
 if [ -z "${SWEEP_SELF_TEST_RUN:-}" ]; then
@@ -41,7 +41,7 @@ if [ -z "${SWEEP_SELF_TEST_RUN:-}" ]; then
 	runs=0 failed=0
 	for b in $bashes; do
 		runs=$((runs + 1))
-		# scripts/sweep starts with `#!/usr/bin/env bash`: this bash goes first on PATH.
+		# sweep starts with `#!/usr/bin/env bash`: this bash goes first on PATH.
 		mkdir -p "$tmp/bin-$runs"
 		ln -s "$b" "$tmp/bin-$runs/bash"
 		PATH="$tmp/bin-$runs:$PATH" SWEEP_SELF_TEST_RUN=1 "$b" "$0" || failed=$((failed + 1))
@@ -62,10 +62,10 @@ unset SWEEP_OWNER_YES SWEEP_FORGE SWEEP_FRESH_MIN SWEEP_BASE SWEEP_REPO SWEEP_GH
 # shellcheck disable=SC2046 # one variable name per line, no spaces
 unset $(git rev-parse --local-env-vars)
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$TMPDIR" "$tmp/stub"
-sweep="$root/scripts/sweep"
+sweep="$here/sweep"
 tab="$(printf '\t')"
 
-# A gh that answers the two calls scripts/sweep may make, and logs every call.
+# A gh that answers the two calls sweep may make, and logs every call.
 cat >"$tmp/stub/gh" <<EOF
 #!/bin/sh
 echo "\$*" >>"$tmp/gh.log"
@@ -154,7 +154,7 @@ printf 'agent/claude/stack/openpr\tOPEN\nagent/claude/stack/onforge\tCLOSED\nage
 fingerprint() {
 	find "$repo" -type f -exec cksum {} + | sort | cksum
 }
-# sw <args>: scripts/sweep from the repository, output in $tmp/out, exit code in $rc.
+# sw <args>: sweep from the repository, output in $tmp/out, exit code in $rc.
 sw() {
 	rc=0
 	(cd "${at:-$repo}" && "$sweep" "$@") >"$tmp/out" 2>"$tmp/err" || rc=$?

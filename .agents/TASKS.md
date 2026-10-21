@@ -11,7 +11,7 @@ repository, and who opened, moved or blocked a task is part of the record, per a
 exists and the maintainer's key is the one that signs. The maintainer's clone holds the units of
 the harness redo (29 tasks, loaded from `.agents/tasks/redo.tsv`, below); the Radicle node is
 not running and nothing has been pushed to the `rad` remote, so no other clone has them. Needs
-`rad`: `scripts/layer on radicle`.
+`rad`: the skill `fpl:worktree:layer`.
 
 ```
 scripts/task new "parser: integer expressions" -b <id>    # -b: blocked by; repeatable
@@ -56,7 +56,7 @@ a clone, so the file is how a reviewer sees what was loaded, in a diff. The load
   200, brief over 10 000 characters), a label two tasks of the store share, a link to a task
   this identity may not link, more than 64 blockers on a task, a new link that closes a loop
   of blockers or parents with the store's own, and a title or brief that
-  `scripts/leak-check --text` flags (always in block mode, whatever `FPL_LEAK_GATE` says);
+  the leak-check of `fpl:leak` flags (`--text`, always in block mode, whatever `FPL_LEAK_GATE` says);
 - reads back every task it opens and every link it writes, and stops at the first one the
   reducer did not apply;
 - is idempotent: a unit whose label already is the first word of a task, in any case, is not

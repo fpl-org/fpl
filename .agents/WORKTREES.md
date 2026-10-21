@@ -42,13 +42,12 @@ worktrees/
 
 ## Recipes
 
-```
-# create an attempt (worktree add + agent identity + scripts/setup in one step)
-scripts/new-worktree b                       # worktrees/b on attempt/b, from main
-scripts/new-worktree -a claude b             # …on agent/claude/attempt/b, for an agent to work in
-scripts/new-worktree b some-ref              # …from another base; -n for a dry run
+Making one, wired and with the agent identity, is `fpl:worktree:new`; wiring a checkout made
+another way is `fpl:worktree:setup`; the inventory, and the one clean-up it proposes, is
+`fpl:worktree:sweep` (the routine: `fpl:worktree`). What git itself does:
 
-# the same by hand
+```
+# by hand
 git worktree add worktrees/b -b attempt/b main
 cd worktrees/b && ../../scripts/setup        # wire hooks + config in the new worktree
 
@@ -65,13 +64,9 @@ git worktree move <old-path> worktrees/a
 git worktree prune
 ```
 
-`scripts/new-worktree` is the vendor-neutral entry point; `.claude/commands/new-worktree.md`
-is a thin wrapper over it.
-
-`scripts/sweep` tables every worktree and unattached branch (merged, commits `main` lacks by
-patch, dirty files, pull request, owner) with a proposal: keep, review or archive. A dry run is
-the default; `SWEEP_OWNER_YES=1 scripts/sweep --apply`, run from the main checkout, tags what it
-removes and saves dirty files under `harness/sweep-archive/` there.
+Nothing removes a worktree or a branch without the owner's yes: an agent runs the sweep's
+dry run and reports, and a removed worktree's dirty files are saved as patches under
+`harness/sweep-archive/` in the main checkout, git-ignored, before it goes.
 
 ## The two sides
 
