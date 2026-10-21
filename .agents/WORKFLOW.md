@@ -58,7 +58,7 @@ top of base) · **restack** (rebase the stack when base or a lower commit change
    judges the branch's whole history. Its report names the rule, the list line and the
    place, never the match. With no list only the defaults run.
    `FPL_LEAK_GATE=block` (default) · `warn` (report, don't block) · `off`. It covers what
-   leaves through git and `scripts/pr`; the comments `scripts/export-review` posts, and
+   leaves through git and `scripts/pr`; the comments `fpl:review:export` posts, and
    anything written on the forge by hand, do not pass it.
 10. **An approved pull request is frozen; fix forward.** Until the maintainer approves a pull
     request, agents rewrite it freely, in this order: the machines first (`make check` and
@@ -151,25 +151,6 @@ To amend a commit that isn't on top, before it is approved:
 ```
 git rebase -i --update-refs github/main    # mark the target 'edit', amend, continue
 ```
-
-## Read the diff with the file around it
-
-```
-scripts/review                 the current branch against main
-scripts/review -b <base> …     against the branch below, in a stack
-scripts/review -s              side by side
-```
-
-renders every changed file whole — `git diff -U9999` through `diff2html` — and opens the page
-in the browser. A forge shows a hunk and three lines around it; whether a name is already
-bound, whether the line above reverses the meaning, whether `set -e` bites here, none of that
-is in the hunk, and a reviewer who cannot see it approves what he cannot judge.
-`FPL_REVIEW_CONTEXT` changes the number of lines; `-o <file>` writes the page instead of
-opening it.
-
-It reads git refs and nothing else: no forge, no network, no account. It works on a branch
-that was never pushed, and it survives a change of forge — which is rule 7 applied to the one
-part of review that does not need the forge at all.
 
 ## Land — through GitHub, for now
 
@@ -463,87 +444,12 @@ to main (so landing brings the count down) and to the head of a pull request whe
 asks for changes (so his fix can be pushed). Back at the cap or under it, the next run lifts
 the lock. A refused push over the cap is the brake: drain the queue, do not route around it.
 
-## Bring the review home
+## Review lives in the repository
 
-```
-scripts/import-review <number>...   those pull requests, into Radicle patches
-scripts/import-review --open        every open one
-```
-
-The code already has a home that is not the forge; the conversation about it did not. This
-carries a pull request into a Radicle patch in the repository: the head as a revision, based
-on the branch below so a stack shows one layer at a time, and every comment, line comment,
-reply and verdict as a comment on that revision, at the same lines. After the import the
-patch is the record, and it replicates like the rest.
-
-A comment arrives signed by whoever ran the import, since the forge user has no key. Its first
-line says who wrote it on the forge, when, and links it: a claim, not a signature. The link is
-also how a second run skips it, so importing twice changes nothing. The Radicle review itself
-stays empty, because Radicle keeps one review per signer per revision, and that one is for
-the verdict of whoever runs the import.
-
-It pushes to the `rad` remote and so needs `rad` (`scripts/layer on radicle`) and the key in
-the agent. `--self-test` runs it in a throwaway Radicle home without the network.
-
-```
-scripts/review --serve       import the open pull requests, then show them in the browser
-```
-
-stops the page this clone is already serving, if there is one, imports every open pull
-request (`scripts/import-review --open`), and serves the patches on 127.0.0.1. The page
-reads the patches and nothing else. Its address, token included, is also written to
-`.git/review-serve.pid`, so it can be opened in another browser than the default.
-
-Open pull requests form one queue, ordered by what each is stacked on: a pull request reads
-after the open one whose commits hold its base, even when that one has moved on since;
-those based on main come first, and filing time orders pull requests that do not depend on
-each other. The page is that queue as one surface, head first, with the last few merged pull requests above it in grey. On the left is the queue as
-a tree, main at the top, each pull request with its commits under it; a click on a pull
-request scrolls there, a click on a commit shows that commit alone. On the right are the
-timeline, the files and the commits of the pull request in view. `[` and `]` fold the two
-panels away.
-
-Every changed file is there whole. Long unchanged stretches are hatched in the gutter; a
-click on the hatching folds one, `z` folds the one nearest you and `Z` all of them, but
-nothing is folded unless you fold it. You read top to bottom and decide per hunk, in the
-place you read it: approve with `→` or by dragging the hunk to the right, not this with `←`
-or by dragging it to the left, comment with `c`. `↓` and `↑` move between hunks, `u` undoes
-the last mark, and a selected range of lines can be approved on its own. A mark is a
-Radicle reaction on those lines, signed like a comment. At the end of each pull request is
-its merge button (`m`), which opens only when every hunk is approved; with hunks refused it
-offers to request changes instead. Merging records your approval of the revision too, turns
-the pull request purple and then grey, and moves on to the next one, which the merge has
-moved onto the new main. An approval stays with a hunk as long as the hunk itself does not
-change.
-
-At the end of a pull request the page stops. Scroll on and a bar there fills; past the line
-you are in the next pull request. The same going back up, into the ones already merged.
-
-Only what is in Radicle shows; `scripts/review-serve` without `--fresh` serves it without
-importing first. What you write there goes into the patch under your key, the way the
-Radicle CLI writes it: a line comment into your review of the revision, a reply into the
-thread it answers, accept or reject as your review's verdict. Comments in a review can be
-resolved; imported ones cannot, because Radicle keeps them on the revision, where there is
-no resolve, so they are answered instead.
-
-```
-scripts/export-review <number>... | --open
-```
-
-is the way back. What was written in the review and not imported goes onto the pull
-request once, posted by the machine account: a line comment as a review comment on those
-lines (or, for a line outside the forge's diff, a plain comment that names and links the
-line), a reply to a forge comment as a reply in its thread, anything else and a verdict as a
-comment. The first line names the writer and the key that signed it; the last is an HTML
-comment with the Radicle id, which is how a second run skips it and how scripts/import-review
-leaves it out. So a conversation can run in both places and each comment keeps one home.
-
-The page lands nothing and writes nothing to the forge. At the end of a pull request, with
-every hunk approved, its box links to the pull request: approve it in the GitHub UI, and the
-lander lands it, fast-forward only (see Land). Commits keep their SHAs, so a patch stacked on
-it needs no replay and the page has none; it becomes a root of the queue once its parent has
-landed. The server listens on 127.0.0.1 only and wants the token in the address it prints, so
-no other page in the browser can write to it.
+Radicle is the mirror of record for reviews: a pull request is imported into a signed patch,
+and after that the patch is the record, replicated with the code and readable when the forge
+is gone. How to read a branch whole, to serve the patches, and to carry a review between the
+forge and Radicle is the skill `fpl:review` (`.agents/skills/`).
 
 ## The agent's credential
 
