@@ -40,6 +40,7 @@ TYPE = "nl.psjs.dagtaak"
 OPEN_STATES = ("todo", "doing")
 VERBS = {"start": "doing", "done": "done", "drop": "dropped", "reopen": "todo"}
 HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)  # the checkout this script is in: the skills live under it
 
 
 def die(message):
@@ -321,7 +322,7 @@ def refuse_loops(graph, units, ids, plan):
 
 
 def leak_gate(units):
-    """Every title and brief through scripts/leak-check --text, before anything is written.
+    """Every title and brief through leak-check --text (skill fpl:leak), before anything is written.
 
     A task is signed and replicated, and a COB cannot be taken back out of a peer's store,
     so a refusal here names the unit and nothing has been written yet. For the same reason
@@ -334,8 +335,9 @@ def leak_gate(units):
         with tempfile.NamedTemporaryFile("w", suffix=".txt") as handle:
             handle.write(f"{title}\n\n{brief}\n")
             handle.flush()
+            leak_check = os.path.join(ROOT, ".agents", "skills", "fpl:leak", "scripts", "leak-check")
             done = subprocess.run(
-                [os.path.join(HERE, "leak-check"), "--text", handle.name],
+                [leak_check, "--text", handle.name],
                 env=dict(os.environ, FPL_LEAK_GATE="block"),
                 capture_output=True,
                 text=True,

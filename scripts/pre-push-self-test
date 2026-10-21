@@ -9,11 +9,11 @@
 # it left, and only the forge noticed (fpl-org/fpl#125, #126). Every commit below is made
 # with the hooks off, which is how such a commit looks to the push.
 #
-# Everything happens in a throwaway clone of this checkout's .githooks/, scripts/ and
-# .github/, pushing to a bare repository on disk: forward-only does not judge a push that
-# does not go to GitHub, and nothing reaches the network. Git's global and system config,
-# HOME and XDG_CONFIG_HOME point away from the maintainer's. The leak gate is off: it has
-# a self-test of its own, and the copied scripts hold its synthetic key.
+# Everything happens in a throwaway clone of this checkout's .githooks/, scripts/, .github/
+# and the leak skill the hook runs, pushing to a bare repository on disk: forward-only does
+# not judge a push that does not go to GitHub, and nothing reaches the network. Git's global
+# and system config, HOME and XDG_CONFIG_HOME point away from the maintainer's. The leak gate
+# is off: it has a self-test of its own, and the copied scripts hold its synthetic key.
 #
 # Where there is a /bin/bash, the whole run is made a second time with it first on PATH: on
 # a Mac that is bash 3.2, which a push from outside the dev shell gets, and which every
@@ -49,6 +49,7 @@ repo="$tmp/repo"
 git init -q -b main "$repo"
 cd "$repo"
 cp -R "$root/.githooks" "$root/scripts" "$root/.github" .
+mkdir -p .agents/skills && cp -R "$root/.agents/skills/fpl:leak" .agents/skills/
 commit() { git -c core.hooksPath=/dev/null commit -q --allow-empty "$@"; }
 git add -A
 commit -m "chore(harness): base" -m "Human-Only: true"

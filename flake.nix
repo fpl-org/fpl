@@ -102,7 +102,7 @@
         pkgs.git
         pkgs.jujutsu # optional workflow, .agents/JJ.md
         pkgs.diff2html-cli # scripts/review renders a branch as a page
-        # scripts/leak-check, which the hooks run on every commit and push: the
+        # leak-check (skill fpl:leak), which the hooks run on every commit and push: the
         # repository is public, so it cannot wait in an opt-in layer.
         pkgs.gitleaks
 

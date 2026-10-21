@@ -168,7 +168,7 @@ if ! grep -q 'scripts/whoami-check" "${2:-}" >&2 || :$' "$hook"; then
 fi
 # Anchored on the calls, not the comments that name the scripts: the first call of each.
 if [ "$(grep -n '^[^#]*"\$top/scripts/whoami-check"' "$hook" | head -n 1 | cut -d: -f1)" -gt \
-	"$(grep -n '^[^#]*"\$top/scripts/leak-check"' "$hook" | head -n 1 | cut -d: -f1)" ]; then
+	"$(grep -n '^[^#]*"\$top/.agents/skills/fpl:leak/scripts/leak-check"' "$hook" | head -n 1 | cut -d: -f1)" ]; then
 	echo "FAIL hook: whoami-check runs after the gates"
 	fails=$((fails + 1))
 fi
