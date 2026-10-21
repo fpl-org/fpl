@@ -51,8 +51,8 @@ A routine loads its sub-skills by name. A row marked *planned* has no skill yet 
 | `fpl:commit` (`:acommit`, `:identity`, `:lint`, `:boundary`, `:branch`) | making a commit, checking a range or a branch name | `acommit`, `agent-identity`, `commit-lint`, `boundary`, `branch-lint`; planned (S3), `.agents/COMMITS.md` |
 | `fpl:series` (`:stamp`, `:manifest`, `:range`, `:revert`, `:restack`, `:present-check`) | giving a series its identity, moving or undoing it | `series`, `restack`, `present-check`; planned (S3), `.agents/COMMITS.md` |
 | `fpl:present` (`:silent`, `:stamp`, one sub-skill per state) | telling a finished branch again for the maintainer | `present`; planned (S0, S3b), `.claude/agents/presenter.md` |
-| `fpl:pr` (`:open`, `:body`, `:ready`, `:reviewer`, `:whoami`, `:tree`) | opening a draft, its body, making it ready, the tree of open pull requests | `pr`, `whoami-check`, `stack-tree`; planned (S2), `.agents/WORKFLOW.md` |
-| `fpl:land` (`:dry-run`, `:land`, `:by-hand`) | landing an approved head on `main` | `land`; planned (S2), `.agents/WORKFLOW.md` |
+| `fpl:pr` (`:open`, `:body`, `:ready`, `:reviewer`, `:whoami`, `:tree`) | opening a draft, its body, making it ready, the tree of open pull requests | `pr`, `whoami-check`, `stack-tree` |
+| `fpl:land` (`:dry-run`, `:land`, `:by-hand`) | landing an approved head on `main` | `land` |
 | `fpl:worktree` (`:setup`, `:new`, `:layer`, `:sweep`) | a new checkout, its hooks, the forge layer | `setup`, `new-worktree`, `layer`, `sweep`; planned (S4), `.agents/WORKTREES.md` |
 | `fpl:leak` | text or a range before it leaves the machine | `leak-check`; planned (S4), `.agents/WORKFLOW.md` |
 | `fpl:quality` (`:crap`, `:props`, `:escapes`, `:mutants`, `:gates`, `:diagrams`, `:skills`) | the gate's lanes, their proofs, the map | `crap`, `props`, `escapes`, `mutants`, `gates`, `diagrams`, `skills-cover`; `fpl:quality:skills` exists, the rest planned (S5), `.agents/QUALITY.md` |
