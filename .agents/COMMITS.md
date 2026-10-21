@@ -8,7 +8,8 @@ generator can all read, while staying legible for a human doing archaeology year
 
 `scripts/acommit` assembles a compliant message; `.githooks/commit-msg` validates every
 commit independently. Each rule below is marked **[gate]** (a hook rejects violations) or
-**[advisory]** (documented, not machine-checkable — a hook cannot reliably tell).
+**[advisory]** (documented, not machine-checkable — a hook cannot reliably tell). How to make
+a commit, lint a range and split a mixed commit is the `fpl:commit` skill and its sub-skills.
 
 The hook only sees a commit made with git, in a clone whose hooks are wired.
 `git commit --no-verify`, an unwired clone and `jj` (`.agents/JJ.md`) get past it. So the same
@@ -17,20 +18,7 @@ the hook over commits that already exist, and `.github/workflows/commit-lint.yml
 for every commit of a pull request. `.githooks/pre-push` runs it too, over the commits a push
 adds to a branch, judged for the branch they arrive at: a commit moved since it was made
 (cherry-pick, `rebase --onto`, `branch -f`) still carries the `Stack:` of the branch it left,
-and is refused before it reaches the forge. By hand, for a branch based on `main`:
-
-```
-scripts/commit-lint -b "$(git branch --show-current)" github/main..HEAD
-```
-
-For a branch based on a parent not merged yet, the base is that parent on the remote, so
-the parent's commits, which may carry another `Stack:`, are left out as the hook leaves
-them out. Set `PARENT` to the parent branch's name first:
-
-```
-PARENT=agent/claude/stack/parent-name
-scripts/commit-lint -b "$(git branch --show-current)" "github/$PARENT..HEAD"
-```
+and is refused before it reaches the forge.
 
 The agent addresses it accepts beside `.git/agent-identity` come from one of two lists. In
 CI the workflow sets `FPL_AGENT_EMAILS` inline, and that list is the only one trusted: the
@@ -174,9 +162,8 @@ key, so landed history is not refused for case alone; a type or scope in the wro
   landing leaves no merge commit, so this trailer is the in-repo record of which commits formed
   one unit: `git log --grep='^Stack: typed-let$'` recovers the stack years later, forge or no
   forge.
-- `scripts/acommit` takes the session id from `-S <id>`, else `$FPL_SESSION_ID`, else
-  `$CLAUDE_CODE_SESSION_ID`, and refuses to commit when none is set — any harness can
-  export `FPL_SESSION_ID`. It never invents one: a made-up id is useless for forensics.
+- `scripts/acommit` refuses to commit without a session id, and never invents one: a made-up
+  id is useless for forensics. Where it reads the id: `fpl:commit:acommit`.
 - **[gate]** known trailers appear in the order of `COMMIT_TRAILER_ORDER`:
 
   | Trailer | Meaning | Example |
@@ -246,14 +233,9 @@ Two identities, deliberately kept apart.
   `<id>` names its lead, not an exclusive author, so it is not compared with `Assisted-By`:
   a Codex commit on a Claude-led branch is legal and attributed by its own author name and
   trailers. Human commits on agent branches are legal too. `FPL_BRANCH_GATE=warn` overrides.
-- Set up once per clone/worktree:
-
-  ```
-  scripts/agent-identity set "NNNNN+psjg-claude@users.noreply.github.com"
-  ```
-
-  This writes `.git/agent-identity` (inside `.git/`, per-worktree, never committed).
-  `scripts/acommit` reads it and refuses to commit if it is unset.
+- The address is set once per clone or worktree, in `.git/agent-identity` (inside `.git/`,
+  per-worktree, never committed): `fpl:commit:identity`. `scripts/acommit` reads it and
+  refuses to commit if it is unset.
 
 ### 2. Forge-originated work — the Claude GitHub App
 
