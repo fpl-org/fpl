@@ -36,8 +36,8 @@ The page is for one person on one machine: it binds to 127.0.0.1, and a write ne
 token that is in the address this prints, so another site open in the same browser cannot
 post to it, let alone land something.
 
-Needs rad (`scripts/layer on radicle`) and a repository that went through `rad init`, and
-gh for the import (`scripts/layer on github`). The
+Needs rad (`.agents/skills/fpl:worktree:layer/scripts/layer on radicle`) and a repository that went through `rad init`, and
+gh for the import (`.agents/skills/fpl:worktree:layer/scripts/layer on github`). The
 commits of a patch must be in this clone; a patch pushed from here has them, one that
 came in from elsewhere needs a `git fetch rad` first.
 """
@@ -71,7 +71,7 @@ def run(*cmd, ok=True, env=None):
     try:
         done = subprocess.run(cmd, capture_output=True, text=True, env=env)
     except FileNotFoundError:
-        raise Refused(f"{cmd[0]} not found" + ("; scripts/layer on radicle" if cmd[0] == "rad" else ""))
+        raise Refused(f"{cmd[0]} not found" + ("; .agents/skills/fpl:worktree:layer/scripts/layer on radicle" if cmd[0] == "rad" else ""))
     if ok and done.returncode != 0:
         raise Refused(f"{' '.join(cmd[:3])}: {(done.stderr or done.stdout).strip()}")
     return done
