@@ -30,19 +30,22 @@ annotated, because it needs a retarget (or its base landed) first.
 it. --mermaid prints a fenced Mermaid block (`graph TB`: a pull request above the one it is
 based on, the trunk at the bottom, drafts dashed) to paste into a comment or a run's
 $GITHUB_STEP_SUMMARY, where GitHub draws it. Node ids are p<number> and b<k>, never taken from
-a title. Titles, headlines and branch names are untrusted forge text: every character of
-Unicode category C (control, format such as a bidi override, surrogate, private use, and so
-newlines) is shown as `?`, in both outputs and in every refusal. A line is never cut to the
-terminal's width. A reader that closes the pipe early ends the script quietly, as for any filter.
+a title, and a `#` in a title is escaped, which Mermaid would read as an entity. Titles,
+headlines and branch names are untrusted forge text: every character of Unicode category C
+(control, format such as a bidi override, surrogate, private use, and so newlines) is shown as
+`?`, in both outputs and in every refusal. A line is never cut to the terminal's width. A reader
+that closes the pipe early ends the script quietly, as for any filter.
 
 Refused, naming the rule and the remedy (exit 2): stack-tree/input
-(not the JSON above, or a file that cannot be read),
+(not the JSON above, nested too deep to read, a commit oid that is not hex, or a file that
+cannot be read),
 stack-tree/ambiguous (two or more open same-repository pull requests share a head branch),
 stack-tree/cycle (pull requests that are each other's ancestors, which a walk from the roots
 would silently drop; each cycle is named, and what hangs above it),
-stack-tree/limit (300 pull requests came back, or 100 commits of one, which is all gh lists:
-some may be missing), stack-tree/gh and stack-tree/forge (the forge could not be read),
-stack-tree/usage.
+stack-tree/limit (300 pull requests, or 100 commits of one, which is all gh lists: some may be
+missing; so for a file as for the forge), stack-tree/gh and stack-tree/forge (the forge could
+not be read, or a `gh pr view` printed no list of commits),
+stack-tree/usage (the command line, or no github remote).
 
 Exit 0: drawn (no open pull requests draws that), or the self-test passed; 1: the self-test
 failed; 2: refused.
@@ -60,6 +63,7 @@ import tempfile
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NoReturn
 
 MAIN = "main"
 ORPHAN = "(no open pull request on this branch: retarget or land first)"
@@ -73,7 +77,9 @@ FIELDS = {
     "isDraft": bool,
     "isCrossRepository": bool,
 }
-MERMAID_ESCAPES = str.maketrans({'"': "#quot;", "<": "#lt;", ">": "#gt;", "&": "#amp;"})
+MERMAID_ESCAPES = str.maketrans(
+    {"#": "#35;", '"': "#quot;", "<": "#lt;", ">": "#gt;", "&": "#amp;"}
+)
 INPUT_REMEDY = f"feed it `gh pr list --state open --limit {LIMIT} --json {','.join(FIELDS)}`"
 COMMITS_REMEDY = INPUT_REMEDY[:-1] + ",commits`, per pull request as `gh pr view` has it"
 
@@ -117,10 +123,13 @@ def read_commit(raw: object, at: int) -> tuple[str, str]:
     if not (
         isinstance(raw, dict)
         and type(raw.get("oid")) is str
+        and re.fullmatch(r"[0-9a-f]{7,64}", raw["oid"])
         and type(raw.get("messageHeadline")) is str
     ):
         raise refuse(
-            "stack-tree/input", f"entry {at}: a commit lacks oid or messageHeadline", INPUT_REMEDY
+            "stack-tree/input",
+            f"entry {at}: a commit lacks a hex oid or a messageHeadline",
+            INPUT_REMEDY,
         )
     return raw["oid"][:7], raw["messageHeadline"]
 
@@ -154,13 +163,26 @@ def read_pr(raw: object, at: int, with_commits: bool) -> Pr:
     )
 
 
-def read_prs(text: str, with_commits: bool = False) -> list[Pr]:
+def load(text: str) -> list:
+    """The JSON list of pull requests in `text`: gh lists at most LIMIT, so a list that long may
+    have been cut short, whether it came from the forge or from a file."""
     try:
         raw = json.loads(text)
-    except ValueError as e:
+    except (ValueError, RecursionError) as e:  # RecursionError: JSON nested thousands deep
         raise refuse("stack-tree/input", f"not JSON ({e})", INPUT_REMEDY) from e
     if not isinstance(raw, list):
         raise refuse("stack-tree/input", "the top level is not a list", INPUT_REMEDY)
+    if len(raw) >= LIMIT:
+        raise refuse(
+            "stack-tree/limit",
+            f"{len(raw)} pull requests, as many as the {LIMIT} gh lists; some may be missing",
+            "close or land some, or raise LIMIT in scripts/stack-tree",
+        )
+    return raw
+
+
+def read_prs(text: str, with_commits: bool = False) -> list[Pr]:
+    raw = load(text)
     prs = [read_pr(r, i, with_commits) for i, r in enumerate(raw)]
     numbers = [p.number for p in prs]
     if len(set(numbers)) != len(numbers):
@@ -284,7 +306,7 @@ def mermaid_lines(prs: list[Pr], f: Forest) -> list[str]:
     for k, base in enumerate(root_order(f.roots), 1):
         out.append(f'  b{k}["{esc(root_label(base))}"]')
         edges += [f"  p{n} --> b{k}" for n in f.roots[base]]
-    out += [f'  p{p.number}["{esc(f"#{p.number} {p.title}")}"]' for p in prs]
+    out += [f'  p{p.number}["#{p.number} {esc(p.title)}"]' for p in prs]
     for parent, ns in sorted(f.kids.items()):
         edges += [f"  p{n} --> p{parent}" for n in ns]
     drafts = ",".join(f"p{p.number}" for p in prs if p.draft)
@@ -360,16 +382,17 @@ def fetch(repo: str | None, with_commits: bool) -> str:
         ],
         env,
     )
-    prs = json.loads(listed)
-    if len(prs) >= LIMIT:
+    prs = load(listed)
+    try:
+        for raw in prs if with_commits else ():
+            view = run([gh, "pr", "view", str(raw["number"]), *at, "--json", "commits"], env)
+            raw["commits"] = json.loads(view)["commits"]
+    except (ValueError, RecursionError, KeyError, TypeError) as e:
         raise refuse(
-            "stack-tree/limit",
-            f"{LIMIT} pull requests came back; some may be missing",
-            "raise LIMIT in scripts/stack-tree",
-        )
-    for raw in prs if with_commits else ():
-        view = run([gh, "pr", "view", str(raw["number"]), *at, "--json", "commits"], env)
-        raw["commits"] = json.loads(view)["commits"]
+            "stack-tree/forge",
+            f"gh printed what is not a pull request ({e!r})",
+            "check the gh version and the repository",
+        ) from e
     return json.dumps(prs)
 
 
@@ -382,18 +405,23 @@ def read_source(name: str) -> str:
         ) from e
 
 
+class Parser(argparse.ArgumentParser):
+    def error(self, message: str) -> NoReturn:
+        raise refuse("stack-tree/usage", message, "see scripts/stack-tree --help")
+
+
 def main(argv: list[str]) -> int:
-    ap = argparse.ArgumentParser(prog="stack-tree", description="the open pull requests as a tree")
+    ap = Parser(prog="stack-tree", description="the open pull requests as a tree")
     ap.add_argument("--commits", action="store_true", help="list each pull request's commits")
     ap.add_argument("--mermaid", action="store_true", help="print a Mermaid block instead")
     ap.add_argument("--json", metavar="FILE", help="read gh's JSON from FILE, or - for stdin")
     ap.add_argument("--repo", metavar="OWNER/NAME", help="the repository to ask the forge about")
     ap.add_argument("--self-test", action="store_true", help="prove the script on fixtures")
-    a = ap.parse_args(argv)
-    if a.self_test:
-        return self_test()
-    commits = a.commits and not a.mermaid
     try:
+        a = ap.parse_args(argv)
+        if a.self_test:
+            return self_test()
+        commits = a.commits and not a.mermaid
         text = read_source(a.json) if a.json else fetch(a.repo, commits)
         lines = draw(read_prs(text, commits), a.mermaid, commits)
     except RefusalError as e:
@@ -545,7 +573,7 @@ CASES = [
     ),
     ("a head named main is no parent of main's pull requests", [], FORWARD, 0, FORWARD_TEXT, ()),
     ("ambiguous head", [], AMBIGUOUS, 2, "", ("stack-tree/ambiguous", "#1, #2 and #3", "remedy")),
-    ("--mermaid ignores --commits", ["--mermaid", "--commits"], STACK, 0, STACK_MERMAID, ()),
+    ("--mermaid ignores --commits", ["--mermaid", "--commits"], NO_COMMITS, 0, STACK_MERMAID, ()),
     ("empty", [], [], 0, "no open pull requests", ()),
     ("not a list", [], {}, 2, "", ("stack-tree/input", "remedy")),
     ("missing field", [], [{"number": 1}], 2, "", ("stack-tree/input", "title")),
@@ -579,11 +607,22 @@ def extra_cases(tmp: Path) -> list[str]:
         json.dumps([pr(1, "t", "t", "main", commits=("c",) * GH_COMMITS)])
     )
     (tmp / "head.json").write_text(json.dumps(HOSTILE_HEAD))
-    gone, bad, many, head = (
+    (tmp / "deep.json").write_text("[" * 10000 + "]" * 10000)
+    (tmp / "full.json").write_text(json.dumps([pr(n, "t", f"b{n}", "main") for n in range(LIMIT)]))
+    bad_oid = pr(1, "t", "t", "main", commits=("c",))
+    bad_oid["commits"][0]["oid"] = "\x1b[31mX"
+    (tmp / "oid.json").write_text(json.dumps([bad_oid]))
+    (tmp / "entity.json").write_text(json.dumps([pr(1, "#9829;", "a", "main")]))
+    gone, bad, many, head, deep, full, oid, entity, usage = (
         go("--json", str(tmp / "gone.json")),
         go("--json", str(tmp / "latin1.json")),
         go("--json", str(tmp / "many.json"), "--commits"),
         go("--json", str(tmp / "head.json")),
+        go("--json", str(tmp / "deep.json")),
+        go("--json", str(tmp / "full.json")),
+        go("--json", str(tmp / "oid.json"), "--commits"),
+        go("--json", str(tmp / "entity.json"), "--mermaid"),
+        go("--bad\x1b[31m"),
     )
     (tmp / "empty.json").write_text("[]")
     closed = subprocess.Popen(
@@ -611,6 +650,13 @@ def extra_cases(tmp: Path) -> list[str]:
         "missing file": refused(gone, "gone.json"),
         "non-UTF-8 file": refused(bad, "latin1.json"),
         "100 commits": many.returncode == 2 and "stack-tree/limit" in many.stderr,
+        "300 pull requests in a file": full.returncode == 2 and "stack-tree/limit" in full.stderr,
+        "JSON nested too deep": refused(deep, "not JSON") and "Traceback" not in deep.stderr,
+        "oid with an escape": refused(oid, "hex oid") and "\x1b" not in oid.stderr + oid.stdout,
+        "# in a Mermaid title": 'p1["#1 #35;9829;"]' in entity.stdout,
+        "bad option": usage.returncode == 2
+        and "stack-tree/usage" in usage.stderr
+        and "\x1b" not in usage.stderr,
         "hostile text in a refusal": len(head.stderr.splitlines()) == 2
         and "'x?y\\nz?'" in head.stderr
         and "\x1b" not in head.stderr,
@@ -630,7 +676,7 @@ def self_test() -> int:
             if not (
                 got.returncode == code
                 and got.stdout.rstrip("\n") == out.rstrip("\n")
-                and all(w in got.stderr for w in words)
+                and (all(w in got.stderr for w in words) if code else got.stderr == "")
             ):
                 failed.append(name)
                 print(
