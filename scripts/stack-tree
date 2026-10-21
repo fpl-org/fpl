@@ -2,7 +2,8 @@
 # gates: $BIN/python $S/stack-tree --self-test
 """scripts/stack-tree — the open pull requests as the tree their bases make, never committed.
 
-    scripts/stack-tree [--commits] [--mermaid] [--json FILE] [--repo OWNER/NAME]
+    scripts/stack-tree [--commits] [--mermaid] [--urls] [--json FILE] [--repo OWNER/NAME]
+                       [--forge URL]
     scripts/stack-tree --self-test
 
 The maintainer stacks pull requests: one is based on the head branch of another. GitHub's list
@@ -52,6 +53,18 @@ missing; so for a file as for the forge), stack-tree/gh and stack-tree/forge (th
 not be read, or printed what is not the JSON above),
 stack-tree/usage (the command line, or no github remote).
 
+Each pull request links to its page on the forge: on a terminal its number is an OSC 8
+hyperlink, with --urls its address follows the title (for a pipe, which gets no escapes), and in
+--mermaid a click on its node opens it. The address comes from a
+remote's url, any spelling git takes: --forge URL, else https://github.com/OWNER/NAME when the
+repository is named (gh reads it there), else the `github` remote. The host names the forge's
+kind, which names the path to a request (PR_PATHS): /pull/N on GitHub, /-/merge_requests/N on
+GitLab, /pulls/N on Gitea, Forgejo and Codeberg; github.com, gitlab.com and codeberg.org, or a
+host whose first label is the kind, as gitlab.example.org, in any case. An ssh alias such as
+github.com-bot names one of those three; past them an alias cannot be told from a host, so a
+host without a dot over ssh, or whose last label is not shaped as a top-level domain's, gets no
+links, as does any other host.
+
 Exit 0: drawn (no open pull requests draws that), or the self-test passed; 1: the self-test
 failed; 2: refused.
 """
@@ -61,6 +74,7 @@ import json
 import os
 import random
 import re
+import select
 import shutil
 import signal
 import subprocess
@@ -72,6 +86,9 @@ from pathlib import Path
 from typing import NoReturn
 
 MAIN = "main"
+GH_HOST = "github.com"  # where gh reads from; links follow the remote, any forge
+PR_PATHS = {"github": "/pull/", "gitlab": "/-/merge_requests/", "gitea": "/pulls/"}
+PR_PATHS |= {"forgejo": "/pulls/", "codeberg": "/pulls/"}  # the path to a request, by kind
 ORPHAN = "(no open pull request on this branch: retarget or land first)"
 LIMIT = 300
 GH_COMMITS = 100  # what `gh pr view --json commits` lists at most
@@ -285,14 +302,18 @@ def root_label(base: str) -> str:
     return clean(base) + ("" if base == MAIN else " " + ORPHAN)
 
 
-def text_lines(prs: list[Pr], f: Forest, commits: bool) -> list[str]:
+def text_lines(prs: list[Pr], f: Forest, commits: bool, link: str | None, how: str) -> list[str]:
+    """The tree; with a `link`, each number is an OSC 8 hyperlink if `how` is "osc8", or the
+    title is followed by its address if it is "url"."""
     by = {p.number: p for p in prs}
     out: list[str] = []
 
     def draw(n: int, prefix: str, last: bool) -> None:
         p, sub, sk = by[n], prefix + ("   " if last else "│  "), f.kids.get(n, [])
         mark = " (draft)" if p.draft else ""
-        out.append(f"{prefix}{'└─ ' if last else '├─ '}#{n}{mark} {clean(p.title)}")
+        num = f"\x1b]8;;{link}{n}\x1b\\#{n}\x1b]8;;\x1b\\" if link and how == "osc8" else f"#{n}"
+        url = f" <{link}{n}>" if link and how == "url" else ""
+        out.append(f"{prefix}{'└─ ' if last else '├─ '}{num}{mark} {clean(p.title)}{url}")
         if commits:
             bar = f"{sub}{'│' if sk else ' '}  "
             out.extend(f"{bar}{oid} {clean(h)}" for oid, h in p.commits)
@@ -311,9 +332,10 @@ def js_len(text: str) -> int:
     return len(text.encode("utf-16-le")) // 2
 
 
-def mermaid_lines(prs: list[Pr], f: Forest, cut: int | None) -> list[str]:
+def mermaid_lines(prs: list[Pr], f: Forest, cut: int | None, link: str | None) -> list[str]:
     """The diagram, unfenced: the trunk on the left, an edge from a branch to each pull request
-    based on it, so a stack reads left to right in the order it lands; titles cut to `cut`."""
+    based on it, so a stack reads left to right in the order it lands; titles cut to `cut`, and
+    a click on a node opens `link` and its number."""
 
     def esc(text: str) -> str:
         return text.translate(MERMAID_ESCAPES)
@@ -331,14 +353,15 @@ def mermaid_lines(prs: list[Pr], f: Forest, cut: int | None) -> list[str]:
     for parent, ns in sorted(f.kids.items()):
         edges += [f"  p{parent} --> p{n}" for n in ns]
     drafts = ",".join(f"p{p.number}" for p in prs if p.draft)
-    return [*out, *edges, *([f"  class {drafts} draft"] if drafts else [])]
+    clicks = [f'  click p{p.number} href "{link}{p.number}"' for p in prs if link]
+    return [*out, *edges, *([f"  class {drafts} draft"] if drafts else []), *clicks]
 
 
-def mermaid_block(prs: list[Pr], f: Forest) -> list[str]:
+def mermaid_block(prs: list[Pr], f: Forest, link: str | None) -> list[str]:
     """The fenced diagram with the longest titles that keep it within MERMAID_MAX, past which
     Mermaid draws an error instead."""
     for cut in CUTS:
-        if js_len("\n".join(lines := mermaid_lines(prs, f, cut))) <= MERMAID_MAX:
+        if js_len("\n".join(lines := mermaid_lines(prs, f, cut, link))) <= MERMAID_MAX:
             return ["```mermaid", *lines, "```"]
     raise refuse(
         "stack-tree/limit",
@@ -347,11 +370,11 @@ def mermaid_block(prs: list[Pr], f: Forest) -> list[str]:
     )
 
 
-def draw(prs: list[Pr], mermaid: bool, commits: bool) -> list[str]:
+def draw(prs: list[Pr], mermaid: bool, commits: bool, link: str | None, how: str) -> list[str]:
     if not prs:
         return ["no open pull requests"]
     f = forest(prs)
-    return mermaid_block(prs, f) if mermaid else text_lines(prs, f, commits)
+    return mermaid_block(prs, f, link) if mermaid else text_lines(prs, f, commits, link, how)
 
 
 # --- the edge: the forge, argv, the terminal -------------------------------------------------
@@ -380,11 +403,47 @@ def repo_of(url: str) -> str | None:
     return m.group(1) if m else None
 
 
+def forge_link(url: str) -> str | None:
+    """What a pull request's number is appended to, to address it: from a remote's url in any
+    spelling git takes (https, ssh:// or [user@]host:path, where github.com-<alias> and the like
+    are ssh aliases of github.com, gitlab.com and codeberg.org), on a host of a kind in PR_PATHS:
+    github.com, gitlab.com, codeberg.org, or one whose first label names its kind, as
+    gitlab.example.org, in any case. None for any other, and for an ssh host that may be an alias
+    of another: one without a dot, or whose last label is not shaped as a top-level domain's."""
+    m = re.fullmatch(
+        r"(?:(?P<scheme>https?)://(?:[^@/\s]+@)?(?P<web>[\w.-]+(?::\d+)?)/"
+        r"|ssh://(?:[^@/\s:]+@)?(?P<ssh>[\w.-]+)(?::\d+)?/|(?:[^@/\s:]+@)?(?P<scp>[\w.-]+):)"
+        r"(?P<path>[\w.-]+(?:/[\w.-]+)+)/?",
+        url.strip(),
+        re.ASCII,
+    )
+    if m is None:
+        return None
+    alias = r"(?i)^(github\.com|gitlab\.com|codeberg\.org)-[\w-]+$"
+    host = m["web"] or re.sub(alias, r"\1", m["ssh"] or m["scp"])
+    name = host.split(":")[0].lower()
+    if not re.fullmatch(r"[a-z]+|xn--[a-z0-9-]+", name.rsplit(".", 1)[-1]) or not (
+        m["web"] or "." in name
+    ):
+        return None
+    kind = {GH_HOST: "github", "gitlab.com": "gitlab"}.get(name, name.split(".")[0])
+    pr_path = PR_PATHS.get(kind)
+    path = m["path"].removesuffix(".git")
+    return pr_path and f"{m['scheme'] or 'https'}://{host}/{path}{pr_path}"
+
+
+def remote_url() -> str:
+    """The url of the `github` remote, the one the forge is read from; empty without one, or
+    without git: drawing needs python3 alone."""
+    try:
+        cmd = ["git", "remote", "get-url", "github"]
+        return subprocess.run(cmd, capture_output=True, text=True, check=False).stdout
+    except OSError:
+        return ""
+
+
 def default_repo() -> str:
-    url = subprocess.run(
-        ["git", "remote", "get-url", "github"], capture_output=True, text=True, check=False
-    ).stdout
-    if (name := repo_of(url)) is None:
+    if (name := repo_of(remote_url())) is None:
         raise refuse(
             "stack-tree/usage",
             "no `github` remote to take the repository from",
@@ -400,7 +459,7 @@ def fetch(repo: str | None, with_commits: bool) -> str:
     user = os.environ.get("STACK_TREE_GH_USER", "psjg-claude")
     token = run([gh, "auth", "token", "--hostname", "github.com", "--user", user]).strip()
     env = {**os.environ, "GH_TOKEN": token}
-    at = ["-R", f"github.com/{repo or os.environ.get('STACK_TREE_REPO') or default_repo()}"]
+    at = ["-R", f"{GH_HOST}/{repo or default_repo()}"]
     listed = run(
         [
             gh,
@@ -450,14 +509,19 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--mermaid", action="store_true", help="print a Mermaid block instead")
     ap.add_argument("--json", metavar="FILE", help="read gh's JSON from FILE, or - for stdin")
     ap.add_argument("--repo", metavar="OWNER/NAME", help="the repository to ask the forge about")
+    ap.add_argument("--forge", metavar="URL", help="link to this remote's pull requests")
+    ap.add_argument("--urls", action="store_true", help="print each pull request's address")
     ap.add_argument("--self-test", action="store_true", help="prove the script on fixtures")
     try:
         a = ap.parse_args(argv)
         if a.self_test:
             return self_test()
         commits = a.commits and not a.mermaid
-        text = read_source(a.json) if a.json else fetch(a.repo, commits)
-        lines = draw(read_prs(text, commits), a.mermaid, commits)
+        repo = a.repo or os.environ.get("STACK_TREE_REPO")
+        text = read_source(a.json) if a.json else fetch(repo, commits)
+        forge = a.forge or (f"https://{GH_HOST}/{repo}" if repo else remote_url())
+        how = "url" if a.urls else "osc8" if sys.stdout.isatty() else ""
+        lines = draw(read_prs(text, commits), a.mermaid, commits, forge_link(forge), how)
     except RefusalError as e:
         print(f"stack-tree: {e}", file=sys.stderr)
         return 2
@@ -521,6 +585,12 @@ graph LR
   p195 --> p190
   class p191 draft
 ```"""
+GH = "https://github.com/o/r/pull/"
+STACK_LINKED = (
+    STACK_MERMAID[:-3]
+    + "".join(f'  click p{n} href "{GH}{n}"\n' for n in (179, 182, 190, 191, 195))
+    + "```"
+)
 FORK = [
     pr(1, "one", "topic", "main"),
     pr(2, "fork", "topic", "main", cross=True),
@@ -538,6 +608,12 @@ ORPHANED_TEXT = f"""main
 
 release {ORPHAN}
 └─ #7 late"""
+LAB = "https://gitlab.example.org/g/s/r/-/merge_requests/"
+ORPHANED_URLS = f"""main
+└─ #8 ok <{LAB}8>
+
+release {ORPHAN}
+└─ #7 late <{LAB}7>"""
 HOSTILE = [
     pr(1, "\x1b[31mred", "a", "main", commits=("x\ny",)),
     pr(2, "a\nb \u202eevil", "b", "main"),
@@ -613,6 +689,30 @@ CASES = [
     ("tree", [], STACK, 0, STACK_TEXT, ()),
     ("commits", ["--commits"], STACK, 0, STACK_COMMITS, ()),
     ("mermaid", ["--mermaid"], STACK, 0, STACK_MERMAID, ()),
+    (
+        "links: GitHub",
+        ["--mermaid", "--forge", "git@github.com-bot:o/r.git"],
+        STACK,
+        0,
+        STACK_LINKED,
+        (),
+    ),
+    (
+        "links: unknown host",
+        ["--mermaid", "--forge", "https://example.org/o/r"],
+        STACK,
+        0,
+        STACK_MERMAID,
+        (),
+    ),
+    (
+        "--urls",
+        ["--urls", "--forge", "ssh://git@gitlab.example.org:22/g/s/r"],
+        ORPHANED,
+        0,
+        ORPHANED_URLS,
+        (),
+    ),
     ("cross-repo head is no parent", [], FORK, 0, FORK_TEXT, ()),
     ("root off main is annotated", [], ORPHANED, 0, ORPHANED_TEXT, ()),
     ("hostile titles, text", ["--commits"], HOSTILE, 0, HOSTILE_TEXT, ()),
@@ -652,16 +752,31 @@ CASES = [
 
 
 def go(
-    *args: str, stdin: str | None = None, env: dict[str, str] | None = None
+    *args: str, stdin: str | None = None, env: dict[str, str] | None = None, cwd: Path | None = None
 ) -> subprocess.CompletedProcess[str]:
+    """The script as a process; outside a git repository unless `env` says otherwise, so no
+    remote of the checkout it runs from adds links."""
     return subprocess.run(
-        [sys.executable, __file__, *args],
+        [sys.executable, str(Path(__file__).resolve()), *args],
         input=stdin,
         capture_output=True,
         text=True,
         check=False,
-        env=env,
+        env=env or {**os.environ, "GIT_DIR": os.devnull},
+        cwd=cwd,
     )
+
+
+def tty(*args: str) -> str:
+    """What the script writes to a terminal. The terminal stays open here until it is read to
+    its end: macOS drops what is unread once the last writer closes it."""
+    lead, follow = os.openpty()
+    proc, out = subprocess.Popen([sys.executable, __file__, *args], stdout=follow), b""
+    while select.select([lead], [], [], 0.1)[0] or proc.poll() is None:
+        out += os.read(lead, 65536) if select.select([lead], [], [], 0)[0] else b""
+    os.close(follow)
+    os.close(lead)
+    return out.decode()
 
 
 def live(tmp: Path, listed: str, view: str, *flags: str) -> subprocess.CompletedProcess[str]:
@@ -674,6 +789,7 @@ def live(tmp: Path, listed: str, view: str, *flags: str) -> subprocess.Completed
     )
     gh.chmod(0o755)
     env = {**os.environ, "PATH": f"{gh.parent}:{os.environ['PATH']}", "L": listed, "V": view}
+    env["GIT_DIR"] = os.devnull
     return go("--repo", "o/r", *flags, env=env)
 
 
@@ -787,14 +903,49 @@ def extra_cases(tmp: Path) -> list[str]:
         *((f"fuzz{k}", fuzz(k)) for k in range(8)),
     ]:
         (tmp / f"{name}.json").write_text(json.dumps(data))
-        blocks.append(go("--json", str(tmp / f"{name}.json"), "--mermaid").stdout.rstrip("\n"))
+        got = go(
+            "--json", str(tmp / f"{name}.json"), "--mermaid", "--forge", "https://github.com/o/r"
+        )
+        blocks.append(got.stdout.rstrip("\n"))
+    repo = tmp / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "github", LAB[:-18]], check=True)
+    (tmp / "orphaned.json").write_text(json.dumps(ORPHANED))
+    (tmp / "stack.json").write_text(json.dumps(STACK))
+    remote = go("--json", str(tmp / "orphaned.json"), "--urls", env=dict(os.environ), cwd=repo)
+    remotes = {
+        "https://github.com/o/r.git": GH,
+        "git@github.com-bot:o/r": GH,
+        "http://forgejo.lan:3000/o/r/": "http://forgejo.lan:3000/o/r/pulls/",
+        "git@codeberg.org:o/r.git": "https://codeberg.org/o/r/pulls/",
+        "ssh://git@gitlab.example.org:2222/g/s/r.git": LAB,
+        "https://gitea.example.net/o/r": "https://gitea.example.net/o/r/pulls/",
+        "https://git.example.org/o/r": None,
+        "github.com:o/r.git": GH,
+        "https://GitHub.com/o/r": "https://GitHub.com/o/r/pull/",
+        "git@GitHub.com-bot:o/r": "https://GitHub.com/o/r/pull/",
+        "ssh://git@gitlab.example-host/g/r.git": None,
+        "git@gitlab.example.org-bot:g/r": None,
+        "srv/git/r.git": None,
+        "git@gitlab:o/r.git": None,
+        "rad://zKCzLFSuTB5BCmisbSBu6SsSokJc": None,
+        "/srv/git/r.git": None,
+        'https://github.com/o/r"x': None,
+    }
     checks = {
+        "remotes to links": [forge_link(u) for u in remotes] == list(remotes.values()),
+        "links on a terminal": f"\x1b]8;;{GH}179\x1b\\#179\x1b]8;;\x1b\\"
+        in tty("--json", str(tmp / "stack.json"), "--forge", "https://github.com/o/r"),
+        "links from the github remote": remote.stdout.rstrip("\n") == ORPHANED_URLS,
         "fuzz: every block is lines Mermaid parses, within MERMAID_MAX": all(
             mermaid_ok(b.splitlines()) for b in blocks
         ),
         "big: titles cut to fit": "…" in blocks[1]
         and max(map(len, blocks[1].splitlines())) < 6 * 256,  # an uncut title escapes to that
-        "stdin": go("--json", "-", stdin="[]").stdout == "no open pull requests\n",
+        "stdin, with no git on PATH": go(
+            "--json", "-", stdin="[]", env={**os.environ, "GIT_DIR": os.devnull, "PATH": ""}
+        ).stdout
+        == "no open pull requests\n",
         "missing file": refused(gone, "gone.json"),
         "non-UTF-8 file": refused(bad, "latin1.json"),
         "100 commits": many.returncode == 2 and "stack-tree/limit" in many.stderr,
