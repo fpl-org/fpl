@@ -4,9 +4,10 @@
 # every gates line, in one order on every machine, keeps a skipped file from ruff, and
 # refuses each way a tool could drop out of `make gates` unseen.
 #
-#   the mechanism   a throwaway tree with a copy of gates-list beside fixture tools: the
-#                   commands in C order (a capital before a small letter, whatever the
-#                   caller's locale), each rule of refusal on its own fixture, by name
+#   the mechanism   a throwaway tree with a copy of gates-list beside fixture tools, and a
+#                   skill with tools of its own: the commands in C order (a skill's path
+#                   before scripts/, a capital before a small letter, whatever the caller's
+#                   locale), each rule of refusal on its own fixture, by name
 #   both shells     every case under /bin/bash (3.2 on macOS) and under the bash on PATH
 #   the floor       every command the recipe of quality/noslop.mk ran before discovery is
 #                   still found in this repository. Only removing a gate edits the floor
@@ -27,10 +28,15 @@ fail() {
 	fails=$((fails + 1))
 }
 
-# tree <dir>: the fixture, a copy of gates-list among tools of every kind.
+# tree <dir>: the fixture, a copy of gates-list among tools of every kind, and the skill
+# fpl:k with a self-test and a tool that declares its proof.
 tree() {
-	mkdir -p "$1/scripts" "$1/quality"
+	mkdir -p "$1/scripts" "$1/quality" "$1/.agents/skills/fpl:k/scripts"
 	cp "$here/gates-list" "$1/scripts/"
+	printf '#!/usr/bin/env bash\ntrue\n' >"$1/.agents/skills/fpl:k/scripts/y-self-test"
+	chmod +x "$1/.agents/skills/fpl:k/scripts/y-self-test"
+	printf '#!/usr/bin/env python3\n# gates: $ROOT/.agents/skills/fpl:k/scripts/w --self-test\n"""w."""\n' \
+		>"$1/.agents/skills/fpl:k/scripts/w"
 	printf '#!/usr/bin/env bash\ntrue\n' >"$1/scripts/b-self-test"
 	printf '#!/usr/bin/env bash\ntrue\n' >"$1/scripts/Z-self-test"
 	chmod +x "$1/scripts/b-self-test" "$1/scripts/Z-self-test"
@@ -83,23 +89,28 @@ for sh in "${shells[@]}"; do
 	rm -rf "$d"
 	tree "$d"
 	LC_ALL=en_US.UTF-8 "$sh" "$d/scripts/gates-list" >"$d/cmds" || fail "$sh: the list failed"
-	expect "$sh" "the commands" "$d/cmds" '$S/Z-self-test
+	expect "$sh" "the commands" "$d/cmds" '$ROOT/.agents/skills/fpl:k/scripts/w --self-test
+$ROOT/.agents/skills/fpl:k/scripts/y-self-test
+$S/Z-self-test
 $S/b-self-test
 $BIN/python $S/crap --self-test
 $S/zz --self-test'
 	"$sh" "$d/scripts/gates-list" --lint >"$d/lint" || fail "$sh: the lint list failed"
-	expect "$sh" "the lint list" "$d/lint" "$d/scripts/crap
+	expect "$sh" "the lint list" "$d/lint" "$d/.agents/skills/fpl:k/scripts/w
+$d/scripts/crap
 $d/scripts/gates
 $d/quality/plugin.py"
 
 	refused "$sh" GATES-NOT-EXECUTABLE 'chmod -x b-self-test'
+	refused "$sh" GATES-NOT-EXECUTABLE 'chmod -x ../.agents/skills/fpl:k/scripts/y-self-test'
 	refused "$sh" GATES-PAST-HEADER 'printf "x=1\n# gates: \$S/late\n" >>gates'
 	refused "$sh" GATES-WRONG-FILE 'printf "#!/bin/sh\n# gates: \$S/x\n" >c-self-test; chmod +x c-self-test'
+	refused "$sh" GATES-WRONG-FILE 'printf "#!/bin/sh\n# gates: \$S/x\n" >../.agents/skills/fpl:k/scripts/y-self-test'
 	refused "$sh" GATES-TWICE 'printf "#!/bin/sh\n# gates: a\n# gates: b\n" >two'
 	refused "$sh" GATES-EMPTY 'printf "#!/bin/sh\n# gates:   \n" >empty'
 	refused "$sh" SKIP-PAST-HEADER 'printf "x=1\n# noslop: skip late\n" >>gates'
 	refused "$sh" SKIP-NO-REASON 'printf "#!/usr/bin/env python3\n# noslop: skip\n" >bare'
-	refused "$sh" GATES-NONE 'rm b-self-test Z-self-test; printf "#!/bin/sh\n" >crap; printf "#!/bin/sh\n" >zz'
+	refused "$sh" GATES-NONE 'rm b-self-test Z-self-test ../.agents/skills/fpl:k/scripts/*; printf "#!/bin/sh\n" >crap; printf "#!/bin/sh\n" >zz'
 done
 
 # The floor: the recipe's lines as quality/noslop.mk held them before discovery, written
