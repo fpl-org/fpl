@@ -37,7 +37,7 @@ a reader meets it). Skip a step a change lacks; never go back up. One lemma per 
 subject states a claim that is true once the commit is applied; the body argues it (why true,
 why here, what it rests on). Every commit stands alone: `make quick` and commit-lint green. At
 most 10 commits and 600 changed lines; above that, split into sub-series, each its own pull
-request on the one below (`scripts/pr -B <parent>`) with its own card. A lemma keeps the author
+request on the one below (`fpl:pr:open`, `-B <parent>`) with its own card. A lemma keeps the author
 and the `Assisted-By`, `Reasoning-Effort` and `Session-Id` of the work it carries; folding
 several builders, the one with most lines, the rest as `Co-Authored-By`. Commit in the dev shell
 with the hooks on: `git commit --author="<builder>" --cleanup=verbatim -F <message>`.
@@ -74,9 +74,8 @@ lander reads `Assisted-By`). Who proposed what goes on the card: it is the ackno
 8. Run the silence check again, now: his word may have come while you built, and the lease guards
    the branch, not the comments. Any URL printed or query failing: stop, push nothing. Then
    `git push --force-with-lease=refs/heads/<branch>:<W sha> <token URL> P:refs/heads/<branch>`.
-9. The card as the body and the review request: `scripts/pr --update-body N <card>`, then
-   `--ready N` once the draft bots are quiet, then `--reviewer N psjg`; where `scripts/pr` lacks
-   these flags, the forge wrapper your orchestrator names. When Codex answers on the ready pull
+9. The card as the body and the review request: `fpl:pr:body`, then `fpl:pr:ready` once the
+   draft bots are quiet, then `fpl:pr:reviewer` for psjg. When Codex answers on the ready pull
    request, apply its findings (a lemma, or a fold into one), present again from step 3, and only
    then ask for the review.
 
