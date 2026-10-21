@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# scripts/layer — turn the opt-in layers of the dev shell on and off for this checkout.
+# layer (skill fpl:worktree:layer) — turn the opt-in layers of the dev shell on and off for this checkout.
 #
-#   scripts/layer                  list the layers; * marks the ones that are on here
-#   scripts/layer on github gitlab
-#   scripts/layer off gitlab
-#   scripts/layer reset            no layers: back to the default shell
+#   layer                  list the layers; * marks the ones that are on here
+#   layer on github gitlab
+#   layer off gitlab
+#   layer reset            no layers: back to the default shell
 #
 # Layers are declared in flake.nix (.agents/DEVSHELL.md). The choice is stored in the
 # git-ignored file .fpl-shell at the top of the checkout, which .envrc reads; direnv
@@ -42,7 +42,7 @@ store() { # stdin: names, one per line
 		rm -f "$file"
 		printf 'layer: none on; direnv loads .#default at the next prompt\n'
 	else
-		printf '# written by scripts/layer; one layer per line\n%s\n' "$names" >"$file"
+		printf '# written by the layer script of skill fpl:worktree:layer; one layer per line\n%s\n' "$names" >"$file"
 		printf 'layer: on: %s; direnv loads .#%s at the next prompt\n' \
 			"$(paste -sd' ' - <<<"$names")" "$(paste -sd- - <<<"$names")"
 	fi
@@ -61,9 +61,9 @@ list)
 	done <<<"$known"
 	;;
 on | off)
-	[ $# -gt 0 ] || die "usage: scripts/layer $cmd <name>..."
+	[ $# -gt 0 ] || die "usage: layer $cmd <name>..."
 	for n in "$@"; do
-		cut -f1 <<<"$known" | grep -qxF -- "$n" || die "no such layer: $n  (scripts/layer lists them)"
+		cut -f1 <<<"$known" | grep -qxF -- "$n" || die "no such layer: $n  (layer lists them)"
 	done
 	next="$(current | grep -vxF -f <(printf '%s\n' "$@") || true)"
 	[ "$cmd" = on ] && next="$(printf '%s\n' "$next" "$@")"
@@ -73,6 +73,6 @@ reset)
 	store </dev/null
 	;;
 *)
-	die "usage: scripts/layer [list | on <name>... | off <name>... | reset]"
+	die "usage: layer [list | on <name>... | off <name>... | reset]"
 	;;
 esac

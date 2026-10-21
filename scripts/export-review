@@ -50,7 +50,7 @@ def run(*cmd, ok=True):
     try:
         done = subprocess.run(cmd, capture_output=True, text=True)
     except FileNotFoundError:
-        die(f"{cmd[0]} not found" + ("; scripts/layer on radicle" if cmd[0] == "rad" else ""))
+        die(f"{cmd[0]} not found" + ("; .agents/skills/fpl:worktree:layer/scripts/layer on radicle" if cmd[0] == "rad" else ""))
     if ok and done.returncode != 0:
         die(f"{' '.join(cmd[:3])} failed: {(done.stderr or done.stdout).strip()}")
     return done

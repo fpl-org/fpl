@@ -11,7 +11,7 @@ repository, and who opened, moved or blocked a task is part of the record, per a
 exists and the maintainer's key is the one that signs. The maintainer's clone holds the units of
 the harness redo (29 tasks, loaded from `.agents/tasks/redo.tsv`, below); the Radicle node is
 not running and nothing has been pushed to the `rad` remote, so no other clone has them. Needs
-`rad`: `scripts/layer on radicle`.
+`rad`: the skill `fpl:worktree:layer`.
 
 ```
 scripts/task new "parser: integer expressions" -b <id>    # -b: blocked by; repeatable

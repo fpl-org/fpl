@@ -22,7 +22,7 @@ the object id; the first word wins when both would match. Tasks live under refs/
 of the Radicle repository, as signed operations: who opened, moved or blocked what is part
 of the record, and it travels with the repository, not with a forge. scripts/rad-cob-dagtaak
 gives the operations their meaning and says who may do what; this file only reads state and
-writes actions through `rad cob`. Needs rad (`scripts/layer on radicle`) and a repository that
+writes actions through `rad cob`. Needs rad (`.agents/skills/fpl:worktree:layer/scripts/layer on radicle`) and a repository that
 went through `rad init`. `--self-test` runs the whole thing in a throwaway Radicle home.
 """
 
@@ -60,7 +60,7 @@ def rad(*args, stdin=None):
             ["rad", *args], env=env, input=stdin, capture_output=True, text=True, check=False
         )
     except FileNotFoundError:
-        die("rad not found; scripts/layer on radicle")
+        die("rad not found; .agents/skills/fpl:worktree:layer/scripts/layer on radicle")
     if done.returncode != 0:
         die(f"rad {' '.join(args[:2])} failed: {done.stderr.strip() or done.stdout.strip()}")
     return done.stdout

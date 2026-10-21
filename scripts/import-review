@@ -33,7 +33,7 @@ Comments do not go into a Radicle review. Radicle keeps one review per signer pe
 revision, and every imported comment has the same signer; the review is left free for the
 verdict of whoever runs this.
 
-Needs rad (`scripts/layer on radicle`), a repository that went through `rad init`, and a
+Needs rad (`.agents/skills/fpl:worktree:layer/scripts/layer on radicle`), a repository that went through `rad init`, and a
 remote on github.com. Reads the forge with the machine account's token (.agents/WORKFLOW.md);
 reading needs no particular account, only access to the repository.
 """
@@ -62,7 +62,7 @@ def run(*cmd, stdin=None, ok=True):
     try:
         done = subprocess.run(cmd, input=stdin, capture_output=True, text=True)
     except FileNotFoundError:
-        die(f"{cmd[0]} not found" + ("; scripts/layer on radicle" if cmd[0] == "rad" else ""))
+        die(f"{cmd[0]} not found" + ("; .agents/skills/fpl:worktree:layer/scripts/layer on radicle" if cmd[0] == "rad" else ""))
     if ok and done.returncode != 0:
         die(f"{' '.join(cmd[:3])} failed: {(done.stderr or done.stdout).strip()}")
     return done

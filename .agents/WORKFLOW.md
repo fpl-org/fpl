@@ -262,7 +262,7 @@ refuses for it gets the same remedy. With it an admin's push skips the rulesets 
 force included, so the checks the rulesets made are the ones `scripts/land` makes before it
 pushes, and it never forces. Pushing `main` by hand stays what rule 6 forbids.
 
-`scripts/land` needs `gh`, which is not in the default dev shell: `scripts/layer on github`
+`scripts/land` needs `gh`, which is not in the default dev shell: `fpl:worktree:layer`
 (`.agents/DEVSHELL.md`, "Forge tools are opt-in"). `scripts/pr` needs neither: it calls the API
 with python3 from the default shell. `scripts/land-self-test` (`make gates`) runs it against
 a forge in fixtures and a bare repository on disk.
@@ -384,7 +384,7 @@ into this clone's object store). It prints a line for each rule, `ok`,
 `NO` with its remedy, or `--` with the reason when an answer the rule rests on is missing;
 the count; the approval it would give; the exact push; the retarget of what is stacked on the
 head; and the `git ls-remote` that shows `main` is the head afterwards. A rule refused: do
-not land. It needs `gh`: `scripts/layer on github`.
+not land. It needs `gh`: `fpl:worktree:layer`.
 
 **Land.** After a clean dry run, one of two ways.
 
@@ -482,7 +482,7 @@ also how a second run skips it, so importing twice changes nothing. The Radicle 
 stays empty, because Radicle keeps one review per signer per revision, and that one is for
 the verdict of whoever runs the import.
 
-It pushes to the `rad` remote and so needs `rad` (`scripts/layer on radicle`) and the key in
+It pushes to the `rad` remote and so needs `rad` (`fpl:worktree:layer`) and the key in
 the agent. `--self-test` runs it in a throwaway Radicle home without the network.
 
 ```
