@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# gates: $S/smoke
 #
 # scripts/smoke — the walker as a user meets it: `nix run` on the flake answers.
+# It is not in `make gates`: it needs cache.nixos.org and, for a forge flake, the forge, so a
+# network fault would turn the gates red. Run it with `make smoke`; CI runs it after a landing.
 #
 #   scripts/smoke [flake]    default: this checkout. github:fpl-org/fpl asks the forge's main,
 #                            github:fpl-org/fpl/<sha> one commit of it
