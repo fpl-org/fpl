@@ -12,12 +12,17 @@
 #   scripts/pr --body-file FILE    the body from a file, not generated
 #   scripts/pr -n                  dry run: print what would be sent
 #
-# And four things to do to a pull request that is open, by its number:
+# And five things to do to a pull request that is open, by its number:
 #
 #   scripts/pr --update-body N FILE   replace its body with the file
 #   scripts/pr --quiet N              say whether every bot is quiet on its head; reads only
 #   scripts/pr --ready N              take it out of draft, once the bots are quiet
 #   scripts/pr --reviewer N LOGIN     ask LOGIN to review it, once the bots are quiet
+#   scripts/pr --defer N BRANCH       past the round budget, move its open bot findings to
+#                                     a follow-up on BRANCH, not its own: one issue lists
+#                                     them (through the leak gate), and each thread is
+#                                     answered with its link and resolved. Run again, it
+#                                     resolves what an earlier run answered only.
 #
 # The body, a file or generated, and a new body go through the leak gate first. --ready
 # looks at the head commit: it waits, up to FPL_PR_WAIT seconds (default 900, polling every
@@ -101,7 +106,7 @@ die() {
 
 usage="usage: scripts/pr [-n] [--draft] [-t <title>] [-b <text>|--body-file <file>] [-B <parent>] [<branch>]
        scripts/pr --update-body <number> <file> | --quiet <number> | --ready <number>
-       scripts/pr --reviewer <number> <login>"
+       scripts/pr --reviewer <number> <login> | --defer <number> <follow-up branch>"
 base="" title="" body="" bodyfile="" dry=0 draft=0 mode=create num="" arg=""
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -109,7 +114,7 @@ while [ $# -gt 0 ]; do
 		[ $# -ge 2 ] || die "$1 needs a file; $usage"
 		bodyfile="$2" && shift 2
 		;;
-	--update-body | --reviewer)
+	--update-body | --reviewer | --defer)
 		[ $# -ge 3 ] || die "$1 needs two values; $usage"
 		mode="${1#--}" num="$2" arg="$3" && shift 3
 		;;
@@ -436,8 +441,8 @@ def judge_threads(number, pull, found, rounds):
         if rounds >= budget and any(by_bot(t) for t in loose):
             fix = (
                 f"the budget of {budget} Codex rounds is spent ({rounds}): move the bots' to a"
-                " follow-up issue, and each thread links it (.agents/WORKFLOW.md, rule 10);"
-                " answer a person's here"
+                f" follow-up, scripts/pr --defer {number} <follow-up branch>; answer a person's"
+                " here"
             )
         out.append(("pr/threads", False, f"{what}: {' '.join(named)}", fix))
     for t in (t for t in found if t["isResolved"]):
@@ -600,6 +605,97 @@ elif command == "quiet":
     if refusals:
         die(f"#{args[0]} at {pull['head']['sha'][:7]} is not quiet:\n{told(refusals)}")
     print(f"pr: every bot is quiet at {pull['head']['sha'][:7]} on #{args[0]}", file=sys.stderr)
+elif command == "defer-plan":  # the issue --defer would open, written to a file to leak-check
+    number, branch, model, out = args
+    pull = api(f"/repos/{slug}/pulls/{number}")
+    if branch == pull["head"]["ref"]:
+        die(f"pr/defer: {branch} is #{number}'s own branch, which its approval freezes; name a"
+            " new one")
+    bots = seen(number)
+    found, _, _, rounds = bots
+    budget, short = int(os.environ["FPL_PR_ROUNDS"]), pull["head"]["sha"][:7]
+    if rounds < budget:
+        die(
+            f"pr/budget: #{number} has spent {rounds} of its {budget} Codex rounds; fix its"
+            " findings on"
+            " it: a finding moves to a follow-up only once the budget is spent (FPL_PR_ROUNDS)"
+        )
+    left = [
+        r
+        for r in quiet(number, pull, bots)
+        if r[0] not in ("pr/threads", "pr/codex")
+        or (r[0] == "pr/codex" and "findings unresolved" not in r[2])
+    ]
+    if left:
+        die(
+            f"#{number} at {short}: a deferral follows a finished round, and this is not:\n"
+            + told(left)
+        )
+    loose = [t for t in found if by_bot(t) and not t["isResolved"]]  # a person's: never
+    todo = [t for t in loose if not deferred(t)]
+    if not loose:
+        die(f"#{number} has no unresolved bot review thread to defer")
+    if not todo:  # an earlier --defer answered them and did not resolve them: no second issue
+        open(out, "w").close()
+        raise SystemExit(0)
+    lines = []
+    for t in todo:
+        text = first(t).get("body", "")
+        title = re.search(r"</sub></sub>\s*(.+?)\*\*", text) or re.search(r"(\S.{0,99})", text)
+        grade = re.search(r"badge/(P\d)", text)
+        grade = f"{grade.group(1)} " if grade else ""
+        lines.append(f"- [ ] {where(t)} {grade}{title.group(1) if title else ''}")
+    head = api(f"/repos/{slug}/commits/{pull['head']['sha']}")["commit"]["message"]
+    series = re.search(r"^Series-Id: (\S+)$", head, re.M)
+    body = (
+        f"Written by an AI agent ({model}) working for @psjg, with `scripts/pr --defer`.\n\n"
+        f"#{number} spent its budget of {budget} Codex rounds at {short} ({rounds} rounds). The"
+        f" findings below move off it, unfixed: each is fixed in a fix-forward series against main"
+        f" once #{number} lands, and this issue closes with that series. Nothing here is"
+        " dropped.\n\n"
+        f"Follow-up branch: `{branch}`\n"
+        + (f"Series-Id: {series.group(1)}\n" if series else "")
+        + "\n"
+        + "\n".join(lines)
+        + "\n"
+    )
+    title = (
+        f"Follow-up of #{number}: {len(todo)} review findings deferred after {rounds} Codex rounds"
+    )
+    with open(out, "w") as f:
+        f.write(f"{title}\n\n{body}")
+elif command == "defer-send":  # the leak-checked issue, then the reply and resolution per thread
+    number, plan = args
+    with open(plan) as f:
+        title, _, body = f.read().partition("\n\n")
+    refused = "the token needs Issues read and write (.agents/WORKFLOW.md, the credential)"
+    issue = title and api(f"/repos/{slug}/issues", {"title": title, "body": body}, refused=refused)
+    if issue:
+        print(f"pr: opened {issue['html_url']}", file=sys.stderr)
+    for t in threads(number):  # the threads it lists, and those an earlier run answered only
+        listed = issue and first(t).get("url", "") in body
+        if t["isResolved"] or not by_bot(t) or not (listed or deferred(t)):
+            continue
+        if not deferred(t):
+            text = DEFERRAL.format(slug=slug, number=issue["number"])
+            api(
+                f"/repos/{slug}/pulls/{number}/comments/{first(t)['databaseId']}/replies",
+                {"body": text},
+            )
+        done = api(
+            "/graphql",
+            {
+                "query": "mutation($id: ID!) { resolveReviewThread(input: {threadId: $id})"
+                " { thread { isResolved } } }",
+                "variables": {"id": t["id"]},
+            },
+        )
+        why = failed(done, "resolveReviewThread", "thread")
+        if why:
+            die(f"{where(t)} stays open: {why}; run this again, or resolve it on the forge")
+        print(f"pr: deferred {where(t)}", file=sys.stderr)
+    if issue:
+        print(issue["html_url"])
 elif command == "reviewer":
     pull = api(f"/repos/{slug}/pulls/{args[0]}")
     if pull["draft"]:
@@ -681,6 +777,18 @@ update-body)
 	;;
 ready | quiet)
 	pyapi "$mode" "$num"
+	exit 0
+	;;
+defer)
+	case "$("$top/scripts/branch-lint" --parse "$arg" 2>/dev/null || true)" in
+	kind=agent-*) ;;
+	*) die "pr/defer: '$arg' is not an agent branch to fix the findings forward on" ;;
+	esac
+	model="${FPL_MODEL:-${CLAUDE_CODE_MODEL:-}}"
+	[ -n "$model" ] || die "pr/defer: the issue names the model that writes it: set FPL_MODEL"
+	pyapi defer-plan "$num" "$arg" "$model" "$said/issue"
+	"$top/scripts/leak-check" --text "$said/issue" || die "nothing was sent"
+	pyapi defer-send "$num" "$said/issue"
 	exit 0
 	;;
 reviewer)

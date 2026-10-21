@@ -20,6 +20,10 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
+command -v gitleaks >/dev/null || {
+	echo "pr-quiet-self-test: needs gitleaks, for the leak gate --defer passes; enter the dev shell (nix develop)" >&2
+	exit 1
+}
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/pr-quiet-self-test.XXXXXX")"
 server=""
 # The forge is reaped as well as killed: bash 3.2 reports a killed job it never waited for.
@@ -44,6 +48,7 @@ from urllib.parse import urlparse
 forge = sys.argv[1]
 MUTATIONS = {  # the mutations scripts/pr sends, and GitHub's answer to each
     "markPullRequestReadyForReview": {"pullRequest": {"isDraft": False}},
+    "resolveReviewThread": {"thread": {"isResolved": True}},
 }
 
 
@@ -168,6 +173,11 @@ if "own" in words:  # the follow-up is the pull request's own branch
     issue["body"] = issue["body"].replace("x.followup", "x")
 if "closed" in words:
     issue["state"] = "closed"
+if "halfway" in words:  # an earlier --defer answered it and did not resolve it
+    threads.append(thread(8, at=H, replies=[deferral]))
+if "leaky" in words:
+    node = threads[0]["comments"]["nodes"][0]
+    node["body"] = node["body"].replace("Finding 1", "Finding quuxfrobnitz")
 rabbit = ("pending", "Review in progress") if "rabbit" in words else ("success", "Review skipped")
 statuses.append({"context": "CodeRabbit", "state": rabbit[0], "description": rabbit[1]})
 runs.append({"name": "claude-review", "status": "in_progress" if "claude" in words else "completed"})
@@ -179,6 +189,8 @@ routes = {
     f"GET {R}/pulls/7/reviews": reviews,
     f"GET {R}/issues/7/comments": said,
     f"GET {R}/issues/comments/11/reactions": eyes,
+    f"GET {R}/commits/{H}": {"commit": {"message": "feat(x): y\n\nSeries-Id: x-1a2b3c\n"}},
+    f"POST {R}/issues": {"number": 51, "html_url": f"{U}/issues/51"},
     f"GET {R}/commits/{H}/check-runs": {"total_count": len(runs), "check_runs": runs},
     f"GET {R}/commits/{H}/status": {"total_count": len(statuses), "statuses": statuses},
     "graphql reviewThreads": {"data": {"repository": {"pullRequest": {"reviewThreads": {
@@ -194,6 +206,8 @@ if "opened" in words:  # a bot opens a thread while the rest is judged
 for word, answer in (("hollow", {}), ("refused", {"errors": [{"message": "nope"}]})):
     if word in words:  # the forge answers the mutation with nothing, or with an error
         routes["graphql markPullRequestReadyForReview"] = answer
+if "unsettled" in words:  # the forge answers the resolution without the thread
+    routes["graphql resolveReviewThread"] = {"data": {"resolveReviewThread": {"thread": None}}}
 if "deferred" in words and "noissue" not in words:
     routes[f"GET {R}/issues/50"] = issue
 if "long" in words:  # thread 5 has more comments than a page: its deferral is on the second
@@ -220,6 +234,7 @@ git remote add github https://github.com/pr-test/fpl.git
 git config branch.main.remote github
 echo 1+psjg-claude@users.noreply.github.com >"$(git rev-parse --git-dir)/agent-identity"
 echo 'https://psjg-claude:made-up-token@github.com' >"$(git rev-parse --git-dir)/agent-credentials"
+echo quuxfrobnitz >"$(git rev-parse --git-dir)/leak-patterns"
 mkdir -p "$tmp/bin"
 printf '#!/bin/sh\nexit 1\n' >"$tmp/bin/gh"
 chmod +x "$tmp/bin/gh"
@@ -368,6 +383,55 @@ run 0 "a deferral past the first page of a thread's comments" --quiet 7
 scene clean receipts deferred hushed
 run 1 "a person's thread deferred" --quiet 7
 says "pr/deferred: https://github.com/pr-test/fpl/pull/7#discussion_r107 is a person's thread" "hushed"
+
+# Past the budget the open findings move to a follow-up: one issue lists them and names the
+# branch, each thread links it and is resolved; then the bots are quiet. Before the budget,
+# while Codex is not done, off an agent branch, or with a private term, nothing is written.
+export FPL_MODEL="Test Model"
+scene clean receipts open
+run 0 "deferred to a follow-up" --defer 7 agent/claude/stack/x.followup
+logged '^POST /repos/pr-test/fpl/issues .*Follow-up branch: `agent/claude/stack/x.followup`.*Series-Id: x-1a2b3c.*discussion_r101 P2 Finding 1' \
+	"the issue names the branch, the Series-Id and the thread"
+logged '^POST /repos/pr-test/fpl/pulls/7/comments/101/replies .*Deferred to https://github.com/pr-test/fpl/issues/51, the follow-up' \
+	"the thread is answered with the issue"
+logged 'resolveReviewThread.*"T1"' "the thread is resolved"
+wrote 3 "an issue, a reply, a resolution"
+scene clean open
+run 1 "defer under the budget" --defer 7 agent/claude/stack/x.followup
+says "pr/budget: #7 has spent 0 of its 3 Codex rounds" "defer budget"
+wrote 0 "defer under the budget writes nothing"
+scene running receipts open
+run 1 "defer while Codex runs" --defer 7 agent/claude/stack/x.followup
+says "a deferral follows a finished round" "defer running"
+wrote 0 "defer while Codex runs writes nothing"
+scene clean receipts open
+run 1 "defer to main" --defer 7 main
+says "pr/defer: 'main' is not an agent branch" "defer main"
+run 1 "defer to its own branch" --defer 7 agent/claude/stack/x
+says "pr/defer: agent/claude/stack/x is #7's own branch" "defer own"
+wrote 0 "a deferral to its own branch writes nothing"
+scene clean receipts open human
+run 0 "a person's thread stays" --defer 7 agent/claude/stack/x.followup
+wrote 3 "only the bot's thread is deferred"
+logged 'Follow-up of #7: 1 review findings' "the issue lists the bot's thread alone"
+scene clean receipts halfway
+run 0 "a retry resolves what was answered" --defer 7 agent/claude/stack/x.followup
+logged 'resolveReviewThread.*"T8"' "the answered thread is resolved"
+wrote 1 "no second issue, no second reply"
+scene clean receipts open halfway
+run 0 "a retry with a new finding" --defer 7 agent/claude/stack/x.followup
+wrote 4 "an issue and a reply for the new one, two resolutions"
+scene clean receipts open unsettled
+run 1 "a resolution answered without the thread" --defer 7 agent/claude/stack/x.followup
+says "stays open: the forge's answer is not the mutation's" "unsettled"
+scene clean receipts open leaky
+run 1 "defer with a private term" --defer 7 agent/claude/stack/x.followup
+says "nothing was sent" "defer leak"
+wrote 0 "a leaking deferral writes nothing"
+unset FPL_MODEL
+scene clean receipts open
+run 1 "defer without a model" --defer 7 agent/claude/stack/x.followup
+says "set FPL_MODEL" "defer model"
 
 # The other bots, mid-review.
 scene clean rabbit
