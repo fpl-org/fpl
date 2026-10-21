@@ -336,7 +336,7 @@ branch: `scripts/setup` turns `rebase.updateRefs` on, and a branch pointing into
 being rewritten would move with it, leaving the proof to compare P with P.
 
 ```
-scripts/series stamp github/main..<branch>              # one Series-Id on every commit of W
+.agents/skills/fpl:series/scripts/series stamp github/main..<branch>              # one Series-Id on every commit of W
 git tag unpresented/<series> <branch>                   # W, kept so anyone can repeat the proof
 # … rewrite <branch> into P: git rebase -i, or reset and recommit …
 git diff --quiet unpresented/<series> <branch>          # exit 0: tree(W) == tree(P)
@@ -351,8 +351,8 @@ run, and the checks its header names besides.
 **Manifest.** The manifest of a range is one pair per commit, the `git patch-id --verbatim`
 of its diff and a hash of its author and raw message, and a digest of the lines. `--verbatim`
 because `--stable` gave one id to a diff and its re-indented copy. Two ranges with the same
-manifest are the same review. `scripts/series manifest <range>` prints it and
-`scripts/series digest <range>` the digest alone; by hand, the same definition, with the diff
+manifest are the same review. `.agents/skills/fpl:series/scripts/series manifest <range>` prints it and
+`.agents/skills/fpl:series/scripts/series digest <range>` the digest alone; by hand, the same definition, with the diff
 options pinned so that no configuration of the caller's changes an id:
 
 ```
@@ -457,10 +457,10 @@ scripts/acommit -t revert -s <scope> -m "<what the series did>" -r "series <seri
 ```
 
 A series is the commits that share a Series-Id (`git log --grep='^Series-Id: <id>$'`); one
-that landed before `scripts/series` carries only its `Stack:` trailer
+that landed before `.agents/skills/fpl:series/scripts/series` carries only its `Stack:` trailer
 (`git log --grep='^Stack: <name>$'`). The range must be contiguous on `main`: a commit of
 another series in between is reverted by its own pull request first. The revert takes a
-Series-Id of its own (`scripts/series stamp`).
+Series-Id of its own (`.agents/skills/fpl:series/scripts/series stamp`).
 
 ## The cap
 

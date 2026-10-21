@@ -184,7 +184,7 @@ key, so landed history is not refused for case alone; a type or scope in the wro
 `Stack:` is the readable name of a stack and stays so. `Series-Id:` is its identity: minted once,
 `<topic>-<7 hex digits of the tip it was minted at>`, and carried by every commit of the series
 through every rebase, reorder and move, which a branch name and a SHA are not. At most one a
-commit, in the form `COMMIT_SERIES_RE` fixes (`series-many`, `series-value`). `scripts/series`
+commit, in the form `COMMIT_SERIES_RE` fixes (`series-many`, `series-value`). `.agents/skills/fpl:series/scripts/series`
 holds the tooling: `mint` the id, `stamp` it onto a range (refused once the maintainer has
 reviewed or commented on the pull request of the branch, or of any branch the rebase moves with
 it, unless his latest review there requests changes: the rewrite is then what he asked for, and
