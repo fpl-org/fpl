@@ -2,8 +2,8 @@
 # gates: $BIN/python $S/stack-tree --self-test
 """scripts/stack-tree — the open pull requests as the tree their bases make, never committed.
 
-    scripts/stack-tree [--commits] [--mermaid] [--urls] [--json FILE] [--repo OWNER/NAME]
-                       [--forge URL]
+    scripts/stack-tree [--commits] [--mermaid | --markdown] [--urls] [--json FILE]
+                       [--repo OWNER/NAME] [--forge URL]
     scripts/stack-tree --self-test
 
 The maintainer stacks pull requests: one is based on the head branch of another. GitHub's list
@@ -36,7 +36,11 @@ not top down, as a pull request's title is wider than tall: the open ones of 202
 p<number> and b<k>, never taken from a title; in a label `#`, `"`, `<`, `>`, `&` and a backtick
 are written as entities, as Mermaid reads them as an entity, the label's end, markup or a
 Markdown label. Mermaid draws an error past MERMAID_MAX characters, so titles are cut, longest
-first, until the block fits. Titles,
+first, until the block fits. --markdown, for a pull request's body, prints that block and then
+its source, fence and all, in a collapsed <details> as a code block: GitHub's own button on a
+drawn block copies the source without its fence, and Obsidian draws a ```mermaid block as
+pasted. No line of the block starts with a backtick but its fences, so a fence of four holds it.
+Titles,
 headlines and branch names are untrusted forge text: every character of Unicode category C
 (control, format such as a bidi override, surrogate, private use, and so newlines) is shown as
 `?`, in both outputs and in every refusal. A line is never cut to the terminal's width. A reader
@@ -370,6 +374,14 @@ def mermaid_block(prs: list[Pr], f: Forest, link: str | None) -> list[str]:
     )
 
 
+def markdown_lines(block: list[str]) -> list[str]:
+    """The block GitHub draws, then its source in a fence of four backticks, which holds the
+    three of the block whole and is shown as code, with the copy button GitHub gives code. Its
+    own button on a drawn block copies the source without its fence."""
+    details = "<details><summary>Mermaid source, to copy</summary>"
+    return [*block, "", details, "", "````text", *block, "````", "", "</details>"]
+
+
 def draw(prs: list[Pr], mermaid: bool, commits: bool, link: str | None, how: str) -> list[str]:
     if not prs:
         return ["no open pull requests"]
@@ -507,6 +519,7 @@ def main(argv: list[str]) -> int:
     ap = Parser(prog="stack-tree", description="the open pull requests as a tree")
     ap.add_argument("--commits", action="store_true", help="list each pull request's commits")
     ap.add_argument("--mermaid", action="store_true", help="print a Mermaid block instead")
+    ap.add_argument("--markdown", action="store_true", help="--mermaid, and its source to copy")
     ap.add_argument("--json", metavar="FILE", help="read gh's JSON from FILE, or - for stdin")
     ap.add_argument("--repo", metavar="OWNER/NAME", help="the repository to ask the forge about")
     ap.add_argument("--forge", metavar="URL", help="link to this remote's pull requests")
@@ -516,16 +529,18 @@ def main(argv: list[str]) -> int:
         a = ap.parse_args(argv)
         if a.self_test:
             return self_test()
+        a.mermaid |= a.markdown
         commits = a.commits and not a.mermaid
         repo = a.repo or os.environ.get("STACK_TREE_REPO")
         text = read_source(a.json) if a.json else fetch(repo, commits)
         forge = a.forge or (f"https://{GH_HOST}/{repo}" if repo else remote_url())
         how = "url" if a.urls else "osc8" if sys.stdout.isatty() else ""
-        lines = draw(read_prs(text, commits), a.mermaid, commits, forge_link(forge), how)
+        prs = read_prs(text, commits)
+        lines = draw(prs, a.mermaid, commits, forge_link(forge), how)
     except RefusalError as e:
         print(f"stack-tree: {e}", file=sys.stderr)
         return 2
-    print("\n".join(lines))
+    print("\n".join(markdown_lines(lines) if a.markdown and prs else lines))
     return 0
 
 
@@ -591,6 +606,15 @@ STACK_LINKED = (
     + "".join(f'  click p{n} href "{GH}{n}"\n' for n in (179, 182, 190, 191, 195))
     + "```"
 )
+STACK_MARKDOWN = f"""{STACK_MERMAID}
+
+<details><summary>Mermaid source, to copy</summary>
+
+````text
+{STACK_MERMAID}
+````
+
+</details>"""
 FORK = [
     pr(1, "one", "topic", "main"),
     pr(2, "fork", "topic", "main", cross=True),
@@ -736,6 +760,7 @@ CASES = [
     ),
     ("a head named main is no parent of main's pull requests", [], FORWARD, 0, FORWARD_TEXT, ()),
     ("ambiguous head", [], AMBIGUOUS, 2, "", ("stack-tree/ambiguous", "#1, #2 and #3", "remedy")),
+    ("markdown", ["--markdown"], STACK, 0, STACK_MARKDOWN, ()),
     ("--mermaid ignores --commits", ["--mermaid", "--commits"], NO_COMMITS, 0, STACK_MERMAID, ()),
     ("empty", [], [], 0, "no open pull requests", ()),
     ("not a list", [], {}, 2, "", ("stack-tree/input", "remedy")),
@@ -840,6 +865,23 @@ def mmdc(tmp: Path, blocks: list[str]) -> list[str]:
         return ["mmdc parses every block"]
     print(f"stack-tree self-test: mmdc rendered {len(blocks)} blocks", file=sys.stderr)
     return []
+
+
+def markdown_ok(text: str) -> list[str]:
+    """Parse --markdown's output as CommonMark, which GitHub's Markdown extends: it must be the
+    Mermaid fence, then the details around a text fence holding that fence whole. Without
+    markdown-it it says so on stderr and checks nothing."""
+    try:
+        from markdown_it import MarkdownIt  # noqa: PLC0415 - optional, so not at the top
+    except ImportError:
+        print("stack-tree self-test: SKIP CommonMark parse: no markdown-it", file=sys.stderr)
+        return []
+    block = text[: text.index("\n\n<details>")]
+    tokens = [t for t in MarkdownIt("commonmark").parse(text) if t.type != "paragraph_open"]
+    fences = [(t.info, t.content) for t in tokens if t.type == "fence"]
+    src = block.removeprefix("```mermaid\n").removesuffix("```")
+    html = [t.type for t in tokens].count("html_block")
+    return [] if fences == [("mermaid", src), ("text", block + "\n")] and html == 2 else ["md"]
 
 
 def refused(got: subprocess.CompletedProcess[str], name: str) -> bool:
@@ -967,7 +1009,9 @@ def extra_cases(tmp: Path) -> list[str]:
         "closed pipe": closed.returncode == -signal.SIGPIPE and closed_err == "",
         "remote urls": [repo_of(u) for u in urls] == list(urls.values()),
     }
-    return [name for name, ok in checks.items() if not ok] + mmdc(tmp, blocks)
+    md = go("--json", str(tmp / "fuzz0.json"), "--markdown", "--forge", "https://github.com/o/r")
+    failed = [name for name, ok in checks.items() if not ok] + mmdc(tmp, blocks)
+    return failed + markdown_ok(md.stdout)
 
 
 def self_test() -> int:
