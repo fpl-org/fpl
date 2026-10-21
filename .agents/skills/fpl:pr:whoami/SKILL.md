@@ -9,11 +9,13 @@ Three identities can write to GitHub from one machine: git's credential helper (
 the active `gh` account, and the ssh key. It prints each, and a `NAG` line when one is an
 admin account (`FPL_ADMIN_ACCOUNTS`, default `psjg`): a push would then go out as the
 maintainer, and nobody could approve it. Given the URL a push goes to, it judges only the
-identity that transport uses; `.githooks/pre-push` runs it so, first, as a message.
+identity that transport uses: a push to a path on this machine is judged on none, and the ssh
+key, which may ask for a Touch ID tap, is asked only for a push that goes by ssh.
+`.githooks/pre-push` runs it so, first, as a message.
 
 - **Exit 0**, always: a message, never a gate. Read the lines; with a `NAG`, push by the
   remedy it prints, the machine account's token in the URL:
-  `TOKEN=$(gh auth token --user psjg-claude); git -c credential.helper= push "https://x-access-token:$TOKEN@github.com/fpl-org/fpl.git" HEAD:refs/heads/<branch>`.
+  `TOKEN=$(gh auth token --hostname github.com --user psjg-claude); git -c credential.helper= push "https://x-access-token:$TOKEN@github.com/fpl-org/fpl.git" HEAD:refs/heads/<branch>`.
   Never print the token; the script never reads a password into a variable.
 
 Each probe is cut off after `FPL_WHOAMI_DEADLINE` seconds (10), so a key waiting on a touch
