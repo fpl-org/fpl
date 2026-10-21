@@ -109,6 +109,12 @@ top of base) · **restack** (rebase the stack when base or a lower commit change
     and names the branch (`pr/budget`, `pr/deferred`); a thread resolved at the head it was
     found on, with no later head to hold its fix, must be deferred so.
 
+    **Scope of a finding.** The scripts only agents run, in worktrees of their own, do not
+    defend against a hostile environment: an inherited hook that rewrites an amend, a `TMPDIR`
+    inside the worktree, a commit message in a foreign encoding, a shim on `PATH` that moves a
+    ref, a config alias of a key git reads. A finding that needs one is not fixed as code: its
+    fix is one line in the tool's header that names the limit, and its thread links that line.
+
 ## Setup (once per clone/worktree)
 
 ```
