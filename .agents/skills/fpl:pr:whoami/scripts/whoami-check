@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# scripts/whoami-check — which account would a push from here use? A message, never a gate.
+# whoami-check — which account would a push from here use? A message, never a gate. It lives
+# in .agents/skills/fpl:pr:whoami/scripts/; the skill fpl:pr:whoami says when to run it.
 #
 # Three identities can write to GitHub from one Mac, and they are not always the same one:
 #

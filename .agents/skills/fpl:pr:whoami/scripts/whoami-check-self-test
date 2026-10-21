@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# scripts/whoami-check-self-test — proof that scripts/whoami-check reports the three
+# whoami-check-self-test — proof that whoami-check, beside it, reports the three
 # identities, nags when an admin account is among them and only then, never prints the
 # credential's password, and always exits 0. Run by `make gates`.
 #
@@ -11,7 +11,8 @@
 
 set -euo pipefail
 
-root="$(cd "$(dirname "$0")/.." && pwd)"
+root="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
+check="$root/.agents/skills/fpl:pr:whoami/scripts/whoami-check"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/whoami-check-self-test.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 mkdir "$tmp/bin"
@@ -31,7 +32,7 @@ fails=0
 # expect <bash> <name> <PUSH> <GH> <SSH> <nag: yes|no> <a line the output must have, after 'whoami-check: ', or ''> [URL]
 expect() {
 	local sh="$1" name="$2" out rc=0
-	out="$(PATH="$tmp/bin:$PATH" PUSH="$3" GH="$4" SSH="$5" "$sh" "$root/scripts/whoami-check" ${8:+"$8"} 2>&1)" || rc=$?
+	out="$(PATH="$tmp/bin:$PATH" PUSH="$3" GH="$4" SSH="$5" "$sh" "$check" ${8:+"$8"} 2>&1)" || rc=$?
 	case "$out" in *TOKEN-IN-URL*) echo "FAIL $name ($sh): the URL was printed"; fails=$((fails + 1)) ;; esac
 	if [ "$rc" -ne 0 ]; then echo "FAIL $name ($sh): exit $rc"; fails=$((fails + 1)); fi
 	case "$out" in *SECRET-PW*) echo "FAIL $name ($sh): the password was printed"; fails=$((fails + 1)) ;; esac
@@ -120,17 +121,17 @@ run() {
 		esac
 		out="$(env -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT -u GIT_ASKPASS -u SSH_ASKPASS \
 			HOME="$tmp" XDG_CONFIG_HOME="$tmp" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$tmp/gitconfig" \
-			${set[@]+"${set[@]}"} "$sh" "$root/scripts/whoami-check" https://askpass.invalid/o/r.git 2>&1)"
+			${set[@]+"${set[@]}"} "$sh" "$check" https://askpass.invalid/o/r.git 2>&1)"
 		if [ -e "$ask.asked" ]; then echo "FAIL askpass-$via ($sh): git's askpass was asked"; fails=$((fails + 1)); fi
 		printf '%s\n' "$out" | grep -qxF "whoami-check: username=unknown" || { echo "FAIL askpass-$via ($sh): the probe did not come back unknown"; fails=$((fails + 1)); }
 	done
 	# The admin list is configurable.
-	out="$(PATH="$tmp/bin:$PATH" PUSH=bob GH=bob SSH=bob FPL_ADMIN_ACCOUNTS="bob" "$sh" "$root/scripts/whoami-check" 2>&1)"
+	out="$(PATH="$tmp/bin:$PATH" PUSH=bob GH=bob SSH=bob FPL_ADMIN_ACCOUNTS="bob" "$sh" "$check" 2>&1)"
 	case "$out" in *NAG*) : ;; *) echo "FAIL admins-env ($sh): no NAG"; fails=$((fails + 1)) ;; esac
 	# A glob in the admin list is a name, not a pathname pattern: with a file "bob" in the working
 	# directory, "*" must not become "bob" and nag a non-admin.
 	mkdir "$tmp/glob" && : >"$tmp/glob/bob"
-	out="$(cd "$tmp/glob" && PATH="$tmp/bin:$PATH" PUSH=bob GH=bob SSH=bob FPL_ADMIN_ACCOUNTS="*" "$sh" "$root/scripts/whoami-check" 2>&1)"
+	out="$(cd "$tmp/glob" && PATH="$tmp/bin:$PATH" PUSH=bob GH=bob SSH=bob FPL_ADMIN_ACCOUNTS="*" "$sh" "$check" 2>&1)"
 	case "$out" in *NAG*) echo "FAIL admins-glob ($sh): '*' expanded against the working directory"; fails=$((fails + 1)) ;; esac
 	rm -rf "$tmp/glob"
 	# A stock Mac has no timeout. Every probe still has a deadline there (perl's alarm), and
@@ -143,16 +144,16 @@ run() {
 		for c in sh sed awk head cat sleep env; do ln -s "$(command -v "$c")" "$iso/$c"; done
 		[ "$variant" = bare ] || ln -s "$(command -v perl)" "$iso/perl"
 		if PATH="$iso" command -v timeout >/dev/null 2>&1; then echo "FAIL no-timeout-$variant ($sh): the isolated PATH has timeout"; fails=$((fails + 1)); fi
-		out="$(PATH="$iso" PUSH=psjg GH=psjg SSH=psjg "$sh" "$root/scripts/whoami-check" 2>&1)"
+		out="$(PATH="$iso" PUSH=psjg GH=psjg SSH=psjg "$sh" "$check" 2>&1)"
 		printf '%s\n' "$out" | grep -qxF "whoami-check: ssh:      psjg" || { echo "FAIL no-timeout-$variant ($sh): no ssh line"; fails=$((fails + 1)); }
 		# A probe that hangs is cut off at the deadline (with perl), and never costs more than that.
 		if [ "$variant" = perl ]; then
 			t0=$SECONDS
-			out="$(PATH="$iso" HANG=ssh FPL_WHOAMI_DEADLINE=1 PUSH=psjg GH=psjg SSH=psjg "$sh" "$root/scripts/whoami-check" 2>&1)"
+			out="$(PATH="$iso" HANG=ssh FPL_WHOAMI_DEADLINE=1 PUSH=psjg GH=psjg SSH=psjg "$sh" "$check" 2>&1)"
 			if [ $((SECONDS - t0)) -gt 6 ]; then echo "FAIL hang-perl ($sh): took $((SECONDS - t0))s with a 1s deadline"; fails=$((fails + 1)); fi
 			printf '%s\n' "$out" | grep -qxF "whoami-check: ssh:      unknown" || { echo "FAIL hang-perl ($sh): a hung ssh was not 'unknown'"; fails=$((fails + 1)); }
 			t0=$SECONDS
-			out="$(PATH="$iso" HANG=git FPL_WHOAMI_DEADLINE=1 PUSH=psjg GH=psjg SSH=psjg "$sh" "$root/scripts/whoami-check" https://github.com/o/r.git 2>&1)"
+			out="$(PATH="$iso" HANG=git FPL_WHOAMI_DEADLINE=1 PUSH=psjg GH=psjg SSH=psjg "$sh" "$check" https://github.com/o/r.git 2>&1)"
 			if [ $((SECONDS - t0)) -gt 6 ]; then echo "FAIL hang-helper ($sh): took $((SECONDS - t0))s with a 1s deadline"; fails=$((fails + 1)); fi
 			printf '%s\n' "$out" | grep -qxF "whoami-check: username=unknown" || { echo "FAIL hang-helper ($sh): a hung helper was not 'unknown'"; fails=$((fails + 1)); }
 		fi
@@ -162,12 +163,12 @@ run() {
 
 # The hook runs it as a message: before the gates, and its failure cannot refuse a push.
 hook="$root/.githooks/pre-push"
-if ! grep -q 'scripts/whoami-check" "${2:-}" >&2 || :$' "$hook"; then
-	echo "FAIL hook: .githooks/pre-push does not run scripts/whoami-check as a message"
+if ! grep -q 'whoami/scripts/whoami-check" "${2:-}" >&2 || :$' "$hook"; then
+	echo "FAIL hook: .githooks/pre-push does not run whoami-check as a message"
 	fails=$((fails + 1))
 fi
 # Anchored on the calls, not the comments that name the scripts: the first call of each.
-if [ "$(grep -n '^[^#]*"\$top/scripts/whoami-check"' "$hook" | head -n 1 | cut -d: -f1)" -gt \
+if [ "$(grep -n '^[^#]*"\$top/.agents/skills/fpl:pr:whoami/scripts/whoami-check"' "$hook" | head -n 1 | cut -d: -f1)" -gt \
 	"$(grep -n '^[^#]*"\$top/scripts/leak-check"' "$hook" | head -n 1 | cut -d: -f1)" ]; then
 	echo "FAIL hook: whoami-check runs after the gates"
 	fails=$((fails + 1))
