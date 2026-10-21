@@ -383,6 +383,52 @@ sr 0 "revert of a policy series with a long log" "revert-" revert big-abcdef0 ag
 same "the undo of a long log carries the policy marker" "$(git log -1 --format=%B agent/claude/stack/revert-big | grep -c '^Carries the \[policy\]')" 1
 git switch -q main
 
+# --- attempt: the work tip kept as an annotated tag, never as a branch ---------------------------
+sr 1 "attempt refuses main" "[branch]" attempt demo
+git switch -q -c agent/claude/stack/att main
+sr 1 "attempt refuses a branch with nothing beyond main" "[attempt-empty]" attempt att
+ser att-abcdef0 docs/att ""
+atip="$(git rev-parse HEAD)"
+sr 1 "attempt refuses a unit with a slash" "[usage]" attempt a/b
+echo dirty >>docs/att
+sr 1 "attempt refuses a dirty tree" "[dirty]" attempt att
+git checkout -q -- docs/att
+SERIES_DATE=2026-10-21 sr 0 "attempt tags the work tip" "refs/tags/attempts/att/2026-10-21" attempt att
+aout="$(cat "$tmp/out")"
+same "attempt prints the tag first" "$(printf '%s\n' "$aout" | sed -n 1p)" attempts/att/2026-10-21
+same "attempt takes the token on a line of its own" "$(printf '%s\n' "$aout" | sed -n 2p)" 'T=$(gh auth token --user psjg-claude) &&'
+same "the attempt tag is annotated" "$(git cat-file -t attempts/att/2026-10-21)" tag
+same "the attempt tag points at the work tip" "$(git rev-parse 'attempts/att/2026-10-21^{commit}')" "$atip"
+amsg="$(git cat-file tag attempts/att/2026-10-21)"
+same "the attempt message names the series" "$(printf '%s\n' "$amsg" | grep -c 'Series: att-abcdef0, on agent/claude/stack/att')" 1
+same "the attempt message repeats the proof" "$(printf '%s\n' "$amsg" | grep -c 'scripts/present-check -B main attempts/att/2026-10-21 agent/claude/stack/att')" 1
+same "attempt makes no branch" "$(git for-each-ref --format='%(refname)' refs/heads | grep -c attempt || true)" 0
+same "attempt leaves the checkout on the work branch" "$(git branch --show-current)" agent/claude/stack/att
+SERIES_DATE=2026-10-21 sr 1 "attempt refuses an existing tag" "[attempt-exists]" attempt att
+same "the refused attempt left the tag alone" "$(git rev-parse 'attempts/att/2026-10-21^{commit}')" "$atip"
+SERIES_DATE='bad..date' sr 1 "attempt refuses a date that makes no tag name" "[usage]" attempt att
+SERIES_DATE='$(id)' sr 1 "attempt refuses a date a shell would expand" "[usage]" attempt att2
+same "the refused date made no tag" "$(git tag -l 'attempts/att2/*' | wc -l | tr -d ' ')" 0
+SERIES_REPO='o/$(id)' sr 1 "attempt refuses a repository a shell would expand" "[usage]" attempt att2
+SERIES_REPO=$'fpl-org/fpl\n$(id)' sr 1 "attempt refuses a repository with a second line" "[usage]" attempt att2
+# A sub-series is proved over its parent branch: over main its range would hold the parent's
+# commits and their other Series-Id, which present-check refuses.
+git switch -q -c agent/claude/stack/att.side main
+ser att-side-abcdef0 docs/atts ""
+git switch -q -c agent/claude/stack/att.child agent/claude/stack/att
+ser att-child-abcdef0 docs/attc ""
+sr 1 "attempt refuses a base the branch is not on" "[attempt-base]" attempt attc agent/claude/stack/att.side
+sr 1 "attempt refuses a base a shell would expand" "[usage]" attempt attc 'x$(id)'
+sr 1 "attempt refuses a base with nothing beyond it" "[attempt-empty]" attempt attc HEAD
+SERIES_DATE=2026-10-21 sr 0 "attempt over the parent branch" "attempts/attc/2026-10-21" attempt attc agent/claude/stack/att
+same "the sub-series proof runs over its parent" "$(git cat-file tag attempts/attc/2026-10-21 | grep -c 'scripts/present-check -B agent/claude/stack/att attempts/attc/2026-10-21 agent/claude/stack/att.child$')" 1
+# A branch name may hold a character the shell expands (the branch gate refuses one, unless it
+# is set to warn); the proof line quotes it.
+FPL_BRANCH_GATE=warn git switch -q -c 'agent/claude/stack/at$q' 2>/dev/null
+SERIES_DATE=2026-10-21 sr 0 "attempt on a branch with a dollar" "attempts/atq/2026-10-21" attempt atq
+same "the proof line quotes the branch" "$(git cat-file tag attempts/atq/2026-10-21 | grep -c 'agent/claude/stack/at\\\$q$')" 1
+git switch -q main
+
 if [ "$fails" -ne 0 ]; then
 	echo "series self-test: $fails of $total checks failed" >&2
 	exit 1

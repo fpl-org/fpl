@@ -38,10 +38,19 @@
 #                                   series: a new Series-Id and the trailer Refs: series <id>.
 #                                   The branch is agent/<lead>/stack/revert-<id> when run from
 #                                   an agent branch agent/<lead>/..., else it must be named.
+#   series attempt <unit> [base]    archive the current work tip before a presenter rewrites it:
+#                                   an annotated tag attempts/<unit>/<date>, never a branch, whose
+#                                   message names the series, the branch the presented tip goes
+#                                   to, and the present-check line over base (default main; the
+#                                   parent branch of a sub-series) that repeats the proof. Refused
+#                                   on main or detached, on a dirty tree, over a base HEAD is not
+#                                   on, and when the tag exists. Prints the tag, then the two
+#                                   lines that push it; pushes nothing.
 #
 # Environment: SERIES_MAIN (the ref of main; default github/main, else origin/main, else main;
 # once set it must resolve, it never falls back), SERIES_GH (the gh to ask the forge; default
-# gh), SERIES_REPO (fpl-org/fpl), SERIES_OWNER (the login whose word freezes a branch; psjg). The
+# gh), SERIES_REPO (fpl-org/fpl), SERIES_OWNER (the login whose word freezes a branch; psjg),
+# SERIES_DATE (the <date> of an attempt tag, YYYY-MM-DD; default today, date +%F). The
 # forge is only read, with the machine account's token. Plain bash 3.2: no mapfile, no
 # associative arrays.
 
@@ -384,7 +393,58 @@ cmd_revert() { # revert <id> [branch]
 	printf '%s %s\n' "$branch" "$new"
 }
 
+# whole <ere> <text>: the text as a whole matches the anchored expression. grep would judge each
+# line apart, so a value with a newline passes on one good line and carries the rest.
+whole() { [[ $2 =~ $1 ]]; }
+
+# attempt <unit> [base]: the work tip, kept reachable as a tag once a presenter rewrites the
+# branch. A branch would count as work in flight and invite commits; a tag is a fixed record. The
+# message says what a reader of an old review thread needs: which series this was, where its
+# presented tip lives, and the one line that proves the two hold the same tree. That line runs
+# over base: a sub-series is proved over its parent branch, as main would add the parent's
+# commits and their other Series-Id. The unit, the date, the base and the repository are
+# checked here and the branch is quoted, so the printed lines can be pasted as they stand: no
+# shell expands a character of a name in them.
+cmd_attempt() {
+	local unit="${1:-}" base="${2:-}" branch tip tag date id repo="${SERIES_REPO:-fpl-org/fpl}"
+	whole '^[a-z0-9][a-z0-9._-]*$' "$unit" \
+		|| die usage "'$unit' is not a unit name (lower-case letters, digits and . _ -, no slash)" "series attempt <unit> [base]"
+	date="${SERIES_DATE:-$(date +%F)}"
+	whole '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' "$date" \
+		|| die usage "'$date' is not a date YYYY-MM-DD" "check SERIES_DATE"
+	whole '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' "$repo" \
+		|| die usage "'$repo' is not an owner/name" "check SERIES_REPO"
+	branch="$(git branch --show-current)"
+	[ -n "$branch" ] && [ "$branch" != main ] || die branch "the work tip is the tip of a work branch, not main or a detached HEAD" "switch to the work branch"
+	require_clean
+	[ -n "$base" ] || base="$(main_ref)"
+	whole '^[A-Za-z0-9][A-Za-z0-9._/-]*$' "$base" \
+		|| die usage "'$base' is not a base this line can name (letters, digits and . _ / -)" "name the base branch"
+	git rev-parse -q --verify "$base^{commit}" >/dev/null || die usage "'$base' is not a commit here" "name the base branch"
+	tip="$(git rev-parse HEAD)"
+	git merge-base --is-ancestor "$base" "$tip" || die attempt-base "$branch is not on $base" "name the branch the series sits on"
+	[ -n "$(git rev-list "$base..$tip")" ] || die attempt-empty "$branch holds no commit beyond $base" "nothing to archive"
+	tag="attempts/$unit/$date"
+	git check-ref-format "refs/tags/$tag" || die usage "'$tag' is not a tag name" "check SERIES_DATE"
+	! git rev-parse -q --verify "refs/tags/$tag" >/dev/null \
+		|| die attempt-exists "$tag exists, at $(git rev-parse --short "$tag^{commit}")" "an attempt is archived once; name another unit for another tip"
+	id="$(ids_of "$tip" | head -n 1)"
+	printf '%s\n' "Work tip of $unit before its presentation on $date." "" \
+		"Series: ${id:-no Series-Id yet}, on $branch." \
+		"The presented tip goes to $branch, which the presenter rewrites from this" \
+		"commit as a literate series with the same tree. This tag keeps the work tip" \
+		"reachable, so the proof can be repeated and old review threads keep their commits:" "" \
+		"    scripts/present-check -B $base $tag $(printf '%q' "$branch")" \
+		| git tag -a -F - "$tag" "$tip"
+	# The token is taken on a line of its own: in a substitution inside the push a failed lookup
+	# is lost, git asks the credential helper instead, and the tag goes out as another account.
+	# The && ends that line, so a failed lookup skips the push without closing a pasted-into shell.
+	printf '%s\n' "$tag" \
+		'T=$(gh auth token --user psjg-claude) &&' \
+		"git push \"https://x-access-token:\$T@github.com/$repo.git\" refs/tags/$tag"
+}
+
 case "${1:-}" in
-mint | stamp | check | manifest | digest | range | revert | _amend) c="cmd_${1}"; shift; "$c" "$@" ;;
-*) die usage "series {mint|stamp|check|manifest|digest|range|revert} ..." "see the header of scripts/series" ;;
+mint | stamp | check | manifest | digest | range | revert | attempt | _amend) c="cmd_${1}"; shift; "$c" "$@" ;;
+*) die usage "series {mint|stamp|check|manifest|digest|range|revert|attempt} ..." "see the header of scripts/series" ;;
 esac
