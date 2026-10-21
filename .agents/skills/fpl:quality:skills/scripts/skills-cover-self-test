@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+#
+# skills-cover-self-test — proof that skills-cover refuses each way the skill tree can come
+# apart and nothing else, under /bin/bash (3.2 on a Mac) and the bash on PATH.
+#
+#   the fixture   a throwaway tree with prose, skills, a ratchet and the link, which passes;
+#                 each rule is then broken one way at a time on a fresh copy, by name
+#   the tool      a stub git exiting 2 on PATH makes a run without a root exit 3, naming git
+#   the replay    this repository: 0 refusals with its ratchet, N without, N printed; then
+#                 every open pull request tip the forge lists, each in a detached worktree of
+#                 its github/ ref with this tree's skills laid over it, judged with this
+#                 tree's ratchet, as it will be once restacked on this gate: an uncovered
+#                 script that exists here means the ratchet is wrong and fails; one the tip
+#                 adds is printed as what that pull request must add, and does not. Skipped,
+#                 saying so, where gh or the refs are not at hand (the forge's runner has
+#                 neither).
+#   the list      scripts/gates-list names this file, so make gates runs it
+
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+root="$(cd "$here/../../../.." && pwd)"
+cover="$here/skills-cover"
+tmp="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/skills-cover-self-test.XXXXXX")" && pwd)"
+trap 'rm -rf "$tmp"' EXIT
+fails=0
+
+fail() {
+	printf 'skills-cover-self-test: %s\n' "$1" >&2
+	fails=$((fails + 1))
+}
+
+# tree <dir>: the fixture. Prose names a, b, the self-test c and the skill's own tool; fpl:m
+# is a routine over fpl:m:a, which names a and its own scripts/own; b is in the ratchet.
+tree() {
+	mkdir -p "$1/scripts" "$1/quality" "$1/.agents/sub" "$1/.agents/skills/fpl:m" \
+		"$1/.agents/skills/fpl:m:a/scripts" "$1/.claude/agents" "$1/.claude/commands"
+	for s in a b c-self-test zz; do echo true >"$1/scripts/$s"; done
+	echo true >"$1/.agents/skills/fpl:m:a/scripts/own"
+	printf 'Run `scripts/a`, then `scripts/b`; `scripts/c-self-test` proves a.\n' >"$1/AGENTS.md"
+	printf 'See .agents/skills/fpl:m:a/scripts/own and scripts/gone.\n' >"$1/.agents/X.md"
+	printf 'Not scanned: scripts/zz\n' >"$1/.agents/sub/deep.md"
+	printf 'scripts/a again\n' >"$1/.claude/agents/p.md"
+	printf 'scripts/a again\n' >"$1/.claude/commands/c.md"
+	printf -- '---\nname: fpl:m\n---\nLoad fpl:m:a (fpl:<module> is the form).\n' >"$1/.agents/skills/fpl:m/SKILL.md"
+	printf -- '---\nname: fpl:m:a\ndescription: a\n---\nRun scripts/a, then scripts/own.\n' \
+		>"$1/.agents/skills/fpl:m:a/SKILL.md"
+	printf '# the ratchet\n\nscripts/b -- not yet: unit S9\n' >"$1/quality/skills-ratchet"
+	ln -s ../.agents/skills "$1/.claude/skills"
+}
+
+# refused <shell> <rule> <setup> [count]: on a fresh tree changed by setup, skills-cover exits 1
+# and names the rule, [count] times (default once), and no other rule.
+refused() {
+	local d="$tmp/r" rc=0
+	rm -rf "$d"
+	tree "$d"
+	(cd "$d" && eval "$3")
+	"$1" "$cover" "$d" >"$d.out" 2>"$d.err" || rc=$?
+	[ "$rc" -eq 1 ] || fail "$1: $2: exit $rc, not 1"
+	[ "$(grep -c "^skills-cover: $2: " "$d.err")" -eq "${4:-1}" ] || {
+		fail "$1: $2: not refused ${4:-1} time(s) by that rule:"
+		sed 's/^/    /' "$d.err" >&2
+	}
+	grep -q "^skills-cover: $2: " "$d.err" && grep -q '^    remedy: ' "$d.err" || fail "$1: $2: no remedy"
+	if grep '^skills-cover: SKILLS-' "$d.err" | grep -qv "^skills-cover: $2: "; then
+		fail "$1: $2: another rule fired too:"
+		sed 's/^/    /' "$d.err" >&2
+	fi
+	[ ! -s "$d.out" ] || fail "$1: $2: a refusal wrote to stdout"
+}
+
+suite() {
+	local sh="$1" d="$tmp/ok" rc=0
+	rm -rf "$d"
+	tree "$d"
+	"$sh" "$cover" "$d" >"$d.out" 2>"$d.err" || fail "$sh: the good tree was refused: $(cat "$d.err")"
+	[ ! -s "$d.out" ] && [ ! -s "$d.err" ] || fail "$sh: the good tree was not silent"
+
+	refused "$sh" SKILLS-UNCOVERED 'printf "scripts/b -- x\n" >quality/skills-ratchet; sed -i.bak "s/scripts\/b --/scripts\/zz --/" quality/skills-ratchet; rm quality/skills-ratchet.bak'
+	refused "$sh" SKILLS-UNCOVERED 'rm quality/skills-ratchet'
+	refused "$sh" SKILLS-UNCOVERED 'printf "scripts/b is named here too\n" >.agents/skills/fpl:m/notes.md; rm quality/skills-ratchet'
+	refused "$sh" SKILLS-RATCHET-STALE 'echo "scripts/a -- covered now" >>quality/skills-ratchet'
+	refused "$sh" SKILLS-RATCHET-STALE 'echo "scripts/gone -- no such file" >>quality/skills-ratchet'
+	refused "$sh" SKILLS-RATCHET-STALE 'echo "scripts/c-self-test -- a proof" >>quality/skills-ratchet'
+	refused "$sh" SKILLS-RATCHET-REASON 'echo "scripts/zz" >>quality/skills-ratchet'
+	refused "$sh" SKILLS-RATCHET-REASON 'echo "scripts/zz -- " >>quality/skills-ratchet'
+	refused "$sh" SKILLS-NAME 'sed -i.bak "s/^name: fpl:m:a/name: fpl:m:b/" .agents/skills/fpl:m:a/SKILL.md'
+	refused "$sh" SKILLS-NAME 'mkdir .agents/skills/fpl:Bad; printf -- "---\nname: fpl:Bad\n---\n" >.agents/skills/fpl:Bad/SKILL.md'
+	refused "$sh" SKILLS-NAME 'mkdir .agents/skills/fpl:a:b:c:d; printf -- "---\nname: fpl:a:b:c:d\n---\n" >.agents/skills/fpl:a:b:c:d/SKILL.md'
+	refused "$sh" SKILLS-NAME 'mkdir .agents/skills/fpl:empty'
+	refused "$sh" SKILLS-LINK 'rm .claude/skills'
+	refused "$sh" SKILLS-LINK 'rm .claude/skills; ln -s ../.agents .claude/skills'
+	refused "$sh" SKILLS-LINK 'rm .claude/skills; mkdir .claude/skills'
+	refused "$sh" SKILLS-SUB 'echo "and fpl:m:gone" >>.agents/skills/fpl:m/SKILL.md'
+	refused "$sh" SKILLS-SCREEN 'awk "BEGIN { for (i = 0; i < 80; i++) print i }" >>AGENTS.md'
+	# Every rule at once: all are printed, none stops the others.
+	rm -rf "$d"; tree "$d"
+	(cd "$d" && awk 'BEGIN { for (i = 0; i < 80; i++) print i }' >>AGENTS.md && rm .claude/skills quality/skills-ratchet)
+	"$sh" "$cover" "$d" >"$d.out" 2>"$d.err" || rc=$?
+	[ "$rc" -eq 1 ] || fail "$sh: three rules: exit $rc, not 1"
+	[ "$(sed -n 's/^skills-cover: \(SKILLS-[A-Z-]*\): .*/\1/p' "$d.err" | sort -u | tr '\n' ' ')" = 'SKILLS-LINK SKILLS-SCREEN SKILLS-UNCOVERED ' ] \
+		|| { fail "$sh: three rules: not all printed:"; sed 's/^/    /' "$d.err" >&2; }
+
+	# --uncovered: the lines the tree needs, with the reason the ratchet has, else none.
+	rm -rf "$d"; tree "$d"
+	echo 'scripts/a' >>"$d/AGENTS.md"
+	printf 'Also `scripts/zz`.\n' >>"$d/AGENTS.md"
+	"$sh" "$cover" --uncovered "$d" >"$d.out" 2>"$d.err" || fail "$sh: --uncovered failed"
+	[ "$(cat "$d.out")" = 'scripts/b -- not yet: unit S9
+scripts/zz --' ] || { fail "$sh: --uncovered printed:"; sed 's/^/    /' "$d.out" >&2; }
+
+	# A broken tool is loud: exit 3 naming git, never a verdict.
+	mkdir -p "$tmp/bin"
+	printf '#!/bin/sh\necho "git: stub" >&2\nexit 2\n' >"$tmp/bin/git"
+	chmod +x "$tmp/bin/git"
+	rc=0
+	(cd "$d" && PATH="$tmp/bin:$PATH" "$sh" "$cover" >"$d.out" 2>"$d.err") || rc=$?
+	[ "$rc" -eq 3 ] || fail "$sh: stub git: exit $rc, not 3"
+	grep -q 'git rev-parse --show-toplevel failed (exit 2)' "$d.err" || fail "$sh: stub git: the cause is not named"
+	rc=0
+	"$sh" "$cover" --bogus >/dev/null 2>&1 || rc=$?
+	[ "$rc" -eq 2 ] || fail "$sh: usage: exit $rc, not 2"
+	rc=0
+	"$sh" "$cover" "$tmp/nowhere" >/dev/null 2>&1 || rc=$?
+	[ "$rc" -eq 2 ] || fail "$sh: a missing root: exit $rc, not 2"
+}
+
+shells=()
+for sh in /bin/bash "$(command -v bash)"; do
+	[ -x "$sh" ] || continue
+	case " ${shells[*]-} " in *" $sh "*) continue ;; esac
+	shells+=("$sh")
+done
+for sh in "${shells[@]}"; do suite "$sh"; done
+
+# The replay over this tree.
+"$cover" "$root" 2>"$tmp/here.err" || { fail "this tree is refused:"; sed 's/^/    /' "$tmp/here.err" >&2; }
+n="$("$cover" --no-ratchet "$root" 2>&1 | grep -c '^skills-cover: SKILLS-UNCOVERED: ' || true)"
+[ "$n" -gt 0 ] || fail "the replay without the ratchet refused nothing; the scan reads no prose"
+echo "skills-cover-self-test: this tree: 0 refusals with quality/skills-ratchet, $n without"
+grep -qxF "\$ROOT/${here#"$root"/}/skills-cover-self-test" <"$("$root/scripts/gates-list" >"$tmp/list" && echo "$tmp/list")" \
+	|| fail "scripts/gates-list does not list this self-test"
+
+# The replay over the open pull request tips.
+tips=''
+if command -v gh >/dev/null && tips="$(cd "$root" && gh pr list --state open --json headRefName --jq '.[].headRefName' 2>/dev/null)" && [ -n "$tips" ]; then
+	for ref in $tips; do
+		git -C "$root" rev-parse -q --verify "github/$ref^{commit}" >/dev/null 2>&1 || { echo "skills-cover-self-test: $ref: no github/$ref here, not replayed"; continue; }
+		w="$tmp/tip"
+		git -C "$root" worktree add -q --detach "$w" "github/$ref" 2>/dev/null || { fail "$ref: git worktree add failed"; continue; }
+		mkdir -p "$w/.agents/skills" && cp -R "$root/.agents/skills/." "$w/.agents/skills/"
+		adds=''
+		for p in $("$cover" --ratchet "$root/quality/skills-ratchet" "$w" 2>&1 | sed -n 's/^skills-cover: SKILLS-UNCOVERED: \([^ ]*\) .*/\1/p'); do
+			if [ -f "$root/$p" ]; then fail "$ref: $p is uncovered there and exists here: the ratchet is wrong"
+			else adds="$adds $p"; fi
+		done
+		if [ -n "$adds" ]; then adds="must add a skill or a ratchet line for$adds"; else adds="adds nothing"; fi
+		echo "skills-cover-self-test: $ref ($(git -C "$root" rev-parse --short "github/$ref")): 0 of this tree's scripts uncovered; $adds"
+		git -C "$root" worktree remove --force "$w"
+	done
+else
+	echo "skills-cover-self-test: no gh or no open pull requests: the tips are not replayed"
+fi
+
+[ "$fails" -eq 0 ] || { echo "skills-cover-self-test: $fails failed (shells: ${shells[*]})" >&2; exit 1; }
+echo "skills-cover-self-test: ok (shells: ${shells[*]})"
