@@ -96,6 +96,25 @@ top of base) · **restack** (rebase the stack when base or a lower commit change
     request opens ready and CODEOWNERS asks the maintainer at once, so the gate holds the asks
     that go through `scripts/pr`, not that first one.
 
+    **The round budget.** `codex-review.yml` asks Codex again on every push, Codex reads the
+    whole diff each time, and every fix is a push, so its findings do not run out by
+    themselves: on #191 six rounds found 2, 2, 3, 3, 3 and 0. After `FPL_PR_ROUNDS` (default 3) Codex rounds on a pull request (a round is one
+    completed review: findings, or a receipt with none), the findings still open move off it,
+    whatever their grade: `scripts/pr --defer N <branch>` opens one issue that lists them and
+    names the follow-up branch, a new one (the pull request's own freezes at approval),
+    answers each thread with the issue's link, and resolves it. Nothing is dropped. Only a
+    bot's finding moves: a person's thread, the maintainer's above all, is answered here. Every finding is fixed, in a fix-forward series against `main` on that
+    branch once the pull request lands, and the issue closes with it. The gate takes a thread
+    as discharged only past the budget, and only while that issue is open, lists the thread
+    and names the branch (`pr/budget`, `pr/deferred`); a thread resolved at the head it was
+    found on, with no later head to hold its fix, must be deferred so.
+
+    **Scope of a finding.** The scripts only agents run, in worktrees of their own, do not
+    defend against a hostile environment: an inherited hook that rewrites an amend, a `TMPDIR`
+    inside the worktree, a commit message in a foreign encoding, a shim on `PATH` that moves a
+    ref, a config alias of a key git reads. A finding that needs one is not fixed as code: its
+    fix is one line in the tool's header that names the limit, and its thread links that line.
+
 ## Setup (once per clone/worktree)
 
 ```
@@ -584,7 +603,8 @@ and Pull requests read/write, and Metadata, Checks and Commit statuses read — 
 Workflows. Rule 8 is then a property of the credential rather than of anyone's discipline:
 the push is refused, not remembered to be avoided. Checks and Commit statuses are for
 `scripts/pr --ready`, which reads the check runs and commit statuses of the head; a private
-repository refuses both (403) to a token without them.
+repository refuses both (403) to a token without them. `scripts/pr --defer` opens an issue,
+and needs Issues read and write beside them.
 
 The maintainer creates it (the account's settings, then approve the request as an owner of
 the organisation) and writes the file. It expires; a push then fails with 403 and a new token
