@@ -9,9 +9,9 @@
 # from one file of routes a scene writes, by method and path or a GraphQL query's field, and
 # logs every write, one line each. A scene is a pull request in a state measured on
 # fpl-org/fpl (2026-10-21): Codex clean, at its usage limit, running, or with only a 👀 on the
-# ask; threads open or resolved; CodeRabbit and the Claude job running or done; the bots'
-# own bodies, trimmed. The token is a made-up line in .git/agent-credentials, a gh that has
-# none comes first on PATH, and git's config, HOME and gh's config point away from the
+# ask; threads open, resolved or deferred; CodeRabbit and the Claude job running or done; the
+# bots' own bodies, trimmed. The token is a made-up line in .git/agent-credentials, a gh that
+# has none comes first on PATH, and git's config, HOME and gh's config point away from the
 # maintainer's.
 #
 # Where there is a /bin/bash other than the bash running this, the whole run is made a second
@@ -26,7 +26,7 @@ server=""
 trap '[ -z "$server" ] || { kill "$server"; wait "$server"; } 2>/dev/null || true; rm -rf "$tmp"' EXIT
 : >"$tmp/gitconfig"
 # shellcheck disable=SC2046 # one name a line, split on purpose
-unset GH_TOKEN GITHUB_TOKEN GH_HOST FPL_API_URL FPL_PR_TIMEOUT GIT_NAMESPACE \
+unset GH_TOKEN GITHUB_TOKEN GH_HOST FPL_API_URL FPL_PR_TIMEOUT FPL_PR_ROUNDS GIT_NAMESPACE \
 	GIT_CEILING_DIRECTORIES $(git rev-parse --local-env-vars)
 export GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home" \
 	XDG_CONFIG_HOME="$tmp/xdg" GH_CONFIG_DIR="$tmp/gh" GIT_AUTHOR_NAME=t \
@@ -64,6 +64,8 @@ class Handler(BaseHTTPRequestHandler):
             for name, answer in MUTATIONS.items():
                 if query.lstrip().startswith("mutation") and name in query:
                     return self.reply(200, routes.get(f"graphql {name}", {"data": {name: answer}}))
+            if "PullRequestReviewThread" in query:  # the rest of one thread's comments
+                return self.reply(200, routes["graphql comments"])
             if "reviewThreads" in query:
                 return self.reply(200, self.take(routes, "graphql reviewThreads"))
             return self.reply(200, {"errors": [{"message": "not served"}]})
@@ -122,11 +124,13 @@ def state(sha, status, unresolved=False):
                    f"## Codex Review Summary\n\n| 📝 **Code Review** | {row} | `{sha[:7]}` |", "2026-10-20T19:11:39Z")
 
 
-def thread(i, resolved=False, at=OLD, author=BOT, outdated=False):
+def thread(i, resolved=False, at=OLD, author=BOT, outdated=False, replies=()):
     first = {"databaseId": 100 + i, "url": f"{U}/pull/7#discussion_r{100 + i}", "author": author,
              "body": f"**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Finding {i}**", "originalCommit": {"oid": at}}
+    rest = [{"databaseId": 200 + i, "url": "", "author": {"__typename": "User", "login": "psjg-claude"},
+             "body": text, "originalCommit": {"oid": at}} for text in replies]
     return {"id": f"T{i}", "isResolved": resolved, "isOutdated": outdated, "path": "scripts/x", "line": i,
-            "comments": {"nodes": [first]}}
+            "comments": {"pageInfo": {"hasNextPage": False}, "nodes": [first] + rest}}
 
 
 said, threads, reviews, runs, statuses = [ASK], [], [], [], []
@@ -139,16 +143,35 @@ if "limit" in words:
 if "unconnected" in words:
     said.append(comment(12, "To use Codex here, [create a Codex account and connect to github](https://chatgpt.com/codex/cloud/settings/connectors)."))
 eyes = [{"user": {"login": CODEX}, "content": "eyes"}] if "eyes" in words else []
+if "receipts" in words:  # three rounds: two reviews with findings, one clean receipt
+    reviews = [{"user": {"login": CODEX}, "commit_id": OLD}] * 2
+    said.append(comment(13, "<!-- codex-review-receipt:v1 -->\n\nCodex Review: Didn't find any major issues. Bravo."))
 if "open" in words:
     threads.append(thread(1, outdated=True))
 if "human" in words:
     threads.append(thread(2, author={"__typename": "User", "login": "psjg"}))
 if "fixed" in words:
     threads.append(thread(3, resolved=True))
+if "dropped" in words:  # resolved on the head it was found on, no deferral
+    threads.append(thread(4, resolved=True, at=H))
+deferral = f"Deferred to {U}/issues/50, the follow-up of this pull request."
+if "deferred" in words:
+    threads.append(thread(5, resolved=True, at=H, replies=[deferral]))
+if "hushed" in words:  # a person's thread, resolved with a deferral
+    threads.append(thread(7, resolved=True, author={"__typename": "User", "login": "psjg"}, replies=[deferral]))
+issue = {"number": 50, "state": "open", "body": f"- {U}/pull/7#discussion_r105\n\nFollow-up branch: `agent/claude/stack/x.followup`"}
+if "unnamed" in words:
+    issue["body"] = f"- {U}/pull/7#discussion_r105"
+if "unlisted" in words:
+    issue["body"] = issue["body"].replace("discussion_r105", "discussion_r999")
+if "own" in words:  # the follow-up is the pull request's own branch
+    issue["body"] = issue["body"].replace("x.followup", "x")
+if "closed" in words:
+    issue["state"] = "closed"
 rabbit = ("pending", "Review in progress") if "rabbit" in words else ("success", "Review skipped")
 statuses.append({"context": "CodeRabbit", "state": rabbit[0], "description": rabbit[1]})
 runs.append({"name": "claude-review", "status": "in_progress" if "claude" in words else "completed"})
-pull = {"number": 7, "state": "open", "draft": "draft" in words, "head": {"sha": H}, "node_id": "PR_7",
+pull = {"number": 7, "state": "open", "draft": "draft" in words, "head": {"sha": H, "ref": "agent/claude/stack/x"}, "node_id": "PR_7",
         "requested_reviewers": [], "requested_teams": []}
 routes = {
     "GET /user": {"login": "psjg-claude"},
@@ -171,6 +194,13 @@ if "opened" in words:  # a bot opens a thread while the rest is judged
 for word, answer in (("hollow", {}), ("refused", {"errors": [{"message": "nope"}]})):
     if word in words:  # the forge answers the mutation with nothing, or with an error
         routes["graphql markPullRequestReadyForReview"] = answer
+if "deferred" in words and "noissue" not in words:
+    routes[f"GET {R}/issues/50"] = issue
+if "long" in words:  # thread 5 has more comments than a page: its deferral is on the second
+    nodes = threads[-1]["comments"]["nodes"]
+    threads[-1]["comments"] = {"pageInfo": {"hasNextPage": True, "endCursor": "c1"}, "nodes": nodes[:1]}
+    routes["graphql comments"] = {"data": {"node": {"comments": {
+        "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": nodes[1:]}}}}
 json.dump(routes, open(f"{forge}/routes.json", "w"))
 open(f"{forge}/log", "w").close()
 PY
@@ -292,6 +322,7 @@ says "stays a draft: nope" "refused"
 scene clean open
 run 1 "an outdated bot thread" --quiet 7
 says "pr/threads: 1 of 1 review threads unresolved, outdated ones included: https://github.com/pr-test/fpl/pull/7#discussion_r101 (by chatgpt-codex-connector)" "open thread"
+says "(0 of 3 Codex rounds)" "rounds in the remedy"
 scene clean human
 run 1 "the maintainer's own open thread" --quiet 7
 says "discussion_r102 (by psjg)" "human thread"
@@ -303,6 +334,40 @@ says "pr/codex: Codex finished c0ffeec with findings unresolved" "flagged open"
 scene clean broken
 run 1 "threads unreadable: fail closed" --quiet 7
 says "pr/threads: the forge's answer is not a page of review threads" "broken threads"
+
+# Deferral: only past the budget, only to an open issue that lists the thread and names its
+# follow-up branch; a finding resolved at the head it was found on must be deferred.
+scene clean receipts open
+run 1 "budget spent" --quiet 7
+says "the budget of 3 Codex rounds is spent (3)" "budget spent"
+scene clean dropped
+run 1 "resolved at its own head, not deferred" --quiet 7
+says "pr/deferred: https://github.com/pr-test/fpl/pull/7#discussion_r104 was found at c0ffeec" "dropped"
+scene clean receipts deferred
+run 0 "deferred past the budget" --quiet 7
+scene clean deferred
+run 1 "deferred under the budget" --quiet 7
+says "pr/budget: https://github.com/pr-test/fpl/pull/7#discussion_r105 is deferred after 0 Codex rounds" "under budget"
+scene clean receipts deferred noissue
+run 1 "deferred to no issue" --quiet 7
+says "pr/deferred: issue #50 does not exist" "no issue"
+scene clean receipts deferred unnamed
+run 1 "deferred to an issue that names no branch" --quiet 7
+says "issue #50 names no follow-up branch" "unnamed"
+scene clean receipts deferred unlisted
+run 1 "deferred to an issue that does not list the thread" --quiet 7
+says "issue #50 does not list https://github.com/pr-test/fpl/pull/7#discussion_r105" "unlisted"
+scene clean receipts deferred closed
+run 1 "deferred to a closed issue" --quiet 7
+says "issue #50 is closed" "closed"
+scene clean receipts deferred own
+run 1 "deferred to the pull request's own branch" --quiet 7
+says "issue #50 names the pull request's own branch" "own branch"
+scene clean receipts deferred long
+run 0 "a deferral past the first page of a thread's comments" --quiet 7
+scene clean receipts deferred hushed
+run 1 "a person's thread deferred" --quiet 7
+says "pr/deferred: https://github.com/pr-test/fpl/pull/7#discussion_r107 is a person's thread" "hushed"
 
 # The other bots, mid-review.
 scene clean rabbit

@@ -43,6 +43,17 @@
 #   pr/coderabbit the CodeRabbit commit status on H is not pending (a skipped review is done).
 #   pr/claude     no check run on H whose name starts with "claude" is still running.
 #   pr/reviewer   --reviewer asks nobody to read a draft: --ready first.
+#   pr/budget     a thread is deferred only once FPL_PR_ROUNDS (default 3) Codex rounds are
+#                 spent. A round is one completed Codex review of this pull request: a review
+#                 with findings, or a receipt that found no major issues. Counted per pull
+#                 request: a series that moves to a new number starts again.
+#   pr/deferred   a resolved bot thread with a reply "Deferred to <issue url>" points at an
+#                 open issue of this repository that lists the thread's url and names the
+#                 follow-up branch on a line "Follow-up branch: `agent/...`", not the pull
+#                 request's own, where the finding is fixed forward after it lands. A bot
+#                 thread resolved at the head it was found on, with no later head to hold its
+#                 fix, must be so deferred: nothing a bot found is dropped. A person's thread
+#                 is never deferred.
 #
 # --reviewer and --quiet judge once. --ready waits, under FPL_PR_WAIT, on what time alone can
 # clear (a review running) and refuses at once on the rest. Right before its mutation each
@@ -296,8 +307,12 @@ THREADS = """query($owner: String!, $name: String!, $number: Int!, $after: Strin
   repository(owner: $owner, name: $name) { pullRequest(number: $number) {
     reviewThreads(first: 100, after: $after) {
       pageInfo { hasNextPage endCursor }
-      nodes { id isResolved isOutdated path line comments(first: 100) { nodes {
-        databaseId url body author { __typename login } originalCommit { oid } } } } } } } }"""
+      nodes { id isResolved isOutdated path line comments(first: 100) { NODES } } } } } }"""
+NODES = """pageInfo { hasNextPage endCursor } nodes {
+  databaseId url body author { __typename login } originalCommit { oid } }"""
+COMMENTS = """query($id: ID!, $after: String) { node(id: $id) { ... on PullRequestReviewThread {
+  comments(first: 100, after: $after) { NODES } } } }"""
+THREADS, COMMENTS = THREADS.replace("NODES", NODES), COMMENTS.replace("NODES", NODES)
 
 
 def threads(number):
@@ -316,12 +331,28 @@ def threads(number):
             die(f"pr/threads: the forge's answer is not a page of review threads of #{number}:"
                 f" {json.dumps(got)[:200]}; run this again, or read the threads on the forge")
         if not more:
-            return found
+            break
+    for t in found:  # a thread of over 100 comments: the rest, where a deferral is appended
+        page = t["comments"]
+        while page["pageInfo"]["hasNextPage"]:
+            variables = {"id": t["id"], "after": page["pageInfo"]["endCursor"]}
+            got = api("/graphql", {"query": COMMENTS, "variables": variables})
+            try:
+                page = got["data"]["node"]["comments"]
+                t["comments"]["nodes"] += page["nodes"]
+            except (KeyError, TypeError):
+                die(f"pr/threads: the forge's answer is not a page of comments of {where(t)}:"
+                    f" {json.dumps(got)[:200]}; run this again, or read the thread on the forge")
+    return found
 
 
 CODEX = "chatgpt-codex-connector"  # GraphQL's spelling of the login; REST adds [bot]
 STATE = re.compile(r"<!-- codex-review-state:v1 (\{.*?\}) -->", re.S)
 SINCE = re.compile(r'since <relative-time datetime="([^"]+)"')
+DEFERRAL = (
+    "Deferred to https://github.com/{slug}/issues/{number}, the follow-up of this pull request."
+)
+BRANCH = re.compile(r"^Follow-up branch: `(agent/[^`\s]+)`\s*$", re.M)
 
 
 def who(user):
@@ -339,23 +370,96 @@ def where(thread):
     return first(thread).get("url") or f"{thread['path']}:{thread['line']}"
 
 
+def by_bot(thread):
+    author = first(thread).get("author") or {}
+    return author.get("__typename") == "Bot" or who(author) in (CODEX, "coderabbitai", "claude")
+
+
+def deferred(thread):
+    """The numbers of the issues a thread is deferred to: its replies, by anyone but a bot, that
+    say so in the words of DEFERRAL."""
+    pattern = re.escape(DEFERRAL.format(slug=slug, number="NUMBER")).replace("NUMBER", r"(\d+)")
+    return {
+        int(k)
+        for c in thread["comments"]["nodes"][1:]
+        if (c.get("author") or {}).get("__typename") != "Bot"
+        for k in re.findall(pattern, c["body"])
+    }
+
+
+issues = {}  # by number, read once each
+
+
+def unfit(number, url, own):
+    """Why issue `number` cannot carry the deferral of the thread at `url` off the pull request
+    whose branch is `own`, or None."""
+    if number not in issues:
+        issues[number] = api(f"/repos/{slug}/issues/{number}", absent={})
+    issue, body = issues[number], issues[number].get("body") or ""
+    branch = BRANCH.search(body)
+    if not issue:
+        return f"issue #{number} does not exist"
+    if "pull_request" in issue:
+        return f"#{number} is a pull request, not an issue"
+    if issue.get("state") != "open":
+        return f"issue #{number} is {issue.get('state')}"
+    if not branch:
+        return f"issue #{number} names no follow-up branch (a line Follow-up branch: `agent/...`)"
+    if branch.group(1) == own:
+        return f"issue #{number} names the pull request's own branch, which its approval freezes"
+    if url not in body:
+        return f"issue #{number} does not list {url}"
+    return None
+
+
 def seen(number):
-    """What the pull request holds: its review threads, its comments, and Codex's among them."""
+    """What the pull request holds: its review threads, its comments, Codex's among them, and
+    the Codex rounds spent (pr/budget)."""
     found = threads(number)
     said = listing(f"/repos/{slug}/issues/{number}/comments")
     mine = [c for c in said if who(c["user"]) == CODEX]
-    return found, said, mine
+    reviews = listing(f"/repos/{slug}/pulls/{number}/reviews")
+    rounds = sum(who(r["user"]) == CODEX for r in reviews)
+    rounds += sum("Didn't find any major issues" in c["body"] for c in mine)
+    return found, said, mine, rounds
 
 
-def judge_threads(found):
-    """pr/threads, as the header has it."""
+def judge_threads(number, pull, found, rounds):
+    """pr/threads, pr/budget and pr/deferred, as the header has them."""
+    sha, own = pull["head"]["sha"], pull["head"].get("ref")
+    out, short, budget = [], sha[:7], int(os.environ["FPL_PR_ROUNDS"])
     loose = [t for t in found if not t["isResolved"]]
-    if not loose:
-        return []
-    what = f"{len(loose)} of {len(found)} review threads unresolved, outdated ones included"
-    named = [f"{where(t)} (by {who(first(t).get('author')) or 'nobody known'})" for t in loose]
-    fix = "fix each and push, or answer it and resolve it"
-    return [("pr/threads", False, f"{what}: {' '.join(named)}", fix)]
+    if loose:
+        what = f"{len(loose)} of {len(found)} review threads unresolved, outdated ones included"
+        named = [f"{where(t)} (by {who(first(t).get('author')) or 'nobody known'})" for t in loose]
+        fix = f"fix each and push, or answer it and resolve it ({rounds} of {budget} Codex rounds)"
+        if rounds >= budget and any(by_bot(t) for t in loose):
+            fix = (
+                f"the budget of {budget} Codex rounds is spent ({rounds}): move the bots' to a"
+                " follow-up issue, and each thread links it (.agents/WORKFLOW.md, rule 10);"
+                " answer a person's here"
+            )
+        out.append(("pr/threads", False, f"{what}: {' '.join(named)}", fix))
+    for t in (t for t in found if t["isResolved"]):
+        cited, mine = deferred(t), by_bot(t)
+        if cited and not mine:
+            fix = "a person's thread is never deferred: reopen it"
+            out.append(("pr/deferred", False, f"{where(t)} is a person's thread, deferred", fix))
+            continue
+        if not cited and mine and (first(t).get("originalCommit") or {}).get("oid") == sha:
+            what = f"{where(t)} was found at {short} and is resolved, with no later head to hold"
+            fix = "push its fix, or defer it to the follow-up; nothing a bot found is dropped"
+            out.append(("pr/deferred", False, f"{what} its fix and no deferral", fix))
+        if cited and rounds < budget:
+            what = f"{where(t)} is deferred after {rounds} Codex rounds, under the budget of"
+            what += f" {budget}"
+            fix = "fix it on this pull request; a finding moves to a follow-up only once the"
+            out.append(("pr/budget", False, what, f"{fix} budget is spent (FPL_PR_ROUNDS)"))
+        for why in filter(None, (unfit(k, first(t).get("url", ""), own) for k in sorted(cited))):
+            fix = f"the issue a thread is deferred to is open, lists {where(t)} and names the"
+            fix += " follow-up branch: edit its body, or defer the thread again"
+            out.append(("pr/deferred", False, why, fix))
+    return out
 
 
 def silence(said, mine, short, rerun):
@@ -424,9 +528,9 @@ def quiet(number, pull, bots=None, codex=True):
     """The refusals of the header's rules on the head, pr/codex only where `codex`: a list of
     (rule, wait, what, remedy), empty when quiet; `wait` where time alone may clear it."""
     sha = pull["head"]["sha"]
-    found, said, mine = bots or seen(number)
+    found, said, mine, rounds = bots or seen(number)
     codex = judge_codex(sha, found, said, mine) if codex else []
-    return judge_threads(found) + codex + judge_others(sha)
+    return judge_threads(number, pull, found, rounds) + codex + judge_others(sha)
 
 
 def again(number, pull, codex=True):
@@ -558,7 +662,7 @@ else:
 PY
 pyapi() {
 	FPL_SLUG="$slug" FPL_LOGIN="$login" FPL_TOKEN="$token" FPL_PR_WAIT="${FPL_PR_WAIT:-900}" \
-		FPL_PR_POLL="${FPL_PR_POLL:-15}" FPL_PR_TIMEOUT="${FPL_PR_TIMEOUT:-30}" python3 -c "$pysrc" "$@"
+		FPL_PR_POLL="${FPL_PR_POLL:-15}" FPL_PR_ROUNDS="${FPL_PR_ROUNDS:-3}" FPL_PR_TIMEOUT="${FPL_PR_TIMEOUT:-30}" python3 -c "$pysrc" "$@"
 }
 
 # What goes to the forge is first written here and leak-checked here, and the copy is what
