@@ -1,7 +1,6 @@
 # CONVENTIONS.md — how the walker, the implementation, is laid out
 
-Canonical for every agent. The Claude `fpl-conventions` skill and the `.claude/commands/*`
-wrappers just point here. The walker, the Python implementation, is a project of its own in
+Canonical for every agent; the `.claude/commands/*` wrappers just point here. The walker, the Python implementation, is a project of its own in
 `bootstrap/`: its package is `fpl`, so `import fpl` and the module names below are what they
 were; only the directory moved, and with it the paths of its files. `fpl/features/`,
 the conformance suite, stays above the project, in the language's own tree `fpl/` at the root,
