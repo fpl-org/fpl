@@ -1,0 +1,262 @@
+#!/usr/bin/env bash
+#
+# pr-self-test — proof that pr, beside it, keeps a draft a draft while a review thread is
+# unresolved (pr/threads), names each thread and the command that resolves it, still names a
+# check that is pending, resolves one thread of the pull request named and no other
+# (--resolve), asks nobody to read a draft (pr/reviewer), and takes no answer of the forge for
+# a success that is not one. Run by `make gates`.
+#
+# The forge is a small HTTP server of the test's own on 127.0.0.1 (FPL_API_URL, the one
+# address pr accepts besides GitHub's): it serves fixtures out of a directory, read afresh on
+# every request, and logs every write, one line each, to a file the checks read; a GraphQL
+# query is a read and is not logged. The repository is a fresh one on disk whose remote is
+# named https://github.com/pr-test/fpl.git, as the slug is read from it; nothing here fetches
+# or pushes. The machine account's token is a made-up line in .git/agent-credentials, and a gh
+# that has none comes first on PATH. Where /bin/bash is not the bash running this (a Mac:
+# 3.2), the whole run is made a second time with it first on PATH.
+
+set -euo pipefail
+
+root="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/pr-self-test.XXXXXX")"
+server=""
+trap '[ -z "$server" ] || { kill "$server"; wait "$server"; } 2>/dev/null || true; rm -rf "$tmp"' EXIT
+: >"$tmp/gitconfig"
+export GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home" \
+	XDG_CONFIG_HOME="$tmp/xdg" GH_CONFIG_DIR="$tmp/gh" GIT_TERMINAL_PROMPT=0 FPL_PR_WAIT=0 FPL_PR_POLL=0
+# shellcheck disable=SC2046 # one name a line, split on purpose
+unset GH_TOKEN GITHUB_TOKEN GH_HOST FPL_API_URL FPL_PR_TIMEOUT $(git rev-parse --local-env-vars)
+mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$GH_CONFIG_DIR" "$tmp/bin"
+printf '#!/bin/sh\nexit 1\n' >"$tmp/bin/gh"
+chmod +x "$tmp/bin/gh"
+export PATH="$tmp/bin:$PATH"
+
+forge="$tmp/forge"
+mkdir -p "$forge"
+: >"$forge/log"
+echo '{"check_runs": []}' >"$forge/checks.json"
+echo '{"statuses": []}' >"$forge/status.json"
+echo '[]' >"$forge/threads.json"
+echo '{"data": {"markPullRequestReadyForReview": {"pullRequest": {"isDraft": false}}}}' >"$forge/graphql.json"
+cat >"$tmp/forge.py" <<'PY'
+import json, os, sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
+
+forge = sys.argv[1]
+
+
+def fixture(name):
+    with open(f"{forge}/{name}") as f:
+        return f.read()
+
+
+def swap(name):  # <name>.json is served; a <name>.next.json takes its place for the next read
+    text = fixture(f"{name}.json")
+    if os.path.exists(f"{forge}/{name}.next.json"):
+        os.replace(f"{forge}/{name}.next.json", f"{forge}/{name}.json")
+    return text
+
+
+class Handler(BaseHTTPRequestHandler):
+    def reply(self, code, text):
+        data = text.encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def page(self, key, text, query):  # one page of a list, as GitHub serves it, with its total
+        items = json.loads(text)[key]
+        size = min(int(query.get("per_page", ["30"])[0]), 100)
+        start = (int(query.get("page", ["1"])[0]) - 1) * size
+        return json.dumps({"total_count": len(items), key: items[start : start + size]})
+
+    def threads(self, body):  # review threads as GraphQL serves them: 100 a page, a cursor
+        if os.path.exists(f"{forge}/threads.bad"):
+            return fixture("threads.bad")
+        nodes = json.loads(swap("threads"))
+        start = int(json.loads(body)["variables"].get("after") or 0)
+        page = {"pageInfo": {"hasNextPage": start + 100 < len(nodes), "endCursor": str(start + 100)},
+                "nodes": nodes[start : start + 100]}
+        return json.dumps({"data": {"repository": {"pullRequest": {"reviewThreads": page}}}})
+
+    def do_GET(self):
+        self.serve("GET")
+
+    def do_POST(self):
+        self.serve("POST")
+
+    def serve(self, method):
+        url, parts = urlparse(self.path), self.path.strip("/").split("?")[0].split("/")
+        size = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(size).decode() if size else ""
+        if method != "GET" and '"query": "query' not in body:
+            with open(f"{forge}/log", "a") as log:
+                log.write(f"{method} {url.path} {body}\n")
+        if self.headers.get("Authorization") != "Bearer made-up-token":
+            return self.reply(401, '{"message": "Bad credentials"}')
+        if url.path == "/user":
+            return self.reply(200, '{"login": "psjg-claude"}')
+        if url.path == "/graphql":
+            if "reviewThreads" in body:
+                return self.reply(200, self.threads(body))
+            if "resolveReviewThread" in body:
+                return self.reply(200, '{"data": {"resolveReviewThread": {"thread": {"isResolved": true}}}}')
+            return self.reply(200, fixture("graphql.json"))
+        if parts[:3] != ["repos", "pr-test", "fpl"]:
+            return self.reply(404, '{"message": "not served"}')
+        if parts[3] == "pulls" and len(parts) == 5 and method == "GET":
+            return self.reply(200, swap(f"pull-{parts[4]}"))
+        if parts[3] == "pulls" and parts[5:] == ["requested_reviewers"] and method == "POST":
+            return self.reply(201, "{}")
+        if parts[3] == "commits" and parts[5] in ("check-runs", "status"):
+            key, name = ("check_runs", "checks") if parts[5] == "check-runs" else ("statuses", "status")
+            return self.reply(200, self.page(key, fixture(f"{name}.json"), parse_qs(url.query)))
+        return self.reply(404, '{"message": "not served"}')
+
+    def log_message(self, *args):
+        pass
+
+
+ThreadingHTTPServer.daemon_threads = True
+httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+with open(f"{forge}/port", "w") as f:
+    f.write(str(httpd.server_port))
+httpd.serve_forever()
+PY
+python3 "$tmp/forge.py" "$forge" &
+server=$!
+for _ in $(seq 100); do [ -s "$forge/port" ] && break || sleep 0.1; done
+[ -s "$forge/port" ] || { echo "pr-self-test: the forge did not start" >&2; exit 1; }
+export FPL_API_URL="http://127.0.0.1:$(cat "$forge/port")"
+
+# The repository: pr asks it for the slug, the remote and the identity, nothing more here.
+repo="$tmp/repo"
+git init -q -b main "$repo"
+cd "$repo"
+mkdir -p scripts .agents/skills/fpl:pr/scripts
+cp "$root/scripts/agent-identity" scripts/
+cp "$root/.agents/skills/fpl:pr/scripts/pr" .agents/skills/fpl:pr/scripts/
+git remote add github https://github.com/pr-test/fpl.git
+git config branch.main.remote github
+echo 1+psjg-claude@users.noreply.github.com >.git/agent-identity
+echo 'https://psjg-claude:made-up-token@github.com' >.git/agent-credentials
+pr=.agents/skills/fpl:pr/scripts/pr
+
+fails=0 total=0
+# run <exit code> <description> <pr arguments...>: stderr in $tmp/err.
+run() {
+	local want="$1" what="$2" rc=0
+	shift 2
+	total=$((total + 1))
+	"$pr" "$@" >"$tmp/out" 2>"$tmp/err" || rc=$?
+	[ "$rc" -eq "$want" ] || {
+		fails=$((fails + 1))
+		echo "self-test: $what: exit $rc, want $want" >&2
+		sed 's/^/    /' "$tmp/err" >&2
+	}
+}
+says() { # says <text> <description>: stderr holds the text
+	total=$((total + 1))
+	grep -Fq -- "$1" "$tmp/err" || { fails=$((fails + 1)); echo "self-test: $2: no '$1'" >&2; }
+}
+logged() { # logged <count> <text> <description>: the forge logged text on that many lines
+	local n
+	total=$((total + 1))
+	n="$(grep -Fc -- "$2" "$forge/log" || true)"
+	[ "$n" = "$1" ] || { fails=$((fails + 1)); echo "self-test: $3: '$2' logged $n times, want $1" >&2; }
+}
+pull() { # pull <draft> [reviewers json]; PULL_STATE=.next: what the forge serves from the next read on
+	printf '{"number": 5, "state": "open", "draft": %s, "node_id": "PR_node_5", "updated_at": "t",
+ "head": {"sha": "0123456789abcdef"}, "requested_reviewers": %s, "requested_teams": []}\n' \
+		"$1" "${2:-[]}" >"$forge/pull-5${PULL_STATE:-}.json"
+}
+threads() { printf '%s' "$1" >"$forge/${2:-threads}.json"; }
+OPEN='{"id": "PRRT_1", "isResolved": false, "path": "scripts/task", "line": 7,
+ "comments": {"nodes": [{"url": "https://github.com/pr-test/fpl/pull/5#discussion_r1"}]}}'
+SHUT='{"id": "PRRT_2", "isResolved": true, "path": "a", "line": 1, "comments": {"nodes": []}}'
+ME=.agents/skills/fpl:pr/scripts/pr
+
+# --- pr/threads: a conversation left open keeps the draft a draft ---------------------------
+pull true
+threads "[$OPEN, $SHUT]"
+run 1 "ready with a review thread unresolved" --ready 5
+says "pr/threads: #5 has 1 of 2 review threads unresolved: https://github.com/pr-test/fpl/pull/5#discussion_r1" \
+	"names the rule, the count and the thread"
+says "$ME --resolve 5 <id> (ids: PRRT_1)" "and the remedy, with the id"
+logged 0 "POST /graphql" "not marked over an open thread"
+threads "[$SHUT]"
+echo '{"check_runs": [{"name": "lint", "status": "in_progress"}]}' >"$forge/checks.json"
+run 1 "ready with every thread resolved and a check running" --ready 5
+says "check lint is in_progress" "a pending check is still named"
+logged 0 "POST /graphql" "and not marked"
+echo '{"check_runs": []}' >"$forge/checks.json"
+run 0 "ready with every thread resolved and the bots quiet" --ready 5
+says "quiet at 0123456" "marked"
+logged 1 "POST /graphql" "once"
+python3 -c 'import json, sys; print(json.dumps([{"id": f"PRRT_{i}", "isResolved": True, "path": "a", "line": i, "comments": {"nodes": []}} for i in range(100)] + [json.loads(sys.argv[1])]))' "$OPEN" >"$forge/threads.json"
+run 1 "ready with a thread unresolved on the second page" --ready 5
+says "pr/threads: #5 has 1 of 101 review threads unresolved" "the thread past the first page is read"
+logged 1 "POST /graphql" "not marked on a page it did not read"
+echo '{"errors": [{"message": "boom"}]}' >"$forge/threads.bad"
+run 1 "ready with a forge that answers no page of threads" --ready 5
+says "pr/threads: the forge's answer is not a page of review threads of #5" "the gate fails closed"
+says "boom" "quoting the answer"
+echo 'not json' >"$forge/threads.bad"
+run 1 "ready with a forge that answers no JSON" --ready 5
+says "/graphql: the forge's answer is not JSON" "the gate fails closed on that too"
+rm "$forge/threads.bad"
+logged 1 "POST /graphql" "not marked on either"
+# A thread opened between the read the pull request was judged by and the one before the
+# mutation: the pin differs, the loop goes round, and the wait being over, it stops.
+threads "[$SHUT]"
+threads "[$OPEN, $SHUT]" threads.next
+run 1 "ready with a thread opened while it was read" --ready 5
+says "the head, the review requests or the threads changed while it was read" "a new thread is a change"
+logged 1 "POST /graphql" "not marked over a thread nobody judged"
+threads "[$SHUT]"
+
+# --- a mutation answered with nothing, or with an error, is no success ----------------------
+echo '{}' >"$forge/graphql.json"
+run 1 "ready with a forge that answers the mutation with nothing" --ready 5
+says "stays a draft: the forge's answer is not the mutation's" "not called ready"
+echo '{"errors": [{"message": "nope"}]}' >"$forge/graphql.json"
+run 1 "ready with a forge that answers the mutation with an error" --ready 5
+says "stays a draft: nope" "the error is quoted"
+logged 3 "POST /graphql" "both mutations went out"
+
+# --- --resolve: one thread of this pull request, by the id --ready printed ------------------
+threads "[$OPEN, $SHUT]"
+run 0 "resolving a thread" --resolve 5 PRRT_1
+logged 1 "resolveReviewThread" "resolved"
+logged 1 '"id": "PRRT_1"' "that one"
+says "thread PRRT_1 of #5 resolved (https://github.com/pr-test/fpl/pull/5#discussion_r1)" "and named"
+run 1 "resolving a thread of another pull request" --resolve 5 PRRT_9
+says "#5 has no review thread PRRT_9" "refused"
+run 0 "resolving a resolved thread" --resolve 5 PRRT_2
+says "resolved already" "nothing to do"
+logged 1 "resolveReviewThread" "no second mutation"
+run 1 "--resolve without a thread" --resolve 5
+
+# --- pr/reviewer: never of a draft --------------------------------------------------------
+run 1 "asking for a review of a draft" --reviewer 5 psjg
+says "pr/reviewer: #5 is a draft" "refused: Ready is the one door"
+says "$ME --ready 5" "with the way out"
+logged 0 "requested_reviewers" "nothing asked"
+pull false
+run 0 "asking for a review" --reviewer 5 psjg
+logged 1 "POST /repos/pr-test/fpl/pulls/5/requested_reviewers" "the request is posted"
+logged 1 '"reviewers": ["psjg"]' "naming the login"
+
+if [ "$fails" -ne 0 ]; then echo "pr-self-test: $fails of $total failed ($BASH_VERSION)"; exit 1; fi
+echo "pr-self-test: $total ok ($BASH_VERSION)"
+# The same again under /bin/bash, where that is another bash: a Mac ships 3.2 there.
+if [ -z "${PR_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ] &&
+	[ "$(/bin/bash -c 'echo $BASH_VERSION')" != "$BASH_VERSION" ]; then
+	mkdir "$tmp/shim" && ln -s /bin/bash "$tmp/shim/bash"
+	kill "$server" && wait "$server" 2>/dev/null || true
+	server=""
+	PATH="$tmp/shim:$PATH" PR_SELF_TEST_SHIM=1 /bin/bash "$root/.agents/skills/fpl:pr/scripts/pr-self-test"
+fi
