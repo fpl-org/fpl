@@ -90,13 +90,9 @@ top of base) · **restack** (rebase the stack when base or a lower commit change
 
 ## Setup (once per clone/worktree)
 
-```
-scripts/setup
-```
-
-sets `rebase.updateRefs=true` (carry intermediate branch refs during rebase),
-`rerere.enabled=true` (remember conflict resolutions across restacks), and points git at
-`.githooks/`.
+`fpl:worktree:setup` wires the hooks and the three settings the stack below relies on:
+`rebase.updateRefs` (carry intermediate branch refs during rebase), `rerere` (remember
+conflict resolutions across restacks) and the scissors cleanup.
 
 **Remotes are named after the place they are**, not after their role: `github`, not `origin`.
 The repository is meant to live in more than one place (rule 7), and with two remotes

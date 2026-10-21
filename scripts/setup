@@ -3,7 +3,7 @@
 # scripts/setup — make a clone or worktree ready for the FPL commit workflow.
 #
 # Idempotent. Run it once after `git clone`, and once inside every new worktree
-# (`scripts/new-worktree` / `.claude/commands/new-worktree.md` call it for you).
+# (the new-worktree of the skill fpl:worktree:new runs it for you).
 #
 # What it does:
 #   1. Points git at the tracked hooks in .githooks/ (so prepare-commit-msg, commit-msg and

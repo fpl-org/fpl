@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# scripts/new-worktree — create an implementation worktree under worktrees/<name>/.
+# new-worktree (skill fpl:worktree:new) — create an implementation worktree under worktrees/<name>/.
 #
 # The create recipe from .agents/WORKTREES.md as one command, usable by any agent or
-# human (`.claude/commands/new-worktree.md` is a thin wrapper over this):
+# human (`.claude/commands/new-worktree.md` loads the skill, which runs this):
 #
 #   1. `git worktree add worktrees/<name> -b <branch> <base>`, always from the
 #      root checkout, so it works when invoked from inside another worktree.
@@ -21,7 +21,7 @@
 # session's job (.agents/CONVENTIONS.md).
 #
 # Usage:
-#   scripts/new-worktree [-n] [-a <id>] <name> [base]
+#   new-worktree [-n] [-a <id>] <name> [base]
 #
 #   <name>   [a-z0-9][a-z0-9._-]*  -> path worktrees/<name>, branch attempt/<name>
 #   [base]   ref to branch from (default: main)

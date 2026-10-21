@@ -39,7 +39,7 @@ started elsewhere does not: launch it from the repo directory, or wrap the comma
 | `gitleaks` | `scripts/leak-check`, which the hooks run on every commit and push (`.agents/WORKFLOW.md`, rule 9), so it cannot be an opt-in layer |
 | Python 3.12, `uv`, `ruff`, `pyright`, `make` | the implementation stack of `.agents/STACK.md` and the gate of `.agents/QUALITY.md`. `make` syncs Lark and the gate's Python tools into the worktree's `.venv` with `uv`, at the versions `quality/uv.lock` pins; several are not in nixpkgs. On Linux the shell also puts libstdc++ on `LD_LIBRARY_PATH`, which CrossHair's solver needs |
 
-On first entry in a clone or worktree the shell runs `scripts/setup` (git hooks, stacked-commit
+On first entry in a clone or worktree the shell runs `scripts/setup` (`fpl:worktree:setup`: git hooks, stacked-commit
 config, identity report). It checks `core.hooksPath` first, so every later entry is silent.
 
 Not in the shell: credentials of any kind, and the `claude` CLI that the soft `atomic-check`

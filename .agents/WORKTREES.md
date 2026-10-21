@@ -42,13 +42,10 @@ worktrees/
 
 ## Recipes
 
-```
-# create an attempt (worktree add + agent identity + scripts/setup in one step)
-scripts/new-worktree b                       # worktrees/b on attempt/b, from main
-scripts/new-worktree -a claude b             # …on agent/claude/attempt/b, for an agent to work in
-scripts/new-worktree b some-ref              # …from another base; -n for a dry run
+Making one, wired and with the agent identity, is `fpl:worktree:new`. What git itself does:
 
-# the same by hand
+```
+# by hand
 git worktree add worktrees/b -b attempt/b main
 cd worktrees/b && ../../scripts/setup        # wire hooks + config in the new worktree
 
@@ -64,9 +61,6 @@ git worktree move <old-path> worktrees/a
 # prune stale admin files after a manual delete
 git worktree prune
 ```
-
-`scripts/new-worktree` is the vendor-neutral entry point; `.claude/commands/new-worktree.md`
-is a thin wrapper over it.
 
 Nothing removes a worktree or a branch without the owner's yes: an agent runs the sweep's
 dry run and reports, and a removed worktree's dirty files are saved as patches under
