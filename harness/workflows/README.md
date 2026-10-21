@@ -83,3 +83,15 @@ Both need `scripts/present-check` on `main` first.
   skipped there would report success under the name of a check a push had judged red. It fails,
   harmlessly, until `land.yml` is on `main`, and always for a pull request from a fork, whose
   run GitHub denies `actions: write`: there the error names the `land.yml` run to start by hand.
+
+## smoke.yml
+
+Install (owner):
+
+```bash
+git mv harness/workflows/smoke.yml .github/workflows/
+```
+
+It runs `scripts/smoke` against `github:fpl-org/fpl/<sha>` on Linux and macOS, on each push to
+`main`, weekly and by hand. It fails until `apps.default` is on `main`. No ruleset needs it:
+it judges `main` after the fact, so its red is a notice, not a gate.
