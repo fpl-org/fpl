@@ -26,6 +26,8 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 # over-long fixture below is built from them, so a changed limit needs no edit here.
 # shellcheck source=../.githooks/commit-limits
 . "$root/.githooks/commit-limits"
+# COMMIT_COMMITTER_SINCE, the date the committer rule starts at, is the rules file's.
+COMMIT_COMMITTER_SINCE="$(sed -n 's/^COMMIT_COMMITTER_SINCE=\([0-9]*\).*/\1/p' "$root/.githooks/commit-rules")"
 # overlong <text>: the text, padded with words until it is longer than the body limit. A line
 # is judged only with a space in it (an unbreakable token is exempt), and the padding has some.
 overlong() {
@@ -1110,6 +1112,31 @@ refuse hook provenance-session "missing 'Session-Id:'" "docs(x): a"$'\n\n'"Stack
 refuse hook agent-identity-unset "agent identity unset" "docs(x): a"$'\n\n'"Stack: t"$'\n'"Assisted-By: claude"$'\n'"Session-Id: s"
 printf '%s\n' "other@example.invalid" >"$(git rev-parse --git-path agent-identity)"
 refuse hook author-email "author email is 't@example.invalid'" "docs(x): a"$'\n\n'"Stack: t"$'\n'"Assisted-By: claude"$'\n'"Session-Id: s"
+rm -f "$(git rev-parse --git-path agent-identity)"
+# The committer of an agent's commit is the machine account, not the person whose git config
+# the checkout inherits (.agents/COMMITS.md, "Authorship"). Here the agent's address is t's,
+# the one the run commits as; the owner is o. In lint mode a commit whose committer date is
+# before COMMIT_COMMITTER_SINCE was made before the rule, and is not judged by it.
+agent=$'docs(x): a\n\nStack: t\nAssisted-By: claude\nSession-Id: s'
+printf '%s\n' "t@example.invalid" >"$(git rev-parse --git-path agent-identity)"
+GIT_COMMITTER_NAME=o GIT_COMMITTER_EMAIL=o@example.invalid \
+	refuse hook committer-human "committer is 'o <o@example.invalid>', not the machine account" "$agent"
+printf '%s\n' "$agent" >"$tmp/m"
+gate 0 "an agent's commit with the machine committer" .githooks/commit-msg "$tmp/m"
+printf '%s\n' "docs(x): a" "" "$tr" >"$tmp/m"
+gate 0 "a person's commit with a person's committer" env GIT_COMMITTER_EMAIL=o@example.invalid \
+	.githooks/commit-msg "$tmp/m"
+printf '%s\n' "$agent" >"$tmp/m"
+here="$(git rev-parse HEAD)"
+GIT_COMMITTER_NAME=o GIT_COMMITTER_EMAIL=o@example.invalid GIT_COMMITTER_DATE="$COMMIT_COMMITTER_SINCE +0000" \
+	commit -m "$agent"
+refuse lint committer-human "committer is 'o <o@example.invalid>'" "$agent"
+git reset -q --hard "$here"
+GIT_COMMITTER_NAME=o GIT_COMMITTER_EMAIL=o@example.invalid GIT_COMMITTER_DATE="$((COMMIT_COMMITTER_SINCE - 1)) +0000" \
+	commit -m "$agent"
+gate 0 "an agent's commit made before the rule, the owner its committer" \
+	env FPL_LINT_COMMIT="$(git rev-parse HEAD)" .githooks/commit-msg "$tmp/m"
+git reset -q --hard "$here"
 rm -f "$(git rev-parse --git-path agent-identity)"
 refuse hook trailer-order "trailer 'Refs' is out of order" "docs(x): a"$'\n\n'"Stack: t"$'\n'"Refs: x"$'\n'"Human-Only: true"
 # Presented-By is the line of the agent that presents a series for review, written after the

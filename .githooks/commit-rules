@@ -53,6 +53,12 @@ COMMIT_STACK_RE='[a-z0-9][a-z0-9._-]*'
 # the id was minted at (scripts/series mint): the identity of a series of commits, which stays
 # the same when the series is rebased, reordered or moved.
 COMMIT_SERIES_RE='[a-z0-9][a-z0-9._-]*-[0-9a-f]{7}'
+# The committer of an agent's commit is the machine account (.agents/COMMITS.md, "Authorship").
+# The rule judges every commit being made, and a commit that exists only from this instant on
+# (committer date, seconds since the epoch: 2026-10-22T00:00:00Z): every agent commit before it
+# names the owner, and the lander pushes reviewed commits unchanged. scripts/land reads it from
+# main's copy of this file.
+COMMIT_COMMITTER_SINCE=1792627200
 COMMIT_TRAILER_ORDER="Refs Stack Series-Id BREAKING-CHANGE Advisor Assisted-By Reasoning-Effort Session-Id Co-Authored-By Presented-By"
 COMMIT_TRAILER_KEYS="$COMMIT_TRAILER_ORDER Human-Only"
 

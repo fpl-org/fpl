@@ -13,6 +13,9 @@
 #      both; all trailers are read from the trailer block git reads (interpret-trailers)
 #   5. known trailers appear in canonical order
 #   6. unless Human-Only, the commit author email equals .git/agent-identity
+#  6b. unless Human-Only, the committer email is an agent address too: the machine account,
+#      not the person whose git config the checkout inherits (in lint mode, only a commit
+#      whose committer date is COMMIT_COMMITTER_SINCE or later)
 #   7. oracle guard: editing docs/DESIGN.md, docs/SPEC.md, fpl/features/*/spec.md or
 #      fpl/features/*/examples/* requires the literal marker [spec] in the message
 #  7b. policy guard: editing what sets how hard the gate judges (quality/, and the
@@ -648,6 +651,27 @@ if [ "$human" -eq 0 ]; then
 	[ "$known" -eq 1 ] \
 		|| fail author-email "author email is '$author_email', expected the machine account '$want'" \
 			"commit with scripts/acommit, or -H for a human commit"
+
+	# 6b. committer identity ------------------------------------------------
+	# The owner's part in an agent's commit is his approving review, not the committer field
+	# his git config would write; the lander keeps that field on main for good. In lint mode a
+	# commit dated before the rule keeps the committer it was made with.
+	if [ -n "$lint_commit" ]; then
+		committer="$(git log -1 --format='%cn <%ce>' "$lint_commit")"
+		since="$(git log -1 --format=%ct "$lint_commit")"
+	else
+		committer="$(git var GIT_COMMITTER_IDENT | sed 's/> .*/>/')"
+		since="$COMMIT_COMMITTER_SINCE"
+	fi
+	committer_email="${committer##*<}"
+	committer_email="${committer_email%>}"
+	known=0
+	for w in "${wanted[@]}"; do
+		[ "$committer_email" = "$w" ] && known=1
+	done
+	[ "$known" -eq 1 ] || [ "$since" -lt "$COMMIT_COMMITTER_SINCE" ] \
+		|| fail committer-human "committer is '$committer', not the machine account '$want'" \
+			"commit with scripts/acommit, and run scripts/agent-identity set <email> once in the worktree, which binds its committer; remake commits already made there with git rebase --force-rebase <base>"
 fi
 
 # 5. trailer order --------------------------------------------------------------
