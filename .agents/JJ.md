@@ -39,11 +39,8 @@ hook**, and `jj git push` does not run `pre-push`. So none of these act on a `jj
 | branch names | `reference-transaction`, `pre-push` | the `branch-lint` check on the pull request |
 | an approved pull request is frozen (`.agents/WORKFLOW.md`, rule 10) | `pre-push` | nobody; dismiss-stale-reviews on the forge, where the ruleset turns it on |
 
-Before pushing, run the message gates yourself:
-
-```
-scripts/commit-lint -b <branch> github/main..<bookmark>
-```
+Before pushing, run the message gates yourself: `fpl:commit:lint`, with the bookmark as the
+end of the range.
 
 A human commit carries `Human-Only: true` (`.agents/COMMITS.md`). `jj` can add it to every
 commit you make in this repository:
