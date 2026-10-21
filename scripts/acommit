@@ -3,8 +3,13 @@
 # scripts/acommit — make a commit that follows .agents/COMMITS.md.
 #
 # Assembles a Conventional-Commits header and a git-trailer provenance block,
-# sets the author to "<model display name> <machine-account email>" while leaving
-# the committer as whoever ran the session, then calls `git commit`. The
+# sets the author to "<model display name> <machine-account email>" and the
+# committer to the machine account ("<login> <email>", scripts/agent-identity login),
+# then calls `git commit`. The committer is set here for each agent commit, so it
+# holds where no worktree config binds it: the main worktree, the App's runner, a
+# worktree made before scripts/agent-identity bound one. A -H commit keeps the
+# committer git config gives: the person's, the machine account in a worktree
+# scripts/agent-identity bound. The
 # .githooks/commit-msg hook validates the result independently — acommit is the
 # happy path, not the enforcement.
 #
@@ -128,7 +133,7 @@ if [ "$breaking" -eq 1 ]; then
 	trailers+=("BREAKING-CHANGE: $breaking_text")
 fi
 
-author_arg=()
+author_arg=() committer_env=()
 if [ "$human_only" -eq 1 ]; then
 	trailers+=("Human-Only: true")
 else
@@ -145,6 +150,7 @@ else
 	trailers+=("Session-Id: $session_id")
 	trailers+=("Co-Authored-By: $model_name <noreply@anthropic.com>")
 	author_arg=(--author "$model_name <$email>")
+	committer_env=("GIT_COMMITTER_NAME=$("$repo_root/scripts/agent-identity" login)" "GIT_COMMITTER_EMAIL=$email")
 fi
 
 # Assemble ---------------------------------------------------------------------
@@ -160,9 +166,11 @@ if [ "$dry" -eq 1 ]; then
 	echo "--- message ---"
 	printf '%s\n' "$msg"
 	echo "--- command ---"
-	printf 'git commit %s%s -F -\n' \
+	printf '%sgit commit %s%s -F -\n' "${committer_env[*]:+${committer_env[*]} }" \
 		"${author_arg[*]:-}" "${passthru[*]:+ ${passthru[*]}}"
 	exit 0
 fi
 
-printf '%s\n' "$msg" | git commit "${author_arg[@]}" "${passthru[@]}" -F -
+# ${a[@]+"${a[@]}"}: an empty array, which bash 3.2 calls unbound under set -u.
+printf '%s\n' "$msg" | env ${committer_env[@]+"${committer_env[@]}"} \
+	git commit ${author_arg[@]+"${author_arg[@]}"} ${passthru[@]+"${passthru[@]}"} -F -

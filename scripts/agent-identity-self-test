@@ -16,6 +16,9 @@
 #   - in the main worktree it writes no committer: that checkout is the owner's;
 #   - a repository without extensions.worktreeConfig gets it, so the value stays in the
 #     one worktree;
+#   - scripts/acommit names the machine committer for an agent's commit wherever it runs (the
+#     main worktree, the App's runner, a worktree bound before this rule); a -H commit takes
+#     the one git config gives;
 #   - scripts/new-worktree, which carries the root's identity over, binds the new worktree.
 #
 # Everything happens in throwaway repositories with this checkout's scripts/ and .githooks/.
@@ -77,6 +80,18 @@ run() {
 	(cd "$r" && "$sh" scripts/agent-identity set "$machine" >"$tmp/out")
 	grep -q "main worktree" "$tmp/out" || fail "set in the main worktree ($sh): it does not say it binds nothing"
 	is "set in the main worktree ($sh)" "$(plain "$r")" "t <t@example.invalid> / t <t@example.invalid>"
+	# scripts/acommit names the machine committer per commit, so an agent's commit has it in
+	# the main worktree too, and in a worktree bound before this rule: a person's (-H) does not.
+	(cd "$r" && "$sh" scripts/acommit -M "Claude Opus 5.5" -S s -t docs -s x -m a -- -q --allow-empty --no-verify </dev/null)
+	is "acommit in the main worktree ($sh)" "$(git -C "$r" log -1 --format='%an <%ae> / %cn <%ce>')" \
+		"Claude Opus 5.5 <$machine> / psjg-claude <$machine>"
+	(cd "$r" && "$sh" scripts/acommit -H -t docs -s x -m b -- -q --allow-empty --no-verify </dev/null)
+	is "acommit -H ($sh)" "$(git -C "$r" log -1 --format='%an <%ae> / %cn <%ce>')" \
+		"t <t@example.invalid> / t <t@example.invalid>"
+	# In a bound worktree a -H commit takes the committer that worktree's config gives.
+	(cd "$r/worktrees/a" && "$sh" scripts/acommit -H -t docs -s x -m c -- -q --allow-empty --no-verify </dev/null)
+	is "acommit -H in a bound worktree ($sh)" "$(git -C "$r/worktrees/a" log -1 --format='%an <%ae> / %cn <%ce>')" \
+		"t <t@example.invalid> / psjg-claude <$machine>"
 
 	(cd "$r" && "$sh" scripts/new-worktree -a claude b >/dev/null 2>&1) || fail "new-worktree ($sh) failed"
 	is "a worktree new-worktree made ($sh)" "$(plain "$r/worktrees/b")" "t <t@example.invalid> / psjg-claude <$machine>"
