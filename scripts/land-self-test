@@ -1611,6 +1611,7 @@ PY
 hooked="$tmp/hooked"
 git init -q -b main "$hooked"
 cp -R "$root/.githooks" "$root/scripts" "$hooked/"
+mkdir -p "$hooked/.agents/skills" && cp -R "$root/.agents/skills/fpl:leak" "$hooked/.agents/skills/"
 (cd "$hooked" && git commit -q --allow-empty --no-verify -m base && git checkout -q --detach)
 install_msg >"$tmp/install-msg"
 rc=0

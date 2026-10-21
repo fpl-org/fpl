@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # .githooks/pre-commit — two symbolic gates on what a commit may hold:
-#   1. no private term or secret in the staged change (scripts/leak-check)
+#   1. no private term or secret in the staged change (skill fpl:leak)
 #   2. no direct commits on main
 #
 # The harness/implementation boundary is not judged here. It is a rule on the commit, not on
@@ -13,7 +13,7 @@ set -euo pipefail
 
 # Gate 1 first: the repository is public.
 # FPL_LEAK_GATE = block (default) | warn | off, read by the script.
-"$(git rev-parse --show-toplevel)/scripts/leak-check" --staged
+"$(git rev-parse --show-toplevel)/.agents/skills/fpl:leak/scripts/leak-check" --staged
 
 # Gate 2. .agents/WORKFLOW.md rule 6: everything lands on main through a GitHub PR. This is
 # the early, friendly half of that rule: it stops a `git commit` on main before

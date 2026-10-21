@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# scripts/leak-check — keep private terms, and secrets, out of a public repository.
+# leak-check (skill fpl:leak) — keep private terms, and secrets, out of a public repository.
 #
 #   leak-check --staged          the staged change: its added lines and its file names
 #   leak-check --message FILE    a commit message, as commit-msg is handed it
