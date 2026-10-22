@@ -38,6 +38,10 @@ BIN      := $(VENV)/bin
 OUT      := .noslop
 # CPU seconds CrossHair spends looking for a counterexample to one contract (make harden).
 CONTRACT_SECONDS := 20
+# Wall-clock seconds one property may take under the symbolic profile (make harden). CrossHair's
+# own budget per path does not end a property that runs the walker: one went on for hours
+# (.agents/QUALITY.md). A property that passes there takes about a minute.
+PROPERTY_SECONDS := 300
 export PYTHONPATH := $(Q):$(CURDIR)
 export UV_PROJECT_ENVIRONMENT := $(VENV)
 export UV_PYTHON_DOWNLOADS := never
@@ -148,7 +152,14 @@ harden: check
 	@$(BIN)/python -c 'import z3' 2>/dev/null || { echo 'harden: z3 does not load, so CrossHair cannot run;' \
 	  'on Linux the dev shell puts libstdc++ on LD_LIBRARY_PATH (.agents/DEVSHELL.md)' >&2; exit 1; }
 	HYPOTHESIS_PROFILE=harden $(BIN)/pytest -q -n auto
-	HYPOTHESIS_PROFILE=symbolic $(BIN)/pytest -q -n auto
+	HYPOTHESIS_PROFILE=symbolic $(BIN)/pytest -q -n auto --maxfail=1 --max-worker-restart=0 \
+	  --timeout=$(PROPERTY_SECONDS) --timeout-method=thread || { \
+	  echo "harden: the symbolic search failed. \"worker ... crashed while running <test>\" above is" >&2; \
+	  echo "        a property CrossHair did not finish in PROPERTY_SECONDS=$(PROPERTY_SECONDS) s (quality/noslop.mk)," >&2; \
+	  echo "        or one whose worker died of something else, such as the solver;" >&2; \
+	  echo "        any other failure is the property's own. Run it alone to see where the time goes:" >&2; \
+	  echo "        HYPOTHESIS_PROFILE=symbolic pytest --hypothesis-show-statistics <test>" >&2; \
+	  exit 1; }
 	$(BIN)/crosshair check fpl --analysis_kind=icontract --per_condition_timeout=$(CONTRACT_SECONDS)
 	$(BIN)/python $(S)/mutants
 

@@ -32,6 +32,7 @@ dependencies = [
   "mutmut",
   "crosshair-tool",
   "hypothesis-crosshair",
+  "pytest-timeout",
   "pip-audit",
 ]
 

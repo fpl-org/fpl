@@ -118,8 +118,15 @@ are in `quality/noslop_pytest.py`, loaded by every test run:
 - `quick`, 100 examples per property: `make quick` and `make check`.
 - `harden`, 2000 examples: `make harden`.
 - `symbolic`, the same properties handed to CrossHair, which solves for inputs that reach each
-  branch instead of drawing them at random: `make harden`. 50 examples; CrossHair spends up to
-  2.5 s per path, so a property that runs deep into Lark costs most of the budget.
+  branch instead of drawing them at random: `make harden`. 50 examples; CrossHair means to
+  spend up to 2.5 s of CPU per path, but that does not hold once a property runs the walker on
+  what it drew: measured on 2026-10-16, the first path of a fold over eight small integers
+  was still running after two minutes, and the property after twenty. From 2026-10-01, when
+  the walker landed, every `make ready` on the forge ran here until it was cancelled: at
+  GitHub's six hours, and from 2026-10-17 at the job's own 90 minutes. So each property
+  also has `PROPERTY_SECONDS` of wall clock (`quality/noslop.mk`,
+  pytest-timeout); the first to run past it stops the lane, named in xdist's
+  `worker ... crashed while running <test>` line.
 
 On Linux, CrossHair's solver needs libstdc++ on the loader path; the dev shell sets it
 (.agents/DEVSHELL.md), and `make harden` stops with a message if it does not load.
