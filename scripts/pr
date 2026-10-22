@@ -8,7 +8,7 @@
 #   scripts/pr <branch>            that branch, without checking it out
 #   scripts/pr -t <title> -b <text>
 #   scripts/pr -B <parent>         stack on the branch of an open pull request (below)
-#   scripts/pr --draft             open it as a draft
+#   scripts/pr --no-draft          open it ready, not as a draft (the rare case, below)
 #   scripts/pr --body-file FILE    the body from a file, not generated
 #   scripts/pr -n                  dry run: print what would be sent
 #
@@ -34,8 +34,10 @@
 # the branch must already be built on it. If it is not, this stops and says how to rebase
 # onto it. -B main is the default spelled out.
 #
-# A pull request opens ready, not as a draft, unless --draft says otherwise: every bot
-# reviewer and check starts at once, so they are done before a human reads.
+# A pull request opens as a draft, and --ready is the only way out of it. CODEOWNERS asks the
+# owner for a review the moment a pull request is ready, or is opened ready, so Ready is his
+# signal to read and nothing before it may be: the bots run on the draft, and --ready waits
+# for them. --no-draft opens one ready at once, which asks him before any bot has spoken.
 #
 # Naming the branch matters when the checkout is someone's working copy: switching it to
 # the branch rewrites their files, and a session that may not delete files can leave it
@@ -64,9 +66,9 @@ die() {
 	exit 1
 }
 
-usage="usage: scripts/pr [-n] [--draft] [-t <title>] [-b <text>|--body-file <file>] [-B <parent>] [<branch>]
+usage="usage: scripts/pr [-n] [--no-draft] [-t <title>] [-b <text>|--body-file <file>] [-B <parent>] [<branch>]
        scripts/pr --update-body <number> <file> | --ready <number> | --reviewer <number> <login>"
-base="" title="" body="" bodyfile="" dry=0 draft=0 mode=create num="" arg=""
+base="" title="" body="" bodyfile="" dry=0 draft=1 flagged=0 mode=create num="" arg=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--body-file)
@@ -87,7 +89,7 @@ while [ $# -gt 0 ]; do
 		shift 2
 		;;
 	-n) dry=1 && shift ;;
-	--draft) draft=1 && shift ;;
+	--no-draft) draft=0 flagged=1 && shift ;;
 	-*) die "$usage" ;;
 	*) break ;;
 	esac
@@ -95,7 +97,7 @@ done
 [ $# -le 1 ] || die "$usage"
 if [ "$mode" != create ]; then
 	case "$num" in '' | *[!0-9]*) die "'$num' is not a pull request number; $usage" ;; esac
-	[ $# -eq 0 ] && [ -z "$base$title$body$bodyfile" ] && [ "$draft$dry" = 00 ] ||
+	[ $# -eq 0 ] && [ -z "$base$title$body$bodyfile" ] && [ "$flagged$dry" = 00 ] ||
 		die "$mode takes only its own arguments; $usage"
 fi
 [ -z "$body" ] || [ -z "$bodyfile" ] || die "-b and --body-file both give the body; take one"
