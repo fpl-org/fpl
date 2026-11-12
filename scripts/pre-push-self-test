@@ -161,15 +161,18 @@ human "feat(x): four" a
 expect 0 "part 2 of a stack" agent/claude/stack/a/2
 
 # An agent commit by an address the commit-lint workflow accepts, though this clone's
-# .git/agent-identity is unset: the local verdict is the forge's.
-GIT_AUTHOR_EMAIL=336224473+psjg-codex@users.noreply.github.com commit -m "feat(x): five" \
+# .git/agent-identity is unset: the local verdict is the forge's. Its committer is the same
+# address, as scripts/acommit makes it; every agent commit below that should pass is so made.
+GIT_AUTHOR_EMAIL=336224473+psjg-codex@users.noreply.github.com \
+	GIT_COMMITTER_EMAIL=336224473+psjg-codex@users.noreply.github.com commit -m "feat(x): five" \
 	-m "Stack: a"$'\n'"Assisted-By: gpt"$'\n'"Session-Id: s"
 expect 0 "an agent address the workflow accepts" agent/claude/stack/a/2
 
 # An address with a glob class, as the GitHub App's is, where a file named like what the
 # class matches sits in the working directory: the list of addresses must not be globbed.
 : >41898282+claudeb@users.noreply.github.com
-GIT_AUTHOR_EMAIL='41898282+claude[bot]@users.noreply.github.com' commit -m "feat(x): bot" \
+GIT_AUTHOR_EMAIL='41898282+claude[bot]@users.noreply.github.com' \
+	GIT_COMMITTER_EMAIL='41898282+claude[bot]@users.noreply.github.com' commit -m "feat(x): bot" \
 	-m "Stack: a"$'\n'"Assisted-By: claude"$'\n'"Session-Id: s"
 expect 0 "an agent address holding a glob class, beside a file it matches" agent/claude/stack/a/2
 rm -f 41898282+claudeb@users.noreply.github.com
@@ -235,7 +238,7 @@ hook 1 "a range git cannot walk" "refs/heads/agent/claude/stack/h $h refs/heads/
 # in the same pull request must not pass the provenance gate (Codex on fpl-org/fpl#129).
 git switch -q -c agent/claude/stack/k main
 rogue=999+rogue@users.noreply.github.com
-GIT_AUTHOR_EMAIL=$rogue commit -m "feat(x): rogue" \
+GIT_AUTHOR_EMAIL=$rogue GIT_COMMITTER_EMAIL=$rogue commit -m "feat(x): rogue" \
 	-m "Stack: k"$'\n'"Assisted-By: claude"$'\n'"Session-Id: s"
 # The workflow's inline list, simulated: every address the checked-in file holds.
 ci="$(sed -e 's/#.*//' .github/agent-emails | xargs)"
@@ -260,7 +263,8 @@ FPL_AGENT_EMAILS="$ci" lint 1 "an author the workflow's list lacks, though the f
 says "author email is" "the author gate refuses it"
 FPL_AGENT_EMAILS="$ci $rogue" lint 0 "an author in the workflow's list"
 git reset -q --hard HEAD~1
-GIT_AUTHOR_EMAIL=326980220+psjg-claude@users.noreply.github.com commit -m "feat(x): listed" \
+GIT_AUTHOR_EMAIL=326980220+psjg-claude@users.noreply.github.com \
+	GIT_COMMITTER_EMAIL=326980220+psjg-claude@users.noreply.github.com commit -m "feat(x): listed" \
 	-m "Stack: k"$'\n'"Assisted-By: claude"$'\n'"Session-Id: s"
 FPL_AGENT_EMAILS="$ci" lint 0 "the file a subset of the workflow's list"
 lint 0 "no workflow list: the file's addresses"
@@ -677,9 +681,9 @@ msg 0 "a trailer-like example in the body, before a well-ordered block" \
 # all trailers, or a quarter of them with one git writes itself (Signed-off-by), prose beside.
 # The gates read the keys as git does.
 sob="Signed-off-by: t <t@example.invalid>"$'\n'"a line of prose in the block"
-GIT_AUTHOR_EMAIL=$claude msg 0 "agent trailers with lower-case keys, in a block with prose git reads" \
+GIT_AUTHOR_EMAIL=$claude GIT_COMMITTER_EMAIL=$claude msg 0 "agent trailers with lower-case keys, in a block with prose git reads" \
 	"feat(x): a"$'\n\n'"$sob"$'\n'"Stack: m"$'\n'"assisted-by: claude"$'\n'"session-id: s"
-GIT_AUTHOR_EMAIL=$claude msg 1 "trailers with lower-case keys, out of order" \
+GIT_AUTHOR_EMAIL=$claude GIT_COMMITTER_EMAIL=$claude msg 1 "trailers with lower-case keys, out of order" \
 	"feat(x): a"$'\n\n'"Stack: m"$'\n'"session-id: s"$'\n'"assisted-by: claude"
 says "out of order" "a lower-case key is ranked as its key"
 # The width gate spares that block, and only it: a last paragraph of lines with a colon is
