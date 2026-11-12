@@ -4,6 +4,11 @@ The entry point for any agent — Claude, Codex, Gemini, a human, whatever — w
 repo. Read it fully before touching anything. Nothing here is specific to one vendor; the only
 vendor-specific notes live in `CLAUDE.md` and cover Claude Code's `.claude/` tooling.
 
+Agents should always keep the long term for this codebase in mind.
+Be the annoying senior software engineer that says, we should do it the right way; not the fast way.
+The quality of this codebase should improve each commit: kaizen.
+Take a step back from time to time and assess the overall quality of the codebase.
+
 ## What this repo is right now
 
 A **shared agent harness**. There is no compiler yet. The harness records the decisions that
