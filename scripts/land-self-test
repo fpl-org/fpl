@@ -166,13 +166,23 @@ HCO="$(agent_commit h@example.invalid "999999999 +0000")"
 git reset -q --hard "$MA"
 git commit -q --allow-empty -m "by a person"
 HCP="$(git rev-parse HEAD)"
+# MB: main as it is before the rule lands, its agent list without the cutoff in commit-rules;
+# HCB the agent's commit with h for committer above it.
+git reset -q --hard "$MA"
+echo "# no cutoff yet" >.githooks/commit-rules
+git commit -q -am "rules"
+MB="$(git rev-parse HEAD)"
+GIT_AUTHOR_NAME=A GIT_AUTHOR_EMAIL=a@example.invalid GIT_COMMITTER_NAME=C \
+	GIT_COMMITTER_EMAIL=h@example.invalid git commit -q --allow-empty -m "by an agent"
+HCB="$(git rev-parse HEAD)"
 git reset -q --hard "$M0"
 git push -q "$REMOTE" "$M0:refs/heads/main" "$H:refs/heads/$BR" "$M1:refs/heads/m1" \
 	"$MC:refs/heads/mc" "$H2:refs/heads/h2" "$HM:refs/heads/hm" "$HS:refs/heads/hs" \
 	"$HN:refs/heads/hn" "$HP:refs/heads/hp" "$HW:refs/heads/hw" "$HG:refs/heads/hg" \
 	"$HB:refs/heads/hb" "$HL:refs/heads/hl" "$MF:refs/heads/mf" "$HGO:refs/heads/hgo" \
 	"$ML:refs/heads/ml" "$HO:refs/heads/ho" "$MA:refs/heads/ma" "$HCH:refs/heads/hch" \
-	"$HCM:refs/heads/hcm" "$HCO:refs/heads/hco" "$HCP:refs/heads/hcp"
+	"$HCM:refs/heads/hcm" "$HCO:refs/heads/hco" "$HCP:refs/heads/hcp" "$MB:refs/heads/mb" \
+	"$HCB:refs/heads/hcb"
 
 # The stand-ins: gh serves the forge, git sends the test's GitHub to the disk, open and
 # xdg-open only log.
@@ -1222,6 +1232,8 @@ says "remedy: the presenter remakes it in a worktree whose committer is the mach
 range_case "$HCM" "$MA" 0 "ok  land/committer" "an agent's commit with the machine account for committer"
 range_case "$HCO" "$MA" 0 "ok  land/committer" "an agent's commit dated before the rule"
 range_case "$HCP" "$MA" 0 "ok  land/committer" "a person's own commit"
+range_case "$HCB" "$MB" 0 "ok  land/committer          skipped: main's .githooks/commit-rules has no COMMIT_COMMITTER_SINCE" \
+	"no cutoff on main yet: a notice, not a rule from the epoch on"
 range_case "$HG" "$M0" 1 "NO  land/gpt" "a commit a GPT model assisted, no gpt-ok"
 at="$HG" HEAD_SHA="$HG"
 forge
