@@ -54,7 +54,8 @@
 # atomicity judge is off for the amend (the diff is unchanged; it ran when the commit was made);
 # commit.cleanup is pinned to verbatim for the picks and the amend, so a comment-like line or
 # trailing blank of a message survives, and the encoding to UTF-8, as git re-encodes a replayed
-# message to i18n.commitEncoding. The rebase moves HEAD alone (--no-update-refs, whatever
+# message to i18n.commitEncoding. git log is read for its metadata alone, never the verdict on
+# a signature that log.showSignature adds. The rebase moves HEAD alone (--no-update-refs, whatever
 # rebase.updateRefs says): another branch pointing into the range is another pull request, whose
 # owner's silence this run never asked.
 # The trailer block is the one the commit-msg gate reads (commit_trailers, .githooks/
@@ -91,6 +92,10 @@ self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]
 repo_root="$(git rev-parse --show-toplevel)"
 # shellcheck source=../.githooks/commit-rules
 . "${self%/*}/../.githooks/commit-rules"
+
+# git_log <arguments...>: git log without the verdict on a signature, which log.showSignature
+# would print among the metadata read here.
+git_log() { git log --no-show-signature "$@"; }
 
 # die <rule> <what> <remedy>: a refusal names its rule, what failed and what to do; exit 2.
 die() {
@@ -243,7 +248,7 @@ in_the_way() {
 			d="${d%/*}"
 			if [ -L "$repo_root/$d" ] || { [ -e "$repo_root/$d" ] && [ ! -d "$repo_root/$d" ]; }; then cands+=("$d"); fi
 		done
-	done < <(git log -z --format= --name-only --no-renames --no-relative "$1")
+	done < <(git_log -z --format= --name-only --no-renames --no-relative "$1")
 	[ ${#cands[@]} -gt 0 ] || return 0
 	[ "$(git -C "$repo_root" config --type=bool --default=false core.ignorecase)" != true ] || magic=':(literal,icase)'
 	hits="$(env -u GIT_LITERAL_PATHSPECS -u GIT_GLOB_PATHSPECS -u GIT_NOGLOB_PATHSPECS -u GIT_ICASE_PATHSPECS \
@@ -282,7 +287,7 @@ cmd_stamp() { # stamp <base>..HEAD [value]
 	[ -z "$(git rev-list --merges "$oid..HEAD")" ] || die range "the range '$range' holds a merge" "a series is linear"
 	# A replayed pick is written in i18n.commitEncoding, the message re-encoded, so only UTF-8
 	# comes back byte for byte, and the rebase below pins UTF-8 whatever the caller's config says.
-	[ -z "$(git log --format=%e "$oid..HEAD" | grep -vixE -e '' -e 'utf-?8')" ] ||
+	[ -z "$(git_log --format=%e "$oid..HEAD" | grep -vixE -e '' -e 'utf-?8')" ] ||
 		die encoding "the range '$range' holds a message in an encoding other than UTF-8, which the replay would re-encode" "amend it in UTF-8 first, with i18n.commitEncoding unset"
 	in_the_way "$oid..HEAD" "$range"
 	if [ $# -eq 2 ]; then value="$2"; else value="$(default_value)" || exit 2; fi
@@ -318,7 +323,7 @@ presenters() { commit_trailers | grep -ci '^presented-by:' || true; }
 # presented <value>: HEAD's trailer block, as the commit-msg gate parses it, holds one
 # Presented-By and ends with 'Presented-By: <value>'.
 presented() {
-	[ "$(git log -1 --format=%B | presenters)" = 1 ] && [ "$(git log -1 --format=%B | commit_trailers | tail -n1)" = "Presented-By: $1" ]
+	[ "$(git_log -1 --format=%B | presenters)" = 1 ] && [ "$(git_log -1 --format=%B | commit_trailers | tail -n1)" = "Presented-By: $1" ]
 }
 
 # bare_trailers <arguments...>: interpret-trailers under no trailer.* setting of anyone's. Its
@@ -346,7 +351,7 @@ cmd__amend() {
 	tree="$(git rev-parse 'HEAD^{tree}')"
 	# The message as git holds it: format:, as --format would end it with one more newline, and
 	# the x keeps the trailing blanks that $(...) would cut.
-	msg="$(git log -1 --pretty=format:%B; printf x)"
+	msg="$(git_log -1 --pretty=format:%B; printf x)"
 	msg="${msg%x}"
 	n="$(printf '%s' "$msg" | presenters)"
 	while [ "$n" -gt 1 ]; do
@@ -364,7 +369,7 @@ cmd__amend() {
 		die tree "$(git rev-parse --short HEAD): a hook changed the tree in the amend, and a stamp changes messages only" "stamp with the hook that writes or stages files off"
 	presented "$1" ||
 		die trailer "$(git rev-parse --short HEAD) does not end its trailer block with 'Presented-By: $1' once amended" "find the trailer.* setting or the hook that rewrites the message"
-	[ "$(git log -1 --pretty=format:%B; printf x)" = "${new}x" ] ||
+	[ "$(git_log -1 --pretty=format:%B; printf x)" = "${new}x" ] ||
 		die message "$(git rev-parse --short HEAD): a hook rewrote more of the message than its Presented-By in the amend, and a stamp writes that line only" "amend the commit through the hook first, so its message reads as the hook writes it, then stamp"
 }
 

@@ -564,6 +564,21 @@ is "$(git rev-parse HEAD)" "$H12" "HEAD is where it was"
 rm -rf local.cfg below "$exclude"
 git switch -q series
 
+# log.showSignature over a signed commit: git log would print the verdict on the signature with
+# the metadata the stamp reads, and the stamp would take it for an encoding or a message.
+if command -v ssh-keygen >/dev/null; then
+	git switch -q -c signed "$M0"
+	ssh-keygen -q -t ed25519 -N '' -C t -f "$tmp/signing" </dev/null >/dev/null
+	echo s >signed
+	git add signed
+	printf 'docs(x): signed\n\nStack: t\n' | git -c gpg.format=ssh -c user.signingkey="$tmp/signing.pub" commit -q -S -F -
+	with_config log.showSignature true 0 "a signed commit under log.showSignature" stamp "$M0..HEAD" "claude-s s1"
+	is "$(git log -1 --no-show-signature --pretty=format:%B)" $'docs(x): signed\n\nStack: t\nPresented-By: claude-s s1' "its message gains the one line"
+	git switch -q series
+else
+	echo "present self-test: no ssh-keygen, so no case of a signed commit under log.showSignature" >&2
+fi
+
 # A trailer that is there but not last; a body with a --- line, which interpret-trailers takes
 # for the start of a patch unless told otherwise; a commit with none, under a config that says
 # to add none.
