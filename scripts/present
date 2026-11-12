@@ -231,9 +231,10 @@ require_clean() {
 # refuses to overwrite a plain untracked file mid-rebase, but takes an ignored one for expendable
 # and overwrites or deletes it without a word. The paths are every commit's, not base..HEAD's: a
 # file the series adds and later drops is written and deleted by the replay too, and --no-renames
-# keeps the source of a rename, and --no-relative every path from the top, which diff.relative
-# would cut to those under the directory the stamp starts in. The disk names the candidates;
-# git says which of them are
+# keeps the source of a rename, --no-relative every path from the top, which diff.relative
+# would cut to those under the directory the stamp starts in, and --ignore-submodules=none every
+# gitlink, which diff.ignoreSubmodules all would leave out. The disk names the candidates; git
+# says which of them are
 # untracked, each candidate a literal pathspec, matched in any case where the worktree folds case
 # (core.ignorecase): there the disk finds an ignored config at Config, and a pathspec that tells
 # case apart would not. The caller's pathspec settings are set aside, as GIT_LITERAL_PATHSPECS
@@ -250,7 +251,7 @@ in_the_way() {
 			d="${d%/*}"
 			if [ -L "$repo_root/$d" ] || { [ -e "$repo_root/$d" ] && [ ! -d "$repo_root/$d" ]; }; then cands+=("$d"); fi
 		done
-	done < <(git_log -z --format= --name-only --no-renames --no-relative "$1")
+	done < <(git_log -z --format= --name-only --no-renames --no-relative --ignore-submodules=none "$1")
 	[ ${#cands[@]} -gt 0 ] || return 0
 	[ "$(git -C "$repo_root" config --type=bool --default=false core.ignorecase)" != true ] || magic=':(literal,icase)'
 	hits="$(env -u GIT_LITERAL_PATHSPECS -u GIT_GLOB_PATHSPECS -u GIT_NOGLOB_PATHSPECS -u GIT_ICASE_PATHSPECS \

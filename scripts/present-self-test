@@ -564,6 +564,23 @@ is "$(git rev-parse HEAD)" "$H12" "HEAD is where it was"
 rm -rf local.cfg below "$exclude"
 git switch -q series
 
+# diff.ignoreSubmodules all: git log would name no gitlink, so an ignored file where the range
+# adds a submodule and drops it again would pass for out of the way.
+git switch -q -c gitlink "$M0"
+git update-index --add --cacheinfo "160000,$M0,linked"
+git commit -q -m "docs(x): add a submodule"$'\n\n'"Stack: t"
+git rm -q --cached linked
+git commit -q -m "docs(x): drop the submodule"$'\n\n'"Stack: t"
+H13="$(git rev-parse HEAD)"
+printf '%s\n' linked >"$exclude"
+echo mine >linked
+with_config diff.ignoreSubmodules all 2 "an ignored file where the range adds a submodule, under diff.ignoreSubmodules all" stamp "$M0..HEAD" "claude-k s6"
+says "linked" "it names the path"
+is "$(cat linked)" mine "the file is as it was"
+is "$(git rev-parse HEAD)" "$H13" "HEAD is where it was"
+rm -f linked "$exclude"
+git switch -q series
+
 # log.showSignature over a signed commit: git log would print the verdict on the signature with
 # the metadata the stamp reads, and the stamp would take it for an encoding or a message.
 if command -v ssh-keygen >/dev/null; then
