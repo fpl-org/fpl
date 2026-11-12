@@ -240,18 +240,22 @@ require_clean() {
 # case apart would not. The caller's pathspec settings are set aside, as GIT_LITERAL_PATHSPECS
 # would read the magic as part of the path. sed keeps five names and reads the list to its end:
 # head would stop reading it, and pipefail would make git's SIGPIPE an exit without a word.
+# The list ends with /ok, which no path of a tree can be, once git log has exited 0: a failure
+# inside <(...) is lost, and its empty list would read as nothing in the way.
 in_the_way() {
-	local p d hits magic=':(literal)'
+	local p d hits ok="" magic=':(literal)'
 	local -a cands=()
 	while IFS= read -r -d '' p; do
 		[ -n "$p" ] || continue
+		[ "$p" != /ok ] || { ok=1; continue; }
 		if [ -e "$repo_root/$p" ] || [ -L "$repo_root/$p" ]; then cands+=("$p"); fi
 		d="$p"
 		while [[ "$d" == */* ]]; do
 			d="${d%/*}"
 			if [ -L "$repo_root/$d" ] || { [ -e "$repo_root/$d" ] && [ ! -d "$repo_root/$d" ]; }; then cands+=("$d"); fi
 		done
-	done < <(git_log -z --format= --name-only --no-renames --no-relative --ignore-submodules=none "$1")
+	done < <(git_log -z --format= --name-only --no-renames --no-relative --ignore-submodules=none "$1" && printf '/ok\0')
+	[ -n "$ok" ] || die paths "git log could not list the paths '$2' writes or removes" "run git log --name-only $2 to see why"
 	[ ${#cands[@]} -gt 0 ] || return 0
 	[ "$(git -C "$repo_root" config --type=bool --default=false core.ignorecase)" != true ] || magic=':(literal,icase)'
 	hits="$(env -u GIT_LITERAL_PATHSPECS -u GIT_GLOB_PATHSPECS -u GIT_NOGLOB_PATHSPECS -u GIT_ICASE_PATHSPECS \

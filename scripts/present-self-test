@@ -581,6 +581,19 @@ is "$(git rev-parse HEAD)" "$H13" "HEAD is where it was"
 rm -f linked "$exclude"
 git switch -q series
 
+# A git log that fails, as under a diff.orderFile that is not there, lists no path: read as a
+# range with none in the way, the replay would delete the ignored local.cfg. Refused instead.
+git switch -q shadow
+H14="$(git rev-parse HEAD)"
+printf '%s\n' local.cfg >"$exclude"
+echo mine >local.cfg
+with_config diff.orderFile "$tmp/no such order" 2 "a git log that fails to list the paths" stamp "$M0..HEAD" "claude-k s7"
+says "[paths]" "it names the rule"
+is "$(cat local.cfg)" mine "the file is as it was"
+is "$(git rev-parse HEAD)" "$H14" "HEAD is where it was"
+rm -f local.cfg "$exclude"
+git switch -q series
+
 # log.showSignature over a signed commit: git log would print the verdict on the signature with
 # the metadata the stamp reads, and the stamp would take it for an encoding or a message.
 if command -v ssh-keygen >/dev/null; then
