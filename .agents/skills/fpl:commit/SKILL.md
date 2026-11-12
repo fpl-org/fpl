@@ -20,4 +20,4 @@ they hold: `.agents/COMMITS.md`. This routine is the order of work; each step is
    implementation paths. Load `fpl:commit:boundary` to split it in two.
 
 A new branch name goes through `fpl:commit:branch` before the branch exists. A series that
-is about to be reviewed gets its identity, the `Series-Id:` trailer, from the series module.
+is about to be reviewed gets its identity from `fpl:series`.

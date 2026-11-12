@@ -149,12 +149,15 @@ run "lint red" 1 "commit-lint refuses" -- pres
 check "lint red: nothing built" lines "$LOG" 0
 rm "$FLAG/lint-fail"
 
-# Series-Id: judged only where scripts/series exists in P's tree.
+# Series-Id: judged only where the series script (fpl:series) is in P's tree.
 mk_series() { # mk_series <branch> <series?> <id-or-empty>...: one commit per id given
 	local b="$1" series="$2"
 	shift 2
 	git checkout -q -b "$b" main
-	[ "$series" != yes ] || { add scripts/series 755 && commit "feat(scripts): series" "Series-Id: $1"; }
+	case "$series" in
+	yes) add .agents/skills/fpl:series/scripts/series 755 && commit "feat(skill): series" "Series-Id: $1" ;;
+	old) add scripts/series 755 && commit "feat(scripts): series" "Series-Id: $1" ;;
+	esac
 	local n=0 id
 	for id in "$@"; do
 		n=$((n + 1))
@@ -166,11 +169,13 @@ mk_series sid1b yes s1 s1
 mk_series sid2 yes s1 s2
 mk_series sid3 yes s1 ""
 mk_series sid4 no s1 s2
+mk_series sid5 old s1 s2
 git checkout -q sid1b
 run "one Series-Id" 0 "Series-Id (s1)" -- sid1b
 run "two Series-Ids" 1 "more than one Series-Id" -- sid2
 run "a lemma without Series-Id" 1 "has no Series-Id" -- sid3
-run "no scripts/series: not judged" 0 "skip  Series-Id" -- sid4
+run "no series script: not judged" 0 "skip  Series-Id" -- sid4
+run "the series script at its old path: judged" 1 "more than one Series-Id" -- sid5
 
 # A finished series: no fix of the series' own files, and no message about the review.
 git checkout -q -b fixself main

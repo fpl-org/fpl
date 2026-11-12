@@ -84,7 +84,7 @@
 #   land/gpt                a commit whose Assisted-By names a GPT model is named by a line
 #                           gpt-ok: <sha> in a code owner's approval of the head, a prefix of
 #                           at least 7 hex digits that no other commit of the range shares
-#   land/series             once main holds scripts/series: one Series-Id on every commit
+#   land/series             once main holds the series script: one Series-Id on every commit
 #   land/series-fresh       and no commit on main carries it yet
 #   land/patch-fresh        no commit's `git patch-id --verbatim` is one on main already,
 #                           judged above a leading run whose pairs main holds (a relocated
@@ -107,8 +107,8 @@
 # it is not the author's, and land/bypass that each ruleset on main lists the App
 # (FPL_LAND_APP_ID, default 5318175, fpl-lander) with bypass mode always, or, where the token
 # cannot see that list, that the ruleset lets the token past always. Before the push it
-# writes the fpl/series check run on the head, when main holds scripts/series, with the
-# digest `scripts/series digest <main>..<head>` prints; the push carries the token. Once
+# writes the fpl/series check run on the head, when main holds the series script, with the
+# digest `series digest <main>..<head>` prints; the push carries the token. Once
 # GitHub shows the merge it retargets to main each pull request based on the landed branch,
 # and only then deletes the branch, if it still is at the head that landed: deleting it
 # first closes them.
@@ -609,7 +609,7 @@ def judge_history(v, main, head, ancestor, merges, start=None):
     else:
         v.no("land/ancestor", f"main {main[:12]} is not an ancestor of {h}",
              "restack before approval, never after: when it is approved, the owner first"
-             " dismisses the approval (.agents/WORKFLOW.md rule 10); then scripts/restack, push,"
+             " dismisses the approval (.agents/WORKFLOW.md rule 10); then restack, push,"
              " and approve the new head")
     if merges == "0":
         v.ok("land/linear", f"no merge commit between main and {h}")
@@ -829,7 +829,7 @@ def trailers(revs, key):
 
 
 def pair(c):
-    """(patch id, SHA-256 of author and raw message) of commit c: the pair scripts/series
+    """(patch id, SHA-256 of author and raw message) of commit c: the pair series
     manifest prints, its diff pinned the same way against the caller's configuration."""
     diff = git("-c", "core.quotePath=true", "diff-tree", "-p", "--root", "--no-ext-diff",
                "--no-textconv", "--no-color", "--no-renames", "-U3", "--src-prefix=a/",
@@ -894,14 +894,19 @@ def derive(main, head):
     print("y", onto)
 
 
+# Where main keeps the series script: the home of fpl:series, or scripts/series on a main
+# from before it moved there. The receipt below looks in the same two places.
+SERIES = (".agents/skills/fpl:series/scripts/series", "scripts/series")
+
+
 def judge_series(v, main, span):
-    """land/series and land/series-fresh, judged once main holds scripts/series: one
+    """land/series and land/series-fresh, judged once main holds the series script: one
     Series-Id on every commit, and no commit on main carries it yet."""
-    has = subprocess.run(("git", "cat-file", "-e", f"{main}:scripts/series"),
-                         capture_output=True).returncode == 0
+    has = any(subprocess.run(("git", "cat-file", "-e", f"{main}:{p}"),
+                             capture_output=True).returncode == 0 for p in SERIES)
     if not has:
         for rule in ("land/series", "land/series-fresh"):
-            v.ok(rule, "skipped: main has no scripts/series")
+            v.ok(rule, f"skipped: main has no {SERIES[0]}")
         return
     rows = trailers(span, "Series-Id")
     ids = sorted({x for _, vals in rows for x in vals})
@@ -911,7 +916,7 @@ def judge_series(v, main, span):
         v.no("land/series", f"Series-Id {' '.join(ids) or 'none'}; not exactly one on"
              f" {' '.join(odd) or 'every commit'}",
              "the presenter stamps one during the relocation or a re-presentation:"
-             f" scripts/series stamp {base}..HEAD on the branch, which"
+             f" {SERIES[0]} stamp {base}..HEAD on the branch, which"
              " mints the id; the stamp rewrites every commit, so the owner asks for it with"
              " changes requested and approves the new head again")
         return
@@ -1550,11 +1555,16 @@ cp "$tmp/checks.json" "$tmp/checks.judged.json"
 cp "$tmp/statuses.json" "$tmp/statuses.judged.json"
 
 # fpl/series, with --ci: the receipt, written before the push so nothing lands without one.
-# Its digest is what main's scripts/series prints for `digest <main>..<head>`, one line:
-# the contract between the two scripts. Without scripts/series on main there is none.
-if [ "$ci" -eq 1 ] && git cat-file -e "$main:scripts/series" 2>/dev/null; then
-	git show "$main:scripts/series" >"$tmp/series" && chmod +x "$tmp/series"
-	digest="$("$tmp/series" digest "$span")" || die "scripts/series digest failed; nothing landed"
+# Its digest is what main's series script prints for `digest <main>..<head>`, one line:
+# the contract between the two scripts. Without the series script on main there is none; a
+# main from before it moved to fpl:series holds it at scripts/series.
+series_path=""
+for p in ".agents/skills/fpl:series/scripts/series" scripts/series; do
+	if git cat-file -e "$main:$p" 2>/dev/null; then series_path="$p" && break; fi
+done
+if [ "$ci" -eq 1 ] && [ -n "$series_path" ]; then
+	git show "$main:$series_path" >"$tmp/series" && chmod +x "$tmp/series"
+	digest="$("$tmp/series" digest "$span")" || die "series digest failed; nothing landed"
 	api -X POST "repos/$slug/check-runs" -f name=fpl/series -f head_sha="$head" \
 		-f status=completed -f conclusion=success -f "output[title]=series $digest" \
 		-f "output[summary]=manifest digest $digest of $span, approved on $head" \

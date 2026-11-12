@@ -58,8 +58,9 @@ lander reads `Assisted-By`). Who proposed what goes on the card: it is the ackno
    now repeat your check against W.
 3. Build P in a detached worktree from the pull request's base `B` (`main`, or the parent branch
    of a sub-series: its commits stay as they are), one lemma per commit.
-4. All trailers before any check: `scripts/series stamp <B>..HEAD` when `scripts/series` is
-   in the tree; then on every commit, last in its block, `Presented-By: <model slug> <session id>`:
+4. All trailers before any check: `.agents/skills/fpl:series/scripts/series stamp <B>..HEAD`
+   (`fpl:series:stamp`) when the series script is in the tree; then on every commit, last in
+   its block, `Presented-By: <model slug> <session id>`:
    `M=$(mktemp "$(git rev-parse --absolute-git-dir)/presented.XXXXXX") || exit 1; export M
    PB='<slug> <id>'; export PB; git rebase -x 'git log -1 --format=%B >"$M" && git interpret-trailers
    --in-place --trailer "Presented-By: $PB" "$M" && git commit -q --amend --allow-empty
@@ -69,7 +70,8 @@ lander reads `Assisted-By`). Who proposed what goes on the card: it is the ackno
    message after step 6.
 5. `scripts/present-check -B <B> W P` when it is on main; else by hand: `git diff --quiet W P`,
    `git rebase -x 'make quick' <B>` on P, `scripts/commit-lint -b <branch> <B>..P`. Red: fix P, not W.
-6. `scripts/series manifest <B>..P`, when present: it hashes the final messages.
+6. `.agents/skills/fpl:series/scripts/series manifest <B>..P` (`fpl:series:manifest`), when
+   present: it hashes the final messages.
 7. The card from `.agents/REVIEW-CARD.md`, through `scripts/leak-check --text`.
 8. Run the silence check again, now: his word may have come while you built, and the lease guards
    the branch, not the comments. Any URL printed or query failing: stop, push nothing. Then
