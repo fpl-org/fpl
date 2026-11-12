@@ -148,6 +148,15 @@ is wrong, say so and let the maintainer decide — don't route around it.
 - The task graph (`scripts/task`, Radicle COBs in the repository): `.agents/TASKS.md`. The harness
   redo's units are in `.agents/tasks/redo.tsv`; `scripts/task load` writes them, `tree` shows them.
 
+## Review guidelines
+
+Every finding carries a **Reproduce** block: the commands or steps that show the failure on the
+pull request's head, and the expected result beside the actual one. A reviewer that cannot run
+anything gives the steps a person can follow. Visual behaviour (a rendered page, a diagram, a
+link that should click) also gets a short screen recording. A finding without a Reproduce block
+is marked **unverified**, and whoever acts on it runs its steps first or refutes it by
+measuring.
+
 ## Coding standards
 
 Lean code, elaborate formatted doc comments, TDD, semantic commits at logical checkpoints,

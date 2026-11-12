@@ -22,6 +22,12 @@ reviews:
   suggested_labels: true
   suggested_reviewers: true
   auto_apply_labels: false
+  path_instructions:
+    - path: "**"
+      instructions: >-
+        Give every finding a Reproduce block: the commands or steps that show the failure on
+        this head, expected against actual, and a screen recording only for visual behaviour.
+        A finding without one is marked unverified.
   auto_review:
     enabled: true
     drafts: true

@@ -51,7 +51,9 @@ against an earlier commit. Trailers are authorship, not review: every builder tr
 lander reads `Assisted-By`). Who proposed what goes on the card: it is the acknowledgements.
 
 **Order of work.**
-1. Read the pull request, every bot finding and `git log -p main..W`; run both checks above.
+1. Read the pull request, every bot finding and `git log -p main..W`; run both checks above. A
+   finding without a Reproduce block (`AGENTS.md`, Review guidelines) is unverified: run it on W
+   or say so on the card.
 2. Push W as `agent/claude/attempt/<series>` (the Series-Id, else the stack name) with the
    token URL: `git push "https://x-access-token:$TOKEN@github.com/fpl-org/fpl.git" W:refs/heads/<ref>`
    (`TOKEN=$(gh auth token --user psjg-claude)`). The pre-push leak gate judges it; anyone can

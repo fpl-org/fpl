@@ -15,5 +15,6 @@ Method:
 - Every finding cites a `file:line` anchor and names which side (spec or code) looks wrong.
 
 Output: a list, most severe first. Each item = the spec sentence + the code anchor +
-`matches` / `diverges` / `unimplemented` + one line of why. End with a one-line verdict:
+`matches` / `diverges` / `unimplemented` + one line of why + for each `diverges`, a Reproduce
+block: the command that shows it, expected against actual. End with a one-line verdict:
 faithful, or not. Do not propose patches unless asked.
