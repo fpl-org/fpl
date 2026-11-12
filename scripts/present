@@ -45,7 +45,9 @@
 #
 # stamp runs `git rebase --exec` with this script's own `_amend` on each commit: the message
 # comes out of git and goes back through git, so no message is written to a scratch file, and no
-# path reaches the exec line but as printf %q writes it. The `_amend` that runs is a copy, made
+# path or value is spelled in the exec line, only three variables the rebase hands down: git runs
+# it with /bin/sh, dash on Debian, which reads bash's printf %q of a path that is not ASCII under
+# the C locale, $'…', as other bytes. The `_amend` that runs is a copy, made
 # before the rebase, of this script and of .githooks, whose rules it sources, in the git
 # directory, where no checkout reaches, named by an absolute path (the exec runs at the top of
 # the worktree, wherever the stamp started), and removed on exit: the rebase checks out each
@@ -302,10 +304,13 @@ cmd_stamp() { # stamp <base>..HEAD [value]
 	mkdir "$frozen/scripts"
 	cp "$self" "$frozen/scripts/present"
 	cp -R "${self%/*}/../.githooks" "$frozen/.githooks"
-	printf -v exec_cmd '%q %q _amend %q' "$BASH" "$frozen/scripts/present" "$value"
+	# The line names the variables, never their values: git hands it to /bin/sh.
+	# shellcheck disable=SC2016 # expanded by that shell, not here
+	exec_cmd='"$PRESENT_STAMP_BASH" "$PRESENT_STAMP_SCRIPT" _amend "$PRESENT_STAMP_VALUE"'
 	# commit.cleanup is pinned for the picks as well as the amend: under strip, the replay of a
 	# commit cuts its comment-like lines too, not only the amend does.
-	err="$(GIT_SEQUENCE_EDITOR=: git -c commit.cleanup=verbatim -c i18n.commitEncoding=UTF-8 -c i18n.logOutputEncoding=UTF-8 rebase -q --no-autosquash --no-update-refs --exec "$exec_cmd" "$oid" 2>&1)" || {
+	err="$(PRESENT_STAMP_BASH="$BASH" PRESENT_STAMP_SCRIPT="$frozen/scripts/present" PRESENT_STAMP_VALUE="$value" \
+		GIT_SEQUENCE_EDITOR=: git -c commit.cleanup=verbatim -c i18n.commitEncoding=UTF-8 -c i18n.logOutputEncoding=UTF-8 rebase -q --no-autosquash --no-update-refs --exec "$exec_cmd" "$oid" 2>&1)" || {
 		printf '%s\n' "$err" >&2
 		git rebase --abort >/dev/null 2>&1 || true
 		[ "$(git rev-parse HEAD)" = "$before" ] ||

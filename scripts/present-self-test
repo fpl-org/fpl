@@ -695,6 +695,16 @@ cd "$self_repo/scripts"
 TMPDIR="../../stamp tmp" expect 0 "from a subdirectory, under a relative TMPDIR" stamp "$S0..HEAD" "claude-d s5"
 is "$(trailers HEAD | tail -n1)" "Presented-By: claude-d s5" "it is stamped"
 is "$(ls -A "$(git rev-parse --absolute-git-dir)" | grep -c present-stamp || true)" 0 "the copy is removed on exit"
+# A checkout whose path is not ASCII, under the C locale: bash's printf %q would spell it $'…',
+# which a /bin/sh that is dash, as git runs the exec with on Debian, reads as other bytes. On a
+# Mac /bin/sh is bash and reads either; the case bites where the shell is dash.
+cd "$tmp"
+mv "$self_repo" "$tmp/self caf"$'\303\251'
+self_repo="$tmp/self caf"$'\303\251'
+cd "$self_repo"
+present="$self_repo/scripts/present"
+LC_ALL=C expect 0 "a checkout whose path is not ASCII, under the C locale" stamp "$S0..HEAD" "claude-d s6"
+is "$(trailers HEAD | tail -n1)" "Presented-By: claude-d s6" "it is stamped"
 present="$saved_present"
 cd "$repo"
 
