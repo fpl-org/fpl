@@ -15,20 +15,15 @@ GPT text never lands, and a presented commit does.
 
 **Only while he is silent.** Rewrite only while psjg has posted no review, no review comment and
 no issue comment on the pull request, and no comment on a commit of `B..W`, unless his comments
-ask for the rewrite: then they are its brief, and the card names them. The `@codex review` line
-that `codex-review.yml` posts with his token is not his word. Ask the forge as the machine
-account; a URL printed, or any query failing, means stop: present the history as built, saying
-why under Limits.
-
-    F='.[]|select(.user.login=="psjg")|select(((.body//"")|gsub("^\\s+|\\s+$";""))!="@codex review")|.html_url'
-    T=$(gh auth token --user psjg-claude) || exit 1
-    C=$(git rev-list "$B..$W") || exit 1
-    for q in pulls/$N/reviews pulls/$N/comments issues/$N/comments $(printf 'commits/%s/comments ' $C); do
-      GH_TOKEN=$T gh api --paginate "repos/fpl-org/fpl/$q" --jq "$F" || exit 1
-    done
-
-The token is taken on a line of its own: in `GH_TOKEN=$(…) gh api …` a failed lookup is lost,
-`gh` falls back to the machine's active account, and the check would run as psjg.
+ask for the rewrite: then they are its brief, and the card names them. `scripts/present silent N`
+asks the forge as the machine account and prints every URL of his, one a line: exit 0 is the
+only go; 1 means he has spoken, and only a URL the card names as its brief lets you go on; 2
+means the forge could not be asked. Otherwise present the history as built, saying why under
+Limits. The script leaves the `@codex review` line that `codex-review.yml` posts with his token
+aside, as that is not his word. It takes the token on a line of its own, since in
+`GH_TOKEN=$(…) gh api …` a failed lookup is lost and `gh` answers as the machine's active
+account, psjg; it pins every call to github.com; and it reads his comments on each commit of the
+request, commit-level and line-level, of which GitHub's commit page shows only the first kind.
 
 **The series.** Exposition order: concept (the names, docs or types the rest is said in),
 invariant (the rule, as the check that keeps it, where it can stand before the code), mechanism
@@ -54,8 +49,8 @@ lander reads `Assisted-By`). Who proposed what goes on the card: it is the ackno
 1. Read the pull request, every bot finding and `git log -p main..W`; run both checks above.
 2. Push W as `agent/claude/attempt/<series>` (the Series-Id, else the stack name) with the
    token URL: `git push "https://x-access-token:$TOKEN@github.com/fpl-org/fpl.git" W:refs/heads/<ref>`
-   (`TOKEN=$(gh auth token --user psjg-claude)`). The pre-push leak gate judges it; anyone can
-   now repeat your check against W.
+   (`TOKEN=$(gh auth token --hostname github.com --user psjg-claude)`). The pre-push leak gate
+   judges it; anyone can now repeat your check against W.
 3. Build P in a detached worktree from the pull request's base `B` (`main`, or the parent branch
    of a sub-series: its commits stay as they are), one lemma per commit.
 4. All trailers before any check: `scripts/series stamp <B>..HEAD` when `scripts/series` is
@@ -71,8 +66,9 @@ lander reads `Assisted-By`). Who proposed what goes on the card: it is the ackno
    `git rebase -x 'make quick' <B>` on P, `scripts/commit-lint -b <branch> <B>..P`. Red: fix P, not W.
 6. `scripts/series manifest <B>..P`, when present: it hashes the final messages.
 7. The card from `.agents/REVIEW-CARD.md`, through `scripts/leak-check --text`.
-8. Run the silence check again, now: his word may have come while you built, and the lease guards
-   the branch, not the comments. Any URL printed or query failing: stop, push nothing. Then
+8. `scripts/present silent N` again, now: his word may have come while you built, and the lease
+   guards the branch, not the comments. Exit 2, or exit 1 with a URL the card does not name as
+   its brief: stop, push nothing. Then
    `git push --force-with-lease=refs/heads/<branch>:<W sha> <token URL> P:refs/heads/<branch>`.
 9. The card as the body and the review request: `scripts/pr --update-body N <card>`, then
    `--ready N` once the draft bots are quiet, then `--reviewer N psjg`; where `scripts/pr` lacks
