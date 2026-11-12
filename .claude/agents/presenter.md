@@ -54,14 +54,10 @@ lander reads `Assisted-By`). Who proposed what goes on the card: it is the ackno
 3. Build P in a detached worktree from the pull request's base `B` (`main`, or the parent branch
    of a sub-series: its commits stay as they are), one lemma per commit.
 4. All trailers before any check: `scripts/series stamp <B>..HEAD` when `scripts/series` is
-   in the tree; then on every commit, last in its block, `Presented-By: <model slug> <session id>`:
-   `M=$(mktemp "$(git rev-parse --absolute-git-dir)/presented.XXXXXX") || exit 1; export M
-   PB='<slug> <id>'; export PB; git rebase -x 'git log -1 --format=%B >"$M" && git interpret-trailers
-   --in-place --trailer "Presented-By: $PB" "$M" && git commit -q --amend --allow-empty
-   --cleanup=verbatim -F "$M"' <B>; rm -f "$M"` (author kept; `FPL_ATOMIC_GATE=off`, the diff is
-   unchanged; the scratch file lives in the git directory, and the paths reach the exec line as
-   quoted variables, so a path with a space or a metacharacter breaks nothing). Nothing touches a
-   message after step 6.
+   in the tree; then `scripts/present stamp <B>..HEAD` writes `Presented-By: <model slug>
+   <session id>` last in the trailer block of every commit, by a rebase that amends each
+   message and keeps the author and the tree (the value from `FPL_MODEL` and `FPL_SESSION_ID`,
+   else given as a third argument). Nothing touches a message after step 6.
 5. `scripts/present-check -B <B> W P` when it is on main; else by hand: `git diff --quiet W P`,
    `git rebase -x 'make quick' <B>` on P, `scripts/commit-lint -b <branch> <B>..P`. Red: fix P, not W.
 6. `scripts/series manifest <B>..P`, when present: it hashes the final messages.

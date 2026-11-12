@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
-# scripts/present — the presenter's tool (.claude/agents/presenter.md): ask whether the owner
-# has spoken on a pull request.
+# scripts/present — the presenter's two tools (.claude/agents/presenter.md): ask whether the
+# owner has spoken on a pull request, and stamp a series with the line of the session that
+# presented it.
 #
 #   present silent <N>                exit 0 when the owner has posted nothing on pull request
 #                                     N: no review, no review comment, no comment in its
@@ -9,6 +10,16 @@
 #                                     Exit 1 when he has, with every URL of his on stdout, one
 #                                     a line; 2 when the forge could not be asked. Only exit 0
 #                                     is a go.
+#   present stamp <base>..HEAD [value] write `Presented-By: <model slug> <session id>` last in
+#                                     the trailer block of every commit of the range, by a
+#                                     rebase that amends each message and keeps the author and
+#                                     the tree. The value is the argument, else the model and
+#                                     the session the environment names, read as scripts/acommit
+#                                     reads them (FPL_MODEL or CLAUDE_CODE_MODEL, FPL_SESSION_ID
+#                                     or CLAUDE_CODE_SESSION_ID). Exit 0 stamped; 1 when a hook
+#                                     refused an amend or changed its tree or another line of
+#                                     its message, the rebase then undone; 2 usage, or a refusal
+#                                     before the rebase.
 #
 # silent reads, as the machine account, the four places his word can be: pulls/N/reviews,
 # pulls/N/comments, issues/N/comments, and commits/<sha>/comments for every commit the forge
@@ -32,6 +43,43 @@
 # as the owner. Every call names github.com, so GH_HOST cannot send the question to another
 # forge, whose silence would mean nothing.
 #
+# stamp runs `git rebase --exec` with this script's own `_amend` on each commit: the message
+# comes out of git and goes back through git, so no message is written to a scratch file, and no
+# path reaches the exec line but as printf %q writes it. The `_amend` that runs is a copy, made
+# before the rebase, of this script and of .githooks, whose rules it sources, in the git
+# directory, where no checkout reaches, named by an absolute path (the exec runs at the top of
+# the worktree, wherever the stamp started), and removed on exit: the rebase checks out each
+# commit before its exec, and a range that changes this script would otherwise amend its early
+# commits with one implementation and its late ones with another, or with none. The soft
+# atomicity judge is off for the amend (the diff is unchanged; it ran when the commit was made);
+# commit.cleanup is pinned to verbatim for the picks and the amend, so a comment-like line or
+# trailing blank of a message survives, and the encoding to UTF-8, as git re-encodes a replayed
+# message to i18n.commitEncoding. The rebase moves HEAD alone (--no-update-refs, whatever
+# rebase.updateRefs says): another branch pointing into the range is another pull request, whose
+# owner's silence this run never asked.
+# The trailer block is the one the commit-msg gate reads (commit_trailers, .githooks/
+# commit-rules): to the end of the message, a --- line included, with `:` as the only separator.
+# An existing Presented-By is replaced, not doubled, and moved last: one presenter a commit, the
+# last one. Where the block holds several, all go; interpret-trailers replaces one a call, so
+# each extra one is traded for an empty trailer that --trim-empty drops, which drops an empty
+# trailer of another key in that block too. A commit whose block already ends with the value is
+# left as it is, so stamping twice changes nothing. Placement and the add or replace are given
+# on the command line; interpret-trailers runs bare of every trailer.* setting (a key or a
+# command for Presented-By), and each amend is read back as the gate reads it: a message that
+# does not end with the value then fails it, as under an alias whose key Presented-By prefixes,
+# which the gate's own reader applies. It is read back whole too, and must be the message
+# written, byte for byte: a hook that rewrites another line, as the commit-msg gate writes a
+# trailer key in its own case, fails it. The base is read once, as an id: a fetch that moves a
+# base named by a ref while the stamp runs does not move the series. Refused on main, on a dirty
+# tree, mid-rebase, on a range that does not end at HEAD or whose base is not an ancestor, on an
+# empty range or one with a merge or a message in an encoding other than UTF-8, which the replay
+# would re-encode, and where an untracked file stands at a path a commit of the
+# range writes or removes, or at one of its directories, in any case where the worktree folds
+# case: git takes an ignored file for expendable, and the replay would overwrite or delete it
+# without a word. A hook that refuses an amend stops the rebase, and so does one that changes its
+# tree, as a formatter that stages what it rewrote: a stamp changes messages only. The rebase is
+# aborted, HEAD is where it was, and the refusal is shown.
+#
 # Plain bash 3.2: no mapfile, no associative arrays. scripts/present-self-test proves each
 # case, in throwaway repositories against a gh of its own.
 set -euo pipefail
@@ -41,6 +89,8 @@ export GIT_NO_REPLACE_OBJECTS=1
 
 self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 repo_root="$(git rev-parse --show-toplevel)"
+# shellcheck source=../.githooks/commit-rules
+. "${self%/*}/../.githooks/commit-rules"
 
 # die <rule> <what> <remedy>: a refusal names its rule, what failed and what to do; exit 2.
 die() {
@@ -161,12 +211,167 @@ cmd_silent() { # silent <N>
 	exit 1
 }
 
+# require_clean: index and working tree both equal HEAD. `git diff HEAD` alone misses a change
+# staged and then undone in the file, which the rebase would carry or lose.
+require_clean() {
+	{ git diff --quiet HEAD -- && git diff --cached --quiet -- && git diff --quiet --; } ||
+		die dirty "the index or the working tree has uncommitted changes" "commit or set them aside first"
+}
+
+# in_the_way <range> <range as named>: refused when an untracked file, ignored or not, stands
+# where the replay writes or removes a path: at a path a commit of the range names, under it (the
+# path is a file there, so the directory goes), or at one of its directories (the file goes). Git
+# refuses to overwrite a plain untracked file mid-rebase, but takes an ignored one for expendable
+# and overwrites or deletes it without a word. The paths are every commit's, not base..HEAD's: a
+# file the series adds and later drops is written and deleted by the replay too, and --no-renames
+# keeps the source of a rename. The disk names the candidates; git says which of them are
+# untracked, each candidate a literal pathspec, matched in any case where the worktree folds case
+# (core.ignorecase): there the disk finds an ignored config at Config, and a pathspec that tells
+# case apart would not. The caller's pathspec settings are set aside, as GIT_LITERAL_PATHSPECS
+# would read the magic as part of the path. sed keeps five names and reads the list to its end:
+# head would stop reading it, and pipefail would make git's SIGPIPE an exit without a word.
+in_the_way() {
+	local p d hits magic=':(literal)'
+	local -a cands=()
+	while IFS= read -r -d '' p; do
+		[ -n "$p" ] || continue
+		if [ -e "$repo_root/$p" ] || [ -L "$repo_root/$p" ]; then cands+=("$p"); fi
+		d="$p"
+		while [[ "$d" == */* ]]; do
+			d="${d%/*}"
+			if [ -L "$repo_root/$d" ] || { [ -e "$repo_root/$d" ] && [ ! -d "$repo_root/$d" ]; }; then cands+=("$d"); fi
+		done
+	done < <(git log -z --format= --name-only --no-renames "$1")
+	[ ${#cands[@]} -gt 0 ] || return 0
+	[ "$(git -C "$repo_root" config --type=bool --default=false core.ignorecase)" != true ] || magic=':(literal,icase)'
+	hits="$(env -u GIT_LITERAL_PATHSPECS -u GIT_GLOB_PATHSPECS -u GIT_NOGLOB_PATHSPECS -u GIT_ICASE_PATHSPECS \
+		git -C "$repo_root" ls-files --others -- "${cands[@]/#/$magic}" | sed -n 1,5p | paste -sd ' ' -)"
+	[ -z "$hits" ] ||
+		die untracked "untracked files stand where '$2' writes or removes a path, and the replay would overwrite or delete them (an ignored one without a word): $hits" "move them out of the worktree, stamp, and put them back"
+}
+
+# default_value: '<slug> <session id>' from the environment, as scripts/acommit derives them.
+default_value() {
+	local model="${FPL_MODEL:-${CLAUDE_CODE_MODEL:-}}" sid="${FPL_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}" slug
+	[ -n "$model" ] && [ -n "$sid" ] ||
+		die usage "the model or the session is not known" "present stamp <base>..HEAD '<model slug> <session id>', or set FPL_MODEL and FPL_SESSION_ID"
+	slug="$(printf '%s' "$model" | tr '[:upper:] .' '[:lower:]--' | tr -s '-')"
+	printf '%s %s\n' "$slug" "$sid"
+}
+
+cmd_stamp() { # stamp <base>..HEAD [value]
+	local range="${1:-}" base oid tip value exec_cmd err before frozen re='^[a-z0-9][a-z0-9-]* [^[:space:]]+$'
+	[ $# -ge 1 ] && [ $# -le 2 ] || die usage "a range is needed" "present stamp <base>..HEAD [value]"
+	[[ "$range" == *..* && "$range" != *...* ]] || die range "stamp wants <base>..HEAD, not '$range'" "present stamp <base>..HEAD"
+	base="${range%%..*}"
+	tip="${range#*..}"
+	# The base as an id, read once: a ref that a fetch moves while the stamp runs would have the
+	# checks read one history and the rebase replay the series onto another.
+	oid="$(git rev-parse -q --verify "$base^{commit}")" || die range "no such base: '$base'" "name a commit this history holds"
+	[ "$(git rev-parse -q --verify "$tip^{commit}" 2>/dev/null)" = "$(git rev-parse HEAD)" ] ||
+		die range "the range must end at HEAD" "present stamp <base>..HEAD, with the series checked out"
+	[ "$(git branch --show-current)" != main ] || die branch "main is never presented" "check out the series, a branch or a detached HEAD"
+	[ ! -e "$(git rev-parse --git-path rebase-merge)" ] && [ ! -e "$(git rev-parse --git-path rebase-apply)" ] ||
+		die state "a rebase is in progress" "finish or abort it first"
+	git merge-base --is-ancestor "$oid" HEAD ||
+		die base "'$base' is not an ancestor of HEAD, so the rebase would move the series onto other history" "name the base the series stands on"
+	require_clean
+	[ -n "$(git rev-list "$oid..HEAD")" ] || die range "the range '$range' holds no commit" "name a non-empty <base>..HEAD"
+	[ -z "$(git rev-list --merges "$oid..HEAD")" ] || die range "the range '$range' holds a merge" "a series is linear"
+	# A replayed pick is written in i18n.commitEncoding, the message re-encoded, so only UTF-8
+	# comes back byte for byte, and the rebase below pins UTF-8 whatever the caller's config says.
+	[ -z "$(git log --format=%e "$oid..HEAD" | grep -vixE -e '' -e 'utf-?8')" ] ||
+		die encoding "the range '$range' holds a message in an encoding other than UTF-8, which the replay would re-encode" "amend it in UTF-8 first, with i18n.commitEncoding unset"
+	in_the_way "$oid..HEAD" "$range"
+	if [ $# -eq 2 ]; then value="$2"; else value="$(default_value)" || exit 2; fi
+	[[ $value =~ $re ]] ||
+		die value "'$value' is not '<model slug> <session id>': a lower-case slug, one space, an id without spaces" "present stamp <base>..HEAD 'claude-opus-5-5 <session id>'"
+	before="$(git rev-parse HEAD)"
+	# One implementation for the whole rebase, the one asked: a copy in the git directory, which
+	# no checkout reaches, while the rebase rewrites the worktree under the exec at every commit.
+	frozen="$(mktemp -d "$(git rev-parse --absolute-git-dir)/present-stamp.XXXXXX")" || die tooling "no room in the git directory for the copy of this script" "check that it is writable"
+	# shellcheck disable=SC2064 # the path is fixed now; the local is gone by exit
+	trap "rm -rf $(printf %q "$frozen")" EXIT
+	mkdir "$frozen/scripts"
+	cp "$self" "$frozen/scripts/present"
+	cp -R "${self%/*}/../.githooks" "$frozen/.githooks"
+	printf -v exec_cmd '%q %q _amend %q' "$BASH" "$frozen/scripts/present" "$value"
+	# commit.cleanup is pinned for the picks as well as the amend: under strip, the replay of a
+	# commit cuts its comment-like lines too, not only the amend does.
+	err="$(GIT_SEQUENCE_EDITOR=: git -c commit.cleanup=verbatim -c i18n.commitEncoding=UTF-8 -c i18n.logOutputEncoding=UTF-8 rebase -q --no-autosquash --no-update-refs --exec "$exec_cmd" "$oid" 2>&1)" || {
+		printf '%s\n' "$err" >&2
+		git rebase --abort >/dev/null 2>&1 || true
+		[ "$(git rev-parse HEAD)" = "$before" ] ||
+			die rebase "the rebase was refused and could not be undone: HEAD was $before" "git reset --hard $before, once the tree is as you want it"
+		printf 'present [rebase]: an amend was refused (above), and the rebase is undone; HEAD is %s again\n    remedy: fix what the message names, then stamp again\n' "$(git rev-parse --short HEAD)" >&2
+		exit 1
+	}
+	printf '%s\n' "$value"
+}
+
+# presenters: how many Presented-By the trailer block of the message on stdin holds, as the
+# commit-msg gate parses it; in any case, as git matches a key.
+presenters() { commit_trailers | grep -ci '^presented-by:' || true; }
+
+# presented <value>: HEAD's trailer block, as the commit-msg gate parses it, holds one
+# Presented-By and ends with 'Presented-By: <value>'.
+presented() {
+	[ "$(git log -1 --format=%B | presenters)" = 1 ] && [ "$(git log -1 --format=%B | commit_trailers | tail -n1)" = "Presented-By: $1" ]
+}
+
+# bare_trailers <arguments...>: interpret-trailers under no trailer.* setting of anyone's. Its
+# arguments cannot outvote one: trailer.<name>.key remaps any --trailer whose key is a prefix of
+# it, and .cmd or .command rewrite the value. So it runs in this script's directory with the
+# repository out of reach, and the system, global and command-line config set aside; the
+# separator is given here, and the gate's reader, with the repository's config, reads back what
+# the amend made.
+bare_trailers() {
+	(
+		cd "${self%/*}" &&
+			env -u GIT_DIR -u GIT_WORK_TREE -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT \
+				GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CEILING_DIRECTORIES="${self%/*/*}" \
+				git -c trailer.separators=: interpret-trailers "$@"
+	)
+}
+
+# _amend <value>: HEAD with 'Presented-By: <value>' last in its trailer block, replacing one that
+# is there, and unchanged when it already ends that way. What stamp runs for each commit.
+# interpret-trailers runs bare of the caller's config, and the result is read back twice, since a
+# hook can still rewrite the message: the way the gate reads it, and whole, byte for byte.
+cmd__amend() {
+	local msg n tree new
+	! presented "$1" || return 0
+	tree="$(git rev-parse 'HEAD^{tree}')"
+	# The message as git holds it: format:, as --format would end it with one more newline, and
+	# the x keeps the trailing blanks that $(...) would cut.
+	msg="$(git log -1 --pretty=format:%B; printf x)"
+	msg="${msg%x}"
+	n="$(printf '%s' "$msg" | presenters)"
+	while [ "$n" -gt 1 ]; do
+		msg="$(printf '%s' "$msg" | bare_trailers --no-divider --where end --if-exists replace --trim-empty --trailer 'Presented-By:'; printf x)"
+		msg="${msg%x}"
+		[ "$(printf '%s' "$msg" | presenters)" -lt "$n" ] ||
+			die trailer "$(git rev-parse --short HEAD): a Presented-By of its trailer block would not go" "find the hook or the comment character that keeps it"
+		n=$((n - 1))
+	done
+	new="$(printf '%s' "$msg" | bare_trailers --no-divider --where end --if-exists replace --if-missing add --trailer "Presented-By: $1" && printf x)" ||
+		die trailer "$(git rev-parse --short HEAD): interpret-trailers did not write the message" "run it on this commit's message by hand to see why"
+	new="${new%x}"
+	printf '%s' "$new" | FPL_ATOMIC_GATE=off git commit -q --amend --allow-empty --cleanup=verbatim -F -
+	[ "$(git rev-parse 'HEAD^{tree}')" = "$tree" ] ||
+		die tree "$(git rev-parse --short HEAD): a hook changed the tree in the amend, and a stamp changes messages only" "stamp with the hook that writes or stages files off"
+	presented "$1" ||
+		die trailer "$(git rev-parse --short HEAD) does not end its trailer block with 'Presented-By: $1' once amended" "find the trailer.* setting or the hook that rewrites the message"
+	[ "$(git log -1 --pretty=format:%B; printf x)" = "${new}x" ] ||
+		die message "$(git rev-parse --short HEAD): a hook rewrote more of the message than its Presented-By in the amend, and a stamp writes that line only" "amend the commit through the hook first, so its message reads as the hook writes it, then stamp"
+}
+
 tok="" slug=""
 case "${1:-}" in
-silent)
+silent | stamp | _amend)
 	c="cmd_$1"
 	shift
 	"$c" "$@"
 	;;
-*) die usage "present silent <N>" "see the header of scripts/present" ;;
+*) die usage "present {silent <N> | stamp <base>..HEAD [value]}" "see the header of scripts/present" ;;
 esac
