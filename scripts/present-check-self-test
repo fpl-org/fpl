@@ -206,10 +206,18 @@ printf '#!/bin/sh\ncase "$1" in\n\t--self-test) echo qux >>"$TESTLOG" ;;\nesac\n
 printf '#!/bin/sh\n# ["--self-test"] is a comment\necho %s\nexit 1\n' "'[\"--self-test\"]'" >scripts/quux
 chmod +x scripts/bar scripts/baz scripts/qux scripts/quux
 git add scripts && commit "feat(scripts): foo, bar, baz, qux and quux"
+# A script a skill owns runs the self-test beside it in the skill's scripts/, when either is
+# touched; one without a self-test runs none.
+add .agents/skills/s/scripts/sk 755 && add .agents/skills/s/scripts/sk-self-test 755
+add .agents/skills/s/scripts/lone 755
+printf '#!/bin/sh\necho sk >>"$TESTLOG"\n' >.agents/skills/s/scripts/sk-self-test
+git add .agents && commit "feat(skill): sk and lone"
+echo again >>.agents/skills/s/scripts/sk && git add .agents && commit "feat(skill): sk again"
 add docs/readme && commit "docs(x): words"
 : >"$TESTLOG"
-run "self-tests" 0 "selftest ok" "scripts/foo-self-test" -- --skip-quick touched
-check "self-tests: foo, bar and qux ran once each; baz, quux and the docs commit none" lines "$TESTLOG" 3
+run "self-tests" 0 "selftest ok" "scripts/foo-self-test" ".agents/skills/s/scripts/sk-self-test" -- --skip-quick touched
+check "self-tests: foo, bar and qux ran once, sk once per commit of it; baz, quux, lone and the docs none" \
+	lines "$TESTLOG" 5
 printf '#!/bin/sh\nexit 1\n' >scripts/foo-self-test
 git add scripts && commit "test(scripts): break foo"
 run "self-test red" 1 "selftest is red" -- --skip-quick touched

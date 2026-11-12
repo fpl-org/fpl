@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# scripts/boundary — one commit holds harness paths or implementation paths, never both.
+# boundary — one commit holds harness paths or implementation paths, never both.
 #
-#   scripts/boundary <commit> [<branch>]          judge the commit
-#   scripts/boundary --split <commit> <branch>    split a mixed commit of <branch> in two
+#   boundary <commit> [<branch>]          judge the commit
+#   boundary --split <commit> <branch>    split a mixed commit of <branch> in two
 #
 # AGENTS.md and .agents/WORKTREES.md split the repository in two, reviewed and landed apart:
 #
@@ -59,7 +59,7 @@
 # history in which a rebuilt commit carries a mergetag header, which would name a commit that
 # is no longer a parent. Notes on rewritten commits stay where they are: the split names them
 # and copies none. When a remote-tracking ref holds the commit, the refusal and the split both
-# say that pushing the result rewrites a published branch. scripts/boundary-self-test proves
+# say that pushing the result rewrites a published branch. boundary-self-test, beside it, proves
 # each case, under bash 3.2 and 5.
 
 set -euo pipefail
@@ -77,10 +77,12 @@ shown=5 # paths listed per side
 pad='          '
 tab="$(printf '\t')"
 q() { printf ' %q' "$@"; }
+# The script, as a caller names it from the repository root: the home of fpl:commit:boundary.
+me=".agents/skills/fpl:commit:boundary/scripts/boundary"
 invocation="$(q "$0" "$@")"
 again="fix what the lines above name (a revision or branch that does not exist, a repository"
 again="$again git cannot read, a TMPDIR where no directory can be made), then run again:$invocation"
-usage="run it as: scripts/boundary <commit> [<branch>], or scripts/boundary --split <commit> <branch>"
+usage="run it as: $me <commit> [<branch>], or $me --split <commit> <branch>"
 
 # tool <exit code> <remedy> <cause> <command...>: refuse with the command, its words and what
 # clears it.
@@ -112,9 +114,9 @@ split=0
 if [ "${1:-}" = --split ]; then
 	split=1
 	shift
-	[ $# -eq 2 ] || tool 2 "$usage" "--split takes a commit and a branch" scripts/boundary --split "$@"
+	[ $# -eq 2 ] || tool 2 "$usage" "--split takes a commit and a branch" "$me" --split "$@"
 else
-	[ $# -ge 1 ] && [ $# -le 2 ] || tool 2 "$usage" "" scripts/boundary "$@"
+	[ $# -ge 1 ] && [ $# -le 2 ] || tool 2 "$usage" "" "$me" "$@"
 fi
 given="${2:-}"
 
@@ -147,7 +149,7 @@ read -r commit <"$tmp/out" || :
 parents_of "$commit"
 if [ "${#pars[@]}" -gt 1 ]; then
 	tool 2 "judge the commits it brings instead, as commit-lint does: scripts/commit-lint $commit^1..$commit" \
-		"$commit is a merge; merges are not judged (commit-lint skips them)" scripts/boundary "$1"
+		"$commit is a merge; merges are not judged (commit-lint skips them)" "$me" "$1"
 fi
 parent="${pars[0]:-}"
 
@@ -246,7 +248,7 @@ mk() {
 if [ "$split" -eq 1 ]; then
 	branch="$given"
 	holds "$branch" || tool 2 "name a branch that holds it (git branch --contains ${commit:0:12})" \
-		"no branch $branch holds ${commit:0:12}" scripts/boundary --split "$1" "$branch"
+		"no branch $branch holds ${commit:0:12}" "$me" --split "$1" "$branch"
 	# update-ref would follow a symbolic ref and move the branch it points at.
 	if git symbolic-ref -q "refs/heads/$branch" >/dev/null 2>&1; then
 		tool 2 "name the branch it points at (git symbolic-ref refs/heads/$(printf '%q' "$branch") shows which)" \
@@ -307,8 +309,8 @@ if [ "$split" -eq 1 ]; then
 
 	git_ rev-parse "$new^{tree}" "$tip^{tree}"
 	{ read -r a && read -r b; } <"$tmp/out"
-	[ "$a" = "$b" ] || tool 2 "nothing moved; report this as a bug in scripts/boundary" \
-		"the rebuilt branch's tree $a is not the old tip's $b" scripts/boundary --split "$1" "$branch"
+	[ "$a" = "$b" ] || tool 2 "nothing moved; report this as a bug in boundary" \
+		"the rebuilt branch's tree $a is not the old tip's $b" "$me" --split "$1" "$branch"
 
 	# Notes stay on the old commits; say which, and copy nothing.
 	git_ for-each-ref --format='%(refname)' refs/notes/

@@ -218,7 +218,7 @@ The gate is only as strict as the files that configure it, and an agent that can
 the same commit as its code can make any code pass. So:
 
 - `quality/` and `scripts/` are harness. A commit that touches them touches no implementation
-  path (`scripts/boundary`, judged by `scripts/commit-lint` at push and in CI), so such a
+  path (`fpl:commit:boundary`, judged by `scripts/commit-lint` at push and in CI), so such a
   change is a commit of its own, made from any checkout.
 - `quality/`, and the `pyproject.toml`, `Makefile` and `mutants.allow` of the root and of
   `bootstrap/`, are policy. A commit that changes one carries the marker `[policy]` in its

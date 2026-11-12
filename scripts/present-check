@@ -275,8 +275,9 @@ selftests() {
 		x="${f#scripts/}"
 		case "$f" in
 		scripts/*/*) ;;
-		scripts/*-self-test) [ -x "$1/$f" ] && echo "$f" ;;
+		scripts/*-self-test | .agents/skills/*/scripts/*-self-test) [ -x "$1/$f" ] && echo "$f" ;;
 		scripts/commit-lint | scripts/acommit | scripts/agent-identity) echo scripts/pre-push-self-test ;;
+		.agents/skills/*/scripts/*) [ -x "$1/$f-self-test" ] && echo "$f-self-test" ;;
 		scripts/restack) echo scripts/land-self-test ;;
 		scripts/import-pr) echo scripts/mirror-self-test ;;
 		scripts/*)
