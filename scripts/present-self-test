@@ -548,6 +548,67 @@ H3="$(git rev-parse HEAD)"
 with_config trailer.separators '=' 0 "stamped again under trailer.separators '='" stamp "$M0..HEAD" "claude-u s5"
 is "$(git rev-parse HEAD)" "$H3" "the same value changes nothing, whatever separators the caller's git reads"
 
+# diff.relative, from a directory below the top: git log would name only the paths under it, and
+# those relative to it, so an ignored local.cfg at the top would pass for out of the way.
+git switch -q shadow
+H12="$(git rev-parse HEAD)"
+printf '%s\n' local.cfg >"$exclude"
+mkdir below
+echo mine >local.cfg
+cd below
+with_config diff.relative true 2 "an ignored file in the way, stamped from below the top under diff.relative" stamp "$M0..HEAD" "claude-k s5"
+cd ..
+says "local.cfg" "it names the path"
+is "$(cat local.cfg)" mine "the file is as it was"
+is "$(git rev-parse HEAD)" "$H12" "HEAD is where it was"
+rm -rf local.cfg below "$exclude"
+git switch -q series
+
+# diff.ignoreSubmodules all: git log would name no gitlink, so an ignored file where the range
+# adds a submodule and drops it again would pass for out of the way.
+git switch -q -c gitlink "$M0"
+git update-index --add --cacheinfo "160000,$M0,linked"
+git commit -q -m "docs(x): add a submodule"$'\n\n'"Stack: t"
+git rm -q --cached linked
+git commit -q -m "docs(x): drop the submodule"$'\n\n'"Stack: t"
+H13="$(git rev-parse HEAD)"
+printf '%s\n' linked >"$exclude"
+echo mine >linked
+with_config diff.ignoreSubmodules all 2 "an ignored file where the range adds a submodule, under diff.ignoreSubmodules all" stamp "$M0..HEAD" "claude-k s6"
+says "linked" "it names the path"
+is "$(cat linked)" mine "the file is as it was"
+is "$(git rev-parse HEAD)" "$H13" "HEAD is where it was"
+rm -f linked "$exclude"
+git switch -q series
+
+# A git log that fails, as under a diff.orderFile that is not there, lists no path: read as a
+# range with none in the way, the replay would delete the ignored local.cfg. Refused instead.
+git switch -q shadow
+H14="$(git rev-parse HEAD)"
+printf '%s\n' local.cfg >"$exclude"
+echo mine >local.cfg
+with_config diff.orderFile "$tmp/no such order" 2 "a git log that fails to list the paths" stamp "$M0..HEAD" "claude-k s7"
+says "[paths]" "it names the rule"
+is "$(cat local.cfg)" mine "the file is as it was"
+is "$(git rev-parse HEAD)" "$H14" "HEAD is where it was"
+rm -f local.cfg "$exclude"
+git switch -q series
+
+# log.showSignature over a signed commit: git log would print the verdict on the signature with
+# the metadata the stamp reads, and the stamp would take it for an encoding or a message.
+if command -v ssh-keygen >/dev/null; then
+	git switch -q -c signed "$M0"
+	ssh-keygen -q -t ed25519 -N '' -C t -f "$tmp/signing" </dev/null >/dev/null
+	echo s >signed
+	git add signed
+	printf 'docs(x): signed\n\nStack: t\n' | git -c gpg.format=ssh -c user.signingkey="$tmp/signing.pub" commit -q -S -F -
+	with_config log.showSignature true 0 "a signed commit under log.showSignature" stamp "$M0..HEAD" "claude-s s1"
+	is "$(git log -1 --no-show-signature --pretty=format:%B)" $'docs(x): signed\n\nStack: t\nPresented-By: claude-s s1' "its message gains the one line"
+	git switch -q series
+else
+	echo "present self-test: no ssh-keygen, so no case of a signed commit under log.showSignature" >&2
+fi
+
 # A trailer that is there but not last; a body with a --- line, which interpret-trailers takes
 # for the start of a patch unless told otherwise; a commit with none, under a config that says
 # to add none.
@@ -664,6 +725,16 @@ cd "$self_repo/scripts"
 TMPDIR="../../stamp tmp" expect 0 "from a subdirectory, under a relative TMPDIR" stamp "$S0..HEAD" "claude-d s5"
 is "$(trailers HEAD | tail -n1)" "Presented-By: claude-d s5" "it is stamped"
 is "$(ls -A "$(git rev-parse --absolute-git-dir)" | grep -c present-stamp || true)" 0 "the copy is removed on exit"
+# A checkout whose path is not ASCII, under the C locale: bash's printf %q would spell it $'…',
+# which a /bin/sh that is dash, as git runs the exec with on Debian, reads as other bytes. On a
+# Mac /bin/sh is bash and reads either; the case bites where the shell is dash.
+cd "$tmp"
+mv "$self_repo" "$tmp/self caf"$'\303\251'
+self_repo="$tmp/self caf"$'\303\251'
+cd "$self_repo"
+present="$self_repo/scripts/present"
+LC_ALL=C expect 0 "a checkout whose path is not ASCII, under the C locale" stamp "$S0..HEAD" "claude-d s6"
+is "$(trailers HEAD | tail -n1)" "Presented-By: claude-d s6" "it is stamped"
 present="$saved_present"
 cd "$repo"
 
