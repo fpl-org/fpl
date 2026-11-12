@@ -16,7 +16,11 @@
 #   series stamp <base>..HEAD [id]  add the Series-Id to every commit of the range by a rebase
 #                                   --exec, reusing the id the range already carries, else
 #                                   [id], else a fresh mint. The rebase runs with --update-refs,
-#                                   so every local branch pointing into the range moves with it.
+#                                   so every local branch pointing into the range moves with it,
+#                                   and with --force-rebase from the first commit without the id:
+#                                   each commit it makes takes the worktree's committer, so an
+#                                   agent's series is stamped in a worktree scripts/agent-identity
+#                                   bound, and the hook refuses it in the owner's checkout.
 #                                   Refused on main, on a dirty tree, when such a branch is
 #                                   checked out in another worktree, and once the maintainer has
 #                                   reviewed, approved or commented on the pull request of the
@@ -149,13 +153,18 @@ insert_id() {
 # cmd__amend <id>: HEAD with the Series-Id added. What stamp runs for each commit (--exec). The
 # soft atomicity judge is off: the diff is unchanged, and it ran when the commit was made. The
 # message goes back verbatim: the caller's commit.cleanup must not strip a comment line or
-# whitespace from the text the manifest hashes.
+# whitespace from the text the manifest hashes. The committer stays HEAD's: adding an id makes
+# nobody else the committer, and the undo revert makes is scripts/acommit's, the machine
+# account's, in a worktree whose config would name the owner (.agents/COMMITS.md).
 cmd__amend() {
-	local have
+	local have who
 	have="$(ids_of HEAD)"
 	[ "$have" != "$1" ] || return 0
 	[ -z "$have" ] || die series-other "$(git rev-parse --short HEAD) carries Series-Id '$have', not '$1'" "stamp the range with the id it carries"
-	git log -1 --format=%B | insert_id "$1" | FPL_ATOMIC_GATE=off git commit -q --amend --allow-empty --cleanup=verbatim -F -
+	who="$(git log -1 --format='%cn%x1f%ce')"
+	git log -1 --format=%B | insert_id "$1" | GIT_COMMITTER_NAME="${who%%$'\x1f'*}" \
+		GIT_COMMITTER_EMAIL="${who#*$'\x1f'}" FPL_ATOMIC_GATE=off \
+		git commit -q --amend --allow-empty --cleanup=verbatim -F -
 }
 
 # forge_silent <branch>: refuses when the owner has a review, comment or approval on the pull
@@ -202,7 +211,7 @@ forge_silent() {
 cmd_mint() { [ -n "${1:-}" ] || die usage "a branch is needed" "series mint <branch>"; mint_of "$1"; }
 
 cmd_stamp() { # stamp <base>..HEAD [id]
-	local range="${1:-}" base branch ids n id exec_cmd c err list sha name
+	local range="${1:-}" base branch ids n id exec_cmd c err list sha name from
 	[[ "$range" == *..* && "$range" != *...* ]] || die range "stamp wants <base>..HEAD, not '$range'" "series stamp <base>..HEAD"
 	base="${range%%..*}"
 	branch="$(git branch --show-current)"
@@ -230,10 +239,18 @@ cmd_stamp() { # stamp <base>..HEAD [id]
 	[ "$n" -le 1 ] || die series-mixed "the range carries $n different Series-Ids" "a series has one id; fix the stray commit"
 	id="${ids:-${2:-$(mint_of "$branch")}}"
 	printf '%s' "$id" | grep -Eq "^${COMMIT_SERIES_RE}\$" || die series-value "'$id' is not a Series-Id ($COMMIT_SERIES_RE)" "series mint <branch>"
+	# The rebase starts at the first commit without the id: the ones before it carry it already
+	# and stay as they are, and a range that carries it throughout is left alone.
+	from=""
+	for c in $list; do [ -n "$(ids_of "$c")" ] || { from="$c^"; break; }; done
+	[ -n "$from" ] || { printf '%s\n' "$id"; return 0; }
 	printf -v exec_cmd '%q %q _amend %q' "$BASH" "$self" "$id"
 	# commit.cleanup is pinned for the picks too: under strip, the replay of the commits after the
-	# first one cut their comment-like lines (measured), not only the amend does.
-	err="$(GIT_SEQUENCE_EDITOR=: git -c commit.cleanup=verbatim rebase -q --update-refs --exec "$exec_cmd" "$base" 2>&1)" || {
+	# first one cut their comment-like lines (measured), not only the amend does. --force-rebase
+	# makes every pick anew, the first one too, which git would otherwise leave as it is: each
+	# commit then takes this worktree's committer, the machine account where it is bound, before
+	# the amend that keeps it (.agents/COMMITS.md).
+	err="$(GIT_SEQUENCE_EDITOR=: git -c commit.cleanup=verbatim rebase -q --force-rebase --update-refs --exec "$exec_cmd" "$from" 2>&1)" || {
 		printf '%s\n' "$err" >&2
 		git rebase --abort >/dev/null 2>&1 || true
 		die rebase "the rebase that adds the id was refused, and is undone" "fix what the message above names, then stamp again"

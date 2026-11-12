@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+#
+# scripts/agent-identity-self-test — proof that an agent's commit names the machine account
+# as its committer, not the person whose git config the checkout inherits. Run by
+# `make gates`.
+#
+# A commit holds two identities. The author is the agent's (scripts/acommit), and the
+# committer is whoever git finds in its config, the owner's in every agent worktree on his
+# machine. The lander pushes commits unchanged, so that field would stay his on main for
+# good (.agents/COMMITS.md, "Authorship"). What is checked here:
+#
+#   - `scripts/agent-identity set` in a linked worktree writes committer.name and
+#     committer.email into that worktree's own config, so every commit made there (a plain
+#     commit, an amend, a rebase, a series stamp) has the machine committer, while the
+#     author of a plain commit stays the person's;
+#   - in the main worktree it writes no committer: that checkout is the owner's;
+#   - a repository without extensions.worktreeConfig gets it, so the value stays in the
+#     one worktree;
+#   - scripts/acommit names the machine committer for an agent's commit wherever it runs (the
+#     main worktree, the App's runner, a worktree bound before this rule); a -H commit takes
+#     the one git config gives;
+#   - scripts/new-worktree, which carries the root's identity over, binds the new worktree.
+#
+# Everything happens in throwaway repositories with this checkout's scripts/ and .githooks/.
+# Git's global and system config, HOME and XDG_CONFIG_HOME point away from the maintainer's;
+# the person is t <t@example.invalid>. Where /bin/bash is not the bash running this (a Mac:
+# 3.2), the run is made twice.
+
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/agent-identity-self-test.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+printf '[user]\n\tname = t\n\temail = t@example.invalid\n[init]\n\tdefaultBranch = main\n' \
+	>"$tmp/gitconfig"
+export GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home" \
+	XDG_CONFIG_HOME="$tmp/xdg" FPL_LEAK_GATE=off
+# The committer must come from the config under test, never from the environment; nor may a
+# variable inherited from a hook point git at the caller's repository.
+unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL \
+	FPL_MODEL CLAUDE_CODE_MODEL FPL_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_EFFORT
+# shellcheck disable=SC2046
+unset $(git rev-parse --local-env-vars)
+mkdir -p "$HOME" "$XDG_CONFIG_HOME"
+machine=326980220+psjg-claude@users.noreply.github.com
+
+fails=0
+fail() { echo "FAIL $*"; fails=$((fails + 1)); }
+# is <what> <got> <want>
+is() { [ "$2" = "$3" ] || fail "$1: got '$2', want '$3'"; }
+
+# repo <dir>: a repository holding this checkout's scripts/ and .githooks/, one commit on main.
+repo() {
+	git init -q "$1"
+	cp -R "$root/scripts" "$root/.githooks" "$1/"
+	git -C "$1" add -A
+	git -C "$1" -c core.hooksPath=/dev/null commit -q -m base
+}
+# plain <dir>: an empty commit made there with the hooks off; prints "author / committer".
+plain() {
+	git -C "$1" -c core.hooksPath=/dev/null commit -q --allow-empty -m x
+	git -C "$1" log -1 --format='%an <%ae> / %cn <%ce>'
+}
+
+run() {
+	local sh="$1" r="$tmp/$2" got
+	repo "$r"
+	git -C "$r" worktree add -q "$r/worktrees/a" -b agent/claude/stack/a
+	got="$(cd "$r/worktrees/a" && "$sh" scripts/agent-identity set "$machine")"
+	case "$got" in *"committer: psjg-claude <$machine>"*) : ;;
+	*) fail "set ($sh): it does not say whom it binds: $got" ;; esac
+	is "bound worktree ($sh)" "$(plain "$r/worktrees/a")" "t <t@example.invalid> / psjg-claude <$machine>"
+	git -C "$r/worktrees/a" -c core.hooksPath=/dev/null commit -q --amend --allow-empty -m y \
+		--author 'Claude Opus 5.5 <'"$machine"'>'
+	is "an amend there ($sh)" "$(git -C "$r/worktrees/a" log -1 --format='%cn <%ce>')" "psjg-claude <$machine>"
+	is "the extension ($sh)" "$(git -C "$r" config extensions.worktreeConfig)" true
+	is "the main worktree's commits ($sh)" "$(plain "$r")" "t <t@example.invalid> / t <t@example.invalid>"
+	is "nothing in the shared config ($sh)" "$(git -C "$r" config --local --get-regexp '^committer\.' || :)" ""
+
+	(cd "$r" && "$sh" scripts/agent-identity set "$machine" >"$tmp/out")
+	grep -q "main worktree" "$tmp/out" || fail "set in the main worktree ($sh): it does not say it binds nothing"
+	is "set in the main worktree ($sh)" "$(plain "$r")" "t <t@example.invalid> / t <t@example.invalid>"
+	# scripts/acommit names the machine committer per commit, so an agent's commit has it in
+	# the main worktree too, and in a worktree bound before this rule: a person's (-H) does not.
+	(cd "$r" && "$sh" scripts/acommit -M "Claude Opus 5.5" -S s -t docs -s x -m a -- -q --allow-empty --no-verify </dev/null)
+	is "acommit in the main worktree ($sh)" "$(git -C "$r" log -1 --format='%an <%ae> / %cn <%ce>')" \
+		"Claude Opus 5.5 <$machine> / psjg-claude <$machine>"
+	(cd "$r" && "$sh" scripts/acommit -H -t docs -s x -m b -- -q --allow-empty --no-verify </dev/null)
+	is "acommit -H ($sh)" "$(git -C "$r" log -1 --format='%an <%ae> / %cn <%ce>')" \
+		"t <t@example.invalid> / t <t@example.invalid>"
+	# In a bound worktree a -H commit takes the committer that worktree's config gives.
+	(cd "$r/worktrees/a" && "$sh" scripts/acommit -H -t docs -s x -m c -- -q --allow-empty --no-verify </dev/null)
+	is "acommit -H in a bound worktree ($sh)" "$(git -C "$r/worktrees/a" log -1 --format='%an <%ae> / %cn <%ce>')" \
+		"t <t@example.invalid> / psjg-claude <$machine>"
+
+	(cd "$r" && "$sh" scripts/new-worktree -a claude b >/dev/null 2>&1) || fail "new-worktree ($sh) failed"
+	is "a worktree new-worktree made ($sh)" "$(plain "$r/worktrees/b")" "t <t@example.invalid> / psjg-claude <$machine>"
+
+	# A shared core.worktree (the main checkout's) or core.bare=true (a bare repository) reaches
+	# every linked worktree once the extension is on: set moves it into the main worktree's own
+	# config first, and both sides keep their tree.
+	repo "$r.cw"
+	git -C "$r.cw" config core.worktree "$(cd "$r.cw" && pwd -P)"
+	git -C "$r.cw" worktree add -q "$r.cw/worktrees/a" -b agent/claude/stack/a
+	(cd "$r.cw/worktrees/a" && "$sh" scripts/agent-identity set "$machine" >/dev/null)
+	is "a worktree under a shared core.worktree ($sh)" "$(git -C "$r.cw/worktrees/a" rev-parse --show-toplevel)" \
+		"$(cd "$r.cw/worktrees/a" && pwd -P)"
+	is "the main worktree's core.worktree ($sh)" "$(git -C "$r.cw" rev-parse --show-toplevel)" "$(cd "$r.cw" && pwd -P)"
+	git clone -q --bare "$r.cw" "$r.bare"
+	git -C "$r.bare" worktree add -q "$r.bwt" -b agent/claude/stack/b
+	(cd "$r.bwt" && "$sh" scripts/agent-identity set "$machine" >/dev/null)
+	is "a worktree of a bare repository ($sh)" "$(git -C "$r.bwt" rev-parse --is-bare-repository)" false
+	is "the bare repository ($sh)" "$(git -C "$r.bare" rev-parse --is-bare-repository)" true
+
+	git -C "$r" worktree add -q "$r/worktrees/c" -b agent/claude/stack/c
+	(cd "$r/worktrees/c" && "$sh" scripts/agent-identity set '41898282+claude[bot]@users.noreply.github.com' >/dev/null)
+	is "the App's login ($sh)" "$(git -C "$r/worktrees/c" var GIT_COMMITTER_IDENT | sed 's/ <.*//')" 'claude[bot]'
+	(cd "$r/worktrees/c" && "$sh" scripts/agent-identity set 'bot@example.org' >/dev/null)
+	is "a plain address's login ($sh)" "$(git -C "$r/worktrees/c" var GIT_COMMITTER_IDENT | sed 's/ <.*//')" bot
+}
+
+run "$(command -v bash)" one
+if [ -x /bin/bash ] && [ "$(/bin/bash -c 'echo $BASH_VERSION')" != "$BASH_VERSION" ]; then
+	run /bin/bash two
+fi
+
+if [ "$fails" -ne 0 ]; then echo "agent-identity-self-test: $fails failure(s)"; exit 1; fi
+echo "agent-identity-self-test: ok"
