@@ -100,6 +100,10 @@ run "empty -b" 2 "usage" -- -b "" pres
 run "one ref" 0 "green, 2 commits" -- pres
 run "a sha is no branch" 0 -- "$(git rev-parse pres)"
 check "a sha: commit-lint got no -b" grep -vq -- '-b ' "$LINTLOG"
+# The work tip archived as an annotated tag (scripts/series attempt) is a W like any other, and
+# the run names it, so the log says which archive the proof was made against.
+git tag -a -m "work tip of x" attempts/x/2026-10-21 work
+run "an attempt tag as W" 0 "work attempts/x/2026-10-21 ($(git rev-parse --short work))" "trees equal" "green, 2 commits" -- attempts/x/2026-10-21 pres
 
 git checkout -q -b extra pres
 add f4 && commit "feat(x): four"

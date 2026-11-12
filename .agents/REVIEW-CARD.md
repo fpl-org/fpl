@@ -20,7 +20,8 @@ lines. Otherwise drop this paragraph.>
 
 ## How checked
 <The acknowledgements: who read the series and what each gave, which the commits never say.>
-- Gates: <present-check or make gates, its result, on which head>.
+- Gates: <present-check or make gates, its result, on which head; for a rewrite, against the
+  work tip's tag attempts/<unit>/<date>>.
 - Bots: <CodeRabbit, Codex, Claude review: each finding, and folded, a lemma, or rejected, why>.
 - GPT verification: <findings as a list, each applied or rejected with why; its text never lands>.
 - Owner: <when his comments asked for this rewrite, which; else drop the line>.
@@ -33,7 +34,10 @@ lines. Otherwise drop this paragraph.>
 
 Series-Id: <id, or n/a until scripts/series is on main>
 Digest: <the digest of scripts/series manifest base..head, or n/a>
-<Presented again: "Re-presented <date>; superseded head <W sha>; bot threads older than that
+Work tip: <for a rewrite, the tag attempts/<unit>/<date> (W sha) that `scripts/series attempt`
+made; else drop the line.>
+<Presented again: "Re-presented <date>; superseded head <sha the pull request showed>, kept
+reachable by the tag attempts/<unit>/<date> of the new work tip; bot threads older than that
 refer to superseded commits." Else drop the line.>
 | # | commit | lemma |
 | --- | --- | --- |

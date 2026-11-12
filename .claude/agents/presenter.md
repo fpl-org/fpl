@@ -52,10 +52,13 @@ lander reads `Assisted-By`). Who proposed what goes on the card: it is the ackno
 
 **Order of work.**
 1. Read the pull request, every bot finding and `git log -p main..W`; run both checks above.
-2. Push W as `agent/claude/attempt/<series>` (the Series-Id, else the stack name) with the
-   token URL: `git push "https://x-access-token:$TOKEN@github.com/fpl-org/fpl.git" W:refs/heads/<ref>`
-   (`TOKEN=$(gh auth token --user psjg-claude)`). The pre-push leak gate judges it; anyone can
-   now repeat your check against W.
+2. Archive W as a tag, never a branch: on the work branch, `scripts/series attempt <unit> [<B>]`
+   (the stack name; for a sub-series also its parent branch, the `B` of step 3) makes the
+   annotated tag `attempts/<unit>/<date>`, whose message names the series, the branch P goes to
+   and the `present-check -B <B>` line that repeats the proof, and prints the lines that push
+   it; run them. The pre-push leak gate judges it; anyone can now repeat
+   your check against W, and old review threads keep their commits. A branch would count as
+   work in flight; a tag is a record.
 3. Build P in a detached worktree from the pull request's base `B` (`main`, or the parent branch
    of a sub-series: its commits stay as they are), one lemma per commit.
 4. All trailers before any check: `scripts/series stamp <B>..HEAD` when `scripts/series` is
@@ -67,8 +70,9 @@ lander reads `Assisted-By`). Who proposed what goes on the card: it is the ackno
    unchanged; the scratch file lives in the git directory, and the paths reach the exec line as
    quoted variables, so a path with a space or a metacharacter breaks nothing). Nothing touches a
    message after step 6.
-5. `scripts/present-check -B <B> W P` when it is on main; else by hand: `git diff --quiet W P`,
-   `git rebase -x 'make quick' <B>` on P, `scripts/commit-lint -b <branch> <B>..P`. Red: fix P, not W.
+5. `scripts/present-check -B <B> attempts/<unit>/<date> P` when it is on main (the tag is W);
+   else by hand: `git diff --quiet W P`, `git rebase -x 'make quick' <B>` on P,
+   `scripts/commit-lint -b <branch> <B>..P`. Red: fix P, not W.
 6. `scripts/series manifest <B>..P`, when present: it hashes the final messages.
 7. The card from `.agents/REVIEW-CARD.md`, through `scripts/leak-check --text`.
 8. Run the silence check again, now: his word may have come while you built, and the lease guards
@@ -77,8 +81,11 @@ lander reads `Assisted-By`). Who proposed what goes on the card: it is the ackno
 9. The card as the body and the review request: `scripts/pr --update-body N <card>`, then
    `--ready N` once the draft bots are quiet, then `--reviewer N psjg`; where `scripts/pr` lacks
    these flags, the forge wrapper your orchestrator names. When Codex answers on the ready pull
-   request, apply its findings (a lemma, or a fold into one), present again from step 3, and only
-   then ask for the review.
+   request, apply its findings as commits on the branch: that head is the new W. Present again
+   from step 2 (on the day of the first tag under another unit, such as `<unit>-2`: a tag is
+   never moved), each finding a lemma or a fold into one, and only then ask for the review. W
+   is local now, so the lease of step 8 names the head the pull request shows, the presented
+   tip W was built on.
 
 **Worked example: #163, pijul-remove.** W is one commit, `chore(scripts): remove the pijul mirror
 scripts`: five files, -324 lines. Presented as three lemmas:

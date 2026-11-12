@@ -7,7 +7,9 @@
 #   scripts/present-check rules [-B base] P
 #
 # The work tip W is what the agents built and checked; the presented tip P is the same change
-# told as a short series a person reads (.agents/WORKFLOW.md). Telling it again may reword,
+# told as a short series a person reads (.agents/WORKFLOW.md). Once a presenter rewrites the
+# branch, W lives on as an annotated tag attempts/<unit>/<date> (scripts/series attempt); W may
+# name that tag, and the run then says which archive it judged. Telling it again may reword,
 # split, reorder and rebase, but not change what the series adds up to, and every lemma must
 # stand on its own. With both refs this proves that, cheapest check first, stopping at the
 # first red:
@@ -211,6 +213,14 @@ cleanup() {
 trap cleanup EXIT
 
 printf 'present-check: base %s (%s), presented %s\n' "$(short "$base")" "$base" "$(short "$p")"
+if [ -n "$w" ]; then
+	wname="$1"
+	case "$(git rev-parse -q --symbolic-full-name "$1" 2>/dev/null || true)" in
+	refs/tags/*) ;;
+	*) wname="" ;;
+	esac
+	printf 'present-check: work %s(%s)\n' "${wname:+$wname }" "$(short "$w")"
+fi
 
 if [ -n "$w" ]; then
 	[ "$(git rev-parse "$w^{tree}")" = "$(git rev-parse "$p^{tree}")" ] ||
