@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# scripts/pr-self-test — proof that scripts/pr bases a pull request on main, stacks only on
+# pr-self-test — proof that pr, the script of fpl:pr, bases a pull request on main, stacks only on
 # the branch of an open pull request, opens a draft when asked, and does what --update-body,
 # --ready and --reviewer promise, and nothing else (no label, no queue). Run by `make gates`.
 #
@@ -20,7 +20,8 @@
 
 set -euo pipefail
 
-root="$(cd "$(dirname "$0")/.." && pwd)"
+# The script under test sits beside this file; the repository is four levels up.
+root="$(cd "$(dirname "$0")/../../../.." && pwd)"
 command -v gitleaks >/dev/null || {
 	echo "pr-self-test: needs gitleaks; enter the dev shell (nix develop)" >&2
 	exit 1
@@ -206,6 +207,7 @@ repo="$tmp/repo"
 git init -q -b main "$repo"
 cd "$repo"
 cp -R "$root/scripts" .
+mkdir -p .agents && cp -R "$root/.agents/skills" .agents/
 git config user.name t
 git config user.email t@example.invalid
 git remote add github https://github.com/pr-test/fpl.git
@@ -234,7 +236,7 @@ printf '#!/bin/sh\nexit 1\n' >"$bin/gh"
 chmod +x "$bin/gh"
 export PATH="$bin:$PATH"
 
-pr=scripts/pr
+pr=.agents/skills/fpl:pr/scripts/pr
 fails=0 total=0
 # run <exit code> <description> <scripts/pr arguments...>: stdout in $tmp/out, stderr in $tmp/err.
 run() {
@@ -597,7 +599,7 @@ echo "pr self-test: $fails of $total checks failed (bash $BASH_VERSION)"
 if [ -z "${PR_SELF_TEST_SHIM:-}" ] && [ -x /bin/bash ] && ! [ /bin/bash -ef "$BASH" ]; then
 	mkdir -p "$tmp/shim"
 	ln -s /bin/bash "$tmp/shim/bash"
-	PATH="$tmp/shim:$PATH" PR_SELF_TEST_SHIM=1 /bin/bash "$root/scripts/pr-self-test" ||
+	PATH="$tmp/shim:$PATH" PR_SELF_TEST_SHIM=1 /bin/bash "$root/.agents/skills/fpl:pr/scripts/pr-self-test" ||
 		fails=$((fails + 1))
 fi
 [ "$fails" -eq 0 ]
