@@ -246,35 +246,40 @@ Neither the lint set nor the self-tests are listed in `quality/noslop.mk`; `scri
 reads them from the files, so two series that each add a tool do not meet in a shared list.
 Add a self-test as a file, never as a line in `noslop.mk`:
 
-- an executable `scripts/<name>-self-test` runs as it is;
+- an executable `scripts/<name>-self-test`, or one in a skill's `scripts/`, runs as it is;
 - a tool whose proof is a flag or needs another shell says so in its own header, one line:
   `# gates: $BIN/python $S/<name> --self-test` (`$BIN` is the root's `.venv/bin`, `$S` is
   `scripts/`, `$ROOT` the root);
-- a file of `scripts/` that opens with `#!/usr/bin/env python3` is linted, as is every
-  `quality/*.py`; `# noslop: skip <reason>` in its header keeps one out, the reason required.
+- a file of `scripts/`, or of a skill's `scripts/`, that opens with `#!/usr/bin/env python3` is
+  linted, as is every `quality/*.py`; `# noslop: skip <reason>` in its header keeps one out,
+  the reason required.
 
-They run in the order of their file names, and `scripts/gates` last. `gates-list` refuses, by
-name, a self-test without its exec bit and a gates line it would not read, so a tool cannot
-drop out unseen; `scripts/gates-list-self-test` holds the commands the recipe ran before as a
-floor that must still be found.
+They run in the order of their paths from the root, a skill's first, and `scripts/gates` last.
+`gates-list` refuses, by name, a self-test without its exec bit and a gates line it would not
+read, so a tool cannot drop out unseen; `scripts/gates-list-self-test` holds the commands the
+recipe ran before as a floor that must still be found.
 
 Three tools are in neither set: `scripts/export-review`, `import-review` and `review-serve` each
 have a `--self-test` that needs a Radicle home and declare no gates line, and each carries a
 `# noslop: skip` marker that keeps it from ruff. A green `make gates` says nothing about them.
 
-## Skills cover the scripts (planned)
+## Skills cover the scripts
 
 A procedure that lives in prose and not in a skill is one no harness loads on its own, and the
-prose grew that way: every script got a paragraph. The gate `skills-cover`, planned as unit S1b
-(`.agents/tasks/redo.tsv`) under `.agents/skills/fpl:quality:skills/scripts/`, refuses a script
+prose grew that way: every script got a paragraph. The gate `skills-cover`, of the skill
+`fpl:quality:skills` and kept in `.agents/skills/fpl:quality:skills/scripts/`, refuses a script
 under `scripts/` or `.agents/skills/*/scripts/` that prose names and no `SKILL.md` names
 (`SKILLS-UNCOVERED`), unless `quality/skills-ratchet` lists it with a reason; a ratchet line
-without a reason, or for a script now covered or gone, is refused too (`SKILLS-RATCHET-REASON`,
-`SKILLS-RATCHET-STALE`), so the list only shrinks. It also holds the layout: a skill's `name`
-equal to its directory and of the form `fpl:<module>[:<skill>[:<sub>]]` (`SKILLS-NAME`),
-`.claude/skills` a symbolic link to `../.agents/skills` (`SKILLS-LINK`), every sub-skill a
-`SKILL.md` names present (`SKILLS-SUB`), `AGENTS.md` at most 80 lines (`SKILLS-SCREEN`), and,
-once `scripts/present` generates its own flow, the Mermaid block in `fpl:present/SKILL.md`
-equal to what the script prints (`SKILLS-GRAPH`). It scans `AGENTS.md`, `.agents/*.md`,
-`.claude/agents/*.md` and `.claude/commands/*.md`; `make gates` finds its self-test through
-`scripts/gates-list` once that reads the skills' `scripts/` too.
+without a reason, or for a script now covered, gone or named in no prose, is refused too
+(`SKILLS-RATCHET-REASON`, `SKILLS-RATCHET-STALE`), so the list only shrinks. It also holds the
+layout: a skill's `name` equal to its directory and of the form
+`fpl:<module>[:<skill>[:<sub>]]` (`SKILLS-NAME`), `.claude/skills` a symbolic link to
+`../.agents/skills` (`SKILLS-LINK`), every sub-skill a `SKILL.md` names present (`SKILLS-SUB`),
+`AGENTS.md` at most 80 lines (`SKILLS-SCREEN`), and, once `scripts/present` generates its own
+flow, the Mermaid block in `fpl:present/SKILL.md` equal to what the script prints
+(`SKILLS-GRAPH`). It scans `AGENTS.md`, `.agents/*.md`, `.claude/agents/*.md` and
+`.claude/commands/*.md`; `make gates` finds its self-test through `scripts/gates-list`, which
+reads the skills' `scripts/` as it reads `scripts/`. The self-test replays the gate over the
+open pull requests' tips, with this tree's skills and ratchet laid over each, and prints what
+each must add once it lands on the gate. The ratchet is generated (`skills-cover --uncovered`);
+the reasons are written by hand, never by the tool.
