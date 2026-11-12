@@ -730,6 +730,7 @@ def hook(t: Path, run: Callable[[list[str], Case], Any]) -> list[tuple[str, bool
     git("init", "-q", str(repo))
     (repo / "scripts").symlink_to(root / "scripts")
     (repo / ".githooks").symlink_to(root / ".githooks")
+    (repo / ".agents").symlink_to(root / ".agents")
     (repo / ".git" / "agent-credentials").write_text("https://psjg-claude:file-token@github.com\n")
     git("-C", str(repo), "commit", "-q", "--allow-empty", "-m", "x")
     git("-C", str(repo), "remote", "add", "github", str(t / "remote.git"))

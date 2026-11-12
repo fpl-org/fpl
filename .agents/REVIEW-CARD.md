@@ -1,7 +1,7 @@
 # REVIEW-CARD.md: the body of a pull request
 
 The presenter (`.claude/agents/presenter.md`) writes it from this template: English, at most 40
-lines, through `scripts/leak-check --text`. Fill each `<...>`, keep the headings and the order.
+lines, through the leak-check of `fpl:leak`. Fill each `<...>`, keep the headings and the order.
 
 Written by an AI agent (<model>) working for @psjg, as presenter of this pull request.
 
