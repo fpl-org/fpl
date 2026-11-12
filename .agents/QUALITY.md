@@ -259,8 +259,8 @@ They run in the order of their paths from the root, a skill's first, and `script
 read, so a tool cannot drop out unseen; `scripts/gates-list-self-test` holds the commands the
 recipe ran before as a floor that must still be found.
 
-Three tools are in neither set: `scripts/export-review`, `import-review` and `review-serve` each
-have a `--self-test` that needs a Radicle home and declare no gates line, and each carries a
+Three tools are in neither set: `export-review`, `import-review` and `review-serve`, scripts of
+the skills `fpl:review:*`, each have a `--self-test` that needs a Radicle home and declare no gates line, and each carries a
 `# noslop: skip` marker that keeps it from ruff. A green `make gates` says nothing about them.
 
 ## Skills cover the scripts

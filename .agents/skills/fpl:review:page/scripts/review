@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 #
-# scripts/review — render the diff of a branch as a page, with the whole file around it.
+# .agents/skills/fpl:review:page/scripts/review — render the diff of a branch as a page, with the whole file around it.
 #
-#   scripts/review                  the current branch against main
-#   scripts/review <branch>         that branch against main
-#   scripts/review -b <base> …      against another base (the branch below, in a stack)
-#   scripts/review -s               side by side instead of one column
-#   scripts/review -o <file>        write the page there and do not open it
-#   scripts/review --serve          stop a running page, import the open pull requests,
+#   .agents/skills/fpl:review:page/scripts/review                  the current branch against main
+#   .agents/skills/fpl:review:page/scripts/review <branch>         that branch against main
+#   .agents/skills/fpl:review:page/scripts/review -b <base> …      against another base (the branch below, in a stack)
+#   .agents/skills/fpl:review:page/scripts/review -s               side by side instead of one column
+#   .agents/skills/fpl:review:page/scripts/review -o <file>        write the page there and do not open it
+#   .agents/skills/fpl:review:page/scripts/review --serve          stop a running page, import the open pull requests,
 #                                   and serve the Radicle patches with their comments and
-#                                   a page to add yours (scripts/review-serve --fresh)
+#                                   a page to add yours (.agents/skills/fpl:review:serve/scripts/review-serve --fresh)
 #
 # A forge shows a hunk and a few lines around it, and folds the rest away. A hunk is
 # not reviewable on its own: whether a variable already exists, whether `set -e` bites
@@ -22,7 +22,7 @@ set -euo pipefail
 
 if [ "${1:-}" = --serve ]; then
 	shift
-	exec "$(dirname "$0")/review-serve" --fresh "$@"
+	exec "$(git rev-parse --show-toplevel)/.agents/skills/fpl:review:serve/scripts/review-serve" --fresh "$@"
 fi
 
 die() {
@@ -30,13 +30,13 @@ die() {
 	exit 1
 }
 
-base=main style=line out=""
+base=main style=line out="" quiet="${FPL_REVIEW_NO_OPEN:-}"
 while getopts "b:so:" opt; do
 	case "$opt" in
 	b) base="$OPTARG" ;;
 	s) style=side ;;
-	o) out="$OPTARG" ;;
-	*) die "usage: scripts/review [-b <base>] [-s] [-o <file>] [<branch>]" ;;
+	o) out="$OPTARG" quiet=1 ;;
+	*) die "usage: .agents/skills/fpl:review:page/scripts/review [-b <base>] [-s] [-o <file>] [<branch>]" ;;
 	esac
 done
 shift $((OPTIND - 1))
@@ -65,7 +65,7 @@ git diff --unified="$context" --find-renames "$range" |
 		--title "$branch → $base" --file "$out" >/dev/null
 
 printf '%s\n' "$out"
-[ -n "${FPL_REVIEW_NO_OPEN:-}" ] && exit 0
+[ -z "$quiet" ] || exit 0
 if command -v open >/dev/null; then
 	open "$out"
 elif command -v xdg-open >/dev/null; then
