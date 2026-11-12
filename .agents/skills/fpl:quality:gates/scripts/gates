@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""scripts/gates — proof that every check of the gate still refuses what it is there to refuse.
+"""gates — proof that every check of the gate still refuses what it is there to refuse.
 
-    scripts/gates [case ...]      (default: every case in quality/bad)
+    .agents/skills/fpl:quality:gates/scripts/gates [case ...]    (default: every case)
 
 A check that passes everything looks exactly like a check that found nothing wrong. So each
 check keeps a bad example in quality/bad/<case>/: a few files laid over a small fixture
@@ -12,11 +12,12 @@ must refuse it, and a piece of text the refusal must contain:
     run = "coverage run ... && coverage report ..."
     expect = "Coverage failure"
 
-The fixture has the repository's own layout: the harness (quality/ and scripts/) at its root
-and the project, the package fpl with its tests and pyproject.toml, in bootstrap/, where the
-command runs, so it names the harness as ../quality/ and ../scripts/, as the lanes of
-quality/noslop.mk do. A case's own files lay over the project, except a quality/ in the case,
-which lays over the harness. It runs from anywhere: it finds the harness beside itself.
+The fixture has the repository's own layout: the harness (quality/, scripts/ and
+.agents/skills/) at its root and the project, the package fpl with its tests and
+pyproject.toml, in bootstrap/, where the command runs, so it names the harness as ../quality/,
+../scripts/ and ../.agents/skills/, as the lanes of quality/noslop.mk do. A case's own files
+lay over the project, except a quality/ in the case, which lays over the harness. It runs
+from anywhere: it finds the harness four directories above itself.
 
 For each case the command runs twice, in a fresh copy of the harness: on the fixture alone,
 where it must pass, and with the bad example laid over it, where it must fail and say
@@ -35,7 +36,7 @@ import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent.parent
+HERE = Path(__file__).resolve().parents[4]
 BAD = HERE / "quality" / "bad"
 
 
@@ -46,6 +47,8 @@ def lay(case: str | None, into: Path) -> Path:
         HERE / "quality", into / "quality", ignore=shutil.ignore_patterns("bad", "__pycache__")
     )
     (into / "scripts").symlink_to(HERE / "scripts")
+    (into / ".agents").mkdir()
+    (into / ".agents" / "skills").symlink_to(HERE / ".agents" / "skills")
     project = into / "bootstrap"
     shutil.copytree(BAD / "_base", project)
     if case:

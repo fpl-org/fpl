@@ -82,9 +82,11 @@ quick: venv
 # A gate is only as strict as its policy files, and those sit in the worktree where an
 # edit is one keystroke away. So the gate runs only against the committed policy: an
 # uncommitted change to any of them stops it. Commit such a change first, with [policy].
+# The checkers count here too, those in scripts/ and those in a skill's scripts/ alike.
 # The project's own are named from the root, as the directory these lanes run in.
 WALKER := $(notdir $(CURDIR))
-POLICY := quality scripts Makefile $(addprefix $(WALKER)/,Makefile pyproject.toml mutants.allow)
+POLICY := quality scripts .agents/skills Makefile \
+          $(addprefix $(WALKER)/,Makefile pyproject.toml mutants.allow)
 pristine:
 	@dirty="$$(git -C $(ROOT) status --porcelain --untracked-files=all -- $(POLICY))" || { \
 	  echo "pristine: git could not read the policy files' state, so the gate does not run;" >&2; \
@@ -95,7 +97,8 @@ pristine:
 	  echo "check: the gate's policy files differ from what is committed:" >&2; \
 	  echo "$$dirty" | sed 's/^/         /' >&2; \
 	  echo "       the gate judges only committed policy; commit the change with [policy]," >&2; \
-	  echo "       in a harness commit for quality/ and scripts/ (.agents/WORKTREES.md)" >&2; \
+	  echo "       in a harness commit for quality/, scripts/ and .agents/skills/" >&2; \
+	  echo "       (.agents/WORKTREES.md)" >&2; \
 	  exit 1; \
 	fi
 
@@ -127,11 +130,11 @@ check: venv pristine config-fresh
 	pyright --project $(Q)/pyright.json
 	$(BIN)/mypy --config-file $(Q)/mypy.ini fpl tests
 	$(BIN)/python $(S)/escapes fpl tests
-	$(BIN)/python $(S)/props --obligations $(Q)/obligations.toml
+	$(BIN)/python $(ROOT)/.agents/skills/fpl:quality:props/scripts/props --obligations $(Q)/obligations.toml
 	$(BIN)/coverage erase --rcfile=$(Q)/coveragerc
 	$(BIN)/coverage run --rcfile=$(Q)/coveragerc -m pytest -q
 	$(BIN)/coverage json --rcfile=$(Q)/coveragerc -q --fail-under=0
-	$(BIN)/python $(S)/crap --policy $(Q)/crap.toml
+	$(BIN)/python $(ROOT)/.agents/skills/fpl:quality:crap/scripts/crap --policy $(Q)/crap.toml
 	$(BIN)/coverage report --rcfile=$(Q)/coveragerc
 	$(BIN)/lint-imports --config $(Q)/importlinter.ini --no-cache
 	@! $(BIN)/deptry . --extend-exclude 'mutants' -v 2>&1 | grep -q '^Scanning 0 file' || { \
@@ -150,7 +153,7 @@ harden: check
 	HYPOTHESIS_PROFILE=harden $(BIN)/pytest -q -n auto
 	HYPOTHESIS_PROFILE=symbolic $(BIN)/pytest -q -n auto
 	$(BIN)/crosshair check fpl --analysis_kind=icontract --per_condition_timeout=$(CONTRACT_SECONDS)
-	$(BIN)/python $(S)/mutants
+	$(BIN)/python $(ROOT)/.agents/skills/fpl:quality:mutants/scripts/mutants
 
 ready: harden gates
 	@mkdir -p $(OUT)
@@ -158,13 +161,13 @@ ready: harden gates
 	$(BIN)/pip-audit --progress-spinner off --requirement $(OUT)/requirements.txt --disable-pip
 
 # The harness's own Python, judged by the same ruff it judges others with, then the proof that
-# each of its tools still bites, then scripts/gates: each check refuses its bad example. The
+# each of its tools still bites, then the gates skill's script: each check refuses its bad example. The
 # files say what is in the first two (scripts/gates-list): a new tool adds a file, or one
 # `# gates: <command>` line in its own header, never a line here. Each command is run as
 # written, with $BIN, $S and $ROOT set, and with make's stdin, never the list's, so a
 # self-test that reads stdin cannot swallow the commands after it. config-fresh is a
 # prerequisite, as it is of check; scripts/gen-config-self-test is the proof that it still
-# bites. scripts/gates runs last, by rule: it is not a tool's self-test, and it judges the
+# bites. fpl:quality:gates runs last, by rule: it is not a tool's self-test, and it judges the
 # checks the self-tests have just proven.
 gates: venv config-fresh
 	@set -e; harness="$$($(S)/gates-list --lint)"; set -x; \
@@ -172,7 +175,7 @@ gates: venv config-fresh
 	$(BIN)/ruff format --config $(Q)/ruff.toml --check $$harness
 	@set -e; tests="$$($(S)/gates-list)"; BIN=$(BIN) S=$(S) ROOT=$(ROOT); exec 3<&0; \
 	printf '%s\n' "$$tests" | while IFS= read -r c; do printf '%s\n' "$$c"; eval "$$c" <&3; done
-	$(BIN)/python $(S)/gates
+	$(BIN)/python $(ROOT)/.agents/skills/fpl:quality:gates/scripts/gates
 
 # Each tool syncs its own locked environment into <tool>/.venv, so its dependencies never
 # enter the language's. The package a tool ships is named after its directory. escapes is

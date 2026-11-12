@@ -15,7 +15,7 @@ from hypothesis import HealthCheck, settings
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """The marker a test pays an obligation with (quality/obligations.toml, scripts/props)."""
+    """The marker a test pays an obligation with (quality/obligations.toml, fpl:quality:props)."""
     config.addinivalue_line(
         "markers", "obligation(name): this property pays the named obligation of its module"
     )

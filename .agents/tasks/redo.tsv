@@ -1,5 +1,5 @@
 # The units of the harness redo as tasks: ids and English briefs only. Load with
-#   scripts/task load .agents/tasks/redo.tsv
+#   .agents/skills/fpl:task/scripts/task load .agents/tasks/redo.tsv
 # One unit per line, five tab-separated columns:
 #   label  partOf  blockedBy  name  brief
 # partOf is a label or '-'; blockedBy is a comma-separated list of labels. The task title is

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-# gates: $BIN/python $S/mutants --self-test
-"""scripts/mutants — mutation testing, and a verdict on every mutant that lived.
+# gates: $BIN/python $ROOT/.agents/skills/fpl:quality:mutants/scripts/mutants --self-test
+"""mutants — mutation testing, and a verdict on every mutant that lived.
 
-    scripts/mutants              run mutmut in the worktree, then judge its results
-    scripts/mutants --judge      judge the results of the last run only
-    scripts/mutants --self-test
+    .agents/skills/fpl:quality:mutants/scripts/mutants           run mutmut in the worktree, then
+                                                                 judge its results
+    .agents/skills/fpl:quality:mutants/scripts/mutants --judge   judge the last run's results only
+    .agents/skills/fpl:quality:mutants/scripts/mutants --self-test
 
 mutmut changes the code one small way at a time (`>` to `>=`, a string to another, a call's
 argument to None) and runs the tests against each change. A mutant the tests catch is killed.
