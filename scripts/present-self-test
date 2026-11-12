@@ -548,6 +548,22 @@ H3="$(git rev-parse HEAD)"
 with_config trailer.separators '=' 0 "stamped again under trailer.separators '='" stamp "$M0..HEAD" "claude-u s5"
 is "$(git rev-parse HEAD)" "$H3" "the same value changes nothing, whatever separators the caller's git reads"
 
+# diff.relative, from a directory below the top: git log would name only the paths under it, and
+# those relative to it, so an ignored local.cfg at the top would pass for out of the way.
+git switch -q shadow
+H12="$(git rev-parse HEAD)"
+printf '%s\n' local.cfg >"$exclude"
+mkdir below
+echo mine >local.cfg
+cd below
+with_config diff.relative true 2 "an ignored file in the way, stamped from below the top under diff.relative" stamp "$M0..HEAD" "claude-k s5"
+cd ..
+says "local.cfg" "it names the path"
+is "$(cat local.cfg)" mine "the file is as it was"
+is "$(git rev-parse HEAD)" "$H12" "HEAD is where it was"
+rm -rf local.cfg below "$exclude"
+git switch -q series
+
 # A trailer that is there but not last; a body with a --- line, which interpret-trailers takes
 # for the start of a patch unless told otherwise; a commit with none, under a config that says
 # to add none.
