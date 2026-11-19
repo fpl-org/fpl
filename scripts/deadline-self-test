@@ -22,7 +22,9 @@
 #   refused, exit 125, loud: an unknown step, a malformed override, a malformed table row, a
 #     call without `--`, and a machine without perl or ps (it never runs the step unbounded).
 #
-# Then, outside the isolated PATH: the real scripts/deadlines.tsv parses.
+# Then, outside the isolated PATH: the real scripts/deadlines.tsv parses; every git hook in
+# .githooks/ starts itself under its own row; and a pre-commit that hangs makes git refuse the
+# commit at the budget.
 
 set -euo pipefail
 
@@ -264,6 +266,25 @@ total=$((total + 1))
 rc=0; err="$("$here/deadline" gates.deadline-self-test -- true 2>&1)" || rc=$?
 [ "$rc" -eq 0 ] || no "real-table: scripts/deadlines.tsv is refused: $err"
 
+# Every git hook runs under its own deadline: an executable file of .githooks/ starts itself
+# again under scripts/deadline as step hook.<name>, and that step has a row of its own (not
+# a family's). A hook added without it would run unbounded, and nothing else would say so.
+# Only the names git runs (githooks(5)) are hooks; atomic-check is a helper commit-msg calls,
+# under commit-msg's deadline, with a deadline of its own around the model call.
+githooks=" applypatch-msg pre-applypatch post-applypatch pre-commit pre-merge-commit prepare-commit-msg
+	commit-msg post-commit pre-rebase post-checkout post-merge pre-push pre-receive update proc-receive
+	post-receive post-update reference-transaction push-to-checkout pre-auto-gc post-rewrite
+	sendemail-validate fsmonitor-watchman post-index-change "
+for h in "$here"/../.githooks/*; do
+	n="${h##*/}"
+	case "$githooks" in *[[:space:]]"$n"[[:space:]]*) : ;; *) continue ;; esac
+	total=$((total + 1))
+	grep -q "\"\${FPL_DEADLINE_STEP:-}\" = hook\.$n \] ||" "$h" &&
+		grep -q "exec \"[^\"]*/scripts/deadline\" hook\.$n -- \"\$0\" \"\$@\"\$" "$h" ||
+		no "hook-wrapped: .githooks/$n does not start itself under scripts/deadline hook.$n"
+	grep -q "^hook\.$n	" "$here/deadlines.tsv" || no "hook-row: scripts/deadlines.tsv has no row hook.$n"
+done
+
 # The terminal, under a pty that script(1) makes: a step reads from it (it holds the foreground
 # while it runs; without the hand-off it stops on SIGTTIN and expires), the shell reads from it
 # after (the foreground came back), and a Ctrl-C ends the step, exit 130. BSD script takes the
@@ -296,6 +317,24 @@ if command -v script >/dev/null 2>&1; then
 	pid="$(cat "$tmp/ttyn" 2>/dev/null || echo 0)"
 	[ "$pid" != 0 ] && gone "$pid" || { no "tty-n: the step '$pid' outlived the Ctrl-C"; reap "$pid"; }
 fi
+
+# The wiring, end to end: a pre-commit that hangs (its leak check waits on a gitleaks that never
+# answers) is stopped at its budget, and git refuses the commit, after the runner's line.
+total=$((total + 1))
+repo="$tmp/hooked"
+git init -q "$repo"
+cp -R "$here/../.githooks" "$here" "$repo/"
+mkdir "$tmp/stuck"
+printf '#!/bin/sh\nexec sleep 60\n' >"$tmp/stuck/gitleaks"
+chmod +x "$tmp/stuck/gitleaks"
+echo change >"$repo/file"
+git -C "$repo" add -f file
+t0=$SECONDS rc=0
+err="$(cd "$repo" && PATH="$tmp/stuck:$PATH" FPL_DEADLINE_HOOK_PRE_COMMIT=1 \
+	git -c core.hooksPath=.githooks commit -q -m "feat(x): y" -m "Human-Only: true" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || no "hook-hang: git committed past a hung pre-commit"
+[ $((SECONDS - t0)) -le 6 ] || no "hook-hang: the commit took $((SECONDS - t0))s on a 1s budget"
+case "$err" in *"[DEADLINE-EXPIRED]: hook.pre-commit"*) : ;; *) no "hook-hang: no DEADLINE-EXPIRED for hook.pre-commit in: $err" ;; esac
 
 echo "deadline self-test: $fails failures in $total cases"
 [ "$fails" -eq 0 ]

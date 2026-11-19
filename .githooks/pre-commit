@@ -11,6 +11,13 @@
 
 set -euo pipefail
 
+# The whole hook runs under scripts/deadline (step hook.pre-commit, scripts/deadlines.tsv), so a hang
+# ends in the runner's one-line refusal and a non-zero exit, never in a git that waits for good.
+# The runner sets FPL_DEADLINE_STEP, which is how the hook it starts knows not to start it again.
+# It is found under the top of the tree, as the hook's other scripts are: the hook may be reached
+# through a link from elsewhere (scripts/leak-check-self-test does that).
+[ "${FPL_DEADLINE_STEP:-}" = hook.pre-commit ] || exec "$(git rev-parse --show-toplevel)/scripts/deadline" hook.pre-commit -- "$0" "$@"
+
 # Gate 1 first: the repository is public.
 # FPL_LEAK_GATE = block (default) | warn | off, read by the script.
 "$(git rev-parse --show-toplevel)/scripts/leak-check" --staged
