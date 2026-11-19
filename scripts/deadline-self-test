@@ -318,6 +318,26 @@ if command -v script >/dev/null 2>&1; then
 	[ "$pid" != 0 ] && gone "$pid" || { no "tty-n: the step '$pid' outlived the Ctrl-C"; reap "$pid"; }
 fi
 
+# The bounds that cannot read the table are set where they live. Every CI job has a
+# timeout-minutes of its own (a job that calls a reusable workflow cannot, and is passed over);
+# without one, GitHub gives a hung job 360 minutes. Every command hook of .claude/settings.json
+# has a timeout. The YAML is read by indentation, as GitHub's own files are written here.
+total=$((total + 1))
+untimed="$(awk '
+	function flush() { if (job != "" && !t && !u) print file ": job " job; job = "" }
+	FNR == 1 { flush(); file = FILENAME; injobs = 0 }
+	/^jobs:[ \t]*$/ { injobs = 1; next }
+	injobs && /^[^ \t#]/ { flush(); injobs = 0 }
+	injobs && /^  [A-Za-z0-9_-]+:[ \t]*$/ { flush(); job = $1; sub(/:$/, "", job); t = 0; u = 0; next }
+	injobs && /^    timeout-minutes:/ { t = 1 }
+	injobs && /^    uses:/ { u = 1 }
+	END { flush() }' "$here"/../.github/workflows/*.yml)"
+[ -z "$untimed" ] || no "ci-timeout: no timeout-minutes in: $untimed"
+total=$((total + 1))
+settings="$here/../.claude/settings.json"
+[ "$(grep -c '"type": "command"' "$settings")" -eq "$(grep -c '"timeout": [0-9]' "$settings")" ] ||
+	no "claude-timeout: a command hook of .claude/settings.json has no timeout"
+
 # The wiring, end to end: a pre-commit that hangs (its leak check waits on a gitleaks that never
 # answers) is stopped at its budget, and git refuses the commit, after the runner's line.
 total=$((total + 1))
