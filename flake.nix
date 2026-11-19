@@ -105,6 +105,11 @@
         # scripts/leak-check, which the hooks run on every commit and push: the
         # repository is public, so it cannot wait in an opt-in layer.
         pkgs.gitleaks
+        # scripts/deadline, which every hook and the lanes' slow steps run under: perl is its
+        # engine, ps the picture of what a step started. Without them a machine's own were
+        # used, and the image, which has none, would refuse every hook (DEADLINE-NO-PERL).
+        pkgs.perl
+        pkgs.procps
 
         # The implementation stack, .agents/STACK.md, and the noslop gate, .agents/QUALITY.md.
         # A bare Python 3.12, and uv, which syncs Lark and the gate's Python tools into
