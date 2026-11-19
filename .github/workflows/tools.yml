@@ -27,6 +27,7 @@ permissions:
 jobs:
   tools:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       # tiktoken takes the path literally, so it is spelled out rather than with ~.
       TIKTOKEN_CACHE_DIR: /home/runner/.cache/tiktoken
