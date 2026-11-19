@@ -1,0 +1,301 @@
+#!/usr/bin/env bash
+#
+# scripts/deadline-self-test — proof that scripts/deadline cuts a step off at its budget, says
+# so on one line with the remedy, and otherwise stays out of the way. Run by `make gates`.
+#
+# What is proven, each under /bin/bash and under the bash on PATH (where those differ, as on a
+# Mac: 3.2 and 5), with a PATH that holds only the tools the runner needs, perl among them and
+# timeout not (a stock Mac has no timeout):
+#
+#   a step that hangs is stopped at its budget, exit 124, one line naming the rule
+#     DEADLINE-EXPIRED, the step, the budget and the variable that gives it longer;
+#   a step that ends in time passes its exit code, its stdout and its stdin through untouched,
+#     and still exits as it would with stderr closed;
+#   what the step started is stopped with it: a child, a child that ignores TERM, a child in a
+#     process group of its own, a step that runs a deadline of its own around such a child, and
+#     a child that a TERM handler starts in a group of its own during the grace;
+#   a ps that hangs, or fails, does not hold the stop up, and the step is still stopped;
+#   a TERM sent to the runner stops the step the same way, exit 143, and an INT makes the runner
+#     die of the INT (with -n too), so a caller's shell sees an interrupt, not an exit;
+#   the budget comes from deadlines.tsv beside the script: the exact row, else the longest
+#     family row (`gates.*`), and the variable named in the refusal overrides it;
+#   refused, exit 125, loud: an unknown step, a malformed override, a malformed table row, a
+#     call without `--`, and a machine without perl or ps (it never runs the step unbounded).
+#
+# Then, outside the isolated PATH: the real scripts/deadlines.tsv parses.
+
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/deadline-self-test.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+
+# The fixture: a copy of the runner with a table of its own, so the cases do not depend on the
+# real budgets.
+mkdir "$tmp/fx"
+cp "$here/deadline" "$tmp/fx/deadline"
+printf '# step\tseconds\tbasis\nselftest.slow\t1\tfixture\nfam.*\t1\tfixture\nfam.long.*\t9\tfixture\n' \
+	>"$tmp/fx/deadlines.tsv"
+D="$tmp/fx/deadline"
+
+# The isolated PATH: what the runner and the cases need, nothing else. The stock perl where a
+# Mac has one, else the one on PATH.
+iso="$tmp/iso"
+mkdir "$iso"
+perl_bin=/usr/bin/perl
+[ -x "$perl_bin" ] || perl_bin="$(command -v perl)"
+ln -s "$perl_bin" "$iso/perl"
+for c in sh sleep cat tr ps grep sed; do ln -s "$(command -v "$c")" "$iso/$c"; done
+
+fails=0 total=0
+# reap <pid>: KILL a process a case let escape. Never pid 0, which kill reads as the whole process
+# group, the self-test and whatever started it.
+reap() {
+	case "${1:-0}" in '' | 0 | *[!0-9]*) return 0 ;; esac
+	kill -9 "$1" 2>/dev/null || :
+}
+# ready <file> <pid>: true once <file> has content, within five seconds, and false at once if
+# <pid> has gone without writing it.
+ready() {
+	local i=0
+	while [ "$i" -lt 100 ]; do
+		[ ! -s "$1" ] || return 0
+		kill -0 "$2" 2>/dev/null || { [ -s "$1" ]; return; }
+		sleep 0.05
+		i=$((i + 1))
+	done
+	return 1
+}
+no() {
+	echo "FAIL $*"
+	fails=$((fails + 1))
+}
+
+# gone <pid>: true once the process is gone (a reaped zombie included), within two seconds.
+gone() {
+	local i=0
+	while [ "$i" -lt 40 ]; do
+		kill -0 "$1" 2>/dev/null || return 0
+		sleep 0.05
+		i=$((i + 1))
+	done
+	return 1
+}
+
+# run <bash> <stdin> <args...>: the runner under that bash and the isolated PATH; sets rc, out,
+# err and secs (wall seconds, whole). Output goes to files, not through $(...): a capture waits
+# until every process holding the pipe has gone, so a child that escaped the deadline would
+# hold the case open until it ended on its own, and then look stopped.
+run() {
+	local sh="$1" t0
+	printf '%s' "$2" >"$tmp/in"
+	shift 2
+	t0=$SECONDS
+	rc=0
+	PATH="$iso" "$sh" "$D" "$@" <"$tmp/in" >"$tmp/out" 2>"$tmp/err" || rc=$?
+	secs=$((SECONDS - t0))
+	out="$(cat "$tmp/out")"
+	err="$(cat "$tmp/err")"
+}
+
+suite() {
+	local sh="$1" var pid line
+	if PATH="$iso" command -v timeout >/dev/null 2>&1; then no "iso ($sh): the isolated PATH has timeout"; fi
+
+	# Pass-through.
+	total=$((total + 1)); run "$sh" "" -s 5 t -- sh -c 'exit 0'
+	[ "$rc" -eq 0 ] && [ -z "$err" ] || no "pass-0 ($sh): rc $rc, stderr '$err'"
+	total=$((total + 1)); run "$sh" "" -s 5 t -- sh -c 'echo out; echo e >&2; exit 3'
+	[ "$rc" -eq 3 ] && [ "$out" = out ] && [ "$err" = e ] || no "pass-code ($sh): rc $rc, out '$out', err '$err'"
+	total=$((total + 1)); run "$sh" "a b
+c" -s 5 t -- cat
+	[ "$rc" -eq 0 ] && [ "$out" = "a b
+c" ] || no "pass-stdin ($sh): rc $rc, out '$out'"
+	total=$((total + 1)); run "$sh" "" -s 5 t -- sh -c 'printf %s "$FPL_DEADLINE_STEP"'
+	[ "$out" = t ] || no "step-env ($sh): the step saw FPL_DEADLINE_STEP='$out'"
+	total=$((total + 1)); rc=0; PATH="$iso" "$sh" "$D" -s 5 t -- sh -c 'exit 4' 2>&- || rc=$?
+	[ "$rc" -eq 4 ] || no "closed-stderr-pass ($sh): rc $rc, want 4"
+	total=$((total + 1)); run "$sh" "" -s 5 t -- "$tmp/no-such-command"
+	[ "$rc" -eq 127 ] && case "$err" in *DEADLINE-EXEC*) true ;; *) false ;; esac || no "exec-missing ($sh): rc $rc, err '$err'"
+
+	# A hang is cut at the budget, loud, on one line.
+	total=$((total + 1)); run "$sh" "" -s 1 hang.step -- sleep 30
+	[ "$rc" -eq 124 ] || no "hang ($sh): rc $rc, want 124"
+	[ "$secs" -le 4 ] || no "hang ($sh): took ${secs}s on a 1s budget"
+	[ "$(printf '%s\n' "$err" | grep -c .)" -eq 1 ] || no "hang ($sh): the refusal is not one line: '$err'"
+	case "$err" in *"[DEADLINE-EXPIRED]"*hang.step*" 1s"*FPL_DEADLINE_HANG_STEP=*) : ;;
+	*) no "hang ($sh): the refusal lacks the rule, step, budget or variable: '$err'" ;; esac
+	total=$((total + 1)); rc=0; PATH="$iso" "$sh" "$D" -s 1 t -- sleep 30 2>&- || rc=$?
+	[ "$rc" -eq 124 ] || no "closed-stderr-hang ($sh): rc $rc, want 124"
+
+	# What the step started is stopped with it.
+	total=$((total + 1))
+	run "$sh" "" -s 1 t -- sh -c '
+		sleep 30 & echo $! >"$0/plain"
+		(trap "" TERM; exec sleep 30) & echo $! >"$0/deaf"
+		perl -e "setpgrp(0, 0); \$SIG{TERM} = q(IGNORE); sleep 30" & echo $! >"$0/group"
+		wait' "$tmp"
+	[ "$rc" -eq 124 ] || no "children ($sh): rc $rc, want 124"
+	[ "$secs" -le 5 ] || no "children ($sh): took ${secs}s on a 1s budget and 2s of grace"
+	for kind in plain deaf group; do
+		pid="$(cat "$tmp/$kind")"
+		gone "$pid" || { no "children ($sh): the $kind child $pid outlived the deadline"; reap "$pid"; }
+	done
+
+	# A deadline inside a deadline: the outer one stops everything, the inner one's group too.
+	total=$((total + 1))
+	run "$sh" "" -s 1 outer -- "$sh" "$D" -s 30 inner -- \
+		perl -e 'open(my $f, ">", $ARGV[0]); print $f $$; close $f; $SIG{TERM} = q(IGNORE); sleep 30' "$tmp/nested"
+	[ "$rc" -eq 124 ] || no "nested ($sh): rc $rc, want 124"
+	[ "$secs" -le 5 ] || no "nested ($sh): took ${secs}s on a 1s budget and 2s of grace"
+	pid="$(cat "$tmp/nested" 2>/dev/null || echo 0)"
+	[ "$pid" != 0 ] && gone "$pid" || { no "nested ($sh): the inner step '$pid' outlived the outer deadline"; reap "$pid"; }
+
+	# A child that a TERM handler starts in a group of its own, in the grace: the second picture
+	# finds it while its parent still lives.
+	total=$((total + 1))
+	rm -f "$tmp/forked"
+	run "$sh" "" -s 1 t -- perl -e '
+		$SIG{TERM} = sub {
+			return if fork;
+			setpgrp(0, 0); $SIG{TERM} = q(IGNORE);
+			open(my $f, ">", $ARGV[0]); print $f $$; close $f; sleep 30; exit;
+		};
+		sleep 1 while 1' "$tmp/forked"
+	[ "$rc" -eq 124 ] || no "grace-fork ($sh): rc $rc, want 124"
+	pid="$(cat "$tmp/forked" 2>/dev/null || echo 0)"
+	[ "$pid" != 0 ] && gone "$pid" || { no "grace-fork ($sh): the child '$pid' started in the grace outlived the deadline"; reap "$pid"; }
+
+	# A ps that hangs is cut off, and one that fails leaves the step's own group, still stopped.
+	for how in hangs fails; do
+		total=$((total + 1))
+		rm "$iso/ps"
+		case "$how" in
+		hangs) printf '#!/bin/sh\nexec sleep 15\n' >"$iso/ps" ;;
+		fails) printf '#!/bin/sh\nexit 1\n' >"$iso/ps" ;;
+		esac
+		chmod +x "$iso/ps"
+		run "$sh" "" -s 1 t -- sh -c 'echo $$ >"$0/ps-$1"; exec sleep 30' "$tmp" "$how"
+		rm "$iso/ps"
+		ln -s "$(command -v ps)" "$iso/ps"
+		[ "$rc" -eq 124 ] || no "ps-$how ($sh): rc $rc, want 124"
+		[ "$secs" -le 10 ] || no "ps-$how ($sh): took ${secs}s on a 1s budget, 2s of grace and 3s a ps"
+		[ "$(printf '%s\n' "$err" | grep -c .)" -eq 1 ] || no "ps-$how ($sh): the refusal is not one line: '$err'"
+		pid="$(cat "$tmp/ps-$how" 2>/dev/null || echo 0)"
+		[ "$pid" != 0 ] && gone "$pid" || { no "ps-$how ($sh): the step '$pid' outlived the deadline"; reap "$pid"; }
+	done
+
+	# A TERM to the runner stops the step as an expiry would. The wait for the step to start is
+	# bounded, and ends early if the runner has already gone.
+	total=$((total + 1))
+	rm -f "$tmp/sig"
+	PATH="$iso" "$sh" "$D" -s 30 t -- perl -e 'open(my $f, ">", $ARGV[0]); print $f $$; close $f; $SIG{TERM} = q(IGNORE); sleep 30' "$tmp/sig" 2>/dev/null &
+	line=$!
+	ready "$tmp/sig" "$line" || no "signalled ($sh): the step never started"
+	kill -TERM "$line" 2>/dev/null || :
+	rc=0; wait "$line" || rc=$?
+	[ "$rc" -eq 143 ] || no "signalled ($sh): rc $rc, want 143"
+	pid="$(cat "$tmp/sig" 2>/dev/null || echo 0)"
+	[ "$pid" != 0 ] && gone "$pid" || { no "signalled ($sh): the step '$pid' outlived the runner's TERM"; reap "$pid"; }
+
+	# An INT to the runner: it dies of the INT, not exit 130, with and without -n. perl reads
+	# the status, as a shell's $? cannot tell the two apart.
+	for flag in "" -n; do
+		total=$((total + 1))
+		rm -f "$tmp/int"
+		line="$(PATH="$iso" perl -e '
+			my $p = fork;
+			if (!$p) { exec @ARGV; exit 127 }
+			for (1 .. 100) { last if -s "'"$tmp/int"'"; select(undef, undef, undef, 0.05) }
+			kill "INT", $p; waitpid($p, 0); print $? & 127' "$sh" "$D" ${flag:+"$flag"} -s 30 t -- \
+			sh -c 'echo $$ >"$0/int"; exec sleep 30' "$tmp" 2>/dev/null)"
+		[ "$line" = 2 ] || no "interrupted${flag:+ $flag} ($sh): the runner ended with signal '$line', want 2 (INT)"
+		pid="$(cat "$tmp/int" 2>/dev/null || echo 0)"
+		[ "$pid" != 0 ] && gone "$pid" || { no "interrupted${flag:+ $flag} ($sh): the step '$pid' outlived the INT"; reap "$pid"; }
+	done
+	total=$((total + 1)); run "$sh" "" -n -s 5 t -- sh -c 'exit 3'
+	[ "$rc" -eq 3 ] && [ -z "$err" ] || no "pass-n ($sh): -n changed the step's exit: rc $rc, err '$err'"
+
+	# The table, and its override round trip: the variable the refusal names gives it longer.
+	total=$((total + 1)); run "$sh" "" selftest.slow -- sleep 3
+	[ "$rc" -eq 124 ] || no "table ($sh): rc $rc, want 124 from the 1s row"
+	var="$(printf '%s\n' "$err" | sed -n 's/.*\(FPL_DEADLINE_[A-Z0-9_]*\)=.*/\1/p')"
+	[ "$var" = FPL_DEADLINE_SELFTEST_SLOW ] || no "table ($sh): the refusal names '$var'"
+	total=$((total + 1)); rc=0; out="$(env "$var=10" PATH="$iso" "$sh" "$D" selftest.slow -- sh -c 'sleep 2; echo done' 2>&1)" || rc=$?
+	[ "$rc" -eq 0 ] && [ "$out" = "done" ] || no "override ($sh): with $var=10 rc $rc, out '$out'"
+	total=$((total + 1)); run "$sh" "" fam.x -- sleep 3
+	[ "$rc" -eq 124 ] || no "family ($sh): fam.x did not take the fam.* row: rc $rc"
+	total=$((total + 1)); run "$sh" "" fam.long.x -- sh -c 'sleep 2'
+	[ "$rc" -eq 0 ] || no "family-longest ($sh): fam.long.x did not take the longer fam.long.* row: rc $rc"
+
+	# Refusals: loud, 125, and the step never runs.
+	refused() {
+		local what="$1" rule="$2"
+		shift 2
+		total=$((total + 1)); rm -f "$tmp/ran"
+		rc=0; err="$(env "$@" 2>&1)" || rc=$?
+		[ "$rc" -eq 125 ] || no "$what ($sh): rc $rc, want 125"
+		case "$err" in *"[$rule]"*) : ;; *) no "$what ($sh): no [$rule] in '$err'" ;; esac
+		[ ! -e "$tmp/ran" ] || no "$what ($sh): the step ran anyway"
+	}
+	refused unknown DEADLINE-UNKNOWN PATH="$iso" "$sh" "$D" no.such -- sh -c ": >$tmp/ran"
+	refused override-word DEADLINE-OVERRIDE FPL_DEADLINE_SELFTEST_SLOW=soon PATH="$iso" "$sh" "$D" selftest.slow -- sh -c ": >$tmp/ran"
+	refused override-zero DEADLINE-OVERRIDE FPL_DEADLINE_SELFTEST_SLOW=0 PATH="$iso" "$sh" "$D" selftest.slow -- sh -c ": >$tmp/ran"
+	refused no-dashes DEADLINE-USAGE PATH="$iso" "$sh" "$D" -s 5 t sh -c ": >$tmp/ran"
+	refused bad-budget DEADLINE-USAGE PATH="$iso" "$sh" "$D" -s 1.5 t -- sh -c ": >$tmp/ran"
+	cp "$tmp/fx/deadlines.tsv" "$tmp/good.tsv"
+	printf 'broken\tlater\tfixture\n' >>"$tmp/fx/deadlines.tsv"
+	refused bad-row DEADLINE-TABLE PATH="$iso" "$sh" "$D" selftest.slow -- sh -c ": >$tmp/ran"
+	cp "$tmp/good.tsv" "$tmp/fx/deadlines.tsv"
+	rm "$iso/perl"
+	refused no-perl DEADLINE-NO-PERL PATH="$iso" "$sh" "$D" -s 5 t -- sh -c ": >$tmp/ran"
+	ln -s "$perl_bin" "$iso/perl"
+	rm "$iso/ps"
+	refused no-ps DEADLINE-NO-PS PATH="$iso" "$sh" "$D" -s 5 t -- sh -c ": >$tmp/ran"
+	ln -s "$(command -v ps)" "$iso/ps"
+}
+
+suite /bin/bash
+bash_here="$(command -v bash)"
+if ! [ /bin/bash -ef "$bash_here" ]; then suite "$bash_here"; fi
+
+# The real table parses: every row of scripts/deadlines.tsv is a valid budget.
+total=$((total + 1))
+rc=0; err="$("$here/deadline" gates.deadline-self-test -- true 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || no "real-table: scripts/deadlines.tsv is refused: $err"
+
+# The terminal, under a pty that script(1) makes: a step reads from it (it holds the foreground
+# while it runs; without the hand-off it stops on SIGTTIN and expires), the shell reads from it
+# after (the foreground came back), and a Ctrl-C ends the step, exit 130. BSD script takes the
+# command as arguments, util-linux script as -c.
+inpty() {
+	if script -q /dev/null true </dev/null >/dev/null 2>&1; then
+		script -q "$1" bash -c "$2"
+	else
+		script -q -c "bash -c '$2'" "$1"
+	fi
+}
+if command -v script >/dev/null 2>&1; then
+	total=$((total + 1))
+	(sleep 1; printf 'hello\n'; sleep 1; printf 'again\n'; sleep 1) |
+		inpty "$tmp/pty" "$here/deadline -s 8 tty.read -- sh -c \"read -r x; echo got:\\\$x\"; echo rc=\$?; read -r y; echo after:\$y" >/dev/null 2>&1 || :
+	out="$(tr -d '\r' <"$tmp/pty")"
+	case "$out" in *got:hello*rc=0*after:again*) : ;; *) no "tty-read: the step or the shell after it could not read the terminal: $out" ;; esac
+	total=$((total + 1))
+	(sleep 1; printf '\003'; sleep 2) | inpty "$tmp/pty" "$here/deadline -s 8 tty.int -- sleep 30; echo rc=\$?" >/dev/null 2>&1 || :
+	out="$(tr -d '\r' <"$tmp/pty")"
+	case "$out" in *rc=130*) : ;; *) no "tty-int: a Ctrl-C did not end the step with 130: $out" ;; esac
+	# With -n the runner keeps the foreground: the Ctrl-C reaches it, it stops the step (in a
+	# group of its own, which the terminal does not signal) and dies of the INT.
+	total=$((total + 1))
+	rm -f "$tmp/ttyn"
+	printf '%s\n' "perl -e 'system @ARGV; print \"st=\", \$? & 127, \"\\n\"' \"$here/deadline\" -n -s 8 tty.n -- sh -c 'echo \$\$ >\"$tmp/ttyn\"; exec sleep 30'" >"$tmp/ttyn.sh"
+	(sleep 1; printf '\003'; sleep 3) | inpty "$tmp/pty" "bash $tmp/ttyn.sh" >/dev/null 2>&1 || :
+	out="$(tr -d '\r' <"$tmp/pty")"
+	case "$out" in *st=2*) : ;; *) no "tty-n: a Ctrl-C under -n did not end the runner with INT: $out" ;; esac
+	pid="$(cat "$tmp/ttyn" 2>/dev/null || echo 0)"
+	[ "$pid" != 0 ] && gone "$pid" || { no "tty-n: the step '$pid' outlived the Ctrl-C"; reap "$pid"; }
+fi
+
+echo "deadline self-test: $fails failures in $total cases"
+[ "$fails" -eq 0 ]
