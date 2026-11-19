@@ -8,4 +8,5 @@
 # bounded by timeout-minutes in .github/workflows/, which cannot read this file.
 #
 # step	seconds	basis
+atomic-check.model	45	measured: one claude -p haiku call 12.3s (2026-11-17)
 gates.*	300	measured: every other self-test 0-31s; 300 is 10x the slowest

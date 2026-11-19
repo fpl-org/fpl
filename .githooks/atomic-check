@@ -16,6 +16,16 @@
 #     off    skip entirely
 #   FPL_ATOMIC_STRICT=1   also block when the model could not be reached
 #
+# The model call runs under scripts/deadline (step atomic-check.model, scripts/deadlines.tsv):
+# a call that does not answer in time is a model that could not be reached, so it skips the check
+# like any other infrastructure problem, after the runner's line saying so. Without the deadline a
+# hung `claude -p` held the commit open for good (2026-11-17), the opposite of failing open.
+#
+# A Ctrl-C during the call is not a model that could not be reached: it refuses the commit. The
+# runner runs with -n, so it keeps the terminal and the Ctrl-C reaches it, not claude: `claude -p`
+# catches INT and exits 0 (measured 2026-11-17), which would read as an empty verdict and let the
+# commit through. The runner dies of the INT, and its status, 130, ends the hook.
+#
 # Usage: atomic-check <commit-msg-file>
 
 set -euo pipefail
@@ -25,6 +35,7 @@ mode="${FPL_ATOMIC_GATE:-block}"
 
 msg_file="${1:?usage: atomic-check <commit-msg-file>}"
 git_dir="$(git rev-parse --git-dir)"
+top="$(git rev-parse --show-toplevel)"
 
 # Nothing staged (e.g. --amend --no-edit of metadata) -> nothing to judge.
 git diff --cached --quiet && exit 0
@@ -68,7 +79,17 @@ else
 
 	raw=""
 	if command -v claude >/dev/null 2>&1; then
-		raw="$(claude -p "$prompt" --model "$model" --output-format json 2>/dev/null || true)"
+		# Only claude's own stderr is dropped: the runner's refusal, on the hook's stderr, says
+		# why the check was skipped. stdin is closed, or claude waits 3s for input that never comes.
+		rc=0
+		raw="$("$top/scripts/deadline" -n atomic-check.model -- \
+			sh -c 'exec claude "$@" 2>/dev/null </dev/null' claude \
+			-p "$prompt" --model "$model" --output-format json)" || rc=$?
+		case "$rc" in 129 | 130 | 131 | 143)
+			echo "atomic-check: interrupted (exit $rc) during the model call; the commit is refused" >&2
+			exit "$rc"
+			;;
+		esac
 		# `claude -p --output-format json` yields either a single {result:...}
 		# object or an array of stream messages ending in {type:result,result:...}.
 		raw="$(printf '%s' "$raw" | python3 -c 'import sys,json
