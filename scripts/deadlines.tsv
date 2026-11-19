@@ -14,4 +14,6 @@ hook.pre-commit	30	measured: 0.05s (2026-11-17); leak-check on a large staged di
 hook.prepare-commit-msg	10	prior: local only
 hook.reference-transaction	10	prior: local only
 hook.pre-push	180	prior: forward-only and ls-remote ask the network; commit-lint runs once a pushed commit
+claude.guard-specs	10	prior: a path match and one python3 call
+claude.stop-check	150	measured: make quick 23-28s in the dev shell (2026-11-17), make fix adds seconds
 gates.*	300	measured: every other self-test 0-31s; 300 is 10x the slowest
