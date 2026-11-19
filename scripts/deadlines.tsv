@@ -16,7 +16,34 @@ hook.reference-transaction	10	prior: local only
 hook.pre-push	180	prior: forward-only and ls-remote ask the network; commit-lint runs once a pushed commit
 claude.guard-specs	10	prior: a path match and one python3 call
 claude.stop-check	150	measured: make quick 23-28s in the dev shell (2026-11-17), make fix adds seconds
+venv.sync	600	prior: uv sync, which downloads on a cold cache
+config-fresh	300	prior: nix run .#gen-config, a flake evaluation, a build on a cold store
+quick.pytest	120	measured: 26.3s, 856 tests (2026-11-17)
+check.pyright	600	prior
+check.mypy	600	prior
+check.pytest	600	measured: 117s under coverage, beside another long run (2026-11-17)
+check.rootrun	60	measured: 0.2s, make run on one example from the root (2026-11-17)
+harden.pytest	2400	prior: 20x the examples
+harden.crosshair	2400	prior: CrossHair bounds each condition, not the run
 mutants.run	3600	prior: mutmut run over the package
+ready.uv-export	60	prior
+ready.pip-audit	180	prior: asks the vulnerability database over the network
+tools.sync	600	prior: uv sync per tool
+tools.pyright	600	prior: per tool, as check.pyright
+tools.mypy	600	prior: per tool, as check.mypy
+tools.pytest	600	prior: per tool
 gates.case	120	prior: one bad example of scripts/gates
 smoke.case	600	prior: one nix run, a build on a cold store; measured warm: 4 cases in 3.3s (2026-11-17)
+# make gates, one row a self-test that a slow machine could push past the family row: 5x the
+# wall time measured in the dev shell on an M-series Mac (2026-11-17, land beside a make check),
+# for the Gentoo box (2-3x slower) and CI runners (unmeasured).
+gates.land-self-test	2700	measured: 545s
+gates.pre-push-self-test	1900	measured: 380s, its hooks under scripts/deadline (294s before)
+gates.sweep-self-test	700	measured: 135s
+gates.boundary-self-test	600	measured: 118s
+gates.series-self-test	330	measured: 66s
+gates.deadline-self-test	300	measured: 71s, 70 cases (2026-11-17; 50s before the ps, grace and INT cases)
+gates.task	300	measured: 59s
+gates.smoke	1500	prior: above smoke.case, one cold build and three warm runs
+gates.gates	300	measured: 13s, 16 cases, each under gates.case
 gates.*	300	measured: every other self-test 0-31s; 300 is 10x the slowest
