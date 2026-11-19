@@ -17,7 +17,7 @@ Read it first. This file only covers Claude Code tooling that lives under `.clau
   skill is just a trigger.
 - **Skill** (`.claude/skills/fpl-run/`): the commands that start the walker, `make repl` and
   `nix run`, for an agent asked to run or try FPL.
-- **Hooks** (`.claude/settings.json`):
+- **Hooks** (`.claude/settings.json`), each under `scripts/deadline` and a `timeout` above it:
   - `PreToolUse(Edit|Write)` → `.claude/hooks/guard-specs.sh`: blocks edits to
     `fpl/features/*/spec.md` / `fpl/features/*/examples/*` / `docs/DESIGN.md` / `docs/SPEC.md`
     unless the session sets `FPL_SPEC_EDIT=1`. Mirrors the `[spec]`-marker check in `.githooks/commit-msg`.

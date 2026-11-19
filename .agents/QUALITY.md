@@ -27,6 +27,14 @@ make tools    the tooling beside the language, tools/<name>/, judged as strictly
 make map      the map of the code, never committed (below); no other lane runs it
 ```
 
+Every step that waits on something outside the files (a test run, a solver, `uv sync`, `nix
+run`, `pip-audit`) runs under `scripts/deadline`, with the budget of its row in
+`scripts/deadlines.tsv`; so does every git hook and Claude Code hook. Past the budget the step
+stops with one line, `deadline [DEADLINE-EXPIRED]: <step> ran past its budget of <n>s ...`, which
+names the variable that gives it longer for one run (`FPL_DEADLINE_CHECK_PYTEST=1800`). A budget
+that is too short for good is changed in the table, with the measurement it rests on. CI jobs
+carry `timeout-minutes` instead; `scripts/deadline-self-test` holds every job to one.
+
 Beside the lanes, the root's `Makefile` has the walker's entry, which is not a gate:
 
 ```

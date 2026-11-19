@@ -36,6 +36,7 @@ Keep talk about the vision sober, and the harness small: `docs/notes/2026-09-19-
                       branch-lint, forward-only, layer, pr, review, land, task,
                       rad-cob-dagtaak;
                       crap, props, escapes, mutants, gates (the noslop gate);
+                      deadline (a step under its wall-clock budget, deadlines.tsv);
                       diagrams (make map: the map of the code, never committed);
                       stack-tree (the open pull requests as the tree their bases make, never committed)
   quality/            the noslop gate's lanes, tool configs and pinned tools (.agents/QUALITY.md)

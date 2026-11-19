@@ -223,6 +223,9 @@ order, with the same authors and messages; the SHAs are listed but left out of t
   - `FPL_ATOMIC_STRICT=1` also blocks when the model could not be reached.
   - Verdicts are cached under `.git/atomic-cache/` keyed on tree+message, so `--amend` loops
     don't re-bill. Cost is one Haiku call (~seconds) per distinct staged state.
+  - The call has a deadline (`atomic-check.model` in `scripts/deadlines.tsv`): a model that does
+    not answer in time counts as one that could not be reached. A Ctrl-C during the call refuses
+    the commit.
 - **[advisory]** one logical change per commit; stage at **hunk** level (`git add -p`) so a
   commit never bundles unrelated edits. New files are one hunk by nature.
 
