@@ -31,7 +31,16 @@ from pathlib import Path
 
 ALLOW = Path("mutants.allow")
 LINE = re.compile(r"^\s*(?P<name>\S+):\s*(?P<status>.+?)\s*$")
+# scripts/deadline exits so when the budget ran out (GNU timeout's code), and says so on stderr
+# with this mark: mutmut's own 124 is a failure, not an expiry.
+EXPIRED = 124
+EXPIRED_MARK = "[DEADLINE-EXPIRED]: mutants.run "
 ENTRY = re.compile(r"^(?P<name>\S+)\s+--\s+(?P<reason>\S.*)$")
+
+
+def expired(code: int, stderr: str) -> bool:
+    """Whether scripts/deadline stopped the run: its exit code and its mark on stderr both."""
+    return code == EXPIRED and EXPIRED_MARK in stderr
 
 
 def results(text: str) -> dict[str, str]:
@@ -87,7 +96,18 @@ def main(argv: list[str]) -> int:
         # mutmut reuses mutants/ for any source file not newer than its copy there, and a
         # file restored by `mv` or `git stash` keeps its old time: start from nothing.
         shutil.rmtree("mutants", ignore_errors=True)
-        run = subprocess.run([mutmut, "run"], capture_output=True, text=True, check=False)
+        # Under scripts/deadline (step mutants.run): a run that hangs ends at its budget.
+        deadline = str(Path(__file__).resolve().with_name("deadline"))
+        run = subprocess.run(
+            [deadline, "mutants.run", "--", mutmut, "run"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if expired(run.returncode, run.stderr):
+            print(run.stderr[-2000:], file=sys.stderr)
+            print("mutants: mutmut ran past its budget (scripts/deadlines.tsv)", file=sys.stderr)
+            return 1
         if run.returncode != 0:
             print(run.stdout[-2000:] + run.stderr[-2000:], file=sys.stderr)
             print("mutants: mutmut run failed; the clean test run must pass first", file=sys.stderr)
@@ -124,6 +144,10 @@ def self_test() -> int:
         "an entry needs a reason",
         allow == {"fpl.a.x_f__mutmut_2": "equivalent"} and bad == ["fpl.z.x__mutmut_9"],
     )
+    mark = f"deadline {EXPIRED_MARK}ran past its budget of 3600s and was stopped; ...\n"
+    check("an expiry is the runner's code and mark", expired(EXPIRED, mark))
+    check("mutmut's own 124 is no expiry", not expired(EXPIRED, "mutmut: failed\n"))
+    check("the mark with another code is no expiry", not expired(1, mark))
     said: list[str] = []
     check(
         "an unallowed survivor fails",

@@ -37,6 +37,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
 BAD = HERE / "quality" / "bad"
+DEADLINE = HERE / "scripts" / "deadline"
 
 
 def lay(case: str | None, into: Path) -> Path:
@@ -69,8 +70,23 @@ def run(command: str, cwd: Path) -> tuple[int, str]:
         # CrossHair's solver needs libstdc++ on Linux; the dev shell sets this (.agents/DEVSHELL.md)
         "LD_LIBRARY_PATH": os.environ.get("LD_LIBRARY_PATH", ""),
     }
+    # The budgets' overrides pass through, so the variable a refusal names (FPL_DEADLINE_GATES_CASE
+    # and those of the steps a case runs) works here too; FPL_DEADLINE_STEP is the runner's own.
+    env |= {
+        k: v
+        for k, v in os.environ.items()
+        if k.startswith("FPL_DEADLINE_") and k != "FPL_DEADLINE_STEP"
+    }
+    # Under scripts/deadline (step gates.case): a case that hangs ends at its budget, and the
+    # runner's line in the output says so. subprocess's own timeout would stop bash alone and
+    # leave its children holding the pipes open.
     done = subprocess.run(
-        ["bash", "-c", command], cwd=cwd, env=env, capture_output=True, text=True, check=False
+        [str(DEADLINE), "gates.case", "--", "bash", "-c", command],
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     return done.returncode, done.stdout + done.stderr
 
