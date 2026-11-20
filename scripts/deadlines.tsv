@@ -1,0 +1,11 @@
+# scripts/deadlines.tsv: the wall-clock budget of every step that runs under scripts/deadline,
+# in whole seconds. One row a step: step<TAB>seconds<TAB>basis. A step ending in * is a family:
+# the budget of every step that starts so and has no row of its own (the longest prefix wins).
+# FPL_DEADLINE_<STEP> overrides a row for one run (scripts/deadline names the variable).
+#
+# The basis says where the number comes from: "measured" names the wall time seen and the date,
+# and the budget is 3-5x that; "prior" is a guess no measurement has replaced yet. CI jobs are
+# bounded by timeout-minutes in .github/workflows/, which cannot read this file.
+#
+# step	seconds	basis
+gates.*	300	measured: every other self-test 0-31s; 300 is 10x the slowest
