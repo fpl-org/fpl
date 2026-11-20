@@ -8,8 +8,8 @@
 # bounded by timeout-minutes in .github/workflows/, which cannot read this file.
 #
 # step	seconds	basis
-atomic-check.model	45	measured: one claude -p haiku call 12.3s (2026-11-17)
-hook.commit-msg	120	prior: atomic-check.model 45 plus its curl fallback 30; the rest measured under 1s
+atomic-check.model	120	measured: claude -p 12.3s idle (2026-11-17), 32s at load 34-84 (2026-11-20); 45 expired on 4 of 8 commits
+hook.commit-msg	180	prior: atomic-check.model 120 plus its curl fallback 30; the rest measured under 1s
 hook.pre-commit	30	measured: 0.05s (2026-11-17); leak-check on a large staged diff is the slow part
 hook.prepare-commit-msg	10	prior: local only
 hook.reference-transaction	10	prior: local only
