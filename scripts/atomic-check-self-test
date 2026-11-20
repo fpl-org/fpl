@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+#
+# scripts/atomic-check-self-test — proof that .githooks/atomic-check fails open in time when the
+# model hangs (the 2026-11-17 commit that never ended), and still judges when the model answers.
+# Run by `make gates`.
+#
+# The model is a stand-in `claude` first on PATH: it answers from $ANSWER, or with HANG=1 sleeps
+# far past the budget, and exits 0 on an INT, as `claude -p` does (measured 2026-11-17).
+# ANTHROPIC_API_KEY is unset, so the curl fallback is never reached. The budget is cut to 2
+# seconds through the variable scripts/deadline names (FPL_DEADLINE_ATOMIC_CHECK_MODEL), and the
+# cache is cleared before every case.
+
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/atomic-check-self-test.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+unset ANTHROPIC_API_KEY FPL_ATOMIC_GATE FPL_ATOMIC_STRICT
+
+mkdir "$tmp/bin"
+# shellcheck disable=SC2016 # expanded when the stand-in runs
+printf '#!/bin/sh\n[ -z "$HANG" ] || { trap "exit 0" INT; sleep 60 >/dev/null & wait; exit 0; }\nprintf "{\\"result\\": \\"%%s\\"}" "$ANSWER"\n' >"$tmp/bin/claude"
+chmod +x "$tmp/bin/claude"
+
+# The repository: this checkout's hooks and scripts, one staged change.
+repo="$tmp/repo"
+git init -q "$repo"
+cp -R "$root/.githooks" "$root/scripts" "$repo/"
+echo change >"$repo/file"
+git -C "$repo" add -f file # -f: a global ignore file may hide the name
+printf 'feat(x): one change\n' >"$tmp/msg"
+
+fails=0 total=0
+# case <name> <want rc> <a fragment the output must hold> <env...>
+case_() {
+	local name="$1" want="$2" frag="$3" rc=0 t0=$SECONDS out
+	shift 3
+	rm -rf "$(git -C "$repo" rev-parse --absolute-git-dir)/atomic-cache"
+	total=$((total + 1))
+	out="$(cd "$repo" && env PATH="$tmp/bin:$PATH" FPL_DEADLINE_ATOMIC_CHECK_MODEL=2 "$@" \
+		.githooks/atomic-check "$tmp/msg" 2>&1)" || rc=$?
+	[ "$rc" -eq "$want" ] || { echo "FAIL $name: rc $rc, want $want: $out"; fails=$((fails + 1)); }
+	[ $((SECONDS - t0)) -le 8 ] || { echo "FAIL $name: took $((SECONDS - t0))s on a 2s budget"; fails=$((fails + 1)); }
+	case "$out" in *"$frag"*) : ;; *) echo "FAIL $name: no '$frag' in: $out"; fails=$((fails + 1)) ;; esac
+}
+
+case_ hang-fails-open 0 "DEADLINE-EXPIRED" HANG=1
+case_ hang-says-skipped 0 "model unreachable; skipping" HANG=1
+case_ hang-strict-blocks 1 "DEADLINE-EXPIRED" HANG=1 FPL_ATOMIC_STRICT=1
+# shellcheck disable=SC2016
+case_ split-blocks 1 "more than one logical change" 'ANSWER={\"atomic\": false, \"reason\": \"two things\"}'
+case_ atomic-passes 0 "" 'ANSWER={\"atomic\": true, \"reason\": \"one thing\"}'
+
+# A Ctrl-C on the terminal during the model call refuses the commit. The hook runs as git runs
+# it here, under a deadline of its own that hands it the foreground (hook.commit-msg), in a pty
+# that script(1) makes; the stand-in hangs, and exits 0 on the INT. BSD script takes the command
+# as arguments, util-linux script as -c.
+inpty() {
+	if script -q /dev/null true </dev/null >/dev/null 2>&1; then
+		script -q "$1" bash "$2"
+	else
+		script -q -c "bash $2" "$1"
+	fi
+}
+if command -v script >/dev/null 2>&1; then
+	total=$((total + 1))
+	rm -rf "$(git -C "$repo" rev-parse --absolute-git-dir)/atomic-cache"
+	{
+		printf 'cd %q || exit 9\n' "$repo"
+		printf 'export PATH=%q HANG=1\n' "$tmp/bin:$PATH"
+		printf '%q -s 20 hook.commit-msg -- .githooks/atomic-check %q\n' "$repo/scripts/deadline" "$tmp/msg"
+		printf 'echo rc=$?\n'
+	} >"$tmp/int.sh"
+	t0=$SECONDS
+	(sleep 2; printf '\003'; sleep 4) | inpty "$tmp/pty" "$tmp/int.sh" >/dev/null 2>&1 || :
+	out="$(tr -d '\r' <"$tmp/pty")"
+	case "$out" in *rc=[1-9]*) : ;; *) echo "FAIL ctrl-c: the hook let the commit through after a Ctrl-C: $out"; fails=$((fails + 1)) ;; esac
+	[ $((SECONDS - t0)) -le 10 ] || { echo "FAIL ctrl-c: took $((SECONDS - t0))s"; fails=$((fails + 1)); }
+fi
+
+echo "atomic-check self-test: $fails failures in $total cases"
+[ "$fails" -eq 0 ]

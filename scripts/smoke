@@ -40,7 +40,9 @@ fpl() {
 	local name="$1" input="$2"
 	shift 2
 	set +e
-	nix run "$flake#" -- "$@" <"$input" >"$out/$name.out" 2>"$out/$name.err"
+	# Under scripts/deadline (step smoke.case): a nix run that hangs exits 124, and the runner's
+	# line lands in the case's stderr, which a failure prints.
+	"$root/scripts/deadline" smoke.case -- nix run "$flake#" -- "$@" <"$input" >"$out/$name.out" 2>"$out/$name.err"
 	echo $? >"$out/$name.code"
 	set -e
 }

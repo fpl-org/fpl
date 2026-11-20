@@ -81,6 +81,19 @@ verdict "guard-specs lets an opted-in session edit a spec" "$rc" 0 ""
 rc=0
 printf 'not json' | bash "$root/.claude/hooks/guard-specs.sh" >"$tmp/out" 2>&1 || rc=$?
 verdict "guard-specs ignores an event it cannot read" "$rc" 0 ""
+# A guard that cannot run under its deadline blocks every edit, a spec path or not: the runner
+# missing (127) or not executable (126). The hook is copied into a tree of its own for each.
+for runner in missing unrunnable; do
+	mkdir -p "$tmp/$runner/.claude/hooks" "$tmp/$runner/scripts"
+	cp "$root/.claude/hooks/guard-specs.sh" "$tmp/$runner/.claude/hooks/"
+	[ "$runner" = missing ] || { cp "$root/scripts/deadline" "$tmp/$runner/scripts/" && chmod -x "$tmp/$runner/scripts/deadline"; }
+	for p in /w/fpl/features/draft1/spec.md /w/bootstrap/fpl/eval.py; do
+		rc=0
+		printf '{"tool_input":{"file_path":"%s"}}' "$p" \
+			| bash "$tmp/$runner/.claude/hooks/guard-specs.sh" >"$tmp/out" 2>&1 || rc=$?
+		verdict "guard-specs blocks $p with the runner $runner" "$rc" 2 ""
+	done
+done
 
 # --- the commit-msg gate ----------------------------------------------------------------------
 # msg <marked>: the message file, a human commit, with the marker [spec] in its body or not.

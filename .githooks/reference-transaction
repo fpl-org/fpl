@@ -29,6 +29,17 @@
 set -euo pipefail
 
 [ "${1:-}" = "prepared" ] || exit 0
+
+# Past the two states let through above (no fork for those), the hook runs under
+# scripts/deadline (step hook.reference-transaction, scripts/deadlines.tsv), so a hang ends in
+# the runner's one-line refusal and an aborted transaction, never in a git that waits for good.
+# The runner sets FPL_DEADLINE_STEP, which is how the hook it starts knows not to start it again.
+# It is found under the top of the tree, as the linter is; where it is not there (a bare
+# repository, a checkout from before it), the hook runs as it is and fails open, as it does
+# without the linter.
+top="$(git rev-parse --show-toplevel 2>/dev/null)" || top=""
+[ ! -x "$top/scripts/deadline" ] || [ "${FPL_DEADLINE_STEP:-}" = hook.reference-transaction ] ||
+	exec "$top/scripts/deadline" hook.reference-transaction -- "$0" "$@"
 branch_mode="${FPL_BRANCH_GATE:-block}"
 main_mode="${FPL_MAIN_GATE:-block}"
 [ "$branch_mode" = "off" ] && [ "$main_mode" = "off" ] && exit 0
@@ -37,7 +48,6 @@ updates=()
 while read -r old new ref; do updates+=("$new $ref"); done
 [ "${#updates[@]}" -gt 0 ] || exit 0
 
-top="$(git rev-parse --show-toplevel 2>/dev/null)" || top=""
 lint="$top/scripts/branch-lint"
 
 # new value this same transaction gives REF, if it touches it

@@ -44,6 +44,13 @@
 
 set -euo pipefail
 
+# The whole hook runs under scripts/deadline (step hook.prepare-commit-msg, scripts/deadlines.tsv), so a hang
+# ends in the runner's one-line refusal and a non-zero exit, never in a git that waits for good.
+# The runner sets FPL_DEADLINE_STEP, which is how the hook it starts knows not to start it again.
+# It is found under the top of the tree, as the hook's other scripts are: the hook may be reached
+# through a link from elsewhere (scripts/leak-check-self-test does that).
+[ "${FPL_DEADLINE_STEP:-}" = hook.prepare-commit-msg ] || exec "$(git rev-parse --show-toplevel)/scripts/deadline" hook.prepare-commit-msg -- "$0" "$@"
+
 file="$1"
 repo_root="$(git rev-parse --show-toplevel)"
 # shellcheck source=commit-rules

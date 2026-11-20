@@ -6,6 +6,10 @@
 # `bootstrap/fpl/` dir). There it applies the safe fixes and runs the quick lane
 # (quality/noslop.mk, run in bootstrap/ by the root's Makefile), so the tree does not
 # drift away from `make check` green between turns. At the harness root it is a no-op.
+#
+# Both run under scripts/deadline (step claude.stop-check, scripts/deadlines.tsv): a pytest that
+# hangs would otherwise hold the end of the turn. Past the budget the runner's line is printed
+# with the rest of the output, and the turn still ends: this hook never fails it.
 
 set -uo pipefail
 
@@ -15,7 +19,7 @@ root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 
 cd "$root"
 [ -f Makefile ] || exit 0
-make -s fix >/dev/null 2>&1 || true
-make -s quick 2>&1 | tail -n 5 || true
+scripts/deadline claude.stop-check -- \
+	bash -c 'make -s fix >/dev/null 2>&1 || true; make -s quick 2>&1 | tail -n 5' 2>&1 || true
 
 exit 0
