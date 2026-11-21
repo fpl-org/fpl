@@ -1,0 +1,278 @@
+#!/usr/bin/env bash
+#
+# scripts/deadline — run one step of the harness under a wall-clock budget, and stop it, loud,
+# once it runs past it.
+#
+# A hook, a gate or an agent step that waits on something that never comes (a model call, the
+# network, a credential dialog, a solver) holds up everyone behind it and says nothing: the
+# 2026-11-17 commit that hung in .githooks/atomic-check on `claude -p`. Every such step runs
+# under this script instead, so a hang ends in a refusal that names the step and its remedy.
+#
+#   scripts/deadline [-n] [-s SECONDS] STEP -- COMMAND [ARG...]
+#
+#   STEP      [a-z0-9][a-z0-9._-]*, the step's name: hook.commit-msg, gates.land-self-test
+#   -s N      the budget, N whole seconds; without it the budget is STEP's row of
+#             deadlines.tsv beside this script (below)
+#   -n        the step never uses the terminal: the runner keeps the foreground (below)
+#   COMMAND   run as given, with stdin, stdout and stderr untouched, and FPL_DEADLINE_STEP set
+#             to STEP in its environment (a hook reads it to know it already runs under its
+#             own deadline)
+#
+# The budget. deadlines.tsv is the one place the budgets are written, a table a program can read:
+# one row a step, `step<TAB>seconds<TAB>basis`, '#' lines and empty lines ignored. A row whose
+# step ends in '*' is a family: it gives the budget of every step that starts with what comes
+# before the '*' and has no row of its own; the longest such prefix wins. A family keeps a
+# new self-test from needing a row of its own (scripts/gates-list exists so that a new tool
+# never edits a shared list). FPL_DEADLINE_<STEP> overrides it, with STEP upper-cased and '.'
+# and '-' written '_': FPL_DEADLINE_HOOK_COMMIT_MSG=300. The refusal names that variable.
+#
+# What a deadline stops. The command runs in a process group of its own. At the budget the
+# runner takes a picture of every process the command started, however deep and in whatever
+# group (a nested deadline puts its own command in a group of its own), sends each group and
+# each process TERM, gives them 2 seconds, takes a second picture, walked from every process of
+# the first, and sends KILL to every group and process of both. The first picture is taken
+# before the first signal: a process whose parent dies reparents to init, and would no longer
+# be found by walking the tree afterwards; the second finds what a TERM handler started in the
+# grace, while the process that started it still lives. Two kinds of process are not found, as
+# ps shows no line back to the command for either: one that left the tree before the first
+# picture (its parent ended, and it moved to a group of its own), and one a TERM handler started
+# in a group of its own just before its own process ended. Only a subreaper, which macOS lacks,
+# could hold them. Each picture is one `ps`, given 3 seconds;
+# a ps that hangs or fails leaves the picture at the command's own process and group, which are
+# still stopped. The clock is the monotonic one where perl has it, so a clock set back or
+# forward does not move the budget. A TERM, INT or HUP sent to the runner itself stops the
+# command the same way, and the runner then dies of that signal (143 for TERM), as a shell's
+# caller expects of a program that caught it. A process the command left behind after it ended
+# on its own is not the runner's (as with GNU timeout).
+#
+# The terminal. Where the runner holds the terminal's foreground, it hands that to the
+# command's group and takes it back after, so a step that asks a question on the terminal still
+# can, and a Ctrl-C reaches the step alone. With -n it keeps the foreground: a Ctrl-C reaches the
+# runner and its callers, and the runner stops the step and dies of the INT. A step that catches
+# INT and exits 0 (`claude -p` does) then cannot make its caller go on as if it had answered.
+#
+# Exit status, so a caller can tell a deadline from a failure:
+#   the command's own   it ended in time (128+N when a signal N ended it)
+#   124                 DEADLINE-EXPIRED: the budget ran out, and the command was stopped
+#   125                 the runner refused to run it: DEADLINE-USAGE, DEADLINE-UNKNOWN (no row),
+#                       DEADLINE-TABLE (a row that does not parse), DEADLINE-OVERRIDE (the
+#                       variable is not a positive whole number), DEADLINE-NO-PERL,
+#                       DEADLINE-NO-PS
+#   126, 127            DEADLINE-EXEC: the command cannot be run, or is not found
+# 124 and 125 are GNU timeout's codes for the same two cases. Every refusal is one line on
+# stderr: `deadline [RULE]: what happened; what to do`.
+#
+# The engine is perl, on every machine: a stock Mac has perl and no GNU timeout, and one engine
+# means the self-test proves the code that runs everywhere. Without perl the runner refuses
+# (DEADLINE-NO-PERL), and without ps too (DEADLINE-NO-PS): a step it cannot bound is a step it
+# does not run, never one it runs without a deadline. The shell around it is plain bash 3.2. Proof: scripts/deadline-self-test.
+
+set -u
+
+# refuse <rule> <what> <remedy>: one line, even with stderr closed (the write fails, the exit
+# status stands).
+refuse() {
+	printf 'deadline [%s]: %s; %s\n' "$1" "$2" "$3" >&2 2>/dev/null || :
+	exit 125
+}
+
+# Beside this script; ${0%/*} and not dirname, which is one more tool the runner would need.
+case "$0" in */*) table="${0%/*}/deadlines.tsv" ;; *) table="./deadlines.tsv" ;; esac
+secs="" tty=1
+while :; do
+	case "${1:-}" in
+	-n) tty="" && shift ;;
+	-s)
+		secs="${2:-}"
+		case "$secs" in '' | *[!0-9]* | 0*) refuse DEADLINE-USAGE "-s wants a whole number of seconds above 0, not '$secs'" "write -s 30" ;; esac
+		shift 2
+		;;
+	*) break ;;
+	esac
+done
+step="${1:-}"
+[ "${2:-}" = -- ] && [ $# -ge 3 ] ||
+	refuse DEADLINE-USAGE "usage: deadline [-n] [-s SECONDS] STEP -- COMMAND [ARG...]" "put -- between the step and the command"
+shift 2
+case "$step" in
+[a-z0-9]*) case "$step" in *[!a-z0-9._-]*) refuse DEADLINE-USAGE "step '$step' is not [a-z0-9][a-z0-9._-]*" "rename the step" ;; esac ;;
+*) refuse DEADLINE-USAGE "step '$step' is not [a-z0-9][a-z0-9._-]*" "rename the step" ;;
+esac
+var="FPL_DEADLINE_$(printf '%s' "$step" | tr 'a-z.-' 'A-Z__')"
+
+# The table: every row is judged, so a broken row fails the first step that reads the table, not
+# the one step that would have matched it.
+if [ -z "$secs" ]; then
+	[ -r "$table" ] || refuse DEADLINE-TABLE "no budget table at $table" "restore scripts/deadlines.tsv, or pass -s SECONDS"
+	exact="" family="" flen=-1 n=0
+	while IFS=$'\t' read -r name budget _ || [ -n "$name" ]; do
+		n=$((n + 1))
+		case "$name" in '' | '#'*) continue ;; esac
+		case "$budget" in '' | *[!0-9]* | 0*)
+			refuse DEADLINE-TABLE "$table:$n: '$name' has budget '$budget', not a whole number of seconds above 0" "fix the row"
+			;;
+		esac
+		if [ "$name" = "$step" ]; then
+			exact="$budget"
+		else
+			case "$name" in *'*')
+				prefix="${name%'*'}"
+				case "$step" in "$prefix"*) if [ "${#prefix}" -gt "$flen" ]; then family="$budget" flen="${#prefix}"; fi ;; esac
+				;;
+			esac
+		fi
+	done <"$table"
+	secs="${exact:-$family}"
+	[ -n "$secs" ] || refuse DEADLINE-UNKNOWN "no budget for step '$step' in $table" "add a row '$step<TAB>seconds<TAB>basis', or one for its family"
+fi
+if [ -n "${!var+set}" ]; then
+	secs="${!var}"
+	case "$secs" in '' | *[!0-9]* | 0*) refuse DEADLINE-OVERRIDE "$var='$secs' is not a whole number of seconds above 0" "set $var=<seconds>, or unset it" ;; esac
+fi
+
+command -v perl >/dev/null 2>&1 ||
+	refuse DEADLINE-NO-PERL "perl is not on PATH, so step '$step' cannot be held to its ${secs}s budget, and is not run" \
+		"put perl on PATH (macOS ships /usr/bin/perl; the dev shell has it)"
+# Without ps the runner could stop only the step's own group, and a child in a group of its own
+# would outlive the deadline unseen: refused like a missing perl.
+command -v ps >/dev/null 2>&1 ||
+	refuse DEADLINE-NO-PS "ps is not on PATH, so what step '$step' starts could not all be stopped, and it is not run" \
+		"put ps on PATH (macOS ships /bin/ps; the dev shell has it)"
+
+export FPL_DEADLINE_STEP="$step"
+# shellcheck disable=SC2016 # the engine is perl, its $ are perl's
+exec perl -e '
+use strict;
+use warnings;
+use POSIX qw(WNOHANG setpgid);
+use Time::HiRes qw(sleep);
+
+my ($budget, $step, $var, $hand, @cmd) = @ARGV;
+my $grace = 2;
+my $pswait = 3;
+
+# The monotonic clock where this perl has it, else the wall clock.
+my $now = eval {
+	my $c = Time::HiRes::CLOCK_MONOTONIC();
+	Time::HiRes::clock_gettime($c) > 0 or die;
+	sub { Time::HiRes::clock_gettime($c) };
+} || \&Time::HiRes::time;
+
+my $pid = fork();
+defined $pid or do { print STDERR "deadline [DEADLINE-EXEC]: $step: cannot fork: $!; retry\n"; exit 126 };
+if ($pid == 0) {
+	setpgid(0, 0);
+	{ no warnings "exec"; exec { $cmd[0] } @cmd; }
+	my $why = "$!";
+	my $code = $!{ENOENT} ? 127 : 126;
+	print STDERR "deadline [DEADLINE-EXEC]: $step: cannot run $cmd[0]: $why; check the command and PATH\n";
+	POSIX::_exit($code);
+}
+setpgid($pid, $pid);    # also here, so the group exists before either side goes on
+
+# The terminal, when the runner holds its foreground: the command gets it for as long as it runs.
+my $tty;
+my $mine = getpgrp();
+if ($hand && open($tty, "<", "/dev/tty")) {
+	if (POSIX::tcgetpgrp(fileno $tty) == $mine) {
+		local $SIG{TTOU} = "IGNORE";
+		POSIX::tcsetpgrp(fileno $tty, $pid);
+		kill "CONT", -$pid;
+	} else {
+		undef $tty;
+	}
+} else {
+	undef $tty;
+}
+sub release {
+	return unless $tty;
+	local $SIG{TTOU} = "IGNORE";
+	POSIX::tcsetpgrp(fileno $tty, $mine);
+}
+
+my $got;
+$SIG{$_} = sub { $got //= $_[0] } for qw(TERM INT HUP);
+
+# tree(ROOTS): every process ROOTS started, and every group they are in, but never the
+# runner own. The ps is cut off after $pswait seconds, read and close both.
+sub tree {
+	my (%kids, %group);
+	my $ps_pid = open(my $ps, "-|", "ps", "-A", "-o", "pid=", "-o", "ppid=", "-o", "pgid=");
+	if ($ps_pid) {
+		my $ok = eval {
+			local $SIG{ALRM} = sub { die "ps\n" };
+			alarm $pswait;
+			while (<$ps>) {
+				my ($p, $pp, $g) = split;
+				next unless defined $g;
+				push @{ $kids{$pp} }, $p;
+				$group{$p} = $g;
+			}
+			close $ps;
+			alarm 0;
+			1;
+		};
+		alarm 0;
+		kill "KILL", $ps_pid unless $ok;
+	}
+	my @todo = @_;
+	my %seen;
+	while (@todo) {
+		my $p = shift @todo;
+		next if $seen{$p}++;
+		push @todo, @{ $kids{$p} || [] };
+	}
+	my %groups = ($pid => 1);
+	for (keys %seen) {
+		my $g = $group{$_};
+		$groups{$g} = 1 if defined $g && $g > 1 && $g != $mine;
+	}
+	return ([ grep { $_ != $$ } keys %seen ], [ keys %groups ]);
+}
+
+sub stop {
+	my ($sig) = @_;
+	my ($pids, $groups) = tree($pid);
+	kill "-$sig", @$groups;
+	kill $sig, @$pids;
+	my $until = $now->() + $grace;
+	while ($now->() < $until) {
+		waitpid($pid, WNOHANG);
+		last unless grep { kill 0, $_ } @$pids;
+		sleep 0.05;
+	}
+	my ($later, $lgroups) = tree(@$pids);
+	my %p = map { $_ => 1 } @$pids, @$later;
+	my %g = map { $_ => 1 } @$groups, @$lgroups;
+	kill "-KILL", keys %g;
+	kill "KILL", keys %p;
+	waitpid($pid, 0);
+	release();
+}
+
+my %num = (HUP => 1, INT => 2, TERM => 15);
+my $end = $now->() + $budget;
+my $nap = 0.002;
+while (1) {
+	my $r = waitpid($pid, WNOHANG);
+	if ($r == $pid || $r == -1) {
+		my $st = $r == $pid ? $? : 0;
+		release();
+		exit($st & 127 ? 128 + ($st & 127) : $st >> 8);
+	}
+	if (defined $got) {
+		stop($got);
+		$SIG{$got} = "DEFAULT";
+		kill $got, $$;
+		exit 128 + $num{$got};
+	}
+	if ($now->() >= $end) {
+		stop("TERM");
+		print STDERR "deadline [DEADLINE-EXPIRED]: $step ran past its budget of ${budget}s and was stopped;"
+			. " find what it waits on, or give it longer: $var=<seconds> (scripts/deadlines.tsv)\n";
+		exit 124;
+	}
+	sleep $nap;
+	$nap *= 2 if $nap < 0.1;
+}
+' "$secs" "$step" "$var" "$tty" "$@"
