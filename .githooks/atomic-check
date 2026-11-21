@@ -16,6 +16,12 @@
 #     off    skip entirely
 #   FPL_ATOMIC_STRICT=1   also block when the model could not be reached
 #
+# The model is started without the user's MCP servers, plugins, skills and settings, and
+# with stdin closed. A plain `claude -p` loads all of those first: measured 2026-11-21,
+# 52 s and 89 s for a one-word answer, 2 s of it the model; this form takes 2.0 to 2.1 s.
+# The default tool list stays: `--tools ""` or an own system prompt measured slower
+# (2.2 to 3.2 s), and `--bare` needs an API key, which a subscription login is not.
+#
 # Usage: atomic-check <commit-msg-file>
 
 set -euo pipefail
@@ -68,7 +74,9 @@ else
 
 	raw=""
 	if command -v claude >/dev/null 2>&1; then
-		raw="$(claude -p "$prompt" --model "$model" --output-format json 2>/dev/null || true)"
+		raw="$(claude -p "$prompt" --model "$model" --output-format json \
+			--strict-mcp-config --disable-slash-commands --setting-sources "" \
+			--no-session-persistence </dev/null 2>/dev/null || true)"
 		# `claude -p --output-format json` yields either a single {result:...}
 		# object or an array of stream messages ending in {type:result,result:...}.
 		raw="$(printf '%s' "$raw" | python3 -c 'import sys,json
