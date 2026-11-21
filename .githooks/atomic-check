@@ -3,8 +3,19 @@
 # .githooks/atomic-check — soft LLM gate: is the staged commit ONE logical change?
 #
 # Symbolic hooks can check message shape but not whether the diff is cohesive.
-# This asks a cheap model (Haiku) to judge the staged diff against the commit
-# message's stated intent and blocks a commit that bundles unrelated concerns.
+# This asks a model to judge the staged diff against the commit message's stated
+# intent and blocks a commit that bundles unrelated concerns. The first judge is Jev
+# (typesafe/jev-1.13 via OpenRouter's decisions API), a hosted classifier that
+# returns P(atomic); Haiku through `claude -p` is the fallback when no OpenRouter key
+# is found or Jev does not answer within 10 s.
+#
+# Measured 2026-11-21 on 312 commits from this repo's history, labelled by three
+# models:
+#   Jev 1.13  AUROC 0.92, 21 errors at threshold 0.915, p50 0.39 s, p99 0.80 s
+#   Haiku     AUROC 0.54, no better than calling every commit atomic
+# Jev 1.14 is pinned out on purpose: AUROC 0.88, 27 errors, same speed.
+# The key comes from $OPENROUTER_API_KEY, else the login keychain item
+# `openrouter-api-key` (macOS `security`).
 #
 # It is a *soft* verifier — weaker than the symbolic gates — so it fails OPEN on
 # any infrastructure problem (no model reachable, bad reply): it only blocks on a
@@ -73,7 +84,27 @@ else
 	EOF
 
 	raw=""
-	if command -v claude >/dev/null 2>&1; then
+	jev_key="${OPENROUTER_API_KEY:-}"
+	if [ -z "$jev_key" ] && command -v security >/dev/null 2>&1; then
+		jev_key="$(security find-generic-password -s openrouter-api-key -w 2>/dev/null || true)"
+	fi
+	if [ -n "$jev_key" ]; then
+		# Same state text and question as the benchmark that set the threshold.
+		state="$(printf '=== COMMIT MESSAGE ===\n%s\n\n=== DIFF STAT ===\n%s\n\n=== DIFF (may be truncated) ===\n%s\n' "$msg" "$stat" "$diff")"
+		p="$(python3 -c 'import json,sys
+print(json.dumps({"model":"typesafe/jev-1.13","state":sys.stdin.read(),"questions":{"judgment":{"type":"noul",
+"instructions":"Is this git commit ONE cohesive logical change that matches the intent stated in its commit message? A large but single-purpose change is cohesive. Unrelated concerns mixed together (a feature plus an unrelated refactor or fix in another area) are not."}}}))' <<<"$state" |
+			curl -sS --max-time 10 https://openrouter.ai/api/alpha/decisions \
+				-H "Authorization: Bearer $jev_key" -H "Content-Type: application/json" -d @- 2>/dev/null |
+			python3 -c 'import sys,json
+try: print(float(json.load(sys.stdin)["answers"]["judgment"]["noul"]))
+except Exception: pass' 2>/dev/null || true)"
+		if [ -n "$p" ]; then
+			raw="$(python3 -c 'import json,sys; p=float(sys.argv[1])
+print(json.dumps({"atomic": p >= 0.915, "reason": "Jev 1.13: P(one cohesive change) = %.2f, threshold 0.915" % p}))' "$p")"
+		fi
+	fi
+	if [ -z "$raw" ] && command -v claude >/dev/null 2>&1; then
 		raw="$(claude -p "$prompt" --model "$model" --output-format json \
 			--strict-mcp-config --disable-slash-commands --setting-sources "" \
 			--no-session-persistence </dev/null 2>/dev/null || true)"

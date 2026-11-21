@@ -215,14 +215,15 @@ order, with the same authors and messages; the SHAs are listed but left out of t
 
 ## Atomicity
 
-- **[gate, soft]** `.githooks/atomic-check` sends the staged diff + message to a cheap model
-  (Haiku) and blocks a commit the model judges to bundle unrelated concerns. It is a *soft*
+- **[gate, soft]** `.githooks/atomic-check` sends the staged diff + message to Jev
+  (`typesafe/jev-1.13` on OpenRouter, a hosted classifier; Haiku is the fallback) and blocks a commit the model judges to bundle unrelated concerns. It is a *soft*
   verifier — weaker than the symbolic gates — so it **fails open**: any infrastructure problem
   (no model reachable, unparseable reply) skips the check rather than blocking.
   - `FPL_ATOMIC_GATE=block` (default) · `warn` (print, don't block) · `off` (skip).
   - `FPL_ATOMIC_STRICT=1` also blocks when the model could not be reached.
   - Verdicts are cached under `.git/atomic-cache/` keyed on tree+message, so `--amend` loops
-    don't re-bill. Cost is one Haiku call (~seconds) per distinct staged state.
+    don't re-bill. Cost is one Jev call (about 0.4 s, $0.0001) per distinct staged state; the measurement
+    that picked Jev and its threshold sits in the hook's header.
 - **[advisory]** one logical change per commit; stage at **hunk** level (`git add -p`) so a
   commit never bundles unrelated edits. New files are one hunk by nature.
 
