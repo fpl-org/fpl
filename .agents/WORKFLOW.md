@@ -183,7 +183,7 @@ For agent work there are two scripts, one for each side of the review:
 
 ```
 scripts/pr [<branch>]          # the agent's side: file the branch as the machine account,
-                               # on main (-B <parent> stacks, --draft opens a draft)
+                               # on main (-B <parent> stacks; a draft, --ready N)
 scripts/land [<number>]        # the maintainer's side: check, look, decide, fast-forward main
 scripts/land --dry-run <number>  # every check and the push it would make; changes nothing
 ```
@@ -192,9 +192,16 @@ scripts/land --dry-run <number>  # every check and the push it would make; chang
 `.git/agent-identity` and the branch on the forge is the commit you have; it does not push.
 It files the pull request on `main`. `-B <parent>` stacks it on the branch of an open pull
 request instead, and refuses, with the rebase that fixes it, a branch that is not built on
-that parent or a parent that has no open pull request. It opens a ready pull request unless
-`--draft` says otherwise, so every bot starts at once. The generated body ends with the line
-`landing: fast-forward by the lander after review.`
+that parent or a parent that has no open pull request. It opens a draft, and `--ready <number>`
+is the one way out of it: it waits until no check, status or review request is pending, then
+marks it ready. `.github/CODEOWNERS` asks the maintainer for a review the moment a pull request
+is ready, or is opened ready, so Ready is his signal to read and nothing before it can be:
+opened ready, PRs 172, 173 and 175 had his review requested one second after creation, before
+any bot had started. `--no-draft` opens one ready anyway and so asks him at once; it is for
+the case where no bot is to run first. CodeRabbit reads a draft (`.coderabbit.yaml`); Claude
+reads it once, when it opens, and again when it is ready; Codex waits for Ready
+(`.github/workflows/codex-review.yml`), so its review still lands after his request is out.
+The generated body ends with the line `landing: fast-forward by the lander after review.`
 
 `scripts/land` lands by **fast-forward**: it pushes the pull request's head to `main`
 without force, `git push <url> <head>:refs/heads/main`, to the URL `land/remote` checked.
