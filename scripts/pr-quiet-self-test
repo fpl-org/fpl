@@ -1,0 +1,319 @@
+#!/usr/bin/env bash
+#
+# scripts/pr-quiet-self-test — proof that scripts/pr calls a head quiet only when every bot
+# is and no review thread is open: --quiet says so and reads only, --reviewer asks nobody and
+# --ready marks nothing otherwise, and neither acts on what moved since it judged. Run by
+# `make gates`.
+#
+# The forge is a small HTTP server of the test's own on 127.0.0.1 (FPL_API_URL): it answers
+# from one file of routes a scene writes, by method and path or a GraphQL query's field, and
+# logs every write, one line each. A scene is a pull request in a state measured on
+# fpl-org/fpl (2026-10-21): Codex clean, at its usage limit, running, or with only a 👀 on the
+# ask; threads open or resolved; CodeRabbit and the Claude job running or done; the bots'
+# own bodies, trimmed. The token is a made-up line in .git/agent-credentials, a gh that has
+# none comes first on PATH, and git's config, HOME and gh's config point away from the
+# maintainer's.
+#
+# Where there is a /bin/bash other than the bash running this, the whole run is made a second
+# time with it first on PATH: on a Mac that is bash 3.2.
+
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/pr-quiet-self-test.XXXXXX")"
+server=""
+# The forge is reaped as well as killed: bash 3.2 reports a killed job it never waited for.
+trap '[ -z "$server" ] || { kill "$server"; wait "$server"; } 2>/dev/null || true; rm -rf "$tmp"' EXIT
+: >"$tmp/gitconfig"
+# shellcheck disable=SC2046 # one name a line, split on purpose
+unset GH_TOKEN GITHUB_TOKEN GH_HOST FPL_API_URL FPL_PR_TIMEOUT GIT_NAMESPACE \
+	GIT_CEILING_DIRECTORIES $(git rev-parse --local-env-vars)
+export GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home" \
+	XDG_CONFIG_HOME="$tmp/xdg" GH_CONFIG_DIR="$tmp/gh" GIT_AUTHOR_NAME=t \
+	GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid \
+	FPL_PR_WAIT=0 FPL_PR_POLL=0
+mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$GH_CONFIG_DIR"
+
+forge="$tmp/forge"
+mkdir -p "$forge"
+cat >"$tmp/forge.py" <<'PY'
+import json, sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse
+
+forge = sys.argv[1]
+MUTATIONS = {  # the mutations scripts/pr sends, and GitHub's answer to each
+    "markPullRequestReadyForReview": {"pullRequest": {"isDraft": False}},
+}
+
+
+class Handler(BaseHTTPRequestHandler):
+    def serve(self, method):
+        url = urlparse(self.path)
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode()
+        routes = json.load(open(f"{forge}/routes.json"))
+        query = json.loads(body).get("query", "") if url.path == "/graphql" else ""
+        if method != "GET" and not query.lstrip().startswith("query"):  # a GraphQL query reads
+            with open(f"{forge}/log", "a") as log:
+                log.write(f"{method} {url.path} {body}\n")
+        if self.headers.get("Authorization") != "Bearer made-up-token":
+            return self.reply(401, {"message": "Bad credentials"})
+        if url.path == "/graphql":
+            if query.count("{") != query.count("}"):  # GitHub would answer with a parse error
+                return self.reply(200, {"errors": [{"message": "Expected NAME"}]})
+            for name, answer in MUTATIONS.items():
+                if query.lstrip().startswith("mutation") and name in query:
+                    return self.reply(200, routes.get(f"graphql {name}", {"data": {name: answer}}))
+            if "reviewThreads" in query:
+                return self.reply(200, self.take(routes, "graphql reviewThreads"))
+            return self.reply(200, {"errors": [{"message": "not served"}]})
+        key = f"{method} {url.path}"
+        if key in routes:
+            return self.reply(200, self.take(routes, key))
+        if method == "POST":
+            return self.reply(201, {})
+        return self.reply(404, {"message": "Not Found"})
+
+    def take(self, routes, key):  # a "<key> next" route answers every read after the first
+        got = routes[key]
+        if f"{key} next" in routes:
+            routes[key] = routes.pop(f"{key} next")
+            json.dump(routes, open(f"{forge}/routes.json", "w"))
+        return got
+
+    def reply(self, code, answer):
+        data = json.dumps(answer).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    do_GET, do_POST = (lambda self: self.serve("GET")), (lambda self: self.serve("POST"))
+    log_message = lambda self, *args: None
+
+
+httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+with open(f"{forge}/port", "w") as f:
+    f.write(str(httpd.server_port))
+httpd.serve_forever()
+PY
+
+# scene <word>...: write the forge's routes for pull request 7, head H, as the words say.
+cat >"$tmp/scene.py" <<'PY'
+import json, sys
+
+words, forge = set(sys.argv[2:]), sys.argv[1]
+H, OLD = "c0ffee" * 6 + "abcd", "0dd" * 13 + "0"
+R, U = "/repos/pr-test/fpl", "https://github.com/pr-test/fpl"
+CODEX, BOT = "chatgpt-codex-connector[bot]", {"__typename": "Bot", "login": "chatgpt-codex-connector"}
+ASK = {"id": 11, "user": {"login": "psjg"}, "body": "@codex review\n", "created_at": "2026-10-21T02:17:01Z"}
+
+
+def comment(i, body, at="2026-10-21T02:18:00Z", who=CODEX):
+    return {"id": i, "user": {"login": who}, "body": body, "created_at": at, "updated_at": at}
+
+
+def state(sha, status, unresolved=False):
+    blob = json.dumps({"code_review": {"commit_sha": sha, "has_any_findings": unresolved,
+                                       "has_unresolved_findings": unresolved, "status": status}})
+    row = "🔄 **Running** since <relative-time datetime=\"2026-10-21T02:17:20Z\">" if status == "running" else "✅ **Completed**"
+    return comment(10, f"<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 {blob} -->\n\n"
+                   f"## Codex Review Summary\n\n| 📝 **Code Review** | {row} | `{sha[:7]}` |", "2026-10-20T19:11:39Z")
+
+
+def thread(i, resolved=False, at=OLD, author=BOT, outdated=False):
+    first = {"databaseId": 100 + i, "url": f"{U}/pull/7#discussion_r{100 + i}", "author": author,
+             "body": f"**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Finding {i}**", "originalCommit": {"oid": at}}
+    return {"id": f"T{i}", "isResolved": resolved, "isOutdated": outdated, "path": "scripts/x", "line": i,
+            "comments": {"nodes": [first]}}
+
+
+said, threads, reviews, runs, statuses = [ASK], [], [], [], []
+said.append(state(H, "completed") if "clean" in words else
+            state(H, "completed", True) if "flagged" in words else
+            state(H, "running") if "running" in words else
+            state(H, "failed") if "failed" in words else state(OLD, "completed"))
+if "limit" in words:
+    said.append(comment(12, "You have reached your Codex usage limits for code reviews. You can see your limits in the [Codex usage dashboard](https://chatgpt.com/codex/cloud/settings/usage)."))
+if "unconnected" in words:
+    said.append(comment(12, "To use Codex here, [create a Codex account and connect to github](https://chatgpt.com/codex/cloud/settings/connectors)."))
+eyes = [{"user": {"login": CODEX}, "content": "eyes"}] if "eyes" in words else []
+if "open" in words:
+    threads.append(thread(1, outdated=True))
+if "human" in words:
+    threads.append(thread(2, author={"__typename": "User", "login": "psjg"}))
+if "fixed" in words:
+    threads.append(thread(3, resolved=True))
+rabbit = ("pending", "Review in progress") if "rabbit" in words else ("success", "Review skipped")
+statuses.append({"context": "CodeRabbit", "state": rabbit[0], "description": rabbit[1]})
+runs.append({"name": "claude-review", "status": "in_progress" if "claude" in words else "completed"})
+pull = {"number": 7, "state": "open", "draft": "draft" in words, "head": {"sha": H}, "node_id": "PR_7",
+        "requested_reviewers": [], "requested_teams": []}
+routes = {
+    "GET /user": {"login": "psjg-claude"},
+    f"GET {R}/pulls/7": pull,
+    f"GET {R}/pulls/7/reviews": reviews,
+    f"GET {R}/issues/7/comments": said,
+    f"GET {R}/issues/comments/11/reactions": eyes,
+    f"GET {R}/commits/{H}/check-runs": {"total_count": len(runs), "check_runs": runs},
+    f"GET {R}/commits/{H}/status": {"total_count": len(statuses), "statuses": statuses},
+    "graphql reviewThreads": {"data": {"repository": {"pullRequest": {"reviewThreads": {
+        "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": threads}}}}},
+}
+if "broken" in words:
+    routes["graphql reviewThreads"] = {"data": {"repository": None}}
+if "moved" in words:  # a push lands while the bots are judged
+    routes[f"GET {R}/pulls/7 next"] = dict(pull, head={"sha": "fe" * 20})
+if "opened" in words:  # a bot opens a thread while the rest is judged
+    routes["graphql reviewThreads next"] = json.loads(json.dumps(routes["graphql reviewThreads"]))
+    routes["graphql reviewThreads next"]["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"].append(thread(6))
+for word, answer in (("hollow", {}), ("refused", {"errors": [{"message": "nope"}]})):
+    if word in words:  # the forge answers the mutation with nothing, or with an error
+        routes["graphql markPullRequestReadyForReview"] = answer
+json.dump(routes, open(f"{forge}/routes.json", "w"))
+open(f"{forge}/log", "w").close()
+PY
+scene() { python3 "$tmp/scene.py" "$forge" "$@"; }
+scene clean
+python3 "$tmp/forge.py" "$forge" &
+server=$!
+for _ in $(seq 100); do [ -s "$forge/port" ] && break || sleep 0.1; done
+[ -s "$forge/port" ] || { echo "pr-quiet-self-test: the forge did not start" >&2; exit 1; }
+export FPL_API_URL="http://127.0.0.1:$(cat "$forge/port")"
+
+repo="$tmp/repo"
+git init -q -b main "$repo"
+cd "$repo"
+cp -R "$root/scripts" .
+git remote add github https://github.com/pr-test/fpl.git
+git config branch.main.remote github
+echo 1+psjg-claude@users.noreply.github.com >"$(git rev-parse --git-dir)/agent-identity"
+echo 'https://psjg-claude:made-up-token@github.com' >"$(git rev-parse --git-dir)/agent-credentials"
+mkdir -p "$tmp/bin"
+printf '#!/bin/sh\nexit 1\n' >"$tmp/bin/gh"
+chmod +x "$tmp/bin/gh"
+export PATH="$tmp/bin:$PATH"
+
+fails=0 total=0
+# fail <what> <file>: count a failed check, and say which, with the file that shows why.
+fail() { fails=$((fails + 1)) && printf 'FAIL %s\n' "$1" >&2 && sed 's/^/    /' "$2" >&2; }
+# run <exit code> <description> <scripts/pr arguments...>: stderr in $tmp/err.
+run() {
+	local want="$1" what="$2" got=0
+	shift 2 && total=$((total + 1))
+	scripts/pr "$@" >"$tmp/out" 2>"$tmp/err" || got=$?
+	[ "$got" -eq "$want" ] || fail "$what: exit $got, want $want" "$tmp/err"
+}
+# says <text> <description>: the last run's stderr holds the text.
+says() { total=$((total + 1)) && grep -qF -- "$1" "$tmp/err" || fail "$2: stderr lacks $1" "$tmp/err"; }
+# logged <pattern> <description>: the forge logged a write that matches.
+logged() { total=$((total + 1)) && grep -q -- "$1" "$forge/log" || fail "$2: no write matches $1" "$forge/log"; }
+# wrote <count> <description>: the forge logged that many writes since the scene.
+wrote() { total=$((total + 1)) && [ "$(wc -l <"$forge/log")" -eq "$1" ] || fail "$2: want $1 writes" "$forge/log"; }
+
+# Quiet: Codex completed and clean at the head, threads resolved, the rest done.
+scene clean fixed
+run 0 "clean head" --quiet 7
+says "every bot is quiet at c0ffeec" "clean head"
+wrote 0 "--quiet reads only"
+run 0 "clean head, review asked" --reviewer 7 psjg
+wrote 1 "the review request is sent"
+scene clean draft
+run 1 "a draft asks nobody" --reviewer 7 psjg
+says "pr/reviewer: #7 is a draft" "draft reviewer"
+wrote 0 "a draft's --reviewer writes nothing"
+run 0 "clean draft marked ready" --ready 7
+logged markPullRequestReadyForReview "clean draft marked"
+# Codex reviews no draft (codex-review.yml): --ready leaves pr/codex to --reviewer.
+scene draft fixed
+run 0 "a draft Codex was never asked about is marked ready" --ready 7
+logged markPullRequestReadyForReview "draft without Codex marked"
+
+# The four silences: only the first is quiet.
+scene limit
+run 1 "usage limit" --quiet 7
+says "pr/codex: Codex answered the last ask with its usage limit" "usage limit"
+says "re-run the codex-review job of c0ffeec" "usage limit remedy"
+scene failed limit
+run 1 "failed at the head on a usage limit" --quiet 7
+says "usage limit (its review of c0ffeec is failed)" "failed"
+scene running
+run 1 "running" --quiet 7
+says "pr/codex: Codex is reviewing c0ffeec, running since 2026-10-21T02:17:20Z" "running"
+scene eyes
+run 1 "eyes only" --quiet 7
+says "pr/codex: Codex took the last ask (eyes) and has posted no review of c0ffeec" "eyes"
+scene unconnected
+run 1 "ask from an account without Codex" --quiet 7
+says "an ask from an account without Codex" "unconnected"
+scene
+run 1 "asked, no answer" --quiet 7
+says "pr/codex: Codex was asked at 2026-10-21T02:17:01Z and has not reviewed c0ffeec" "asked"
+
+# Refused means nothing is asked or marked.
+scene limit
+run 1 "reviewer refused" --reviewer 7 psjg
+says "pr/codex" "reviewer refused"
+says "nobody was asked" "reviewer refused"
+wrote 0 "a refused --reviewer writes nothing"
+scene clean open draft
+run 1 "ready refused at once on an open thread" --ready 7
+says "pr/threads: 1 of 1 review threads unresolved" "ready refused"
+says "is not quiet, so it stays a draft" "ready refused at once, not after a wait"
+wrote 0 "a refused --ready marks nothing"
+scene clean rabbit draft
+run 1 "ready waits on a running review, then refuses" --ready 7
+says "is not quiet after 0s" "ready waits"
+wrote 0 "a waiting --ready marks nothing"
+
+# What moves between the judgment and the ask is judged again: a push, a new thread.
+scene clean moved
+run 1 "pushed while judged" --reviewer 7 psjg
+says "changed while it was read (c0ffeec to fefefef)" "moved"
+wrote 0 "a moved head asks nobody"
+scene clean opened
+run 1 "a thread opened while judged" --reviewer 7 psjg
+says "pr/threads: 1 of 1" "opened, reviewer"
+wrote 0 "a new thread asks nobody"
+scene clean draft opened
+run 1 "a thread opened while judged, ready" --ready 7
+says "pr/threads: 1 of 1" "opened, ready"
+wrote 0 "a new thread marks nothing"
+# An answer that is not the mutation's is no success.
+scene clean draft hollow
+run 1 "ready answered with nothing" --ready 7
+says "stays a draft: the forge's answer is not the mutation's" "hollow"
+scene clean draft refused
+run 1 "ready answered with an error" --ready 7
+says "stays a draft: nope" "refused"
+
+# Threads: anyone's, outdated included, each named with who opened it.
+scene clean open
+run 1 "an outdated bot thread" --quiet 7
+says "pr/threads: 1 of 1 review threads unresolved, outdated ones included: https://github.com/pr-test/fpl/pull/7#discussion_r101 (by chatgpt-codex-connector)" "open thread"
+scene clean human
+run 1 "the maintainer's own open thread" --quiet 7
+says "discussion_r102 (by psjg)" "human thread"
+scene flagged fixed
+run 0 "Codex flagged findings it has since seen resolved" --quiet 7
+scene flagged open
+run 1 "Codex flagged findings still open" --quiet 7
+says "pr/codex: Codex finished c0ffeec with findings unresolved" "flagged open"
+scene clean broken
+run 1 "threads unreadable: fail closed" --quiet 7
+says "pr/threads: the forge's answer is not a page of review threads" "broken threads"
+
+# The other bots, mid-review.
+scene clean rabbit
+run 1 "CodeRabbit reviewing" --quiet 7
+says "pr/coderabbit: CodeRabbit is reviewing c0ffeec (Review in progress)" "rabbit"
+scene clean claude
+run 1 "Claude reviewing" --quiet 7
+says "pr/claude: claude-review is in_progress on c0ffeec" "claude"
+
+[ "$fails" -eq 0 ] || { echo "pr-quiet-self-test: $fails of $total checks failed ($BASH_VERSION)" >&2 && exit 1; }
+echo "pr-quiet-self-test: $total checks passed ($BASH_VERSION)"
+if [ -x /bin/bash ] && [ "$(command -v bash)" != /bin/bash ] && [ -z "${PR_QUIET_SECOND:-}" ]; then
+	PR_QUIET_SECOND=1 /bin/bash "$root/scripts/pr-quiet-self-test"
+fi
