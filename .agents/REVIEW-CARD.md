@@ -21,8 +21,8 @@ lines. Otherwise drop this paragraph.>
 ## How checked
 <The acknowledgements: who read the series and what each gave, which the commits never say.>
 - Gates: <present-check or make gates, its result, on which head>.
-- Bots: <CodeRabbit, Codex, Claude review: each finding, and folded, a lemma, or rejected, why>.
-- GPT verification: <findings as a list, each applied or rejected with why; its text never lands>.
+- Bots: <CodeRabbit, Codex, Claude review: each finding, and folded, a lemma, or rejected, why; a finding that came without a Reproduce block is marked unverified>.
+- GPT verification: <findings as a list, each with its Reproduce block, applied or rejected with why; its text never lands>.
 - Owner: <when his comments asked for this rewrite, which; else drop the line>.
 
 ## Limits
