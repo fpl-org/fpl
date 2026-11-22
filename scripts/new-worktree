@@ -13,7 +13,9 @@
 #   2. Carries the root's agent identity into the new worktree. The file lives
 #      under the per-worktree git dir, so a fresh worktree starts without one;
 #      .agents/COMMITS.md fixes the email as one constant machine-account address,
-#      so inheriting it is safe. Skipped when the root has none.
+#      so inheriting it is safe. `scripts/agent-identity set` also makes the machine
+#      account the committer of every commit in the new worktree, in that worktree's
+#      own config. Skipped when the root has none.
 #   3. Runs `scripts/setup` inside the new worktree (hooks, stacked-commit config,
 #      identity report).
 #

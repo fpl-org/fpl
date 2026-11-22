@@ -241,7 +241,26 @@ Two identities, deliberately kept apart.
     links to a single contributor on the forge.
   - `.githooks/commit-msg` rejects a non-`Human-Only` commit whose author email is not the one
     in `.git/agent-identity`.
-- **committer** stays whoever ran the session (their normal `git config user.*`).
+- **[gate] committer** = the machine account too, `<login> <machine-account email>`, e.g.
+  `psjg-claude <NNNNN+psjg-claude@users.noreply.github.com>`: never the person whose git config
+  the checkout inherits. The lander pushes reviewed commits unchanged (`.agents/WORKFLOW.md`,
+  "Land"), so the committer field stays on `main` for good, and a field in the owner's name
+  would say he made a commit he only reviewed. His part is the approving review and the
+  `fpl/series` receipt the lander writes, not a field in his name.
+  - `scripts/agent-identity set` binds it: in a linked worktree it writes `committer.name` and
+    `committer.email` into that worktree's own config (turning on `extensions.worktreeConfig`),
+    so an amend, a rebase, a cherry-pick and a `scripts/series stamp` there keep it.
+    `scripts/new-worktree` calls it. The author of a plain `git commit` stays the person's, and
+    the main worktree, the owner's checkout, is left alone.
+  - `scripts/acommit` sets it on every agent commit it makes, wherever it runs: the main
+    worktree, the App's runner, a worktree made before the binding. A `-H` commit keeps the
+    committer git config gives: the person's, the machine account in a bound worktree.
+  - `.githooks/commit-msg` refuses a non-`Human-Only` commit whose committer email is not an
+    agent address (`committer-human`). Judged after the fact (`commit-lint`, the lander's
+    `land/committer`), only a commit whose committer date is `COMMIT_COMMITTER_SINCE` or later
+    is held to it: every agent commit before that names the owner, and reviewed commits are
+    not rewritten. A refused range is remade in a bound worktree:
+    `git rebase --force-rebase <base>`.
 - **[gate] agent territory** — a commit that is not `Human-Only` sits on an agent branch:
   `agent/<id>/…`, or the flat vendor form `<id>/<slug>` (`.agents/BRANCHES.md`). The branch's
   `<id>` names its lead, not an exclusive author, so it is not compared with `Assisted-By`:

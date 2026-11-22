@@ -185,6 +185,7 @@ someone-else${tab}APPROVED${tab}37
 PSJG${tab}CHANGES_REQUESTED${tab}38" STUB_COMMENTS=psjg sr 0 "stamp when his latest review requests changes" \
 	"in review 38, his latest" stamp "$base0..HEAD"
 sr 0 "check after the requested stamp" "$id" check "$base0..HEAD"
+same "the stamp leaves the commits that carry the id alone" "$(git rev-parse HEAD~1)" "$tip1"
 git reset -q --hard "$tip1"
 
 # --- the manifest is the landed history, whatever the clone's config and replacement refs say ------
@@ -298,6 +299,28 @@ same "revert keeps what came later" "$(git ls-tree --name-only HEAD | grep -cx l
 differ "revert has an id of its own" "$rid" "$id"
 same "revert says what it undoes" "$(git log -1 --format=%B | grep -c "^Refs: series $id\$" || true)" 1
 sr 0 "revert's commit carries its id" "$rid" check "main..HEAD"
+# The undo is an agent's commit, so its committer is the machine account (scripts/acommit), and
+# the amend that adds the id keeps it, in this main worktree too, where no config binds it.
+same "revert's committer is the machine account" "$(git log -1 --format=%ce)" bot@example.invalid
+# A worktree bound after its commits were made: they name the person as committer. The stamp
+# makes each commit it gives the id anew there, the first one too, which git would otherwise
+# leave as it is; the amend keeps that committer, the machine account, and the hook takes it.
+git worktree add -q "$tmp/late" -b agent/claude/stack/late main
+(
+	cd "$tmp/late"
+	unset GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
+	printf 'bot@example.invalid\n' >"$(git rev-parse --git-dir)/agent-identity"
+	for f in l1 l2; do
+		echo "$f" >"$f"; git add "$f"
+		"$BASH" scripts/acommit -t feat -s demo -m "add $f" -b "Body of $f." -- -q --no-verify </dev/null
+		GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid git commit -q --amend --no-edit --no-verify
+	done
+	"$BASH" scripts/agent-identity set bot@example.invalid >/dev/null
+	STUB_REVIEWS=someone-else "$BASH" scripts/series stamp main..HEAD
+) >"$tmp/out" 2>&1 && rc=0 || rc=$?
+verdict "stamp in a worktree bound after its commits" "$rc" 0 "late-"
+same "every commit stamped there has the machine committer" "$(git -C "$tmp/late" log --format=%ce main..HEAD | sort -u)" bot@example.invalid
+git worktree remove --force "$tmp/late"
 
 # --- revert: what it must refuse, and leave no trace of ----------------------------------------
 # A bad SERIES_MAIN is an error, not a quiet other history.
